@@ -1,0 +1,6 @@
+websockets
+soundcard
+numpy<2.0.0
+python-dotenv
+aiohttp
+requests

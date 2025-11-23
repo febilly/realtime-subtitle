@@ -1,0 +1,33 @@
+# Minimal .gitignore for this Python project
+# Only ignore files/folders that are definitely not needed in the repo
+
+# Virtual environment used for building/running locally
+venv/
+venv_build/
+.venv/
+
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+
+# Logs and runtime transcripts (large, generated)
+logs/
+*.log
+
+# Environment file that may contain secrets
+.env
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Test cache
+.pytest_cache/
+
+*.spec

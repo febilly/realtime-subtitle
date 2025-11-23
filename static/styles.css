@@ -1,0 +1,222 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    overflow: hidden;
+    transition: background 0.3s ease;
+}
+
+body.dark-theme {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+}
+
+.button-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 48px;
+    background: rgba(255, 255, 255, 0.95);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 8px;
+    z-index: 1000;
+    transition: background 0.3s ease, border-color 0.3s ease;
+}
+
+body.dark-theme .button-bar {
+    background: rgba(30, 30, 46, 0.95);
+    border-bottom-color: rgba(255, 255, 255, 0.1);
+}
+
+.subtitle-container {
+    width: 100vw;
+    height: calc(100vh - 48px);
+    margin-top: 48px;
+    background: rgba(255, 255, 255, 0.95);
+    padding: 12px;
+    overflow-y: auto;
+    transition: background 0.3s ease, color 0.3s ease;
+}
+
+body.dark-theme .subtitle-container {
+    background: rgba(30, 30, 46, 0.95);
+}
+
+.control-button {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.05);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    transition: all 0.2s ease;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.control-button:hover {
+    background: rgba(0, 0, 0, 0.1);
+    transform: scale(1.05);
+}
+
+.control-button:active {
+    transform: scale(0.95);
+}
+
+body.dark-theme .control-button {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+body.dark-theme .control-button:hover {
+    background: rgba(255, 255, 255, 0.15);
+}
+
+.restart-button.restarting {
+    animation: spin 1s linear infinite;
+    pointer-events: none;
+    opacity: 0.6;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.speaker-label {
+    display: inline-block;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 8px;
+    font-size: 0.65em;
+    font-weight: 600;
+    margin-bottom: 3px;
+}
+
+.speaker-label.speaker-1 {
+    background: #a5b4fc;
+}
+
+.speaker-label.speaker-2 {
+    background: #fca5a5;
+}
+
+.speaker-label.speaker-3 {
+    background: #86efac;
+}
+
+.speaker-label.speaker-4 {
+    background: #fcd34d;
+}
+
+.speaker-label.speaker-undefined {
+    background: #d1d5db;
+}
+
+.subtitle-block {
+    margin-bottom: 8px;
+}
+
+.subtitle-block.same-speaker {
+    margin-top: 6px;
+    margin-bottom: 8px;
+}
+
+.subtitle-line {
+    margin-bottom: 2px;
+    line-height: 1.2;
+}
+
+.sentence-block {
+    margin-bottom: 4px;
+}
+
+.language-tag {
+    display: inline-block;
+    font-size: 0.6em;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+    text-transform: uppercase;
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.subtitle-text {
+    font-size: 1em;
+    color: #1f2937;
+    font-weight: 400;
+}
+
+body.dark-theme .subtitle-text {
+    color: #e5e7eb;
+}
+
+.subtitle-text.non-final {
+    color: #3b82f6;
+}
+
+body.dark-theme .subtitle-text.non-final {
+    color: #60a5fa;
+}
+
+body.dark-theme .language-tag {
+    background: #374151;
+    color: #9ca3af;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #9ca3af;
+    font-size: 1.1em;
+}
+
+body.dark-theme .empty-state {
+    color: #6b7280;
+}
+
+/* 滚动条样式 - 亮色模式 */
+.subtitle-container::-webkit-scrollbar {
+    width: 8px;
+}
+
+.subtitle-container::-webkit-scrollbar-track {
+    background: rgba(240, 240, 240, 0.5);
+}
+
+.subtitle-container::-webkit-scrollbar-thumb {
+    background: rgba(180, 180, 180, 0.6);
+    border-radius: 4px;
+}
+
+.subtitle-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(150, 150, 150, 0.8);
+}
+
+/* 滚动条样式 - 深色模式 */
+body.dark-theme .subtitle-container::-webkit-scrollbar-track {
+    background: rgba(30, 30, 46, 0.5);
+}
+
+body.dark-theme .subtitle-container::-webkit-scrollbar-thumb {
+    background: rgba(100, 100, 120, 0.6);
+    border-radius: 4px;
+}
+
+body.dark-theme .subtitle-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(120, 120, 140, 0.8);
+}
