@@ -18,7 +18,7 @@ A real-time speech-to-subtitle tool based on Soniox API. Captures system audio a
 
 Download the latest release from the Releases page, or install from source:
 ```bash
-git clone https://github.com/febilly/RealtimeSubtitle
+git clone https://github.com/febilly/realtime-subtitle
 cd RealtimeSubtitle
 pip install -r requirements.txt
 ```
