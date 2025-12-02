@@ -7,34 +7,40 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="button-bar">
-        <button class="control-button" id="themeToggle" title="Toggle theme">
-            <span id="themeIcon">☀️</span>
-        </button>
+    <div class="main-container">
+        <div class="subtitle-container" id="subtitleContainer">
+            <div class="empty-state">Subtitles will appear here...</div>
+        </div>
         
-        <button class="control-button restart-button" id="restartButton" title="Restart recognition">
-            <span>🔄</span>
-        </button>
-        
-        <button class="control-button" id="pauseButton" title="Pause/Resume recognition">
-            <span id="pauseIcon">⏸️</span>
-        </button>
+        <div class="button-bar">
+            <button class="control-button" id="themeToggle" title="Toggle theme">
+                <span id="themeIcon">☀️</span>
+            </button>
+            
+            <button class="control-button restart-button" id="restartButton" title="Restart recognition">
+                <span>🔄</span>
+            </button>
+            
+            <button class="control-button" id="pauseButton" title="Pause/Resume recognition">
+                <span id="pauseIcon">⏸️</span>
+            </button>
 
-        <button class="control-button" id="audioSourceButton" title="Switch audio source">
-            <span id="audioSourceIcon">🔊</span>
-        </button>
-        
-        <button class="control-button" id="segmentModeButton" title="Toggle segmentation mode">
-            <span id="segmentModeText">✂️</span>
-        </button>
-        
-        <button class="control-button" id="displayModeButton" title="Toggle display mode">
-            <span id="displayModeText">🌍</span>
-        </button>
-    </div>
-    
-    <div class="subtitle-container" id="subtitleContainer">
-        <div class="empty-state">Subtitles will appear here...</div>
+            <button class="control-button" id="audioSourceButton" title="Switch audio source">
+                <span id="audioSourceIcon">🔊</span>
+            </button>
+            
+            <button class="control-button" id="segmentModeButton" title="Toggle segmentation mode">
+                <span id="segmentModeText">✂️</span>
+            </button>
+            
+            <button class="control-button" id="displayModeButton" title="Toggle display mode">
+                <span id="displayModeText">🌍</span>
+            </button>
+            
+            <button class="control-button" id="furiganaButton" title="Toggle furigana for Japanese">
+                <span id="furiganaIcon">あ</span>
+            </button>
+        </div>
     </div>
 
     <script src="app.js"></script>

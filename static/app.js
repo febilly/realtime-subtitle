@@ -11,6 +11,8 @@ const segmentModeButton = document.getElementById('segmentModeButton');
 const segmentModeText = document.getElementById('segmentModeText');
 const displayModeButton = document.getElementById('displayModeButton');
 const displayModeText = document.getElementById('displayModeText');
+const furiganaButton = document.getElementById('furiganaButton');
+const furiganaIcon = document.getElementById('furiganaIcon');
 
 // 存储所有已确认的tokens
 let allFinalTokens = [];
@@ -34,6 +36,11 @@ let segmentMode = localStorage.getItem('segmentMode') || 'endpoint';
 // 显示模式: 'both', 'original', 'translation'
 let displayMode = localStorage.getItem('displayMode') || 'both';
 
+// 日语假名注音开关（默认关闭）
+let furiganaEnabled = localStorage.getItem('furiganaEnabled') === 'true';
+// 假名注音缓存（避免重复请求）
+let furiganaCache = new Map();
+
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
 let isRestarting = false;    // 是否正在重启中
@@ -44,6 +51,7 @@ let audioSource = 'system';  // 音频输入来源
 updateSegmentModeButton();
 updateDisplayModeButton();
 updateAudioSourceButton();
+updateFuriganaButton();
 
 // 主题切换功能（默认深色）
 let isDarkTheme = true;
@@ -161,6 +169,33 @@ displayModeButton.addEventListener('click', () => {
     renderSubtitles();  // 立即重新渲染
     console.log(`Display mode switched to: ${displayMode}`);
 });
+
+// 假名注音开关
+function updateFuriganaButton() {
+    if (!furiganaButton || !furiganaIcon) {
+        return;
+    }
+    
+    if (furiganaEnabled) {
+        furiganaButton.classList.add('active');
+        furiganaButton.title = 'Furigana enabled (click to disable)';
+    } else {
+        furiganaButton.classList.remove('active');
+        furiganaButton.title = 'Furigana disabled (click to enable)';
+    }
+}
+
+if (furiganaButton) {
+    furiganaButton.addEventListener('click', () => {
+        furiganaEnabled = !furiganaEnabled;
+        localStorage.setItem('furiganaEnabled', furiganaEnabled);
+        updateFuriganaButton();
+        // 清空缓存以便重新渲染
+        furiganaCache.clear();
+        renderSubtitles();
+        console.log(`Furigana ${furiganaEnabled ? 'enabled' : 'disabled'}`);
+    });
+}
 
 // 重启识别功能
 restartButton.addEventListener('click', async () => {
@@ -572,11 +607,51 @@ function getSpeakerClass(speaker) {
     return `speaker-${speaker}`;
 }
 
-function renderTokenSpan(token) {
+// 异步获取假名注音
+async function getFuriganaHtml(text) {
+    if (!text || !furiganaEnabled) {
+        return null;
+    }
+    
+    // 检查缓存
+    if (furiganaCache.has(text)) {
+        return furiganaCache.get(text);
+    }
+    
+    try {
+        const response = await fetch('/furigana', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        
+        if (!response.ok) {
+            return null;
+        }
+        
+        const data = await response.json();
+        if (data.status === 'ok' && data.html) {
+            furiganaCache.set(text, data.html);
+            return data.html;
+        }
+    } catch (error) {
+        console.error('Failed to fetch furigana:', error);
+    }
+    
+    return null;
+}
+
+function renderTokenSpan(token, useRubyHtml = null) {
     const classes = ['subtitle-text'];
     if (!token.is_final) {
         classes.push('non-final');
     }
+    
+    // 如果提供了 ruby HTML（假名注音），使用它
+    if (useRubyHtml) {
+        return `<span class="${classes.join(' ')}">${useRubyHtml}</span>`;
+    }
+    
     return `<span class="${classes.join(' ')}">${escapeHtml(token.text)}</span>`;
 }
 
@@ -811,13 +886,15 @@ function renderSubtitles() {
 
             if (showOriginal && sentence.originalTokens.length > 0) {
                 const langTag = getLanguageTag(sentence.originalLang);
-                const lineContent = sentence.originalTokens.map(renderTokenSpan).join('');
-                sentenceHtml += `<div class="subtitle-line">${langTag}${lineContent}</div>`;
+                const isJapanese = sentence.originalLang === 'ja';
+                const lineContent = sentence.originalTokens.map(t => renderTokenSpan(t)).join('');
+                const dataAttr = isJapanese && furiganaEnabled ? ' data-furigana-pending="true"' : '';
+                sentenceHtml += `<div class="subtitle-line original-line"${dataAttr}>${langTag}${lineContent}</div>`;
             }
 
             if (showTranslation && sentence.translationTokens.length > 0) {
                 const langTag = getLanguageTag(sentence.translationLang);
-                const lineContent = sentence.translationTokens.map(renderTokenSpan).join('');
+                const lineContent = sentence.translationTokens.map(t => renderTokenSpan(t)).join('');
                 sentenceHtml += `<div class="subtitle-line">${langTag}${lineContent}</div>`;
             }
 
@@ -980,6 +1057,42 @@ function renderSubtitles() {
     autoStickToBottom = scrollState ? scrollState.wasAtBottom : isCloseToBottom();
     if (autoStickToBottom) {
         subtitleContainer.scrollTop = subtitleContainer.scrollHeight;
+    }
+    
+    // 异步处理日语假名注音
+    if (furiganaEnabled) {
+        applyFuriganaToJapaneseLines();
+    }
+}
+
+// 异步为日语行添加假名注音
+async function applyFuriganaToJapaneseLines() {
+    const pendingLines = subtitleContainer.querySelectorAll('[data-furigana-pending="true"]');
+    
+    for (const line of pendingLines) {
+        // 每次处理前检查当前是否在底部（而不是用开始时的状态）
+        const wasAtBottomBeforeChange = isCloseToBottom();
+        
+        // 获取所有 subtitle-text 元素
+        const textSpans = line.querySelectorAll('.subtitle-text');
+        
+        for (const span of textSpans) {
+            const text = span.textContent;
+            if (!text) continue;
+            
+            const rubyHtml = await getFuriganaHtml(text);
+            if (rubyHtml && rubyHtml !== text) {
+                span.innerHTML = rubyHtml;
+            }
+        }
+        
+        // 标记为已处理
+        line.removeAttribute('data-furigana-pending');
+        
+        // 假名添加后行高会变化，只有在添加前就在底部时才保持在底部
+        if (wasAtBottomBeforeChange) {
+            subtitleContainer.scrollTop = subtitleContainer.scrollHeight;
+        }
     }
 }
 

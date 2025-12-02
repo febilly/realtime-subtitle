@@ -16,31 +16,62 @@ body.dark-theme {
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
 }
 
-.button-bar {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 48px;
-    background: rgba(255, 255, 255, 0.95);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+.main-container {
     display: flex;
+    width: 100vw;
+    height: 100vh;
+}
+
+.button-bar {
+    width: 48px;
+    height: 100vh;
+    background: rgba(255, 255, 255, 0.95);
+    border-left: 1px solid rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
     align-items: center;
-    padding: 0 12px;
+    padding: 8px 6px;
     gap: 8px;
-    z-index: 1000;
+    flex-shrink: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
     transition: background 0.3s ease, border-color 0.3s ease;
 }
 
 body.dark-theme .button-bar {
     background: rgba(30, 30, 46, 0.95);
-    border-bottom-color: rgba(255, 255, 255, 0.1);
+    border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+/* 右侧菜单栏滚动条 */
+.button-bar::-webkit-scrollbar {
+    width: 4px;
+}
+
+.button-bar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.button-bar::-webkit-scrollbar-thumb {
+    background: rgba(180, 180, 180, 0.4);
+    border-radius: 2px;
+}
+
+.button-bar::-webkit-scrollbar-thumb:hover {
+    background: rgba(150, 150, 150, 0.6);
+}
+
+body.dark-theme .button-bar::-webkit-scrollbar-thumb {
+    background: rgba(100, 100, 120, 0.4);
+}
+
+body.dark-theme .button-bar::-webkit-scrollbar-thumb:hover {
+    background: rgba(120, 120, 140, 0.6);
 }
 
 .subtitle-container {
-    width: 100vw;
-    height: calc(100vh - 48px);
-    margin-top: 48px;
+    flex: 1;
+    height: 100vh;
     background: rgba(255, 255, 255, 0.95);
     padding: 12px;
     overflow-y: auto;
@@ -219,4 +250,30 @@ body.dark-theme .subtitle-container::-webkit-scrollbar-thumb {
 
 body.dark-theme .subtitle-container::-webkit-scrollbar-thumb:hover {
     background: rgba(120, 120, 140, 0.8);
+}
+
+/* 按钮激活状态 */
+.control-button.active {
+    background: rgba(59, 130, 246, 0.2);
+    color: #3b82f6;
+}
+
+body.dark-theme .control-button.active {
+    background: rgba(96, 165, 250, 0.2);
+    color: #60a5fa;
+}
+
+/* Ruby 假名注音样式 */
+ruby {
+    ruby-align: center;
+}
+
+ruby rt {
+    font-size: 0.5em;
+    color: #6b7280;
+    font-weight: normal;
+}
+
+body.dark-theme ruby rt {
+    color: #9ca3af;
 }

@@ -4,10 +4,46 @@ Web服务器模块 - 处理HTTP和WebSocket连接
 import json
 import asyncio
 import os
+import re
 from aiohttp import web
 from aiohttp import WSMsgType
 
 from config import get_resource_path
+
+# 日语假名注音支持
+try:
+    import pykakasi
+    kakasi = pykakasi.kakasi()
+    FURIGANA_AVAILABLE = True
+except ImportError:
+    kakasi = None
+    FURIGANA_AVAILABLE = False
+    print("⚠️  pykakasi not installed, furigana feature disabled")
+
+
+def add_furigana(text):
+    """为日语文本添加假名注音，返回带有ruby标签的HTML"""
+    if not FURIGANA_AVAILABLE or not text:
+        return text
+    
+    result = kakasi.convert(text)
+    html_parts = []
+    
+    for item in result:
+        orig = item['orig']
+        hira = item['hira']
+        
+        # 检查是否包含汉字（需要注音）
+        has_kanji = any('\u4e00' <= c <= '\u9fff' for c in orig)
+        
+        if has_kanji and orig != hira:
+            # 有汉字且读音不同，添加ruby注音
+            html_parts.append(f'<ruby>{orig}<rp>(</rp><rt>{hira}</rt><rp>)</rp></ruby>')
+        else:
+            # 无需注音
+            html_parts.append(orig)
+    
+    return ''.join(html_parts)
 
 
 class WebServer:
@@ -179,6 +215,26 @@ class WebServer:
             "source": self.soniox_session.get_audio_source()
         }
         return web.json_response(response, status=status_code)
+
+    async def furigana_handler(self, request):
+        """为日语文本添加假名注音"""
+        if not FURIGANA_AVAILABLE:
+            return web.json_response({
+                "status": "error",
+                "message": "Furigana feature not available (pykakasi not installed)"
+            }, status=503)
+        
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        
+        text = payload.get("text", "")
+        if not text:
+            return web.json_response({"status": "ok", "html": ""})
+        
+        html = add_furigana(text)
+        return web.json_response({"status": "ok", "html": html})
     
     async def index_handler(self, request):
         """静态文件处理"""
@@ -200,6 +256,7 @@ class WebServer:
         app.router.add_post('/resume', self.resume_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
+        app.router.add_post('/furigana', self.furigana_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径

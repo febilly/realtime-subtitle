@@ -120,7 +120,7 @@ def main():
 
     # 创建并启动 pywebview 窗口
     title = "Real-time Subtitle"
-    window = webview.create_window(title, server_url, width=300, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
+    window = webview.create_window(title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
 
     # 在非调试模式下（默认），在 Windows 上隐藏控制台窗口
     if not debug and os.name == 'nt':
