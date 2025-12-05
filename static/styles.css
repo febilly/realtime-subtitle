@@ -272,6 +272,10 @@ ruby rt {
     font-size: 0.5em;
     color: #6b7280;
     font-weight: normal;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
 }
 
 body.dark-theme ruby rt {
