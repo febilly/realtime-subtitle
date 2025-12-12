@@ -12,6 +12,7 @@ from websockets.sync.client import connect as sync_connect
 from config import SONIOX_WEBSOCKET_URL
 from soniox_client import get_config
 from audio_capture import AudioStreamer
+from osc_manager import osc_manager
 
 
 class SonioxSession:
@@ -34,6 +35,9 @@ class SonioxSession:
         self.audio_source = "system"
         self.audio_streamer: Optional[AudioStreamer] = None
         self.audio_lock = threading.Lock()
+        self.osc_translation_enabled = False
+        self._osc_buffer_lock = threading.Lock()
+        self._osc_translation_tokens: list[dict] = []
     
     def start(self, api_key: Optional[str], audio_format: str, translation: str, loop: asyncio.AbstractEventLoop):
         """启动新的Soniox会话"""
@@ -52,6 +56,8 @@ class SonioxSession:
         self.audio_format = audio_format
         self.translation = translation
         self.loop = loop
+        self._reset_osc_buffer()
+        osc_manager.clear_history()
         
         # 初始化日志文件（如果还没有创建）
         if self.logger.log_file is None:
@@ -75,6 +81,23 @@ class SonioxSession:
         print("⏸️  Recognition paused (connection closing)")
         self.stop()
         return True
+
+    def set_osc_translation_enabled(self, enabled: bool):
+        """开启或关闭翻译结果通过 OSC 发送"""
+        value = bool(enabled)
+        with self._osc_buffer_lock:
+            self.osc_translation_enabled = value
+            if not value:
+                self._osc_translation_tokens.clear()
+                osc_manager.clear_history()
+
+    def get_osc_translation_enabled(self) -> bool:
+        with self._osc_buffer_lock:
+            return self.osc_translation_enabled
+
+    def _reset_osc_buffer(self):
+        with self._osc_buffer_lock:
+            self._osc_translation_tokens.clear()
     
     def resume(self, api_key: Optional[str] = None, audio_format: Optional[str] = None,
                translation: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None):
@@ -128,6 +151,8 @@ class SonioxSession:
 
         if self.thread is None:
             self.stop_event = None
+            self._reset_osc_buffer()
+            osc_manager.clear_history()
 
     def get_audio_source(self) -> str:
         """返回当前配置的音频源"""
@@ -190,6 +215,46 @@ class SonioxSession:
 
         if streamer:
             streamer.stop()
+
+    def _flush_osc_translation_segment(self):
+        """将缓存的译文片段通过 OSC 发送（遵循历史拼接规则）"""
+        with self._osc_buffer_lock:
+            if not self.osc_translation_enabled:
+                self._osc_translation_tokens.clear()
+                return
+
+            tokens = list(self._osc_translation_tokens)
+            self._osc_translation_tokens.clear()
+
+        speaker_value = "?"
+        for tok in reversed(tokens):
+            spk = tok.get("speaker")
+            if spk is not None and spk != "":
+                speaker_value = str(spk)
+                break
+
+        text = "".join([tok.get("text", "") for tok in tokens]).strip()
+
+        if text:
+            osc_manager.add_message_and_send(text, ongoing=False, speaker=speaker_value)
+
+    def _handle_osc_final_tokens(self, final_tokens: list[dict]):
+        """处理新增的 final tokens，用 <end> 断句并缓存译文"""
+        if not self.get_osc_translation_enabled():
+            return
+
+        for token in final_tokens:
+            if not token.get("is_final"):
+                continue
+
+            text = token.get("text") or ""
+            if text == "<end>":
+                self._flush_osc_translation_segment()
+                continue
+
+            if token.get("translation_status") == "translation" and text:
+                with self._osc_buffer_lock:
+                    self._osc_translation_tokens.append(token)
     
     def _run_session(self, api_key: str, audio_format: str, translation: str, loop: asyncio.AbstractEventLoop):
         """运行Soniox会话（内部方法）"""
@@ -250,6 +315,9 @@ class SonioxSession:
 
                         # 计算新增的final tokens（增量部分）
                         new_final_tokens = all_final_tokens[self.last_sent_count:]
+
+                        if new_final_tokens:
+                            self._handle_osc_final_tokens(new_final_tokens)
                         
                         # 将新的final tokens写入日志
                         if new_final_tokens and not self.is_paused:

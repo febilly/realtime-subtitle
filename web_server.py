@@ -36,8 +36,11 @@ def add_furigana(text):
         # 检查是否包含汉字（需要注音）
         has_kanji = any('\u4e00' <= c <= '\u9fff' for c in orig)
         
-        if has_kanji and orig != hira:
-            # 有汉字且读音不同，添加ruby注音
+        # 检查是否包含片假名（需要注音）
+        has_katakana = any('\u30a0' <= c <= '\u30ff' for c in orig)
+        
+        if (has_kanji or has_katakana) and orig != hira:
+            # 有汉字或片假名且读音不同，添加ruby注音
             html_parts.append(f'<ruby>{orig}<rp>(</rp><rt>{hira}</rt><rp>)</rp></ruby>')
         else:
             # 无需注音
@@ -147,6 +150,22 @@ class WebServer:
         except Exception as e:
             print(f"[Server] Failed to restart: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    async def osc_translation_get_handler(self, request):
+        """查询翻译结果 OSC 发送开关状态"""
+        enabled = self.soniox_session.get_osc_translation_enabled()
+        return web.json_response({"enabled": enabled})
+
+    async def osc_translation_set_handler(self, request):
+        """设置翻译结果 OSC 发送开关"""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
+        self.soniox_session.set_osc_translation_enabled(enabled)
+        return web.json_response({"enabled": self.soniox_session.get_osc_translation_enabled()})
     
     async def pause_handler(self, request):
         """暂停识别端点"""
@@ -254,6 +273,8 @@ class WebServer:
         app.router.add_post('/restart', self.restart_handler)
         app.router.add_post('/pause', self.pause_handler)
         app.router.add_post('/resume', self.resume_handler)
+        app.router.add_get('/osc-translation', self.osc_translation_get_handler)
+        app.router.add_post('/osc-translation', self.osc_translation_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_post('/furigana', self.furigana_handler)

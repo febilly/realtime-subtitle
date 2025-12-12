@@ -11,6 +11,8 @@ const segmentModeButton = document.getElementById('segmentModeButton');
 const segmentModeText = document.getElementById('segmentModeText');
 const displayModeButton = document.getElementById('displayModeButton');
 const displayModeText = document.getElementById('displayModeText');
+const oscTranslationButton = document.getElementById('oscTranslationButton');
+const oscTranslationIcon = document.getElementById('oscTranslationIcon');
 const furiganaButton = document.getElementById('furiganaButton');
 const furiganaIcon = document.getElementById('furiganaIcon');
 
@@ -36,6 +38,9 @@ let segmentMode = localStorage.getItem('segmentMode') || 'endpoint';
 // 显示模式: 'both', 'original', 'translation'
 let displayMode = localStorage.getItem('displayMode') || 'both';
 
+// OSC 翻译发送开关（默认关闭）
+let oscTranslationEnabled = false;
+
 // 日语假名注音开关（默认关闭）
 let furiganaEnabled = localStorage.getItem('furiganaEnabled') === 'true';
 // 假名注音缓存（避免重复请求）
@@ -52,6 +57,7 @@ updateSegmentModeButton();
 updateDisplayModeButton();
 updateAudioSourceButton();
 updateFuriganaButton();
+updateOscTranslationButton();
 
 // 主题切换功能（默认深色）
 let isDarkTheme = true;
@@ -97,6 +103,20 @@ function updateDisplayModeButton() {
         displayModeButton.title = 'Show original only';
     } else {
         displayModeButton.title = 'Show translation only';
+    }
+}
+
+function updateOscTranslationButton() {
+    if (!oscTranslationButton || !oscTranslationIcon) {
+        return;
+    }
+
+    if (oscTranslationEnabled) {
+        oscTranslationButton.classList.add('active');
+        oscTranslationButton.title = 'Sending translation to VRChat (click to disable)';
+    } else {
+        oscTranslationButton.classList.remove('active');
+        oscTranslationButton.title = 'Send translation to VRChat via OSC';
     }
 }
 
@@ -169,6 +189,36 @@ displayModeButton.addEventListener('click', () => {
     renderSubtitles();  // 立即重新渲染
     console.log(`Display mode switched to: ${displayMode}`);
 });
+
+if (oscTranslationButton) {
+    oscTranslationButton.addEventListener('click', async () => {
+        const next = !oscTranslationEnabled;
+        try {
+            const response = await fetch('/osc-translation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: next })
+            });
+
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (parseError) {
+                console.error('Failed to parse OSC translation toggle response:', parseError);
+            }
+
+            if (response.ok && data) {
+                oscTranslationEnabled = !!data.enabled;
+                updateOscTranslationButton();
+                console.log(`OSC translation ${oscTranslationEnabled ? 'enabled' : 'disabled'}`);
+            } else {
+                console.error('Failed to toggle OSC translation:', response.status, data?.message);
+            }
+        } catch (error) {
+            console.error('Error toggling OSC translation:', error);
+        }
+    });
+}
 
 // 假名注音开关
 function updateFuriganaButton() {
@@ -349,6 +399,25 @@ async function fetchApiKeyStatus() {
         console.error('Error fetching API key status:', error);
         // Do not display a generic network error here, as it might be a temporary server startup issue.
         // The WebSocket connection will eventually show the error if the API key is truly missing.
+    }
+}
+
+async function fetchOscTranslationStatus() {
+    if (!oscTranslationButton) {
+        return;
+    }
+
+    try {
+        const response = await fetch('/osc-translation');
+        if (!response.ok) {
+            return;
+        }
+
+        const data = await response.json();
+        oscTranslationEnabled = !!data.enabled;
+        updateOscTranslationButton();
+    } catch (error) {
+        console.error('Error fetching OSC translation status:', error);
     }
 }
 
@@ -1114,5 +1183,6 @@ function escapeHtml(text) {
 
 document.addEventListener('DOMContentLoaded', () => {
     fetchApiKeyStatus();
+    fetchOscTranslationStatus();
     connect();
 });
