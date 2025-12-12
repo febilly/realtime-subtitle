@@ -45,6 +45,7 @@ let oscTranslationEnabled = false;
 let furiganaEnabled = localStorage.getItem('furiganaEnabled') === 'true';
 // 假名注音缓存（避免重复请求）
 let furiganaCache = new Map();
+const pendingFuriganaRequests = new Set();
 
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
@@ -88,6 +89,10 @@ themeToggle.addEventListener('click', () => {
 
 // 更新分段模式按钮文本
 function updateSegmentModeButton() {
+    if (!segmentModeButton) {
+        return;
+    }
+
     if (segmentMode === 'translation') {
         segmentModeButton.title = 'Segment by translation (click to switch to endpoint mode)';
     } else {
@@ -242,6 +247,8 @@ if (furiganaButton) {
         updateFuriganaButton();
         // 清空缓存以便重新渲染
         furiganaCache.clear();
+        pendingFuriganaRequests.clear();
+        renderedSentences.clear();
         renderSubtitles();
         console.log(`Furigana ${furiganaEnabled ? 'enabled' : 'disabled'}`);
     });
@@ -710,6 +717,28 @@ async function getFuriganaHtml(text) {
     return null;
 }
 
+function requestFurigana(text) {
+    if (!text || !furiganaEnabled) {
+        return;
+    }
+
+    if (furiganaCache.has(text) || pendingFuriganaRequests.has(text)) {
+        return;
+    }
+
+    pendingFuriganaRequests.add(text);
+    getFuriganaHtml(text)
+        .then((html) => {
+            if (html) {
+                furiganaCache.set(text, html);
+                renderSubtitles();
+            }
+        })
+        .finally(() => {
+            pendingFuriganaRequests.delete(text);
+        });
+}
+
 function renderTokenSpan(token, useRubyHtml = null) {
     const classes = ['subtitle-text'];
     if (!token.is_final) {
@@ -940,8 +969,16 @@ function renderSubtitles() {
     let html = '';
     let previousSpeaker = null;
     let fallbackCounter = 0;
+    const activeSentenceIds = new Set();
+    const pendingSentenceUpdates = [];
+    const sentencesToRemove = [];
+    let blockingUpdate = false;
 
-    speakerBlocks.forEach(block => {
+    for (const block of speakerBlocks) {
+        if (blockingUpdate) {
+            break;
+        }
+
         let blockHtml = '';
 
         if (block.speaker !== previousSpeaker) {
@@ -950,28 +987,73 @@ function renderSubtitles() {
 
         const sentencesHtml = [];
 
-        block.sentences.forEach(sentence => {
-            let sentenceHtml = '';
+        for (const sentence of block.sentences) {
+            const sentenceId = getSentenceId(sentence, fallbackCounter++);
+            activeSentenceIds.add(sentenceId);
+
+            const sentenceParts = [];
 
             if (showOriginal && sentence.originalTokens.length > 0) {
                 const langTag = getLanguageTag(sentence.originalLang);
                 const isJapanese = sentence.originalLang === 'ja';
-                const lineContent = sentence.originalTokens.map(t => renderTokenSpan(t)).join('');
-                const dataAttr = isJapanese && furiganaEnabled ? ' data-furigana-pending="true"' : '';
-                sentenceHtml += `<div class="subtitle-line original-line"${dataAttr}>${langTag}${lineContent}</div>`;
+
+                if (isJapanese && furiganaEnabled) {
+                    const plainText = sentence.originalTokens.map(t => t.text).join('');
+                    const hasNonFinal = sentence.originalTokens.some(t => !t.is_final);
+
+                    if (plainText.trim().length === 0) {
+                        const lineContent = sentence.originalTokens.map(t => renderTokenSpan(t)).join('');
+                        sentenceParts.push(`<div class="subtitle-line original-line">${langTag}${lineContent}</div>`);
+                    } else {
+                        const rubyHtml = furiganaCache.get(plainText);
+
+                        if (rubyHtml) {
+                            const classes = ['subtitle-text'];
+                            if (hasNonFinal) {
+                                classes.push('non-final');
+                            }
+                            const rubySpan = `<span class="${classes.join(' ')}">${rubyHtml}</span>`;
+                            sentenceParts.push(`<div class="subtitle-line original-line">${langTag}${rubySpan}</div>`);
+                        } else {
+                            requestFurigana(plainText);
+                            const previousHtml = renderedSentences.get(sentenceId);
+                            if (previousHtml) {
+                                sentencesHtml.push(previousHtml);
+                            } else {
+                                blockingUpdate = true;
+                            }
+                            continue;
+                        }
+                    }
+                } else {
+                    const lineContent = sentence.originalTokens.map(t => renderTokenSpan(t)).join('');
+                    sentenceParts.push(`<div class="subtitle-line original-line">${langTag}${lineContent}</div>`);
+                }
+            }
+
+            if (blockingUpdate) {
+                break;
             }
 
             if (showTranslation && sentence.translationTokens.length > 0) {
                 const langTag = getLanguageTag(sentence.translationLang);
                 const lineContent = sentence.translationTokens.map(t => renderTokenSpan(t)).join('');
-                sentenceHtml += `<div class="subtitle-line">${langTag}${lineContent}</div>`;
+                sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
             }
 
-            if (sentenceHtml.trim().length > 0) {
-                const sentenceId = getSentenceId(sentence, fallbackCounter++);
-                sentencesHtml.push(`<div class="sentence-block" data-sentence-id="${sentenceId}">${sentenceHtml}</div>`);
+            if (sentenceParts.length === 0) {
+                sentencesToRemove.push(sentenceId);
+                continue;
             }
-        });
+
+            const sentenceHtml = `<div class="sentence-block" data-sentence-id="${sentenceId}">${sentenceParts.join('')}</div>`;
+            sentencesHtml.push(sentenceHtml);
+            pendingSentenceUpdates.push({ id: sentenceId, html: sentenceHtml });
+        }
+
+        if (blockingUpdate) {
+            break;
+        }
 
         if (sentencesHtml.length > 0) {
             blockHtml += sentencesHtml.join('');
@@ -981,6 +1063,19 @@ function renderSubtitles() {
             const blockClass = (block.speaker === previousSpeaker) ? 'subtitle-block same-speaker' : 'subtitle-block';
             html += `<div class="${blockClass}">${blockHtml}</div>`;
             previousSpeaker = block.speaker;
+        }
+    }
+
+    if (blockingUpdate) {
+        return;
+    }
+
+    pendingSentenceUpdates.forEach(({ id, html }) => renderedSentences.set(id, html));
+    sentencesToRemove.forEach(id => renderedSentences.delete(id));
+
+    renderedSentences.forEach((_, key) => {
+        if (!activeSentenceIds.has(key)) {
+            renderedSentences.delete(key);
         }
     });
 
@@ -1126,42 +1221,6 @@ function renderSubtitles() {
     autoStickToBottom = scrollState ? scrollState.wasAtBottom : isCloseToBottom();
     if (autoStickToBottom) {
         subtitleContainer.scrollTop = subtitleContainer.scrollHeight;
-    }
-    
-    // 异步处理日语假名注音
-    if (furiganaEnabled) {
-        applyFuriganaToJapaneseLines();
-    }
-}
-
-// 异步为日语行添加假名注音
-async function applyFuriganaToJapaneseLines() {
-    const pendingLines = subtitleContainer.querySelectorAll('[data-furigana-pending="true"]');
-    
-    for (const line of pendingLines) {
-        // 每次处理前检查当前是否在底部（而不是用开始时的状态）
-        const wasAtBottomBeforeChange = isCloseToBottom();
-        
-        // 获取所有 subtitle-text 元素
-        const textSpans = line.querySelectorAll('.subtitle-text');
-        
-        for (const span of textSpans) {
-            const text = span.textContent;
-            if (!text) continue;
-            
-            const rubyHtml = await getFuriganaHtml(text);
-            if (rubyHtml && rubyHtml !== text) {
-                span.innerHTML = rubyHtml;
-            }
-        }
-        
-        // 标记为已处理
-        line.removeAttribute('data-furigana-pending');
-        
-        // 假名添加后行高会变化，只有在添加前就在底部时才保持在底部
-        if (wasAtBottomBeforeChange) {
-            subtitleContainer.scrollTop = subtitleContainer.scrollHeight;
-        }
     }
 }
 
