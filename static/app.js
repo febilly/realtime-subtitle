@@ -5,6 +5,8 @@ const themeIcon = document.getElementById('themeIcon');
 const restartButton = document.getElementById('restartButton');
 const pauseButton = document.getElementById('pauseButton');
 const pauseIcon = document.getElementById('pauseIcon');
+const autoRestartButton = document.getElementById('autoRestartButton');
+const autoRestartIcon = document.getElementById('autoRestartIcon');
 const audioSourceButton = document.getElementById('audioSourceButton');
 const audioSourceIcon = document.getElementById('audioSourceIcon');
 const segmentModeButton = document.getElementById('segmentModeButton');
@@ -38,6 +40,9 @@ let segmentMode = localStorage.getItem('segmentMode') || 'endpoint';
 // 显示模式: 'both', 'original', 'translation'
 let displayMode = localStorage.getItem('displayMode') || 'both';
 
+// 自动重启识别开关（默认关闭）
+let autoRestartEnabled = localStorage.getItem('autoRestartEnabled') === 'true';
+
 // OSC 翻译发送开关（默认关闭）
 let oscTranslationEnabled = false;
 
@@ -59,6 +64,7 @@ updateDisplayModeButton();
 updateAudioSourceButton();
 updateFuriganaButton();
 updateOscTranslationButton();
+updateAutoRestartButton();
 
 // 主题切换功能（默认深色）
 let isDarkTheme = true;
@@ -122,6 +128,20 @@ function updateOscTranslationButton() {
     } else {
         oscTranslationButton.classList.remove('active');
         oscTranslationButton.title = 'Send translation to VRChat via OSC';
+    }
+}
+
+function updateAutoRestartButton() {
+    if (!autoRestartButton || !autoRestartIcon) {
+        return;
+    }
+
+    if (autoRestartEnabled) {
+        autoRestartButton.classList.add('active');
+        autoRestartButton.title = 'Auto restart enabled (click to disable)';
+    } else {
+        autoRestartButton.classList.remove('active');
+        autoRestartButton.title = 'Auto restart recognition on disconnect';
     }
 }
 
@@ -225,6 +245,15 @@ if (oscTranslationButton) {
     });
 }
 
+if (autoRestartButton) {
+    autoRestartButton.addEventListener('click', () => {
+        autoRestartEnabled = !autoRestartEnabled;
+        localStorage.setItem('autoRestartEnabled', autoRestartEnabled);
+        updateAutoRestartButton();
+        console.log(`Auto restart ${autoRestartEnabled ? 'enabled' : 'disabled'}`);
+    });
+}
+
 // 假名注音开关
 function updateFuriganaButton() {
     if (!furiganaButton || !furiganaIcon) {
@@ -254,61 +283,77 @@ if (furiganaButton) {
     });
 }
 
-// 重启识别功能
-restartButton.addEventListener('click', async () => {
-    if (restartButton.classList.contains('restarting')) {
-        return; // 正在重启中，忽略点击
+async function restartRecognition({ auto = false } = {}) {
+    if (isRestarting) {
+        return false;
     }
 
-    restartButton.classList.add('restarting');
     isRestarting = true;
-    shouldReconnect = false;  // 禁用自动重连
-    
+    shouldReconnect = false;
+
+    if (!auto && restartButton) {
+        restartButton.classList.add('restarting');
+    }
+
+    const manualStatusHtml = '<div style="text-align: center; padding: 40px; color: #6b7280;">Restarting recognition...</div>';
+    const manualErrorHtml = '<div style="text-align: center; padding: 40px; color: #ef4444;">Connection error. Please try again.</div>';
+    const manualFailureHtml = '<div style="text-align: center; padding: 40px; color: #ef4444;">Failed to restart. Please try again.</div>';
+
     try {
-        // 先关闭当前WebSocket连接
         if (ws) {
             console.log('Closing old WebSocket connection...');
-            ws.close();
+            try {
+                ws.close();
+            } catch (closeError) {
+                console.warn('WebSocket close during restart raised an error:', closeError);
+            }
             ws = null;
         }
-        
-        // 清空本地数据
-        allFinalTokens = [];
-        currentNonFinalTokens = [];
-        lastMergedIndex = 0; // 重置合并索引
-        subtitleContainer.innerHTML = '<div style="text-align: center; padding: 40px; color: #6b7280;">Restarting recognition...</div>';
-        
-        // 等待连接完全关闭
-        await new Promise(resolve => setTimeout(resolve, 500));
-        
-        // 调用后端重启接口
-        const response = await fetch('/restart', { method: 'POST' });
-        
-        if (response.ok) {
-            console.log('Recognition restarted successfully');
-            // 等待后端完成重启
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            // 重新启用自动重连并连接
-            shouldReconnect = true;
-            isRestarting = false;
-            connect();
-        } else {
-            console.error('Failed to restart recognition');
-            subtitleContainer.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Failed to restart. Please try again.</div>';
-            shouldReconnect = true;  // 恢复自动重连
-            isRestarting = false;
+
+        clearSubtitleState();
+
+        if (!auto) {
+            subtitleContainer.innerHTML = manualStatusHtml;
         }
+
+        await delay(500);
+
+        const response = await fetch('/restart', { method: 'POST' });
+
+        if (!response.ok) {
+            if (!auto) {
+                subtitleContainer.innerHTML = manualFailureHtml;
+            }
+            throw new Error(`Restart failed with status ${response.status}`);
+        }
+
+        console.log(auto ? 'Auto restart: new recognition session requested.' : 'Recognition restarted successfully');
+
+        await delay(1500);
+
+        shouldReconnect = true;
+        connect();
+        return true;
     } catch (error) {
-        console.error('Error restarting recognition:', error);
-        subtitleContainer.innerHTML = '<div style="text-align: center; padding: 40px; color: #ef4444;">Connection error. Please try again.</div>';
-        shouldReconnect = true;  // 恢复自动重连
-        isRestarting = false;
+        console.error(`${auto ? 'Auto restart' : 'Restart'} error:`, error);
+        if (!auto) {
+            if (subtitleContainer.innerHTML === manualStatusHtml) {
+                subtitleContainer.innerHTML = manualErrorHtml;
+            }
+        }
+        shouldReconnect = true;
+        return false;
     } finally {
-        setTimeout(() => {
-            restartButton.classList.remove('restarting');
-        }, 1500);
+        if (!auto && restartButton) {
+            setTimeout(() => restartButton.classList.remove('restarting'), 1500);
+        }
+        isRestarting = false;
     }
+}
+
+// 重启识别功能
+restartButton.addEventListener('click', () => {
+    void restartRecognition();
 });
 
 // 暂停/恢复识别功能
@@ -447,7 +492,30 @@ function connect() {
 
     ws.onclose = () => {
         console.log('WebSocket closed');
-        
+
+        if (autoRestartEnabled) {
+            if (isRestarting) {
+                console.log('Restart already in progress; skipping auto restart trigger.');
+                return;
+            }
+
+            restartRecognition({ auto: true })
+                .then((success) => {
+                    if (!success && shouldReconnect && !isRestarting) {
+                        console.log('Attempting to reconnect in 2 seconds...');
+                        setTimeout(connect, 2000);
+                    }
+                })
+                .catch((error) => {
+                    console.error('Auto restart promise rejected:', error);
+                    if (shouldReconnect && !isRestarting) {
+                        console.log('Attempting to reconnect in 2 seconds...');
+                        setTimeout(connect, 2000);
+                    }
+                });
+            return;
+        }
+
         // 只在应该重连且不在重启过程中时才重连
         if (shouldReconnect && !isRestarting) {
             console.log('Attempting to reconnect in 2 seconds...');
@@ -466,9 +534,7 @@ function handleMessage(data) {
     if (data.type === 'clear') {
         // 清空所有数据
         console.log('Clearing all subtitles...');
-        allFinalTokens = [];
-        currentNonFinalTokens = [];
-        lastMergedIndex = 0; // 重置合并索引
+        clearSubtitleState();
         // 不修改UI,因为重启流程会处理
         return;
     }
@@ -737,6 +803,18 @@ function requestFurigana(text) {
         .finally(() => {
             pendingFuriganaRequests.delete(text);
         });
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function clearSubtitleState() {
+    allFinalTokens = [];
+    currentNonFinalTokens = [];
+    lastMergedIndex = 0;
+    renderedSentences.clear();
+    renderedBlocks.clear();
+    tokenSequenceCounter = 0;
+    pendingFuriganaRequests.clear();
 }
 
 function renderTokenSpan(token, useRubyHtml = null) {

@@ -20,7 +20,7 @@ SONIOX_TEMP_KEY_URL = os.environ.get("SONIOX_TEMP_KEY_URL")
 USE_SYSTEM_LANGUAGE = True
 
 # 手动指定目标语言（当 USE_SYSTEM_LANGUAGE=False 时使用）
-TARGET_LANG = "zh"
+TARGET_LANG = "ja"
 TARGET_LANG_1 = "en"
 TARGET_LANG_2 = "zh"
 

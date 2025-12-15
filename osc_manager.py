@@ -78,7 +78,7 @@ class OSCManager:
             self._state_lock = threading.Lock()
             self._truncate_enabled = True
             self._message_history: list[HistoryMessage] = []
-            self._history_ttl_seconds = 15.0
+            self._history_ttl_seconds = 10.0
             self._header_line = TRANSLATION_HEADER
             
             logger.info("[OSC] OSC管理器已初始化")
@@ -216,7 +216,7 @@ class OSCManager:
 
     def _prune_history_locked(self, now: float):
         """移除超过 TTL 的历史消息（需要在锁内调用）"""
-        ttl = getattr(self, "_history_ttl_seconds", 15.0)
+        ttl = getattr(self, "_history_ttl_seconds", 10.0)
         self._message_history = [msg for msg in self._message_history if now - msg.timestamp <= ttl]
 
     def _build_combined_history_locked(self) -> str:
