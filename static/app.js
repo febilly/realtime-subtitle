@@ -21,6 +21,9 @@ const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 
+// 由后端下发：锁定“手动控制”相关 UI
+let lockManualControls = false;
+
 // 存储所有已确认的tokens
 let allFinalTokens = [];
 // 存储当前未确认的tokens
@@ -50,7 +53,13 @@ let autoRestartEnabled = localStorage.getItem('autoRestartEnabled') === 'true';
 let oscTranslationEnabled = false;
 
 // 日语假名注音开关（默认关闭）
-let furiganaEnabled = localStorage.getItem('furiganaEnabled') === 'true';
+// 注意：使用 sessionStorage（按“标签页/客户端实例”隔离），避免同一设备多客户端互相影响。
+let furiganaEnabled = false;
+try {
+    furiganaEnabled = sessionStorage.getItem('furiganaEnabled') === 'true';
+} catch (storageError) {
+    console.warn('Unable to access sessionStorage for furigana preference:', storageError);
+}
 // 假名注音缓存（避免重复请求）
 let furiganaCache = new Map();
 const pendingFuriganaRequests = new Set();
@@ -73,6 +82,7 @@ updateOscTranslationButton();
 updateAutoRestartButton();
 updateBottomSafeAreaButton();
 applyBottomSafeArea();
+applyLockPauseRestartControlsUI();
 
 
 // 主题切换功能（默认深色）
@@ -175,12 +185,55 @@ function updateAutoRestartButton() {
         return;
     }
 
+    // UI 锁定时：隐藏按钮并强制开启
+    if (lockManualControls) {
+        autoRestartButton.style.display = 'none';
+        autoRestartEnabled = true;
+        return;
+    }
+
+    autoRestartButton.style.display = '';
+
     if (autoRestartEnabled) {
         autoRestartButton.classList.add('active');
         autoRestartButton.title = 'Auto restart enabled (click to disable)';
     } else {
         autoRestartButton.classList.remove('active');
         autoRestartButton.title = 'Auto restart recognition on disconnect';
+    }
+}
+
+function applyLockPauseRestartControlsUI() {
+    if (restartButton) {
+        restartButton.style.display = lockManualControls ? 'none' : '';
+    }
+    if (pauseButton) {
+        pauseButton.style.display = lockManualControls ? 'none' : '';
+    }
+    if (audioSourceButton) {
+        audioSourceButton.style.display = lockManualControls ? 'none' : '';
+    }
+    if (oscTranslationButton) {
+        oscTranslationButton.style.display = lockManualControls ? 'none' : '';
+    }
+
+    if (lockManualControls) {
+        autoRestartEnabled = true;
+    }
+    updateAutoRestartButton();
+}
+
+async function fetchUiConfig() {
+    try {
+        const response = await fetch('/ui-config');
+        if (!response.ok) {
+            return;
+        }
+        const data = await response.json();
+        lockManualControls = !!data.lock_manual_controls;
+        applyLockPauseRestartControlsUI();
+    } catch (error) {
+        console.error('Error fetching UI config:', error);
     }
 }
 
@@ -303,6 +356,9 @@ if (bottomSafeAreaButton) {
 
 if (autoRestartButton) {
     autoRestartButton.addEventListener('click', () => {
+        if (lockManualControls) {
+            return;
+        }
         autoRestartEnabled = !autoRestartEnabled;
         localStorage.setItem('autoRestartEnabled', autoRestartEnabled);
         updateAutoRestartButton();
@@ -328,7 +384,11 @@ function updateFuriganaButton() {
 if (furiganaButton) {
     furiganaButton.addEventListener('click', () => {
         furiganaEnabled = !furiganaEnabled;
-        localStorage.setItem('furiganaEnabled', furiganaEnabled);
+        try {
+            sessionStorage.setItem('furiganaEnabled', furiganaEnabled);
+        } catch (persistError) {
+            console.warn('Unable to persist furigana preference:', persistError);
+        }
         updateFuriganaButton();
         // 清空缓存以便重新渲染
         furiganaCache.clear();
@@ -374,7 +434,11 @@ async function restartRecognition({ auto = false } = {}) {
 
         await delay(500);
 
-        const response = await fetch('/restart', { method: 'POST' });
+        const response = await fetch('/restart', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ auto: !!auto })
+        });
 
         if (!response.ok) {
             if (!auto) {
@@ -409,11 +473,17 @@ async function restartRecognition({ auto = false } = {}) {
 
 // 重启识别功能
 restartButton.addEventListener('click', () => {
+    if (lockManualControls) {
+        return;
+    }
     void restartRecognition();
 });
 
 // 暂停/恢复识别功能
 pauseButton.addEventListener('click', async () => {
+    if (lockManualControls) {
+        return;
+    }
     try {
         if (isPaused) {
             // 恢复识别
@@ -441,6 +511,9 @@ pauseButton.addEventListener('click', async () => {
 
 if (audioSourceButton) {
     audioSourceButton.addEventListener('click', async () => {
+        if (lockManualControls) {
+            return;
+        }
         const nextSource = audioSource === 'system' ? 'microphone' : 'system';
 
         try {
@@ -513,6 +586,9 @@ async function fetchApiKeyStatus() {
 async function fetchOscTranslationStatus() {
     if (!oscTranslationButton) {
         return;
+            if (lockManualControls) {
+                return;
+            }
     }
 
     try {
@@ -1375,7 +1451,10 @@ function escapeHtml(text) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    fetchApiKeyStatus();
-    fetchOscTranslationStatus();
-    connect();
+    (async () => {
+        await fetchUiConfig();
+        fetchApiKeyStatus();
+        fetchOscTranslationStatus();
+        connect();
+    })();
 });

@@ -8,7 +8,7 @@ import re
 from aiohttp import web
 from aiohttp import WSMsgType
 
-from config import get_resource_path
+from config import get_resource_path, LOCK_MANUAL_CONTROLS
 
 # 日语假名注音支持
 try:
@@ -113,10 +113,31 @@ class WebServer:
     async def health_handler(self, request):
         """健康检查端点 - 用于浏览器定期检测服务器是否存活"""
         return web.json_response({"status": "ok"})
+
+    async def ui_config_handler(self, request):
+        """前端 UI 配置下发"""
+        return web.json_response({
+            "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS)
+        })
     
     async def restart_handler(self, request):
         """重启识别端点"""
         from soniox_client import get_api_key
+
+        is_auto = False
+        try:
+            payload = await request.json()
+            if isinstance(payload, dict):
+                is_auto = bool(payload.get("auto"))
+        except Exception:
+            # 兼容旧客户端：无 body 时视为手动
+            is_auto = False
+
+        if LOCK_MANUAL_CONTROLS and not is_auto:
+            return web.json_response(
+                {"status": "error", "message": "Manual restart is disabled by server config"},
+                status=403
+            )
         
         print("\n[Server] Received restart request...")
         
@@ -168,6 +189,12 @@ class WebServer:
 
     async def osc_translation_set_handler(self, request):
         """设置翻译结果 OSC 发送开关"""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC translation toggle is disabled by server config"},
+                status=403
+            )
+
         try:
             payload = await request.json()
         except Exception:
@@ -179,6 +206,12 @@ class WebServer:
     
     async def pause_handler(self, request):
         """暂停识别端点"""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Pause is disabled by server config"},
+                status=403
+            )
+
         print("\n[Server] Received pause request...")
         paused = self.soniox_session.pause()
 
@@ -191,6 +224,12 @@ class WebServer:
     
     async def resume_handler(self, request):
         """恢复识别端点"""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Resume is disabled by server config"},
+                status=403
+            )
+
         print("\n[Server] Received resume request...")
         from soniox_client import get_api_key
 
@@ -224,6 +263,12 @@ class WebServer:
 
     async def set_audio_source_handler(self, request):
         """切换音频源"""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Audio source switching is disabled by server config"},
+                status=403
+            )
+
         try:
             payload = await request.json()
         except Exception:
@@ -287,6 +332,7 @@ class WebServer:
         app.router.add_get('/', self.index_handler)
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/health', self.health_handler)
+        app.router.add_get('/ui-config', self.ui_config_handler)
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
         app.router.add_post('/restart', self.restart_handler)
         app.router.add_post('/pause', self.pause_handler)

@@ -29,6 +29,12 @@ TARGET_LANG_2 = "zh"
 # False: 仅在命令行打印访问 URL，需要手动在浏览器打开；关闭网页时不会自动退出程序
 AUTO_OPEN_WEBVIEW = True
 
+# UI 锁定：隐藏“手动控制”相关按钮，并在后端禁用对应操作
+# True: 前端隐藏“重启/暂停/自动重启开关/音频源/OSC 发送”；后端拒绝 /pause、/resume、手动 /restart、
+#       /audio-source（切换）以及 /osc-translation（切换）；同时前端强制开启“断线自动重启”
+# False: 正常显示并允许手动控制
+LOCK_MANUAL_CONTROLS = True
+
 # 服务器配置
 # SERVER_PORT 设置为 0 时将自动选择一个空闲端口
 # AUTO_OPEN_WEBVIEW=True 时强制绑定到 127.0.0.1；关闭后默认绑定到 0.0.0.0 以便局域网访问
