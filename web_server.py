@@ -132,12 +132,6 @@ class WebServer:
         except Exception:
             # 兼容旧客户端：无 body 时视为手动
             is_auto = False
-
-        if LOCK_MANUAL_CONTROLS and not is_auto:
-            return web.json_response(
-                {"status": "error", "message": "Manual restart is disabled by server config"},
-                status=403
-            )
         
         print("\n[Server] Received restart request...")
         
