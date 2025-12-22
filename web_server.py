@@ -122,6 +122,12 @@ class WebServer:
     
     async def restart_handler(self, request):
         """重启识别端点"""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Manual restart is disabled by server config"},
+                status=403
+            )
+
         from soniox_client import get_api_key
 
         is_auto = False
