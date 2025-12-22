@@ -24,14 +24,15 @@ TARGET_LANG = "ja"
 TARGET_LANG_1 = "en"
 TARGET_LANG_2 = "zh"
 
-# 自动打开浏览器
-# True: 启动服务器后自动在浏览器中打开前端
-# False: 需要手动打开浏览器
-# AUTO_OPEN_BROWSER = True
+# 自动打开内置 WebView（默认开启）
+# True: 启动后创建嵌入式 webview 窗口
+# False: 仅在命令行打印访问 URL，需要手动在浏览器打开；关闭网页时不会自动退出程序
+AUTO_OPEN_WEBVIEW = True
 
 # 服务器配置
 # SERVER_PORT 设置为 0 时将自动选择一个空闲端口
-SERVER_HOST = 'localhost'
+# AUTO_OPEN_WEBVIEW=True 时强制绑定到 127.0.0.1；关闭后默认绑定到 0.0.0.0 以便局域网访问
+SERVER_HOST = '0.0.0.0'
 SERVER_PORT = 8080
 
 
