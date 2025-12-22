@@ -6,7 +6,13 @@ import time
 from typing import Optional
 
 import numpy as np
-import soundcard as sc
+
+try:
+    import soundcard as sc
+except ImportError:
+    sc = None
+
+_warned_missing_soundcard = False
 
 
 def _convert_float32_to_int16(channel_data: np.ndarray) -> bytes:
@@ -244,6 +250,14 @@ class AudioStreamer:
     def _create_recorder(self, source: str):
         """根据音频源创建对应的recorder上下文"""
         try:
+            global _warned_missing_soundcard
+            if sc is None:
+                if not _warned_missing_soundcard:
+                    print("❌ soundcard is not installed; audio capture is unavailable in this environment")
+                    print("   Install with: pip install soundcard")
+                    _warned_missing_soundcard = True
+                return None
+
             if source == "system":
                 speaker = sc.default_speaker()
                 if speaker is None:

@@ -10,7 +10,6 @@ import os
 import time
 from dotenv import load_dotenv
 from aiohttp import web
-import webview
 
 from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW
 from logger import TranscriptLogger
@@ -27,7 +26,8 @@ def run_server(app, sock):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
-        web.run_app(app, print=None, sock=sock)
+        # 在非主线程运行时必须禁用信号处理（Linux 下否则会触发 set_wakeup_fd 报错）
+        web.run_app(app, print=None, sock=sock, handle_signals=False)
     except Exception as e:
         print(f"Error in server thread: {e}")
     finally:
@@ -119,10 +119,8 @@ def main():
             return "127.0.0.1"
         if bind_host not in ("0.0.0.0", "127.0.0.1", "localhost"):
             return bind_host
-        try:
-            return socket.gethostbyname(socket.gethostname())
-        except socket.gaierror:
-            return "127.0.0.1"
+        # Linux 上 hostname 可能解析成 127.0.1.1，浏览器访问不如 127.0.0.1 直观
+        return "127.0.0.1"
 
     server_url = f"http://{resolve_display_host()}:{actual_port}"
     print(f"🚀 Server starting on {bind_host}:{actual_port}")
@@ -136,6 +134,21 @@ def main():
     server_thread.start()
 
     if AUTO_OPEN_WEBVIEW:
+        try:
+            import webview
+        except ImportError:
+            print("⚠️  pywebview/Qt backend not available; falling back to browser mode")
+            print("🌐 Open this URL in your browser:")
+            print(server_url)
+            try:
+                while True:
+                    time.sleep(1)
+            except KeyboardInterrupt:
+                print("\n👋 Server closed by user")
+            finally:
+                logger.close_log_file()
+                os._exit(0)
+
         title = "Real-time Subtitle"
         window = webview.create_window(title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
 
