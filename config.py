@@ -35,6 +35,20 @@ AUTO_OPEN_WEBVIEW = True
 # False: 正常显示并允许手动控制
 LOCK_MANUAL_CONTROLS = True
 
+# Twitch 音频串流识别（默认关闭）
+# True: 使用 streamlink 从指定 Twitch 频道拉取直播流，并通过 ffmpeg 仅提取音频转为 16kHz mono PCM 供识别
+# False: 使用本机系统音频/麦克风采集
+USE_TWITCH_AUDIO_STREAM = False
+
+# Twitch 频道名（不含 https://www.twitch.tv/ 前缀）
+TWITCH_CHANNEL = ""
+
+# 优先选择的码流（通常可用：audio_only / best）
+TWITCH_STREAM_QUALITY = "audio_only"
+
+# ffmpeg 可执行文件路径（默认依赖 PATH 中的 ffmpeg）
+FFMPEG_PATH = "ffmpeg"
+
 # 服务器配置
 # SERVER_PORT 设置为 0 时将自动选择一个空闲端口
 # AUTO_OPEN_WEBVIEW=True 时强制绑定到 127.0.0.1；关闭后默认绑定到 0.0.0.0 以便局域网访问

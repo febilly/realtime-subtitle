@@ -9,3 +9,4 @@ pywebview
 pystray
 pykakasi
 python-osc
+streamlink

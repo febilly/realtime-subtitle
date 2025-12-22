@@ -9,9 +9,15 @@ from typing import Optional, Tuple
 from websockets import ConnectionClosedOK
 from websockets.sync.client import connect as sync_connect
 
-from config import SONIOX_WEBSOCKET_URL
+from config import (
+    SONIOX_WEBSOCKET_URL,
+    USE_TWITCH_AUDIO_STREAM,
+    TWITCH_CHANNEL,
+    TWITCH_STREAM_QUALITY,
+    FFMPEG_PATH,
+)
 from soniox_client import get_config
-from audio_capture import AudioStreamer
+from audio_capture import AudioStreamer, TwitchAudioStreamer
 from osc_manager import osc_manager
 
 
@@ -32,8 +38,8 @@ class SonioxSession:
         self.translation: Optional[str] = None
         self.sample_rate = 16000
         self.chunk_size = 3840
-        self.audio_source = "system"
-        self.audio_streamer: Optional[AudioStreamer] = None
+        self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
+        self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
         self.osc_translation_enabled = False
         self._osc_buffer_lock = threading.Lock()
@@ -164,6 +170,9 @@ class SonioxSession:
 
         返回 (是否成功, 描述信息)
         """
+        if USE_TWITCH_AUDIO_STREAM:
+            return False, "Twitch streaming mode is enabled; audio source switching is disabled."
+
         if source not in ("system", "microphone"):
             return False, "Invalid audio source (expected 'system' or 'microphone')."
 
@@ -196,12 +205,22 @@ class SonioxSession:
         if existing_streamer:
             existing_streamer.stop()
 
-        streamer = AudioStreamer(
-            ws,
-            initial_source=self.get_audio_source(),
-            sample_rate=self.sample_rate,
-            chunk_size=self.chunk_size
-        )
+        if USE_TWITCH_AUDIO_STREAM:
+            streamer = TwitchAudioStreamer(
+                ws,
+                channel=TWITCH_CHANNEL,
+                quality=TWITCH_STREAM_QUALITY,
+                ffmpeg_path=FFMPEG_PATH,
+                sample_rate=self.sample_rate,
+                chunk_size=self.chunk_size,
+            )
+        else:
+            streamer = AudioStreamer(
+                ws,
+                initial_source=self.get_audio_source(),
+                sample_rate=self.sample_rate,
+                chunk_size=self.chunk_size
+            )
 
         with self.audio_lock:
             self.audio_streamer = streamer

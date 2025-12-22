@@ -25,11 +25,13 @@ PyInstaller.__main__.run([
     '--hidden-import=locale',
     '--hidden-import=pykakasi',
     '--hidden-import=pythonosc',
+    '--hidden-import=streamlink',
     '--collect-all=soundcard',      # Include all soundcard files
     '--collect-all=aiohttp',        # Include all aiohttp files
     '--collect-all=websockets',     # Include all websockets files
     '--collect-all=pykakasi',       # Include all pykakasi files (Japanese furigana)
     '--collect-all=pythonosc',      # Include all pythonosc files (OSC communication)
+    '--collect-all=streamlink',     # Include all streamlink files (Twitch audio streaming)
     f'--distpath={os.path.join(current_dir, "dist")}',
     f'--workpath={os.path.join(current_dir, "build")}',
     f'--specpath={current_dir}',
