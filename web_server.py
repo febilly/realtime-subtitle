@@ -20,6 +20,16 @@ except ImportError:
     FURIGANA_AVAILABLE = False
     print("⚠️  pykakasi not installed, furigana feature disabled")
 
+@web.middleware
+async def cache_bypass_middleware(request, handler):
+    """Add no-cache headers to all non-WS responses."""
+    response = await handler(request)
+    if isinstance(response, web.StreamResponse):
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
 
 def add_furigana(text):
     """为日语文本添加假名注音，返回带有ruby标签的HTML"""
@@ -259,11 +269,19 @@ class WebServer:
         """静态文件处理"""
         index_path = get_resource_path(os.path.join('static', 'index.html'))
         with open(index_path, 'r', encoding='utf-8') as f:
-            return web.Response(text=f.read(), content_type='text/html')
+            return web.Response(
+                text=f.read(),
+                content_type='text/html',
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
     
     def create_app(self):
         """创建aiohttp应用"""
-        app = web.Application()
+        app = web.Application(middlewares=[cache_bypass_middleware])
         
         # 路由设置
         app.router.add_get('/', self.index_handler)

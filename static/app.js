@@ -17,6 +17,9 @@ const oscTranslationButton = document.getElementById('oscTranslationButton');
 const oscTranslationIcon = document.getElementById('oscTranslationIcon');
 const furiganaButton = document.getElementById('furiganaButton');
 const furiganaIcon = document.getElementById('furiganaIcon');
+const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
+const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
+const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 
 // 存储所有已确认的tokens
 let allFinalTokens = [];
@@ -52,6 +55,9 @@ let furiganaEnabled = localStorage.getItem('furiganaEnabled') === 'true';
 let furiganaCache = new Map();
 const pendingFuriganaRequests = new Set();
 
+// 移动端底部留白开关（默认关闭）
+let bottomSafeAreaEnabled = localStorage.getItem('bottomSafeAreaEnabled') === 'true';
+
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
 let isRestarting = false;    // 是否正在重启中
@@ -65,6 +71,9 @@ updateAudioSourceButton();
 updateFuriganaButton();
 updateOscTranslationButton();
 updateAutoRestartButton();
+updateBottomSafeAreaButton();
+applyBottomSafeArea();
+
 
 // 主题切换功能（默认深色）
 let isDarkTheme = true;
@@ -129,6 +138,36 @@ function updateOscTranslationButton() {
         oscTranslationButton.classList.remove('active');
         oscTranslationButton.title = 'Send translation to VRChat via OSC';
     }
+}
+
+function updateBottomSafeAreaButton() {
+    if (!bottomSafeAreaButton || !bottomSafeAreaIcon) {
+        return;
+    }
+
+    // 仅在移动端显示按钮
+    bottomSafeAreaButton.style.display = isMobileBrowser ? '' : 'none';
+    if (!isMobileBrowser) {
+        return;
+    }
+
+    if (bottomSafeAreaEnabled) {
+        bottomSafeAreaButton.classList.add('active');
+        bottomSafeAreaButton.title = 'Hide extra bottom space (mobile)';
+        bottomSafeAreaIcon.textContent = '⬆️';
+    } else {
+        bottomSafeAreaButton.classList.remove('active');
+        bottomSafeAreaButton.title = 'Show extra bottom space (mobile)';
+        bottomSafeAreaIcon.textContent = '⬇️';
+    }
+}
+
+function applyBottomSafeArea() {
+    if (!subtitleContainer) {
+        return;
+    }
+    const shouldAdd = isMobileBrowser && bottomSafeAreaEnabled;
+    subtitleContainer.classList.toggle('mobile-bottom-safe-area', shouldAdd);
 }
 
 function updateAutoRestartButton() {
@@ -242,6 +281,23 @@ if (oscTranslationButton) {
         } catch (error) {
             console.error('Error toggling OSC translation:', error);
         }
+    });
+}
+
+if (bottomSafeAreaButton) {
+    bottomSafeAreaButton.addEventListener('click', () => {
+        if (!isMobileBrowser) {
+            return;
+        }
+        bottomSafeAreaEnabled = !bottomSafeAreaEnabled;
+        try {
+            localStorage.setItem('bottomSafeAreaEnabled', bottomSafeAreaEnabled);
+        } catch (persistError) {
+            console.warn('Unable to persist bottom safe area preference:', persistError);
+        }
+        applyBottomSafeArea();
+        updateBottomSafeAreaButton();
+        console.log(`Mobile bottom safe area ${bottomSafeAreaEnabled ? 'enabled' : 'disabled'}`);
     });
 }
 

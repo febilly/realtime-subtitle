@@ -7,11 +7,12 @@ import asyncio
 import threading
 import socket
 import os
+import time
 from dotenv import load_dotenv
 from aiohttp import web
 import webview
 
-from config import SERVER_HOST, SERVER_PORT
+from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW
 from logger import TranscriptLogger
 from soniox_session import SonioxSession
 from web_server import WebServer
@@ -39,6 +40,7 @@ def main():
     
     # 创建Web服务器（会在创建session时传入）
     web_server = None
+    window = None
     
     # 创建Soniox会话（传入logger和broadcast回调）
     def broadcast_callback(data):
@@ -102,13 +104,28 @@ def main():
 
         raise last_error if last_error else RuntimeError("Failed to allocate listening socket")
 
-    listener_socket, actual_port = create_listening_socket(SERVER_HOST, SERVER_PORT)
+    if AUTO_OPEN_WEBVIEW:
+        bind_host = "127.0.0.1"
+    else:
+        bind_host = SERVER_HOST if SERVER_HOST not in ("localhost", "127.0.0.1") else "0.0.0.0"
+
+    listener_socket, actual_port = create_listening_socket(bind_host, SERVER_PORT)
 
     if SERVER_PORT != actual_port:
         print(f"⚠️  Port {SERVER_PORT} unavailable, switched to {actual_port}")
 
-    server_url = f"http://{SERVER_HOST}:{actual_port}"
-    print(f"🚀 Server starting on {server_url}")
+    def resolve_display_host() -> str:
+        if AUTO_OPEN_WEBVIEW:
+            return "127.0.0.1"
+        if bind_host not in ("0.0.0.0", "127.0.0.1", "localhost"):
+            return bind_host
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except socket.gaierror:
+            return "127.0.0.1"
+
+    server_url = f"http://{resolve_display_host()}:{actual_port}"
+    print(f"🚀 Server starting on {bind_host}:{actual_port}")
 
     # 解析命令行参数：若包含 --debug 则开启调试模式（显示 devtools）
     debug = ('--debug' in sys.argv)
@@ -118,38 +135,46 @@ def main():
     server_thread.daemon = True
     server_thread.start()
 
-    # 创建并启动 pywebview 窗口
-    title = "Real-time Subtitle"
-    window = webview.create_window(title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
+    if AUTO_OPEN_WEBVIEW:
+        title = "Real-time Subtitle"
+        window = webview.create_window(title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
 
-    # 在非调试模式下（默认），在 Windows 上隐藏控制台窗口
-    if not debug and os.name == 'nt':
+        if not debug and os.name == 'nt':
+            try:
+                import ctypes
+                wh = ctypes.windll.kernel32.GetConsoleWindow()
+                if wh:
+                    ctypes.windll.user32.ShowWindow(wh, 0)
+            except Exception:
+                pass
+
+        def on_closed():
+            print("👋 Window closed, shutting down application...")
+            logger.close_log_file()
+            os._exit(0)
+
+        window.events.closed += on_closed
+
         try:
-            import ctypes
-            wh = ctypes.windll.kernel32.GetConsoleWindow()
-            if wh:
-                # 0 = SW_HIDE
-                ctypes.windll.user32.ShowWindow(wh, 0)
-        except Exception:
-            pass
-
-    def on_closed():
-        print("👋 Window closed, shutting down application...")
-        logger.close_log_file()
-        os._exit(0)
-
-    window.events.closed += on_closed
-    
-    try:
-        # 将 debug 标志传给 pywebview.start；debug=True 时会尝试打开 devtools
-        webview.start(debug=debug, private_mode=False)
-    except KeyboardInterrupt:
-        print("\n👋 Server closed by user")
-    finally:
-        if window:
-            window.destroy()
-        logger.close_log_file()
-        os._exit(0)
+            webview.start(debug=debug, private_mode=False)
+        except KeyboardInterrupt:
+            print("\n👋 Server closed by user")
+        finally:
+            if window:
+                window.destroy()
+            logger.close_log_file()
+            os._exit(0)
+    else:
+        print("🌐 WebView disabled. Open this URL in your browser:")
+        print(server_url)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n👋 Server closed by user")
+        finally:
+            logger.close_log_file()
+            os._exit(0)
 
 
 if __name__ == "__main__":

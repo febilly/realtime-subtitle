@@ -78,6 +78,20 @@ body.dark-theme .button-bar::-webkit-scrollbar-thumb:hover {
     transition: background 0.3s ease, color 0.3s ease;
 }
 
+.subtitle-container.mobile-bottom-safe-area {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px) + 24px);
+}
+
+.mobile-only {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .mobile-only {
+        display: flex;
+    }
+}
+
 body.dark-theme .subtitle-container {
     background: rgba(30, 30, 46, 0.95);
 }
@@ -280,4 +294,11 @@ ruby rt {
 
 body.dark-theme ruby rt {
     color: #9ca3af;
+}
+
+@media (max-width: 768px) {
+    ruby rt {
+        font-size: 0.7em;
+        line-height: 1.1;
+    }
 }
