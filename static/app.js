@@ -607,7 +607,8 @@ async function fetchOscTranslationStatus() {
 
 
 function connect() {
-    ws = new WebSocket(`ws://${window.location.host}/ws`);
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${wsProtocol}://${window.location.host}/ws`);
 
     ws.onopen = () => {
         console.log('WebSocket connected');
