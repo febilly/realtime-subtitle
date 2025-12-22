@@ -79,7 +79,7 @@ body.dark-theme .button-bar::-webkit-scrollbar-thumb:hover {
 }
 
 .subtitle-container.mobile-bottom-safe-area {
-    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px) + 24px);
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px) + 48px);
 }
 
 .mobile-only {
