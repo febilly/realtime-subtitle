@@ -9,3 +9,4 @@ pywebview
 pykakasi
 python-osc
 streamlink
+pyinstaller
