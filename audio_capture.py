@@ -70,7 +70,19 @@ class TwitchAudioStreamer:
 
         session = streamlink.Streamlink()
         url = f"https://www.twitch.tv/{self.channel}"
-        streams = session.streams(url)
+
+        # Twitch low-latency mode: initialize the Twitch plugin explicitly so we can pass plugin options.
+        # If the installed streamlink version/plugin doesn't support this option, fall back to session.streams().
+        streams = None
+        try:
+            from streamlink.plugins.twitch import __plugin__ as Twitch
+
+            plugin = Twitch(session, url, options={"low-latency": True})
+            streams = plugin.streams()
+        except Exception:
+            print("⚠️  Unable to enable Twitch low-latency mode; falling back to standard streamlink behavior")
+            streams = session.streams(url)
+
         if not streams:
             raise RuntimeError(f"No streams available for {url}")
 
