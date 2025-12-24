@@ -1,6 +1,7 @@
 """
 主服务器入口文件 - 整合所有模块并启动服务
 """
+import argparse
 import signal
 import sys
 import asyncio
@@ -11,14 +12,88 @@ import time
 from dotenv import load_dotenv
 from aiohttp import web
 
-from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW
-from logger import TranscriptLogger
-from soniox_session import SonioxSession
-from web_server import WebServer
-from soniox_client import get_api_key
-
 # 加载 .env 文件中的环境变量
 load_dotenv()
+
+
+def _set_env_if_provided(name: str, value) -> None:
+    if value is None:
+        return
+    os.environ[name] = str(value)
+
+
+def _set_env_bool_if_provided(name: str, value) -> None:
+    if value is None:
+        return
+    os.environ[name] = "1" if bool(value) else "0"
+
+
+def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(add_help=True)
+
+    parser.add_argument('--debug', action='store_true', help='Enable WebView devtools (when WebView is enabled)')
+
+    webview_group = parser.add_mutually_exclusive_group()
+    webview_group.add_argument('--webview', dest='auto_open_webview', action='store_true', default=None,
+                               help='Enable embedded WebView window')
+    webview_group.add_argument('--no-webview', dest='auto_open_webview', action='store_false', default=None,
+                               help='Disable embedded WebView; print URL only')
+
+    lock_group = parser.add_mutually_exclusive_group()
+    lock_group.add_argument('--lock-manual-controls', dest='lock_manual_controls', action='store_true', default=None,
+                            help='Hide/disable manual controls in UI and reject related backend operations')
+    lock_group.add_argument('--unlock-manual-controls', dest='lock_manual_controls', action='store_false', default=None,
+                            help='Enable manual controls (default behavior when config allows)')
+
+    lang_group = parser.add_mutually_exclusive_group()
+    lang_group.add_argument('--use-system-language', dest='use_system_language', action='store_true', default=None,
+                            help='Use OS language as translation target')
+    lang_group.add_argument('--no-system-language', dest='use_system_language', action='store_false', default=None,
+                            help='Do not use OS language; use --target-lang')
+
+    parser.add_argument('--target-lang', dest='target_lang', default=None, help='Translation target language (ISO 639-1)')
+    parser.add_argument('--target-lang-1', dest='target_lang_1', default=None)
+    parser.add_argument('--target-lang-2', dest='target_lang_2', default=None)
+
+    parser.add_argument('--server-host', dest='server_host', default=None)
+    parser.add_argument('--server-port', dest='server_port', type=int, default=None)
+
+    parser.add_argument('--soniox-temp-key-url', dest='soniox_temp_key_url', default=None)
+    parser.add_argument('--soniox-websocket-url', dest='soniox_websocket_url', default=None)
+
+    twitch_group = parser.add_mutually_exclusive_group()
+    twitch_group.add_argument('--use-twitch-audio-stream', dest='use_twitch_audio_stream', action='store_true', default=None)
+    twitch_group.add_argument('--no-twitch-audio-stream', dest='use_twitch_audio_stream', action='store_false', default=None)
+    parser.add_argument('--twitch-channel', dest='twitch_channel', default=None)
+    parser.add_argument('--twitch-stream-quality', dest='twitch_stream_quality', default=None)
+    parser.add_argument('--ffmpeg-path', dest='ffmpeg_path', default=None)
+
+    return parser.parse_known_args(argv)
+
+
+def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
+    _set_env_bool_if_provided('AUTO_OPEN_WEBVIEW', args.auto_open_webview)
+    _set_env_bool_if_provided('LOCK_MANUAL_CONTROLS', args.lock_manual_controls)
+
+    _set_env_bool_if_provided('USE_SYSTEM_LANGUAGE', args.use_system_language)
+    _set_env_if_provided('TARGET_LANG', args.target_lang)
+    _set_env_if_provided('TARGET_LANG_1', args.target_lang_1)
+    _set_env_if_provided('TARGET_LANG_2', args.target_lang_2)
+
+    if args.target_lang is not None and args.use_system_language is None:
+        os.environ['USE_SYSTEM_LANGUAGE'] = '0'
+
+    _set_env_if_provided('SERVER_HOST', args.server_host)
+    if args.server_port is not None:
+        _set_env_if_provided('SERVER_PORT', int(args.server_port))
+
+    _set_env_if_provided('SONIOX_TEMP_KEY_URL', args.soniox_temp_key_url)
+    _set_env_if_provided('SONIOX_WEBSOCKET_URL', args.soniox_websocket_url)
+
+    _set_env_bool_if_provided('USE_TWITCH_AUDIO_STREAM', args.use_twitch_audio_stream)
+    _set_env_if_provided('TWITCH_CHANNEL', args.twitch_channel)
+    _set_env_if_provided('TWITCH_STREAM_QUALITY', args.twitch_stream_quality)
+    _set_env_if_provided('FFMPEG_PATH', args.ffmpeg_path)
 
 
 def run_server(app, sock):
@@ -35,6 +110,15 @@ def run_server(app, sock):
 
 
 def main():
+    args, _unknown = parse_cli_args(sys.argv[1:])
+    apply_cli_overrides_to_env(args)
+
+    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW
+    from logger import TranscriptLogger
+    from soniox_session import SonioxSession
+    from web_server import WebServer
+    from soniox_client import get_api_key
+
     # 创建日志记录器
     logger = TranscriptLogger()
     
@@ -111,7 +195,7 @@ def main():
 
     listener_socket, actual_port = create_listening_socket(bind_host, SERVER_PORT)
 
-    if SERVER_PORT != actual_port:
+    if SERVER_PORT and SERVER_PORT > 0 and SERVER_PORT != actual_port:
         print(f"⚠️  Port {SERVER_PORT} unavailable, switched to {actual_port}")
 
     def resolve_display_host() -> str:
@@ -125,8 +209,7 @@ def main():
     server_url = f"http://{resolve_display_host()}:{actual_port}"
     print(f"🚀 Server starting on {bind_host}:{actual_port}")
 
-    # 解析命令行参数：若包含 --debug 则开启调试模式（显示 devtools）
-    debug = ('--debug' in sys.argv)
+    debug = bool(args.debug)
 
     # 在新线程中启动 aiohttp 服务器
     server_thread = threading.Thread(target=run_server, args=(app, listener_socket))
