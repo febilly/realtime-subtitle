@@ -6,7 +6,6 @@ aiohttp
 aiohttp-jinja2
 requests
 pywebview
-pystray
 pykakasi
 python-osc
 streamlink
