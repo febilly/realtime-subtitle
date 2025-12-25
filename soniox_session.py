@@ -17,7 +17,7 @@ from config import (
     FFMPEG_PATH,
 )
 from soniox_client import get_config
-from audio_capture import AudioStreamer, TwitchAudioStreamer
+from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 
 
@@ -206,6 +206,8 @@ class SonioxSession:
             existing_streamer.stop()
 
         if USE_TWITCH_AUDIO_STREAM:
+            from twitch_audio_streamer import TwitchAudioStreamer
+
             streamer = TwitchAudioStreamer(
                 ws,
                 channel=TWITCH_CHANNEL,
