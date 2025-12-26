@@ -117,7 +117,8 @@ class WebServer:
     async def ui_config_handler(self, request):
         """前端 UI 配置下发"""
         return web.json_response({
-            "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS)
+            "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
+            "translation_target_lang": self.soniox_session.get_translation_target_lang(),
         })
     
     async def restart_handler(self, request):
@@ -131,15 +132,23 @@ class WebServer:
         from soniox_client import get_api_key
 
         is_auto = False
+        requested_target_lang = None
         try:
             payload = await request.json()
             if isinstance(payload, dict):
                 is_auto = bool(payload.get("auto"))
+                if payload.get("target_lang") is not None:
+                    requested_target_lang = payload.get("target_lang")
         except Exception:
             # 兼容旧客户端：无 body 时视为手动
             is_auto = False
         
         print("\n[Server] Received restart request...")
+
+        if requested_target_lang is not None:
+            ok, message = self.soniox_session.set_translation_target_lang(requested_target_lang)
+            if not ok:
+                return web.json_response({"status": "error", "message": message}, status=400)
         
         # 先停止当前的Soniox会话
         self.soniox_session.stop()
@@ -174,7 +183,13 @@ class WebServer:
             translation = "one_way"  # 总是启用翻译
             
             loop = asyncio.get_event_loop()
-            self.soniox_session.start(api_key, audio_format, translation, loop)
+            self.soniox_session.start(
+                api_key,
+                audio_format,
+                translation,
+                loop,
+                translation_target_lang=self.soniox_session.get_translation_target_lang(),
+            )
             
             print("[Server] New session started successfully")
             return web.json_response({"status": "ok", "message": "Recognition restarted"})

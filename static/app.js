@@ -17,12 +17,128 @@ const oscTranslationButton = document.getElementById('oscTranslationButton');
 const oscTranslationIcon = document.getElementById('oscTranslationIcon');
 const furiganaButton = document.getElementById('furiganaButton');
 const furiganaIcon = document.getElementById('furiganaIcon');
+const translationLangButton = document.getElementById('translationLangButton');
+const translationLangIcon = document.getElementById('translationLangIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 
+const t = (key, vars) => {
+    try {
+        if (window.I18N && typeof window.I18N.t === 'function') {
+            return window.I18N.t(key, vars);
+        }
+    } catch (error) {
+        // ignore
+    }
+    return key;
+};
+
+function localizeBackendMessage(message) {
+    if (message === null || message === undefined) {
+        return message;
+    }
+
+    const raw = String(message).trim();
+    if (!raw) {
+        return raw;
+    }
+
+    const directMap = {
+        'Manual restart is disabled by server config': 'backend_manual_restart_disabled',
+        'Pause is disabled by server config': 'backend_pause_disabled',
+        'Resume is disabled by server config': 'backend_resume_disabled',
+        'Audio source switching is disabled by server config': 'backend_audio_source_disabled',
+        'OSC translation toggle is disabled by server config': 'backend_osc_disabled',
+        'Furigana feature not available (pykakasi not installed)': 'backend_furigana_unavailable',
+    };
+
+    const key = directMap[raw];
+    if (key) {
+        return t(key);
+    }
+
+    // Lightweight heuristics for similar messages without changing backend.
+    if (/disabled by server config/i.test(raw)) {
+        return raw;
+    }
+
+    return raw;
+}
+
 // 由后端下发：锁定“手动控制”相关 UI
 let lockManualControls = false;
+
+// 由后端下发：默认翻译目标语言（ISO 639-1）
+let defaultTranslationTargetLang = 'en';
+let currentTranslationTargetLang = 'en';
+
+const SUPPORTED_TRANSLATION_LANGUAGES = [
+    { code: 'af', en: 'Afrikaans', native: 'Afrikaans' },
+    { code: 'sq', en: 'Albanian', native: 'Shqip' },
+    { code: 'ar', en: 'Arabic', native: 'العربية' },
+    { code: 'az', en: 'Azerbaijani', native: 'Azərbaycan dili' },
+    { code: 'eu', en: 'Basque', native: 'Euskara' },
+    { code: 'be', en: 'Belarusian', native: 'Беларуская' },
+    { code: 'bn', en: 'Bengali', native: 'বাংলা' },
+    { code: 'bs', en: 'Bosnian', native: 'Bosanski' },
+    { code: 'bg', en: 'Bulgarian', native: 'Български' },
+    { code: 'ca', en: 'Catalan', native: 'Català' },
+    { code: 'zh', en: 'Chinese', native: '中文' },
+    { code: 'hr', en: 'Croatian', native: 'Hrvatski' },
+    { code: 'cs', en: 'Czech', native: 'Čeština' },
+    { code: 'da', en: 'Danish', native: 'Dansk' },
+    { code: 'nl', en: 'Dutch', native: 'Nederlands' },
+    { code: 'en', en: 'English', native: 'English' },
+    { code: 'et', en: 'Estonian', native: 'Eesti' },
+    { code: 'fi', en: 'Finnish', native: 'Suomi' },
+    { code: 'fr', en: 'French', native: 'Français' },
+    { code: 'gl', en: 'Galician', native: 'Galego' },
+    { code: 'de', en: 'German', native: 'Deutsch' },
+    { code: 'el', en: 'Greek', native: 'Ελληνικά' },
+    { code: 'gu', en: 'Gujarati', native: 'ગુજરાતી' },
+    { code: 'he', en: 'Hebrew', native: 'עברית' },
+    { code: 'hi', en: 'Hindi', native: 'हिन्दी' },
+    { code: 'hu', en: 'Hungarian', native: 'Magyar' },
+    { code: 'id', en: 'Indonesian', native: 'Bahasa Indonesia' },
+    { code: 'it', en: 'Italian', native: 'Italiano' },
+    { code: 'ja', en: 'Japanese', native: '日本語' },
+    { code: 'kn', en: 'Kannada', native: 'ಕನ್ನಡ' },
+    { code: 'kk', en: 'Kazakh', native: 'Қазақша' },
+    { code: 'ko', en: 'Korean', native: '한국어' },
+    { code: 'lv', en: 'Latvian', native: 'Latviešu' },
+    { code: 'lt', en: 'Lithuanian', native: 'Lietuvių' },
+    { code: 'mk', en: 'Macedonian', native: 'Македонски' },
+    { code: 'ms', en: 'Malay', native: 'Bahasa Melayu' },
+    { code: 'ml', en: 'Malayalam', native: 'മലയാളം' },
+    { code: 'mr', en: 'Marathi', native: 'मराठी' },
+    { code: 'no', en: 'Norwegian', native: 'Norsk' },
+    { code: 'fa', en: 'Persian', native: 'فارسی' },
+    { code: 'pl', en: 'Polish', native: 'Polski' },
+    { code: 'pt', en: 'Portuguese', native: 'Português' },
+    { code: 'pa', en: 'Punjabi', native: 'ਪੰਜਾਬੀ' },
+    { code: 'ro', en: 'Romanian', native: 'Română' },
+    { code: 'ru', en: 'Russian', native: 'Русский' },
+    { code: 'sr', en: 'Serbian', native: 'Српски' },
+    { code: 'sk', en: 'Slovak', native: 'Slovenčina' },
+    { code: 'sl', en: 'Slovenian', native: 'Slovenščina' },
+    { code: 'es', en: 'Spanish', native: 'Español' },
+    { code: 'sw', en: 'Swahili', native: 'Kiswahili' },
+    { code: 'sv', en: 'Swedish', native: 'Svenska' },
+    { code: 'tl', en: 'Tagalog', native: 'Tagalog' },
+    { code: 'ta', en: 'Tamil', native: 'தமிழ்' },
+    { code: 'te', en: 'Telugu', native: 'తెలుగు' },
+    { code: 'th', en: 'Thai', native: 'ไทย' },
+    { code: 'tr', en: 'Turkish', native: 'Türkçe' },
+    { code: 'uk', en: 'Ukrainian', native: 'Українська' },
+    { code: 'ur', en: 'Urdu', native: 'اردو' },
+    { code: 'vi', en: 'Vietnamese', native: 'Tiếng Việt' },
+    { code: 'cy', en: 'Welsh', native: 'Cymraeg' },
+];
+
+let langPopoverEl = null;
+let langPopoverOpen = false;
+let langPopoverCleanup = null;
 
 // 存储所有已确认的tokens
 let allFinalTokens = [];
@@ -83,6 +199,40 @@ updateAutoRestartButton();
 updateBottomSafeAreaButton();
 applyBottomSafeArea();
 applyLockPauseRestartControlsUI();
+applyStaticUiText();
+
+function applyStaticUiText() {
+    if (document && document.documentElement) {
+        try {
+            document.documentElement.lang = (window.I18N && window.I18N.lang) ? window.I18N.lang : 'en';
+        } catch (error) {
+            // ignore
+        }
+    }
+
+    if (themeToggle) {
+        themeToggle.title = t('theme_toggle');
+    }
+
+    if (restartButton) {
+        restartButton.title = t('restart');
+    }
+
+    if (translationLangButton) {
+        translationLangButton.title = t('translation_language');
+    }
+
+    if (pauseButton) {
+        pauseButton.title = isPaused ? t('resume') : t('pause_resume');
+    }
+
+    if (subtitleContainer) {
+        const emptyNode = subtitleContainer.querySelector('.empty-state');
+        if (emptyNode) {
+            emptyNode.textContent = t('empty_state');
+        }
+    }
+}
 
 
 // 主题切换功能（默认深色）
@@ -119,20 +269,20 @@ function updateSegmentModeButton() {
     }
 
     if (segmentMode === 'translation') {
-        segmentModeButton.title = 'Segment by translation (click to switch to endpoint mode)';
+        segmentModeButton.title = t('segment_translation');
     } else {
-        segmentModeButton.title = 'Segment by endpoint (click to switch to translation mode)';
+        segmentModeButton.title = t('segment_endpoint');
     }
 }
 
 // 更新显示模式按钮文本
 function updateDisplayModeButton() {
     if (displayMode === 'both') {
-        displayModeButton.title = 'Show both original and translation';
+        displayModeButton.title = t('display_both');
     } else if (displayMode === 'original') {
-        displayModeButton.title = 'Show original only';
+        displayModeButton.title = t('display_original');
     } else {
-        displayModeButton.title = 'Show translation only';
+        displayModeButton.title = t('display_translation');
     }
 }
 
@@ -143,10 +293,10 @@ function updateOscTranslationButton() {
 
     if (oscTranslationEnabled) {
         oscTranslationButton.classList.add('active');
-        oscTranslationButton.title = 'Sending translation to VRChat (click to disable)';
+        oscTranslationButton.title = t('osc_on');
     } else {
         oscTranslationButton.classList.remove('active');
-        oscTranslationButton.title = 'Send translation to VRChat via OSC';
+        oscTranslationButton.title = t('osc_off');
     }
 }
 
@@ -163,11 +313,11 @@ function updateBottomSafeAreaButton() {
 
     if (bottomSafeAreaEnabled) {
         bottomSafeAreaButton.classList.add('active');
-        bottomSafeAreaButton.title = 'Hide extra bottom space (mobile)';
+        bottomSafeAreaButton.title = t('bottom_safe_area_on');
         bottomSafeAreaIcon.textContent = '⬆️';
     } else {
         bottomSafeAreaButton.classList.remove('active');
-        bottomSafeAreaButton.title = 'Show extra bottom space (mobile)';
+        bottomSafeAreaButton.title = t('bottom_safe_area_off');
         bottomSafeAreaIcon.textContent = '⬇️';
     }
 }
@@ -196,10 +346,10 @@ function updateAutoRestartButton() {
 
     if (autoRestartEnabled) {
         autoRestartButton.classList.add('active');
-        autoRestartButton.title = 'Auto restart enabled (click to disable)';
+        autoRestartButton.title = t('auto_restart_on');
     } else {
         autoRestartButton.classList.remove('active');
-        autoRestartButton.title = 'Auto restart recognition on disconnect';
+        autoRestartButton.title = t('auto_restart_off');
     }
 }
 
@@ -216,6 +366,9 @@ function applyLockPauseRestartControlsUI() {
     if (oscTranslationButton) {
         oscTranslationButton.style.display = lockManualControls ? 'none' : '';
     }
+    if (translationLangButton) {
+        translationLangButton.style.display = lockManualControls ? 'none' : '';
+    }
 
     if (lockManualControls) {
         autoRestartEnabled = true;
@@ -231,10 +384,146 @@ async function fetchUiConfig() {
         }
         const data = await response.json();
         lockManualControls = !!data.lock_manual_controls;
+        if (data && typeof data.translation_target_lang === 'string' && data.translation_target_lang.trim()) {
+            defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
+            currentTranslationTargetLang = defaultTranslationTargetLang;
+        }
         applyLockPauseRestartControlsUI();
     } catch (error) {
         console.error('Error fetching UI config:', error);
     }
+}
+
+function ensureLangPopover() {
+    if (langPopoverEl) {
+        return langPopoverEl;
+    }
+
+    const el = document.createElement('div');
+    el.className = 'lang-popover';
+    el.style.display = 'none';
+
+    for (const lang of SUPPORTED_TRANSLATION_LANGUAGES) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'lang-option';
+        btn.dataset.code = lang.code;
+        btn.textContent = `${lang.en} - ${lang.native}`;
+        btn.addEventListener('click', () => {
+            const selected = btn.dataset.code;
+            hideLangPopover();
+            if (!selected) {
+                return;
+            }
+            if (selected === currentTranslationTargetLang) {
+                return;
+            }
+            currentTranslationTargetLang = selected;
+            void restartRecognition({ auto: false, targetLang: selected });
+        });
+        el.appendChild(btn);
+    }
+
+    document.body.appendChild(el);
+    langPopoverEl = el;
+    return el;
+}
+
+function updateLangPopoverSelection() {
+    if (!langPopoverEl) {
+        return;
+    }
+    const buttons = langPopoverEl.querySelectorAll('.lang-option');
+    buttons.forEach((btn) => {
+        const code = btn.dataset.code;
+        btn.classList.toggle('selected', code === currentTranslationTargetLang);
+    });
+}
+
+function showLangPopover() {
+    if (!translationLangButton) {
+        return;
+    }
+    const el = ensureLangPopover();
+    updateLangPopoverSelection();
+
+    const rect = translationLangButton.getBoundingClientRect();
+    const padding = 8;
+
+    el.style.display = 'block';
+
+    const popoverRect = el.getBoundingClientRect();
+
+    // Place to the left of the button bar, vertically aligned with button.
+    let top = rect.top - 10;
+    if (top < padding) top = padding;
+    if (top + popoverRect.height > window.innerHeight - padding) {
+        top = Math.max(padding, window.innerHeight - padding - popoverRect.height);
+    }
+
+    let left = rect.left - popoverRect.width - 12;
+    if (left < padding) {
+        left = padding;
+    }
+
+    el.style.top = `${top}px`;
+    el.style.left = `${left}px`;
+
+    langPopoverOpen = true;
+
+    const onDocMouseDown = (event) => {
+        const target = event.target;
+        if (!target) {
+            return;
+        }
+        if (langPopoverEl && langPopoverEl.contains(target)) {
+            return;
+        }
+        if (translationLangButton && translationLangButton.contains(target)) {
+            return;
+        }
+        hideLangPopover();
+    };
+
+    const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+            hideLangPopover();
+        }
+    };
+
+    document.addEventListener('mousedown', onDocMouseDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    langPopoverCleanup = () => {
+        document.removeEventListener('mousedown', onDocMouseDown, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+    };
+}
+
+function hideLangPopover() {
+    if (!langPopoverOpen) {
+        return;
+    }
+    langPopoverOpen = false;
+    if (langPopoverEl) {
+        langPopoverEl.style.display = 'none';
+    }
+    if (typeof langPopoverCleanup === 'function') {
+        langPopoverCleanup();
+    }
+    langPopoverCleanup = null;
+}
+
+if (translationLangButton) {
+    translationLangButton.addEventListener('click', () => {
+        if (lockManualControls) {
+            return;
+        }
+        if (langPopoverOpen) {
+            hideLangPopover();
+        } else {
+            showLangPopover();
+        }
+    });
 }
 
 function updateAudioSourceButton() {
@@ -244,10 +533,10 @@ function updateAudioSourceButton() {
 
     if (audioSource === 'microphone') {
         audioSourceIcon.textContent = '🎤';
-        audioSourceButton.title = 'Switch to system audio capture';
+        audioSourceButton.title = t('audio_to_system');
     } else {
         audioSourceIcon.textContent = '🔊';
-        audioSourceButton.title = 'Switch to microphone capture';
+        audioSourceButton.title = t('audio_to_mic');
     }
 }
 
@@ -374,10 +663,10 @@ function updateFuriganaButton() {
     
     if (furiganaEnabled) {
         furiganaButton.classList.add('active');
-        furiganaButton.title = 'Furigana enabled (click to disable)';
+        furiganaButton.title = t('furigana_on');
     } else {
         furiganaButton.classList.remove('active');
-        furiganaButton.title = 'Furigana disabled (click to enable)';
+        furiganaButton.title = t('furigana_off');
     }
 }
 
@@ -399,7 +688,7 @@ if (furiganaButton) {
     });
 }
 
-async function restartRecognition({ auto = false } = {}) {
+async function restartRecognition({ auto = false, targetLang = null } = {}) {
     if (isRestarting) {
         return false;
     }
@@ -411,9 +700,9 @@ async function restartRecognition({ auto = false } = {}) {
         restartButton.classList.add('restarting');
     }
 
-    const manualStatusHtml = '<div style="text-align: center; padding: 40px; color: #6b7280;">Restarting recognition...</div>';
-    const manualErrorHtml = '<div style="text-align: center; padding: 40px; color: #ef4444;">Connection error. Please try again.</div>';
-    const manualFailureHtml = '<div style="text-align: center; padding: 40px; color: #ef4444;">Failed to restart. Please try again.</div>';
+    const manualStatusHtml = `<div style="text-align: center; padding: 40px; color: #6b7280;">${escapeHtml(t('restarting'))}</div>`;
+    const manualErrorHtml = `<div style="text-align: center; padding: 40px; color: #ef4444;">${escapeHtml(t('connection_error_try_again'))}</div>`;
+    const manualFailureHtml = `<div style="text-align: center; padding: 40px; color: #ef4444;">${escapeHtml(t('restart_failed_try_again'))}</div>`;
 
     try {
         if (ws) {
@@ -434,10 +723,16 @@ async function restartRecognition({ auto = false } = {}) {
 
         await delay(500);
 
+        const payload = { auto: !!auto };
+        const lang = (targetLang || currentTranslationTargetLang || '').toString().trim().toLowerCase();
+        if (lang) {
+            payload.target_lang = lang;
+        }
+
         const response = await fetch('/restart', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ auto: !!auto })
+            body: JSON.stringify(payload)
         });
 
         if (!response.ok) {
@@ -491,7 +786,7 @@ pauseButton.addEventListener('click', async () => {
             if (response.ok) {
                 isPaused = false;
                 pauseIcon.textContent = '⏸️';
-                pauseButton.title = 'Pause recognition';
+                pauseButton.title = t('pause');
                 console.log('Recognition resumed');
             }
         } else {
@@ -500,7 +795,7 @@ pauseButton.addEventListener('click', async () => {
             if (response.ok) {
                 isPaused = true;
                 pauseIcon.textContent = '▶️';
-                pauseButton.title = 'Resume recognition';
+                pauseButton.title = t('resume');
                 console.log('Recognition paused');
             }
         }
@@ -555,11 +850,12 @@ if (audioSourceButton) {
 
 
 function displayErrorMessage(message) {
+    const localizedMessage = localizeBackendMessage(message);
     subtitleContainer.innerHTML = `
         <div class="error-message-overlay">
-            <h2 class="error-title">Error</h2>
-            <p class="error-text">${escapeHtml(message)}</p>
-            <p class="error-suggestion">Please set your SONIOX_API_KEY environment variable or check your network connection.</p>
+            <h2 class="error-title">${escapeHtml(t('error_title'))}</h2>
+            <p class="error-text">${escapeHtml(localizedMessage)}</p>
+            <p class="error-suggestion">${escapeHtml(t('error_suggestion_api'))}</p>
         </div>
     `;
     subtitleContainer.scrollTop = 0; // Ensure error is visible
@@ -879,6 +1175,13 @@ function getSpeakerClass(speaker) {
     if (speaker === null || speaker === undefined || speaker === 'undefined') {
         return 'speaker-undefined';
     }
+
+    const parsed = Number.parseInt(String(speaker), 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        const normalized = ((parsed - 1) % 15) + 1;
+        return `speaker-${normalized}`;
+    }
+
     return `speaker-${speaker}`;
 }
 
@@ -978,7 +1281,7 @@ function renderSubtitles() {
     tokens.forEach(assignSequenceIndex);
 
     if (tokens.length === 0) {
-        subtitleContainer.innerHTML = '<div class="empty-state">Subtitles will appear here...</div>';
+        subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
         subtitleContainer.scrollTop = 0;
         autoStickToBottom = true;
         return;
@@ -1171,7 +1474,7 @@ function renderSubtitles() {
     }
 
     if (speakerBlocks.length === 0) {
-        subtitleContainer.innerHTML = '<div class="empty-state">Subtitles will appear here...</div>';
+        subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
         restoreScrollState(scrollState);
         autoStickToBottom = scrollState ? scrollState.wasAtBottom : true;
         return;
@@ -1193,7 +1496,7 @@ function renderSubtitles() {
         let blockHtml = '';
 
         if (block.speaker !== previousSpeaker) {
-            blockHtml += `<div class="speaker-label ${getSpeakerClass(block.speaker)}">SPEAKER ${block.speaker}</div>`;
+            blockHtml += `<div class="speaker-label ${getSpeakerClass(block.speaker)}">${escapeHtml(t('speaker_label', { speaker: block.speaker }))}</div>`;
         }
 
         const sentencesHtml = [];
@@ -1291,7 +1594,7 @@ function renderSubtitles() {
     });
 
     if (!html) {
-        subtitleContainer.innerHTML = '<div class="empty-state">Subtitles will appear here...</div>';
+        subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
         restoreScrollState(scrollState);
         autoStickToBottom = scrollState ? scrollState.wasAtBottom : true;
         return;

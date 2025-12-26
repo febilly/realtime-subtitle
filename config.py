@@ -7,6 +7,46 @@ import locale
 import time
 from dotenv import load_dotenv
 
+
+# Soniox 支持的语言（ISO 639-1），用于校验系统语言/目标语言。
+# 来源：docs/supported-languages.mdx
+SUPPORTED_LANGUAGE_CODES = {
+    "af", "sq", "ar", "az", "eu", "be", "bn", "bs", "bg", "ca",
+    "zh", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "gl",
+    "de", "el", "gu", "he", "hi", "hu", "id", "it", "ja", "kn",
+    "kk", "ko", "lv", "lt", "mk", "ms", "ml", "mr", "no", "fa",
+    "pl", "pt", "pa", "ro", "ru", "sr", "sk", "sl", "es", "sw",
+    "sv", "tl", "ta", "te", "th", "tr", "uk", "ur", "vi", "cy",
+}
+
+
+def normalize_language_code(lang: str) -> str:
+    """Normalize language code to ISO 639-1 lowercase where possible.
+
+    Examples:
+    - 'zh_CN' -> 'zh'
+    - 'en-US' -> 'en'
+    - ' JA '  -> 'ja'
+    """
+    if lang is None:
+        return ""
+    value = str(lang).strip().lower()
+    if not value:
+        return ""
+
+    # common separators
+    for sep in ("_", "-"):
+        if sep in value:
+            value = value.split(sep, 1)[0]
+            break
+
+    return value
+
+
+def is_supported_language_code(lang: str) -> bool:
+    code = normalize_language_code(lang)
+    return bool(code) and code in SUPPORTED_LANGUAGE_CODES
+
 # 加载 .env（在此处加载确保在其他模块导入本配置时也能读取到环境变量）
 load_dotenv()
 
@@ -103,22 +143,30 @@ def get_system_language() -> str:
         
         if system_locale:
             # 提取语言代码（前两个字母）
-            lang_code = system_locale.split('_')[0].lower()
-            print(f"🌐 Detected system language: {system_locale} -> {lang_code}")
-            return lang_code
+            lang_code = normalize_language_code(system_locale)
+            if is_supported_language_code(lang_code):
+                print(f"🌐 Detected system language: {system_locale} -> {lang_code}")
+                return lang_code
+            print(f"⚠️  Detected system language not supported: {system_locale} -> {lang_code}, fallback to: en")
+            return "en"
         else:
-            print("⚠️  Unable to detect system language, using default: zh")
-            return "zh"
+            print("⚠️  Unable to detect system language, using default: en")
+            return "en"
     except Exception as e:
-        print(f"⚠️  Failed to get system language: {e}, using default: zh")
-        return "zh"
+        print(f"⚠️  Failed to get system language: {e}, using default: en")
+        return "en"
 
 
 # 根据配置决定使用哪个目标语言
 if USE_SYSTEM_LANGUAGE:
     TRANSLATION_TARGET_LANG = get_system_language()
 else:
-    TRANSLATION_TARGET_LANG = TARGET_LANG
+    normalized_target = normalize_language_code(TARGET_LANG)
+    if is_supported_language_code(normalized_target):
+        TRANSLATION_TARGET_LANG = normalized_target
+    else:
+        print(f"⚠️  Config TARGET_LANG not supported: {TARGET_LANG} -> {normalized_target}, fallback to: en")
+        TRANSLATION_TARGET_LANG = "en"
 
 print(f"✅ Translation target language set to: {TRANSLATION_TARGET_LANG}")
 

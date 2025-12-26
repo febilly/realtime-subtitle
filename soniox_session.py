@@ -36,6 +36,7 @@ class SonioxSession:
         self.api_key: Optional[str] = None
         self.audio_format: Optional[str] = None
         self.translation: Optional[str] = None
+        self.translation_target_lang: str = "en"
         self.sample_rate = 16000
         self.chunk_size = 3840
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
@@ -44,8 +45,21 @@ class SonioxSession:
         self.osc_translation_enabled = False
         self._osc_buffer_lock = threading.Lock()
         self._osc_translation_tokens: list[dict] = []
+
+        try:
+            from config import TRANSLATION_TARGET_LANG
+            self.translation_target_lang = str(TRANSLATION_TARGET_LANG)
+        except Exception:
+            self.translation_target_lang = "en"
     
-    def start(self, api_key: Optional[str], audio_format: str, translation: str, loop: asyncio.AbstractEventLoop):
+    def start(
+        self,
+        api_key: Optional[str],
+        audio_format: str,
+        translation: str,
+        loop: asyncio.AbstractEventLoop,
+        translation_target_lang: Optional[str] = None,
+    ):
         """启动新的Soniox会话"""
         if self.thread and self.thread.is_alive():
             print("⚠️  Soniox session already running, start request ignored")
@@ -62,6 +76,9 @@ class SonioxSession:
         self.audio_format = audio_format
         self.translation = translation
         self.loop = loop
+
+        if translation_target_lang is not None:
+            self.set_translation_target_lang(translation_target_lang)
         self._reset_osc_buffer()
         osc_manager.clear_history()
         
@@ -71,11 +88,27 @@ class SonioxSession:
         
         self.thread = threading.Thread(
             target=self._run_session,
-            args=(api_key, audio_format, translation, loop),
+            args=(api_key, audio_format, translation, self.translation_target_lang, loop),
             daemon=True
         )
         self.thread.start()
         return True
+
+    def get_translation_target_lang(self) -> str:
+        return str(self.translation_target_lang or "en")
+
+    def set_translation_target_lang(self, lang: str) -> tuple[bool, str]:
+        from config import normalize_language_code, is_supported_language_code
+
+        normalized = normalize_language_code(lang)
+        if not is_supported_language_code(normalized):
+            return False, f"Unsupported translation target language: {lang}"
+
+        previous = self.translation_target_lang
+        self.translation_target_lang = normalized
+        if previous != normalized:
+            print(f"🌐 Translation target language updated: {previous} -> {normalized}")
+        return True, "ok"
     
     def pause(self):
         """暂停识别"""
@@ -106,7 +139,8 @@ class SonioxSession:
             self._osc_translation_tokens.clear()
     
     def resume(self, api_key: Optional[str] = None, audio_format: Optional[str] = None,
-               translation: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None):
+               translation: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None,
+               translation_target_lang: Optional[str] = None):
         """恢复识别"""
         if not self.is_paused:
             print("Resume requested but session is not paused")
@@ -121,11 +155,22 @@ class SonioxSession:
         if loop:
             self.loop = loop
 
+        if translation_target_lang is not None:
+            ok, message = self.set_translation_target_lang(translation_target_lang)
+            if not ok:
+                print(f"⚠️  {message}")
+
         if not all([self.api_key, self.audio_format, self.translation, self.loop]):
             print("❌ Cannot resume: missing session configuration")
             return False
 
-        started = self.start(self.api_key, self.audio_format, self.translation, self.loop)
+        started = self.start(
+            self.api_key,
+            self.audio_format,
+            self.translation,
+            self.loop,
+            translation_target_lang=self.translation_target_lang,
+        )
         if started:
             print("▶️  Recognition resumed (new connection)")
         return started
@@ -277,7 +322,14 @@ class SonioxSession:
                 with self._osc_buffer_lock:
                     self._osc_translation_tokens.append(token)
     
-    def _run_session(self, api_key: str, audio_format: str, translation: str, loop: asyncio.AbstractEventLoop):
+    def _run_session(
+        self,
+        api_key: str,
+        audio_format: str,
+        translation: str,
+        translation_target_lang: str,
+        loop: asyncio.AbstractEventLoop,
+    ):
         """运行Soniox会话（内部方法）"""
         if not api_key:
             print("❌ _run_session called without API key. Exiting session thread.")
@@ -290,7 +342,7 @@ class SonioxSession:
             )
             return
 
-        config = get_config(api_key, audio_format, translation)
+        config = get_config(api_key, audio_format, translation, translation_target_lang=translation_target_lang)
 
         print("Connecting to Soniox...")
         self.stop_event = threading.Event()
