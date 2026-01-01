@@ -71,7 +71,6 @@ class WebServer:
         self.api_key_error_message = None # 新增属性
         self.external_websocket_clients = set()  # External WebSocket clients
         self.external_ws_uri = EXTERNAL_WS_URI  # External WebSocket URI from config
-        self.external_ws_copy_to_clipboard = False  # Copy to clipboard flag
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
@@ -193,25 +192,11 @@ class WebServer:
                     
                     # Let remaining tasks continue in the background
                     # They will complete when the client reads the messages
-        
-        # Also notify frontend clients if copy to clipboard is enabled
-        # Always send the message with copy_to_clipboard flag so frontend can check current state
-        if self.websocket_clients:
-            clipboard_message = json.dumps({
-                "type": "external_ws_text",
-                "text": text,
-                "copy_to_clipboard": self.external_ws_copy_to_clipboard
-            })
-            await asyncio.gather(
-                *[client.send_str(clipboard_message) for client in self.websocket_clients],
-                return_exceptions=True
-            )
     
     async def external_ws_config_get_handler(self, request):
         """Get external WebSocket configuration"""
         return web.json_response({
-            "uri": self.external_ws_uri,
-            "copy_to_clipboard": self.external_ws_copy_to_clipboard
+            "uri": self.external_ws_uri
         })
     
     async def external_ws_config_set_handler(self, request):
@@ -223,13 +208,10 @@ class WebServer:
         
         if "uri" in payload:
             self.external_ws_uri = str(payload["uri"])
-        if "copy_to_clipboard" in payload:
-            self.external_ws_copy_to_clipboard = bool(payload["copy_to_clipboard"])
         
         return web.json_response({
             "status": "ok",
-            "uri": self.external_ws_uri,
-            "copy_to_clipboard": self.external_ws_copy_to_clipboard
+            "uri": self.external_ws_uri
         })
     
     async def websocket_handler(self, request):
