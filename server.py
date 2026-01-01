@@ -111,45 +111,41 @@ def run_server(app, sock):
         sock.close()
 
 
+# TODO: Fix to work properly without dummy client
 async def dummy_client_loop(ws_uri: str):
-    """ダミークライアントループ - 外部WebSocketサーバーに接続してメッセージを受信するだけ"""
+    """Dummy client loop - Connects to external WebSocket server and only receives messages"""
     reconnect_delay = 2.0
     max_reconnect_delay = 60.0
     
     while True:
         try:
-            print(f"[Dummy Client] Connecting to {ws_uri}...")
             async with ClientSession() as session:
                 async with session.ws_connect(ws_uri) as ws:
-                    print(f"[Dummy Client] Connected to {ws_uri}")
-                    reconnect_delay = 2.0  # 接続成功時はリトライ間隔をリセット
+                    reconnect_delay = 2.0
                     
                     async for msg in ws:
                         if msg.type == WSMsgType.TEXT:
-                            # メッセージを受信するだけ（何もしない）
-                            # これにより、WebSocketサーバーのバッファがクリアされ、他のクライアントにも届くようになる
+                            # Just receive messages (do nothing)
+                            # This clears the WebSocket server's buffer and allows messages to reach other clients
                             pass
                         elif msg.type == WSMsgType.ERROR:
-                            print(f"[Dummy Client] WebSocket error: {ws.exception()}")
                             break
                         elif msg.type == WSMsgType.CLOSE:
-                            print(f"[Dummy Client] WebSocket closed: {msg.data}")
                             break
         except Exception as e:
-            print(f"[Dummy Client] Connection error: {e}, reconnecting in {reconnect_delay:.1f}s...")
             await asyncio.sleep(reconnect_delay)
-            # 指数バックオフでリトライ間隔を増やす
+            # Increase retry interval with exponential backoff
             reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
 
 
 def run_dummy_client(ws_uri: str):
-    """ダミークライアントを別スレッドで実行"""
+    """Run dummy client in a separate thread"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(dummy_client_loop(ws_uri))
     except Exception as e:
-        print(f"[Dummy Client] Error in dummy client thread: {e}")
+        pass
     finally:
         loop.close()
 
@@ -188,9 +184,7 @@ def main():
             try:
                 await web_server.send_to_external_clients(text)
             except Exception as e:
-                print(f"[External WS] Error in send callback: {e}")
-        else:
-            print(f"[External WS] Send callback: web_server is None")
+                pass
     
     soniox_session.external_ws_send_callback = external_ws_send_callback
     
@@ -294,9 +288,9 @@ def main():
     external_ws_thread.daemon = True
     external_ws_thread.start()
     
-    # ダミークライアントを自動接続（WebSocket配信の問題を回避）
+    # Automatically connect dummy client (to avoid WebSocket delivery issues)
     if EXTERNAL_WS_AUTO_DUMMY_CLIENT:
-        # サーバーが起動するまで少し待つ
+        # Wait a bit for the server to start
         time.sleep(0.5)
         dummy_client_thread = threading.Thread(target=run_dummy_client, args=(dummy_client_ws_uri,))
         dummy_client_thread.daemon = True

@@ -468,17 +468,12 @@ class SonioxSession:
         if not hasattr(self, 'external_ws_send_callback') or not self.external_ws_send_callback:
             return
         
-        # Process all final tokens first, then flush once at the end
         has_end_token = False
         
         with self._external_ws_buffer_lock:
-            # Clear non-final tokens when final tokens are added
-            # This prevents the same text from being sent twice (once as final, once as non-final)
             self._external_ws_non_final_tokens.clear()
-            # final確定時はカウンターをリセット
             self._external_ws_non_final_token_count = 0
         
-        # Process all final tokens and add them to buffer
         for token in final_tokens:
             if not token.get("is_final"):
                 continue
@@ -507,18 +502,18 @@ class SonioxSession:
                 # No tokens to send
                 return
             
-            # 単語数による条件をチェック（word_countをリセットするかどうかの判断に使用）
+            # Check conditions based on word count (used to determine whether to reset word_count)
             should_reset_word_count = False
             if self._external_ws_tokens:
                 if self._external_ws_word_count >= 20:
                     should_reset_word_count = True
                 elif self._external_ws_word_count >= 10:
-                    # カンマが含まれているかチェック
+                    # Check if comma is included
                     combined_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
                     if ',' in combined_text:
                         should_reset_word_count = True
                 elif self._external_ws_word_count >= 2:
-                    # ドットが含まれているかチェック
+                    # Check if dot is included
                     combined_text = "".join([tok.get("text", "") for tok in self._external_ws_tokens])
                     if '.' in combined_text:
                         should_reset_word_count = True
@@ -526,8 +521,8 @@ class SonioxSession:
                 if should_reset_word_count:
                     self._external_ws_word_count = 0
         
-        # final確定時は必ず配信（レート制御によらず）
-        # <end>トークンがある場合、またはfinalトークンがある場合、すべてを一度に送信
+        # Always deliver when final is confirmed (regardless of rate control)
+        # If <end> token exists or final token exists, send all at once
         self._flush_external_ws_segment()
     
     def _handle_external_ws_non_final_tokens(self, non_final_tokens: list[dict]):
@@ -554,7 +549,6 @@ class SonioxSession:
             
             # Update non-final tokens buffer
             self._external_ws_non_final_tokens = filtered_tokens
-            # non-finalトークンが来るたびにカウンターをインクリメント
             self._external_ws_non_final_token_count += 1
             
             # Get current state
@@ -583,25 +577,19 @@ class SonioxSession:
         should_flush = False
         reset_counter = False
         
-        # 条件1: 単語数による条件（優先）
-        # カンマやドットは「前回のflush以降に新しく追加された部分」に含まれている場合のみ条件に該当
         if combined_word_count >= 20:
             should_flush = True
             reset_counter = True
         elif combined_word_count >= 10:
-            # 10単語以上で、新しく追加された部分（finalまたはnon-final）にカンマが含まれている
             new_combined_text = new_final_text + new_non_final_text
             if ',' in new_combined_text:
                 should_flush = True
                 reset_counter = True
         elif combined_word_count >= 2:
-            # 2単語以上で、新しく追加された部分（finalまたはnon-final）にドットが含まれている
             new_combined_text = new_final_text + new_non_final_text
             if '.' in new_combined_text:
                 should_flush = True
                 reset_counter = True
-        # 条件2: 配信レート制御（条件1に該当しない場合のみ）
-        # interval回に1回だけ送信（例: interval=3なら3回に1回）
         if not should_flush and self._external_ws_non_final_token_count >= self.external_ws_non_final_send_interval:
             should_flush = True
             reset_counter = True
