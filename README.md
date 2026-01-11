@@ -1,8 +1,11 @@
 # Realtime Subtitle
 
 A real-time speech-to-subtitle tool based on Soniox API. Captures system audio and displays live transcription and translation.
+
 **Requires your own Soniox API Key** which costs money based on usage. See [Soniox Pricing](https://soniox.com/pricing) for details.
+
 ~~Soniox used to offer free credits.~~ Sadly they no longer do so anymore.
+
 <div align="center">
     <img src="doc-images/screenshot.png" alt="A screenshot of the software" style="max-width: 100%; width: 256px; height: auto;">
 </div>
@@ -30,7 +33,11 @@ Choose one of the following methods to provide your Soniox API key.
 - Set the `SONIOX_API_KEY` environment variable to your API key
 - Set the `SONIOX_TEMP_KEY_URL` environment variable to point to a temporary key endpoint
 
-This program will also try to read the environment variables from a `.env` file if it exists.
+This program will also try to read the environment variables from a `.env` file if it exists, like this:
+
+```env
+SONIOX_API_KEY="your-key-goes-in-here"
+```
 
 ## Run
 
@@ -51,8 +58,4 @@ The executable will be located at `dist/RealtimeSubtitle.exe`.
 
 ## Configuration Options
 
-Edit `config.py` to modify:
-
-- `USE_SYSTEM_LANGUAGE`: Whether to use system language as translation target
-- `TARGET_LANG`: Manually specified target language code
-- `SERVER_PORT`: Local WebUI server port (falls back to system-assigned port if unavailable)
+Please run `python server.py --help` to see all the avaliable options.
