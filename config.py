@@ -122,6 +122,50 @@ FFMPEG_PATH = _env_str("FFMPEG_PATH", "ffmpeg")
 SERVER_HOST = _env_str("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = _env_int("SERVER_PORT", 8080)
 
+# LLM（OpenAI 兼容）配置：用于对“已完成的译文段落”做最小改动修复。
+# 说明：
+# - LLM_BASE_URL 示例：https://openrouter.ai/api/v1
+# - LLM_API_KEY 用于鉴权
+# - LLM_MODEL 示例：openai/gpt-oss-120b:google-vertex
+LLM_BASE_URL = _env_str("LLM_BASE_URL", "")
+LLM_API_KEY = _env_str("LLM_API_KEY", "")
+LLM_MODEL = _env_str("LLM_MODEL", "openai/gpt-oss-120b:google-vertex")
+
+# 是否在前端展示 refined 译文相对原始译文的修订（diff 高亮）。
+# - True: 删除内容红底+删除线；新增内容绿底
+# - False: 仅展示最终译文（默认）
+LLM_REFINE_SHOW_DIFF = _env_bool("LLM_REFINE_SHOW_DIFF", True)
+
+# Diff 高亮时，是否显示“被删除”的文本。
+# - True: 和当前行为一致（红底+删除线显示被删内容）
+# - False: 只标绿新增内容，不显示被删内容（默认）
+LLM_REFINE_SHOW_DELETIONS = _env_bool("LLM_REFINE_SHOW_DELETIONS", False)
+
+# LLM refine 时携带的“上文语境”条数（已完结句子对：原文+译文）。
+# - 可设为 0 表示不携带上文
+# - 默认 3
+LLM_REFINE_CONTEXT_COUNT = max(0, _env_int("LLM_REFINE_CONTEXT_COUNT", 3))
+
+
+def get_llm_api_key() -> str:
+    """Return the configured LLM API key.
+
+    Only uses LLM_API_KEY.
+    """
+    return (LLM_API_KEY or "").strip()
+
+
+def is_llm_refine_available() -> bool:
+    """Whether the backend has enough configuration to use LLM refine feature."""
+    api_key = get_llm_api_key()
+    base_url = (LLM_BASE_URL or "").strip()
+    model = (LLM_MODEL or "").strip()
+    if not api_key or api_key == "LLM_API_KEY":
+        return False
+    if not base_url or not model:
+        return False
+    return True
+
 
 def get_resource_path(relative_path):
     """获取资源文件的绝对路径，兼容开发环境和PyInstaller打包后的环境"""

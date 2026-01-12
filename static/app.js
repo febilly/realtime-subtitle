@@ -19,6 +19,8 @@ const furiganaButton = document.getElementById('furiganaButton');
 const furiganaIcon = document.getElementById('furiganaIcon');
 const translationLangButton = document.getElementById('translationLangButton');
 const translationLangIcon = document.getElementById('translationLangIcon');
+const translationRefineButton = document.getElementById('translationRefineButton');
+const translationRefineIcon = document.getElementById('translationRefineIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
@@ -68,6 +70,47 @@ function localizeBackendMessage(message) {
 
 // 由后端下发：锁定“手动控制”相关 UI
 let lockManualControls = false;
+
+// 由后端下发：LLM 译文修复能力是否可用（缺少 API key 时为 false）
+let llmRefineAvailable = false;
+
+// 由后端下发：refine 时携带的上文条数（默认 3，可为 0）
+let llmRefineContextCount = 3;
+
+// 由后端下发：是否展示 refined 译文的修订 diff（无前端开关）
+let llmRefineShowDiff = false;
+
+// 由后端下发：diff 高亮时是否显示“被删除”的文本（无前端开关）
+let llmRefineShowDeletions = false;
+
+// 译文自动修复开关（默认关闭）
+let llmRefineEnabled = localStorage.getItem('llmRefineEnabled') === 'true';
+
+// 译文覆盖：避免下一次 renderSubtitles 被 token 覆盖
+const translationOverrides = new Map(); // sentenceId -> refinedTranslation
+const translationOverrideBase = new Map(); // sentenceId -> baseTranslationAtRefine
+const refineInFlight = new Set(); // sentenceId
+const refinedInputs = new Map(); // sentenceId -> { source, translation }
+const refineFailedSentences = new Set(); // sentenceId (do not retry within current session)
+
+// Avoid triggering refinement for historical tokens when user toggles UI modes.
+// We only trigger refinement on "newly observed finalize events" (separator / forced sentence split).
+let lastRefineFinalizeEventSeqIndex = -1;
+
+// Cache refine results by stable input (source+translation) so switching segment mode
+// can still show previously refined output without calling LLM again.
+const refineResultCache = new Map(); // key -> refinedTranslation
+
+function makeRefineCacheKey(source, translation) {
+    const s = (source || '').toString().trim();
+    const t = (translation || '').toString().trim();
+    return `${s}\n---\n${t}`;
+}
+
+// 上文语境：按“已完结句子”维护，避免每 token 重复拼接。
+const refineContextHistory = []; // [{ sentenceId, source, translation }]
+const finalizedSentenceIds = new Set(); // sentenceId (history appended)
+const MAX_REFINE_CONTEXT_HISTORY = 200;
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -197,6 +240,7 @@ updateFuriganaButton();
 updateOscTranslationButton();
 updateAutoRestartButton();
 updateBottomSafeAreaButton();
+updateTranslationRefineButton();
 applyBottomSafeArea();
 applyLockPauseRestartControlsUI();
 applyStaticUiText();
@@ -222,6 +266,10 @@ function applyStaticUiText() {
         translationLangButton.title = t('translation_language');
     }
 
+    if (translationRefineButton) {
+        translationRefineButton.title = llmRefineEnabled ? t('translation_refine_on') : t('translation_refine_off');
+    }
+
     if (pauseButton) {
         pauseButton.title = isPaused ? t('resume') : t('pause_resume');
     }
@@ -231,6 +279,30 @@ function applyStaticUiText() {
         if (emptyNode) {
             emptyNode.textContent = t('empty_state');
         }
+    }
+}
+
+function updateTranslationRefineButton() {
+    if (!translationRefineButton || !translationRefineIcon) {
+        return;
+    }
+
+    // 没有配置 LLM key/base_url 时，隐藏开关并强制关闭
+    if (!llmRefineAvailable) {
+        translationRefineButton.style.display = 'none';
+        llmRefineEnabled = false;
+        localStorage.setItem('llmRefineEnabled', 'false');
+        return;
+    }
+
+    translationRefineButton.style.display = '';
+
+    if (llmRefineEnabled) {
+        translationRefineButton.classList.add('active');
+        translationRefineButton.title = t('translation_refine_on');
+    } else {
+        translationRefineButton.classList.remove('active');
+        translationRefineButton.title = t('translation_refine_off');
     }
 }
 
@@ -384,14 +456,216 @@ async function fetchUiConfig() {
         }
         const data = await response.json();
         lockManualControls = !!data.lock_manual_controls;
+        llmRefineAvailable = !!data.llm_refine_available;
+        llmRefineShowDiff = !!data.llm_refine_show_diff;
+        llmRefineShowDeletions = !!data.llm_refine_show_deletions;
+        if (data && Number.isFinite(data.llm_refine_context_count)) {
+            llmRefineContextCount = Math.max(0, Math.trunc(data.llm_refine_context_count));
+        }
         if (data && typeof data.translation_target_lang === 'string' && data.translation_target_lang.trim()) {
             defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
             currentTranslationTargetLang = defaultTranslationTargetLang;
         }
         applyLockPauseRestartControlsUI();
+        updateTranslationRefineButton();
     } catch (error) {
         console.error('Error fetching UI config:', error);
     }
+}
+
+function tokenizeForDiff(text) {
+    // Character-level diff, but ignore whitespace differences.
+    // We keep only non-whitespace characters for alignment, while rendering refined whitespace unhighlighted.
+    const value = (text || '').toString();
+    const out = [];
+    for (let idx = 0; idx < value.length; idx++) {
+        const ch = value[idx];
+        if (/\s/.test(ch)) {
+            continue;
+        }
+        out.push({ ch, idx });
+    }
+    return out;
+}
+
+function renderTranslationDiffHtml(original, refined) {
+    const a = (original || '').toString();
+    const b = (refined || '').toString();
+
+    // Guardrails: LCS is O(n*m). Keep it safe.
+    if (a.length > 12000 || b.length > 12000) {
+        return escapeHtml(b);
+    }
+
+    const A = tokenizeForDiff(a);
+    const B = tokenizeForDiff(b);
+
+    const n = A.length;
+    const m = B.length;
+    if (n === 0 && m === 0) {
+        return escapeHtml(b);
+    }
+
+    // If this would be too expensive, skip highlighting.
+    if (n * m > 400000) {
+        return escapeHtml(b);
+    }
+
+    // LCS DP table (typed arrays for lower overhead).
+    const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = 1; i <= n; i++) {
+        const ai = A[i - 1].ch;
+        const row = dp[i];
+        const prevRow = dp[i - 1];
+        for (let j = 1; j <= m; j++) {
+            if (ai === B[j - 1].ch) {
+                row[j] = prevRow[j - 1] + 1;
+            } else {
+                const up = prevRow[j];
+                const left = row[j - 1];
+                row[j] = up >= left ? up : left;
+            }
+        }
+    }
+
+    const ops = [];
+    let i = n;
+    let j = m;
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && A[i - 1].ch === B[j - 1].ch) {
+            ops.push({ type: 'eq', idx: B[j - 1].idx });
+            i--;
+            j--;
+        } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+            ops.push({ type: 'ins', idx: B[j - 1].idx });
+            j--;
+        } else {
+            ops.push({ type: 'del', ch: A[i - 1].ch });
+            i--;
+        }
+    }
+    ops.reverse();
+
+    const parts = [];
+    const showDeletions = !!llmRefineShowDeletions;
+    const pushDel = (text) => {
+        if (!showDeletions) return;
+        if (!text) return;
+        parts.push(`<span class="llm-diff-del">${escapeHtml(text)}</span>`);
+    };
+    const pushIns = (text) => {
+        if (!text) return;
+        parts.push(`<span class="llm-diff-ins">${escapeHtml(text)}</span>`);
+    };
+
+    let refinedPos = 0;
+    let delBuffer = '';
+    let insBuffer = '';
+
+    const flushDel = () => {
+        if (!showDeletions) {
+            delBuffer = '';
+            return;
+        }
+        if (delBuffer) {
+            pushDel(delBuffer);
+            delBuffer = '';
+        }
+    };
+    const flushIns = () => {
+        if (insBuffer) {
+            pushIns(insBuffer);
+            insBuffer = '';
+        }
+    };
+
+    for (const op of ops) {
+        if (op.type !== 'ins') {
+            flushIns();
+        }
+        if (op.type !== 'del') {
+            flushDel();
+        }
+
+        if (op.type === 'del') {
+            // Deleted non-whitespace characters are shown in red with strikethrough.
+            if (showDeletions) {
+                delBuffer += op.ch;
+            }
+            continue;
+        }
+
+        const idx = op.idx;
+        if (typeof idx !== 'number' || idx < 0 || idx > b.length) {
+            continue;
+        }
+
+        // Always output refined whitespace (and any other chars between aligned non-ws chars) as plain.
+        if (idx > refinedPos) {
+            parts.push(escapeHtml(b.slice(refinedPos, idx)));
+        }
+
+        const ch = b[idx] || '';
+        if (op.type === 'eq') {
+            parts.push(escapeHtml(ch));
+        } else if (op.type === 'ins') {
+            // Inserted non-whitespace characters are shown in green.
+            insBuffer += ch;
+        }
+
+        refinedPos = idx + 1;
+    }
+
+    flushIns();
+    flushDel();
+
+    if (refinedPos < b.length) {
+        parts.push(escapeHtml(b.slice(refinedPos)));
+    }
+
+    return parts.join('');
+}
+
+function appendFinalizedSentenceToContextHistory({ sentenceId, source, translation }) {
+    if (!sentenceId || !source || !translation) {
+        return;
+    }
+    if (finalizedSentenceIds.has(sentenceId)) {
+        return;
+    }
+
+    finalizedSentenceIds.add(sentenceId);
+    refineContextHistory.push({ sentenceId, source, translation });
+
+    if (refineContextHistory.length > MAX_REFINE_CONTEXT_HISTORY) {
+        const overflow = refineContextHistory.length - MAX_REFINE_CONTEXT_HISTORY;
+        const removed = refineContextHistory.splice(0, overflow);
+        for (const item of removed) {
+            if (item && item.sentenceId) {
+                finalizedSentenceIds.delete(item.sentenceId);
+            }
+        }
+    }
+}
+
+function getRefineContextItems() {
+    const n = Math.max(0, Math.trunc(llmRefineContextCount || 0));
+    if (n <= 0) {
+        return [];
+    }
+    const slice = refineContextHistory.slice(-n);
+    return slice
+        .map(item => {
+            if (!item) {
+                return null;
+            }
+            const overriddenTranslation = translationOverrides.get(item.sentenceId);
+            return {
+                source: (item.source || '').toString(),
+                translation: (overriddenTranslation || item.translation || '').toString(),
+            };
+        })
+        .filter(x => x && x.source && x.translation);
 }
 
 function ensureLangPopover() {
@@ -523,6 +797,17 @@ if (translationLangButton) {
         } else {
             showLangPopover();
         }
+    });
+}
+
+if (translationRefineButton) {
+    translationRefineButton.addEventListener('click', () => {
+        if (!llmRefineAvailable) {
+            return;
+        }
+        llmRefineEnabled = !llmRefineEnabled;
+        localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
+        updateTranslationRefineButton();
     });
 }
 
@@ -1027,6 +1312,89 @@ function insertFinalToken(token) {
     allFinalTokens.push(token);
 }
 
+function joinTokenText(tokens) {
+    if (!tokens || tokens.length === 0) {
+        return '';
+    }
+    return tokens.map(t => (t && t.text) ? String(t.text) : '').join('');
+}
+
+async function refineTranslationSegment({ sentenceId, source, translation, contextItems }) {
+    if (!llmRefineAvailable || !llmRefineEnabled) {
+        return;
+    }
+    if (!sentenceId || !source || !translation) {
+        return;
+    }
+
+    const cacheKey = makeRefineCacheKey(source, translation);
+    if (refineResultCache.has(cacheKey)) {
+        // We already have a refined result for exactly this input.
+        return;
+    }
+
+    // If we already failed once for this sentence, do not retry.
+    if (refineFailedSentences.has(sentenceId)) {
+        return;
+    }
+
+    if (refineInFlight.has(sentenceId)) {
+        return;
+    }
+
+    const previous = refinedInputs.get(sentenceId);
+    if (previous && previous.source === source && previous.translation === translation) {
+        return;
+    }
+
+    refineInFlight.add(sentenceId);
+    try {
+        const context_items = Array.isArray(contextItems) ? contextItems : [];
+        const response = await fetch('/translation-refine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source, translation, context_items })
+        });
+
+        let result = null;
+        try {
+            result = await response.json();
+        } catch (parseError) {
+            console.error('Failed to parse translation refine response:', parseError);
+        }
+
+        if (!response.ok || !result || result.status !== 'ok') {
+            const message = result?.message || `Server responded with status ${response.status}`;
+            console.error('Translation refine failed:', message);
+            refineFailedSentences.add(sentenceId);
+            return;
+        }
+
+        const refined = (result.refined_translation || '').toString().trim();
+        if (!refined) {
+            refineFailedSentences.add(sentenceId);
+            return;
+        }
+
+        refineResultCache.set(cacheKey, refined);
+
+        // 记录 base，确保 token 变化时自动失效
+        translationOverrides.set(sentenceId, refined);
+        translationOverrideBase.set(sentenceId, translation);
+        refinedInputs.set(sentenceId, { source, translation });
+
+        // Mark as handled; no need to retry.
+        refineFailedSentences.delete(sentenceId);
+
+        renderSubtitles();
+    } catch (error) {
+        console.error('Error refining translation:', error);
+        refineFailedSentences.add(sentenceId);
+    } finally {
+        refineInFlight.delete(sentenceId);
+    }
+}
+
 /**
  * 合并连续的final tokens以减少token数量
  * 只合并从lastMergedIndex开始的新tokens
@@ -1251,6 +1619,18 @@ function clearSubtitleState() {
     renderedBlocks.clear();
     tokenSequenceCounter = 0;
     pendingFuriganaRequests.clear();
+
+    translationOverrides.clear();
+    translationOverrideBase.clear();
+    refineInFlight.clear();
+    refinedInputs.clear();
+    refineFailedSentences.clear();
+
+    lastRefineFinalizeEventSeqIndex = -1;
+    refineResultCache.clear();
+
+    refineContextHistory.length = 0;
+    finalizedSentenceIds.clear();
 }
 
 function renderTokenSpan(token, useRubyHtml = null) {
@@ -1290,6 +1670,43 @@ function renderSubtitles() {
     const sentences = [];
     let currentSentence = null;
     let pendingTranslationSentence = null;
+
+    const maybeFinalizeSentence = (sentence, finalizeEventSeqIndex = null) => {
+        if (!sentence) return;
+        if (sentence.isTranslationOnly) return;
+        if (sentence.hasFakeTranslation) return;
+        if (!sentence.originalTokens || sentence.originalTokens.length === 0) return;
+        if (!sentence.translationTokens || sentence.translationTokens.length === 0) return;
+
+        // Only trigger refinement for new finalize events (not during pure re-render).
+        if (finalizeEventSeqIndex === null || finalizeEventSeqIndex === undefined) {
+            return;
+        }
+        if (typeof finalizeEventSeqIndex !== 'number' || !Number.isFinite(finalizeEventSeqIndex)) {
+            return;
+        }
+        if (finalizeEventSeqIndex <= lastRefineFinalizeEventSeqIndex) {
+            return;
+        }
+
+        const allFinal = sentence.originalTokens.every(t => t && t.is_final) && sentence.translationTokens.every(t => t && t.is_final);
+        if (!allFinal) return;
+
+        const sentenceId = getSentenceId(sentence, 0);
+        const source = joinTokenText(sentence.originalTokens).trim();
+        const translation = joinTokenText(sentence.translationTokens).trim();
+        if (!source || !translation) return;
+
+        lastRefineFinalizeEventSeqIndex = Math.max(lastRefineFinalizeEventSeqIndex, finalizeEventSeqIndex);
+
+        // Build context from previously finalized sentences (excluding current).
+        const contextItems = getRefineContextItems();
+
+        // Record current sentence for future context.
+        appendFinalizedSentenceToContextHistory({ sentenceId, source, translation });
+
+        void refineTranslationSegment({ sentenceId, source, translation, contextItems });
+    };
 
     const ensureSpeakerValue = (speaker) => {
         return (speaker === null || speaker === undefined) ? 'undefined' : speaker;
@@ -1355,6 +1772,13 @@ function renderSubtitles() {
     tokens.forEach(token => {
         if (token.is_separator) {
             const separatorType = token.separator_type || 'translation';
+
+            // 只有在当前分段模式会“断句”的时候，才把上一句视为已完结
+            if ((separatorType === 'endpoint' && segmentMode === 'endpoint') || (separatorType === 'translation' && segmentMode === 'translation')) {
+                if (currentSentence) {
+                    maybeFinalizeSentence(currentSentence, token._sequenceIndex);
+                }
+            }
             
             // 当遇到分隔符时，如果当前句子需要翻译但还没有译文，
             // 我们添加一个"假"的翻译标记，表示这个句子已经"完结"了。
@@ -1425,6 +1849,9 @@ function renderSubtitles() {
             }
 
             if (shouldStartNew) {
+                if (currentSentence) {
+                    maybeFinalizeSentence(currentSentence, token._sequenceIndex);
+                }
                 currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
             }
 
@@ -1437,6 +1864,9 @@ function renderSubtitles() {
                 currentSentence.originalLang = token.language;
             } else if (currentSentence.originalLang && token.language && currentSentence.originalLang !== token.language) {
                 // 语言变了，新起一句
+                if (currentSentence) {
+                    maybeFinalizeSentence(currentSentence, token._sequenceIndex);
+                }
                 currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
                 currentSentence.originalLang = token.language;
             }
@@ -1551,8 +1981,57 @@ function renderSubtitles() {
 
             if (showTranslation && sentence.translationTokens.length > 0) {
                 const langTag = getLanguageTag(sentence.translationLang);
-                const lineContent = sentence.translationTokens.map(t => renderTokenSpan(t)).join('');
-                sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
+                const baseTranslation = sentence.translationTokens.map(t => (t && t.text) ? String(t.text) : '').join('');
+                const baseTranslationNormalized = baseTranslation.trim();
+
+                let usedCachedRefine = false;
+
+                const isEligibleForCachedRefine =
+                    !sentence.isTranslationOnly &&
+                    !sentence.hasFakeTranslation &&
+                    sentence.originalTokens && sentence.originalTokens.length > 0 &&
+                    sentence.translationTokens && sentence.translationTokens.length > 0 &&
+                    sentence.originalTokens.every(t => t && t.is_final) &&
+                    sentence.translationTokens.every(t => t && t.is_final);
+
+                if (isEligibleForCachedRefine) {
+                    const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
+                    if (sourceText && baseTranslationNormalized) {
+                        const cached = refineResultCache.get(makeRefineCacheKey(sourceText, baseTranslationNormalized));
+                        if (cached) {
+                            const html = llmRefineShowDiff
+                                ? renderTranslationDiffHtml(baseTranslationNormalized, cached)
+                                : escapeHtml(cached);
+                            sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
+                            usedCachedRefine = true;
+                        }
+                    }
+                }
+
+                if (usedCachedRefine) {
+                    // Translation line already rendered from cache; keep rendering the rest of the sentence.
+                } else {
+
+                const overrideBase = translationOverrideBase.get(sentenceId);
+                if (overrideBase && overrideBase !== baseTranslationNormalized) {
+                    translationOverrideBase.delete(sentenceId);
+                    translationOverrides.delete(sentenceId);
+                }
+
+                // Failure is sticky per sentenceId; do nothing here.
+
+                const override = translationOverrides.get(sentenceId);
+                if (override && translationOverrideBase.get(sentenceId) === baseTranslationNormalized) {
+                    const html = llmRefineShowDiff
+                        ? renderTranslationDiffHtml(baseTranslationNormalized, override)
+                        : escapeHtml(override);
+                    sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
+                } else {
+                    const lineContent = sentence.translationTokens.map(t => renderTokenSpan(t)).join('');
+                    sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
+                }
+
+                }
             }
 
             if (sentenceParts.length === 0) {

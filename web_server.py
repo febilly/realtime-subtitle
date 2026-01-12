@@ -9,6 +9,10 @@ from aiohttp import web
 from aiohttp import WSMsgType
 
 from config import get_resource_path, LOCK_MANUAL_CONTROLS
+from config import is_llm_refine_available, LLM_BASE_URL, LLM_MODEL, get_llm_api_key, LLM_REFINE_CONTEXT_COUNT
+from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
+
+from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 
 # 日语假名注音支持
 try:
@@ -119,7 +123,125 @@ class WebServer:
         return web.json_response({
             "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
             "translation_target_lang": self.soniox_session.get_translation_target_lang(),
+            "llm_refine_available": bool(is_llm_refine_available()),
+            "llm_refine_context_count": int(LLM_REFINE_CONTEXT_COUNT),
+            "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
+            "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
         })
+
+    async def translation_refine_handler(self, request):
+        """对已完成的译文段落做最小改动修复（由前端触发）。"""
+
+        if not is_llm_refine_available():
+            return web.json_response(
+                {
+                    "status": "error",
+                    "message": "LLM refine feature is not available (missing API key or configuration)",
+                },
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        source = payload.get("source")
+        translation = payload.get("translation")
+        context_items = payload.get("context_items")
+
+        if not isinstance(source, str) or not source.strip():
+            return web.json_response({"status": "error", "message": "Missing 'source'"}, status=400)
+        if not isinstance(translation, str) or not translation.strip():
+            return web.json_response({"status": "error", "message": "Missing 'translation'"}, status=400)
+
+        # Basic guardrail to avoid accidental huge prompts.
+        source = source.strip()
+        translation = translation.strip()
+        if len(source) > 20000 or len(translation) > 20000:
+            return web.json_response(
+                {"status": "error", "message": "Input too long"},
+                status=413,
+            )
+
+        # Optional context: list of recent finalized sentences, used only to provide coherence.
+        # Payload format: { context_items: [ { source: str, translation: str }, ... ] }
+        normalized_context: list[dict[str, str]] = []
+        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_COUNT > 0:
+            max_items = min(int(LLM_REFINE_CONTEXT_COUNT), 20)
+            for item in context_items[:max_items]:
+                if not isinstance(item, dict):
+                    continue
+                ctx_source = item.get("source")
+                ctx_translation = item.get("translation")
+                if not isinstance(ctx_source, str) or not isinstance(ctx_translation, str):
+                    continue
+                ctx_source = ctx_source.strip()
+                ctx_translation = ctx_translation.strip()
+                if not ctx_source or not ctx_translation:
+                    continue
+                if len(ctx_source) > 5000 or len(ctx_translation) > 5000:
+                    continue
+                normalized_context.append({"source": ctx_source, "translation": ctx_translation})
+
+        context_block = ""
+        if normalized_context:
+            lines = [
+                "上文（仅供语境参考；不要逐字复述；不要把上文内容合并/重写进当前译文；即使原文和译文都很短，也不要把上文输出到结果中；只用于理解代词、指代与上下文）：",
+            ]
+            for idx, item in enumerate(normalized_context, start=1):
+                lines.append(f"{idx}. 原文：{item['source']}")
+                lines.append(f"   译文：{item['translation']}")
+            context_block = "\n".join(lines) + "\n\n"
+
+        prompt = (
+            "下面的译文是否有严重翻译错误或明显不通顺？如果有，请以最小的改动修好它。"
+            "另外，请去掉口语中的结巴/重复（如重复词、重复音节）、自我修正造成的断续，但不要改变原意、信息量与语气。"
+            "不要用括号标注出原文。专有名词也需要翻译，除非是明确通常不需要翻译的词。"
+            "仅给出答案，不需要解释。\n"
+            "返回格式为：<answer>修复后的译文</answer>\n"
+            "仅修复严重的必要的问题，不影响理解的小问题不要改动。"
+            "如果译文没有错误或已经很通顺，只需原样返回原译文即可，不要做出改动。\n\n"
+            f"{context_block}"
+            "原文：\n```\n"
+            f"{source}\n"
+            "```\n\n"
+            "译文：\n```\n"
+            f"{translation}\n"
+            "```"
+        )
+
+        config = LlmConfig(
+            base_url=(LLM_BASE_URL or "").strip(),
+            api_key=get_llm_api_key(),
+            model=(LLM_MODEL or "").strip(),
+        )
+
+        try:
+            content = await chat_completion(
+                config,
+                messages=[
+                    {"role": "system", "content": "You are a precise translation reviewer."},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.2,
+                max_tokens=1024,
+                timeout_seconds=60.0,
+            )
+        except (asyncio.CancelledError, Exception) as exc:
+            if isinstance(exc, LlmError):
+                return web.json_response({"status": "error", "message": str(exc)}, status=502)
+            return web.json_response({"status": "error", "message": "LLM request failed"}, status=502)
+
+        refined = extract_answer_tag(content)
+        if not refined:
+            # Fallback to original translation if model returned empty.
+            refined = translation
+
+        return web.json_response({"status": "ok", "refined_translation": refined})
     
     async def restart_handler(self, request):
         """重启识别端点"""
@@ -349,6 +471,7 @@ class WebServer:
         app.router.add_get('/health', self.health_handler)
         app.router.add_get('/ui-config', self.ui_config_handler)
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
+        app.router.add_post('/translation-refine', self.translation_refine_handler)
         app.router.add_post('/restart', self.restart_handler)
         app.router.add_post('/pause', self.pause_handler)
         app.router.add_post('/resume', self.resume_handler)
