@@ -12,7 +12,7 @@ from config import get_resource_path, LOCK_MANUAL_CONTROLS
 from config import is_llm_refine_available, LLM_BASE_URL, LLM_MODEL, LLM_TEMPERATURE, get_llm_api_key, LLM_REFINE_CONTEXT_COUNT
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
-from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
+from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError, close_llm_http_session
 
 from osc_manager import osc_manager
 
@@ -223,7 +223,9 @@ class WebServer:
             "2. Minimal Edits: Do NOT improve style, flow, or word choice if the meaning is correct or similar enough. Keep the draft's structure exactly as is.\n"
             "3. Output Format:\n"
             f"   - If the draft is factually accurate (even if styling is poor), output exactly: <answer>{NO_CHANGE_MARKER}</answer>\n"
-            "   - If a critical error exists, output ONLY the corrected translation wrapped in <answer>...</answer>\n\n"
+            "   - If a critical error exists, output ONLY the corrected translation wrapped in <answer>...</answer>\n"
+            "   - When in doubt, prefer no change.\n\n"
+            
             "Do NOT add explanations. Output ONLY the answer.\n"
             "Output format: <answer>...</answer>\n\n"
             f"{context_block}"
@@ -541,6 +543,15 @@ class WebServer:
     def create_app(self):
         """创建aiohttp应用"""
         app = web.Application(middlewares=[cache_bypass_middleware])
+
+        async def _cleanup_llm_session(app_instance):
+            try:
+                await close_llm_http_session()
+            except Exception:
+                # Best-effort cleanup.
+                pass
+
+        app.on_cleanup.append(_cleanup_llm_session)
         
         # 路由设置
         app.router.add_get('/', self.index_handler)

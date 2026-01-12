@@ -11,6 +11,7 @@ The backend uses this for translation refinement.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,51 @@ class LlmConfig:
 
 class LlmError(RuntimeError):
     pass
+
+
+_http_session: Optional[aiohttp.ClientSession] = None
+_http_session_lock: Optional[asyncio.Lock] = None
+
+
+async def _get_http_session() -> aiohttp.ClientSession:
+    """Return a shared aiohttp session to enable HTTP keep-alive.
+
+    Creating a new ClientSession per request defeats connection reuse.
+    We keep a process-level session and close it during app cleanup.
+    """
+
+    global _http_session, _http_session_lock
+
+    if _http_session_lock is None:
+        _http_session_lock = asyncio.Lock()
+
+    async with _http_session_lock:
+        if _http_session is not None and not _http_session.closed:
+            return _http_session
+
+        connector = aiohttp.TCPConnector(
+            limit=50,
+            limit_per_host=20,
+            ttl_dns_cache=300,
+            keepalive_timeout=30,
+        )
+
+        # Do not set a global timeout here; pass per-request timeouts instead.
+        _http_session = aiohttp.ClientSession(connector=connector)
+        return _http_session
+
+
+async def close_llm_http_session() -> None:
+    """Close the shared aiohttp session used for LLM calls."""
+
+    global _http_session
+    session = _http_session
+    _http_session = None
+    if session is None:
+        return
+    if session.closed:
+        return
+    await session.close()
 
 
 def _build_chat_completions_url(base_url: str) -> str:
@@ -72,16 +118,16 @@ async def chat_completion(
     }
 
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.post(url, json=payload, headers=headers) as resp:
-            text = await resp.text()
-            if resp.status >= 400:
-                raise LlmError(f"LLM request failed: HTTP {resp.status}: {text[:4000]}")
+    session = await _get_http_session()
+    async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
+        text = await resp.text()
+        if resp.status >= 400:
+            raise LlmError(f"LLM request failed: HTTP {resp.status}: {text[:4000]}")
 
-            try:
-                data = await resp.json()
-            except Exception as exc:
-                raise LlmError(f"LLM returned non-JSON response: {text[:4000]}") from exc
+        try:
+            data = json.loads(text)
+        except Exception as exc:
+            raise LlmError(f"LLM returned non-JSON response: {text[:4000]}") from exc
 
     try:
         return (
