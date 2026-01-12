@@ -154,6 +154,7 @@ class WebServer:
         source = payload.get("source")
         translation = payload.get("translation")
         context_items = payload.get("context_items")
+        target_lang = payload.get("target_lang")
 
         if not isinstance(source, str) or not source.strip():
             return web.json_response({"status": "error", "message": "Missing 'source'"}, status=400)
@@ -168,6 +169,18 @@ class WebServer:
                 {"status": "error", "message": "Input too long"},
                 status=413,
             )
+
+        target_lang_value = ""
+        if isinstance(target_lang, str) and target_lang.strip():
+            # Keep it short and safe (ISO 639-1 expected).
+            target_lang_value = target_lang.strip().lower()[:16]
+        if not target_lang_value:
+            try:
+                tl = self.soniox_session.get_translation_target_lang()
+                if isinstance(tl, str) and tl.strip():
+                    target_lang_value = tl.strip().lower()[:16]
+            except Exception:
+                target_lang_value = ""
 
         # Optional context: list of recent finalized sentences, used only to provide coherence.
         # Payload format: { context_items: [ { source: str, translation: str }, ... ] }
@@ -192,27 +205,31 @@ class WebServer:
         context_block = ""
         if normalized_context:
             lines = [
-                "上文（仅供语境参考；不要逐字复述；不要把上文内容合并/重写进当前译文；即使原文和译文都很短，也不要把上文输出到结果中；只用于理解代词、指代与上下文）：",
+                "Context (for coherence only; do NOT quote it; do NOT merge or rewrite it into the current translation; "
+                "even if the source/translation is short, do NOT output the context; use it only to resolve pronouns, references, and coherence):",
             ]
             for idx, item in enumerate(normalized_context, start=1):
-                lines.append(f"{idx}. 原文：{item['source']}")
-                lines.append(f"   译文：{item['translation']}")
+                lines.append(f"{idx}. Source: {item['source']}")
+                lines.append(f"   Translation: {item['translation']}")
             context_block = "\n".join(lines) + "\n\n"
 
         prompt = (
-            "下面的译文是否有严重翻译错误或明显不通顺？"
-            "只有在出现严重问题、必须修复时，才输出修复后的译文。"
-            "如果没有严重问题（包括：只是小瑕疵、不影响理解的措辞、轻微不自然等），不要改动译文，"
-            f"只输出标记：<answer>{NO_CHANGE_MARKER}</answer>。"
+            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n"
+            "Does the translation below contain severe translation errors or severe issues that would cause major misunderstanding? "
+            "Only if there is a severe issue, produce a corrected translation with the smallest necessary edits. "
+            "If there is NO severe issue (including minor wording/grammar issues that do not affect understanding), do NOT change anything and output exactly: "
+            f"<answer>{NO_CHANGE_MARKER}</answer>."
             "\n"
-            "不要用括号标注出原文。专有名词也需要翻译，除非是明确通常不需要翻译的词。"
-            "仅给出答案，不需要解释。\n"
-            "返回格式为：<answer>...</answer>\n\n"
+            "Do NOT add explanations. Output ONLY the answer. "
+            "Do NOT include the source text in parentheses. Proper nouns should be translated unless they are commonly left untranslated."
+            "\n"
+            "Output format: <answer>...</answer>"
+            "\n\n"
             f"{context_block}"
-            "原文：\n```\n"
+            "Source:\n```\n"
             f"{source}\n"
             "```\n\n"
-            "译文：\n```\n"
+            "Translation:\n```\n"
             f"{translation}\n"
             "```"
         )
