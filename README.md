@@ -43,15 +43,14 @@ SONIOX_API_KEY="your-key-goes-in-here"
 
 You can optionally enable an "auto-refine completed translations" feature. The UI toggle is only shown when the required LLM settings are present.
 
+You can get some free quota from [Cerebras(recommended)](https://cerebras.net/) or [OpenRouter](https://openrouter.ai/).
+
 Configure an OpenAI-compatible endpoint via:
 
 ```env
-LLM_BASE_URL="https://openrouter.ai/api/v1"
-LLM_MODEL="openai/gpt-oss-120b:google-vertex"
-LLM_API_KEY="your-key"
-LLM_REFINE_CONTEXT_COUNT=3
-LLM_REFINE_SHOW_DIFF=0
-LLM_REFINE_SHOW_DELETIONS=0
+LLM_BASE_URL="https://api.cerebras.ai/v1"
+LLM_MODEL="gpt-oss-120b"
+LLM_API_KEY="your-key-goes-here"
 ```
 
 ## Run

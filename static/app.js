@@ -1354,10 +1354,11 @@ async function refineTranslationSegment({ sentenceId, source, translation, conte
     refineInFlight.add(sentenceId);
     try {
         const context_items = Array.isArray(contextItems) ? contextItems : [];
+        const target_lang = (currentTranslationTargetLang || defaultTranslationTargetLang || '').toString().trim().toLowerCase();
         const response = await fetch('/translation-refine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source, translation, context_items })
+            body: JSON.stringify({ source, translation, context_items, target_lang })
         });
 
         let result = null;
