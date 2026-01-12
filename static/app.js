@@ -1853,6 +1853,87 @@ function renderTokenSpan(token, useRubyHtml = null) {
     return `<span class="${classes.join(' ')}">${escapeHtml(token.text)}</span>`;
 }
 
+function renderTokenSpanWithText(token, text, useRubyHtml = null) {
+    const classes = ['subtitle-text'];
+    if (token && token.is_final === false) {
+        classes.push('non-final');
+    }
+
+    if (useRubyHtml) {
+        return `<span class="${classes.join(' ')}">${useRubyHtml}</span>`;
+    }
+
+    return `<span class="${classes.join(' ')}">${escapeHtml(text)}</span>`;
+}
+
+function renderTokenSpansTrimmed(tokens, useRubyHtml = null) {
+    // Render token spans but remove leading/trailing whitespace from the concatenated output.
+    // IMPORTANT: does NOT mutate token objects; trimming is display-only.
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+        return '';
+    }
+
+    const getText = (tok) => ((tok && tok.text) ? String(tok.text) : '');
+
+    let start = 0;
+    let startText = '';
+    while (start < tokens.length) {
+        const raw = getText(tokens[start]);
+        const trimmed = raw.replace(/^\s+/, '');
+        if (trimmed.length === 0 && /^\s*$/.test(raw)) {
+            start++;
+            continue;
+        }
+        startText = trimmed;
+        break;
+    }
+
+    let end = tokens.length - 1;
+    let endText = '';
+    while (end >= start) {
+        const raw = getText(tokens[end]);
+        const trimmed = raw.replace(/\s+$/, '');
+        if (trimmed.length === 0 && /^\s*$/.test(raw)) {
+            end--;
+            continue;
+        }
+        endText = trimmed;
+        break;
+    }
+
+    if (start > end) {
+        return '';
+    }
+
+    // If a single token remains after trimming whitespace-only edges, trim both ends.
+    if (start === end) {
+        const raw = getText(tokens[start]);
+        const both = raw.trim();
+        if (!both) {
+            return '';
+        }
+        return renderTokenSpanWithText(tokens[start], both, useRubyHtml);
+    }
+
+    const parts = [];
+    for (let i = start; i <= end; i++) {
+        const tok = tokens[i];
+        let txt = getText(tok);
+        if (i === start) {
+            txt = startText;
+        }
+        if (i === end) {
+            txt = endText;
+        }
+        if (!txt) {
+            continue;
+        }
+        parts.push(renderTokenSpanWithText(tok, txt, useRubyHtml));
+    }
+
+    return parts.join('');
+}
+
 function getSentenceId(sentence, fallbackIndex) {
     const anchorToken = sentence.originalTokens[0] || sentence.translationTokens[0];
     if (anchorToken && anchorToken._sequenceIndex !== undefined) {
@@ -2216,7 +2297,7 @@ function renderSubtitles() {
                         }
                     }
                 } else {
-                    const lineContent = sentence.originalTokens.map(t => renderTokenSpan(t)).join('');
+                    const lineContent = renderTokenSpansTrimmed(sentence.originalTokens);
                     sentenceParts.push(`<div class="subtitle-line original-line">${langTag}${lineContent}</div>`);
                 }
             }
@@ -2276,7 +2357,7 @@ function renderSubtitles() {
                         : escapeHtml(override);
                     sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
                 } else {
-                    const lineContent = sentence.translationTokens.map(t => renderTokenSpan(t)).join('');
+                    const lineContent = renderTokenSpansTrimmed(sentence.translationTokens);
                     sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
                 }
 
