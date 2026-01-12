@@ -9,10 +9,12 @@ from aiohttp import web
 from aiohttp import WSMsgType
 
 from config import get_resource_path, LOCK_MANUAL_CONTROLS
-from config import is_llm_refine_available, LLM_BASE_URL, LLM_MODEL, get_llm_api_key, LLM_REFINE_CONTEXT_COUNT
+from config import is_llm_refine_available, LLM_BASE_URL, LLM_MODEL, LLM_TEMPERATURE, get_llm_api_key, LLM_REFINE_CONTEXT_COUNT
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
+
+from osc_manager import osc_manager
 
 # 日语假名注音支持
 try:
@@ -214,22 +216,21 @@ class WebServer:
             context_block = "\n".join(lines) + "\n\n"
 
         prompt = (
-            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n"
-            "Does the translation below contain severe translation errors or severe issues that would cause major misunderstanding? "
-            "Only if there is a severe issue, produce a corrected translation with the smallest necessary edits. "
-            "If there is NO severe issue (including minor wording/grammar issues that do not affect understanding), do NOT change anything and output exactly: "
-            f"<answer>{NO_CHANGE_MARKER}</answer>."
-            "\n"
-            "Do NOT add explanations. Output ONLY the answer. "
-            "Do NOT include the source text in parentheses. Proper nouns should be translated unless they are commonly left untranslated."
-            "\n"
-            "Output format: <answer>...</answer>"
-            "\n\n"
+            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
+            "You are a strict QA system for real-time translation. Your task is to verify a draft translation against the source text.\n\n"
+            "Rules:\n"
+            "1. Critical Errors Only: Fix only mistranslations, hallucinations, opposite meanings, or missing key entities.\n"
+            "2. Minimal Edits: Do NOT improve style, flow, or word choice if the meaning is correct or similar enough. Keep the draft's structure exactly as is.\n"
+            "3. Output Format:\n"
+            f"   - If the draft is factually accurate (even if styling is poor), output exactly: <answer>{NO_CHANGE_MARKER}</answer>\n"
+            "   - If a critical error exists, output ONLY the corrected translation wrapped in <answer>...</answer>\n\n"
+            "Do NOT add explanations. Output ONLY the answer.\n"
+            "Output format: <answer>...</answer>\n\n"
             f"{context_block}"
             "Source:\n```\n"
             f"{source}\n"
             "```\n\n"
-            "Translation:\n```\n"
+            "Draft translation:\n```\n"
             f"{translation}\n"
             "```"
         )
@@ -247,8 +248,8 @@ class WebServer:
                     {"role": "system", "content": "You are a precise translation reviewer."},
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.2,
-                max_tokens=1024,
+                temperature=float(LLM_TEMPERATURE),
+                max_tokens=4096,
                 timeout_seconds=60.0,
             )
         except (asyncio.CancelledError, Exception) as exc:
@@ -364,6 +365,58 @@ class WebServer:
         enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
         self.soniox_session.set_osc_translation_enabled(enabled)
         return web.json_response({"enabled": self.soniox_session.get_osc_translation_enabled()})
+
+    async def osc_translation_send_handler(self, request):
+        """由前端触发：将“已定稿”的译文通过 OSC 发送。
+
+        说明：
+        - 前端会在 LLM refine 结束后（成功或失败）调用此接口
+        - 后端仅负责校验开关/锁定并发送，不做分段/拼接
+        """
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC translation send is disabled by server config"},
+                status=403,
+            )
+
+        if not self.soniox_session.get_osc_translation_enabled():
+            return web.json_response(
+                {"status": "error", "message": "OSC translation is disabled"},
+                status=409,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        text = payload.get("text")
+        if text is None:
+            # Backward/alt key
+            text = payload.get("translation")
+
+        speaker = payload.get("speaker")
+
+        if not isinstance(text, str) or not text.strip():
+            return web.json_response({"status": "error", "message": "Missing 'text'"}, status=400)
+
+        safe_text = text.strip()
+        if len(safe_text) > 5000:
+            return web.json_response({"status": "error", "message": "Input too long"}, status=413)
+
+        speaker_value = "?"
+        if isinstance(speaker, str) and speaker.strip():
+            speaker_value = speaker.strip()[:16]
+
+        try:
+            osc_manager.add_message_and_send(safe_text, ongoing=False, speaker=speaker_value)
+        except Exception:
+            return web.json_response({"status": "error", "message": "OSC send failed"}, status=502)
+
+        return web.json_response({"status": "ok"})
     
     async def pause_handler(self, request):
         """暂停识别端点"""
@@ -501,6 +554,7 @@ class WebServer:
         app.router.add_post('/resume', self.resume_handler)
         app.router.add_get('/osc-translation', self.osc_translation_get_handler)
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
+        app.router.add_post('/osc-translation/send', self.osc_translation_send_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_post('/furigana', self.furigana_handler)

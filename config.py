@@ -73,6 +73,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return float(str(value).strip())
+    except Exception:
+        return default
+
+
 def _env_str(name: str, default: str) -> str:
     value = os.environ.get(name)
     return default if value is None else str(value)
@@ -107,6 +117,11 @@ LOCK_MANUAL_CONTROLS = _env_bool("LOCK_MANUAL_CONTROLS", False)
 # False: 使用本机系统音频/麦克风采集
 USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 
+# OSC 翻译发送触发方：默认由前端驱动。
+# - True: 后端不再按 token/<end> 自动发送译文到 OSC；前端在句子定稿后（可等待 LLM refine）调用 /osc-translation/send
+# - False: 保持旧行为：后端按 <end> 拼段并自动发送译文到 OSC
+OSC_TRANSLATION_FRONTEND_DRIVEN = _env_bool("OSC_TRANSLATION_FRONTEND_DRIVEN", True)
+
 # Twitch 频道名（不含 https://www.twitch.tv/ 前缀）
 TWITCH_CHANNEL = _env_str("TWITCH_CHANNEL", "")
 
@@ -130,6 +145,9 @@ SERVER_PORT = _env_int("SERVER_PORT", 8080)
 LLM_BASE_URL = _env_str("LLM_BASE_URL", "")
 LLM_API_KEY = _env_str("LLM_API_KEY", "")
 LLM_MODEL = _env_str("LLM_MODEL", "openai/gpt-oss-120b:google-vertex")
+
+# LLM temperature (0.0-2.0). Lower is more deterministic.
+LLM_TEMPERATURE = min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.2)))
 
 # 是否在前端展示 refined 译文相对原始译文的修订（diff 高亮）。
 # - True: 删除内容红底+删除线；新增内容绿底

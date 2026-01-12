@@ -306,6 +306,15 @@ class SonioxSession:
 
     def _handle_osc_final_tokens(self, final_tokens: list[dict]):
         """处理新增的 final tokens，用 <end> 断句并缓存译文"""
+        # When frontend drives OSC sending, backend should not auto-send.
+        try:
+            from config import OSC_TRANSLATION_FRONTEND_DRIVEN
+            if OSC_TRANSLATION_FRONTEND_DRIVEN:
+                return
+        except Exception:
+            # If config import fails for any reason, fall back to existing behavior.
+            pass
+
         if not self.get_osc_translation_enabled():
             return
 
