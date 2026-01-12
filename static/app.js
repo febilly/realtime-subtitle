@@ -101,6 +101,10 @@ let lastRefineFinalizeEventSeqIndex = -1;
 // can still show previously refined output without calling LLM again.
 const refineResultCache = new Map(); // key -> refinedTranslation
 
+// When backend/model indicates there is no severe issue, we store this sentinel in cache
+// to avoid re-sending refine requests for the same input.
+const REFINE_NO_CHANGE_SENTINEL = '__NO_CHANGE__';
+
 function makeRefineCacheKey(source, translation) {
     const s = (source || '').toString().trim();
     const t = (translation || '').toString().trim();
@@ -1370,6 +1374,14 @@ async function refineTranslationSegment({ sentenceId, source, translation, conte
             return;
         }
 
+        // New protocol: backend may indicate "no severe issue".
+        if (result.no_change === true || result.refined_translation === REFINE_NO_CHANGE_SENTINEL) {
+            refineResultCache.set(cacheKey, REFINE_NO_CHANGE_SENTINEL);
+            refinedInputs.set(sentenceId, { source, translation });
+            refineFailedSentences.delete(sentenceId);
+            return;
+        }
+
         const refined = (result.refined_translation || '').toString().trim();
         if (!refined) {
             refineFailedSentences.add(sentenceId);
@@ -1998,7 +2010,7 @@ function renderSubtitles() {
                     const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
                     if (sourceText && baseTranslationNormalized) {
                         const cached = refineResultCache.get(makeRefineCacheKey(sourceText, baseTranslationNormalized));
-                        if (cached) {
+                        if (cached && cached !== REFINE_NO_CHANGE_SENTINEL) {
                             const html = llmRefineShowDiff
                                 ? renderTranslationDiffHtml(baseTranslationNormalized, cached)
                                 : escapeHtml(cached);
