@@ -132,6 +132,8 @@ class WebServer:
     async def translation_refine_handler(self, request):
         """对已完成的译文段落做最小改动修复（由前端触发）。"""
 
+        NO_CHANGE_MARKER = "__NO_CHANGE__"
+
         if not is_llm_refine_available():
             return web.json_response(
                 {
@@ -198,13 +200,14 @@ class WebServer:
             context_block = "\n".join(lines) + "\n\n"
 
         prompt = (
-            "下面的译文是否有严重翻译错误或明显不通顺？如果有，请以最小的改动修好它。"
-            "另外，请去掉口语中的结巴/重复（如重复词、重复音节）、自我修正造成的断续，但不要改变原意、信息量与语气。"
+            "下面的译文是否有严重翻译错误或明显不通顺？"
+            "只有在出现严重问题、必须修复时，才输出修复后的译文。"
+            "如果没有严重问题（包括：只是小瑕疵、不影响理解的措辞、轻微不自然等），不要改动译文，"
+            f"只输出标记：<answer>{NO_CHANGE_MARKER}</answer>。"
+            "\n"
             "不要用括号标注出原文。专有名词也需要翻译，除非是明确通常不需要翻译的词。"
             "仅给出答案，不需要解释。\n"
-            "返回格式为：<answer>修复后的译文</answer>\n"
-            "仅修复严重的必要的问题，不影响理解的小问题不要改动。"
-            "如果译文没有错误或已经很通顺，只需原样返回原译文即可，不要做出改动。\n\n"
+            "返回格式为：<answer>...</answer>\n\n"
             f"{context_block}"
             "原文：\n```\n"
             f"{source}\n"
@@ -238,10 +241,14 @@ class WebServer:
 
         refined = extract_answer_tag(content)
         if not refined:
-            # Fallback to original translation if model returned empty.
-            refined = translation
+            # If model didn't follow format, treat as no-change to avoid accidental hallucinated edits.
+            return web.json_response({"status": "ok", "no_change": True})
 
-        return web.json_response({"status": "ok", "refined_translation": refined})
+        refined = refined.strip()
+        if refined == NO_CHANGE_MARKER:
+            return web.json_response({"status": "ok", "no_change": True})
+
+        return web.json_response({"status": "ok", "no_change": False, "refined_translation": refined})
     
     async def restart_handler(self, request):
         """重启识别端点"""
