@@ -39,6 +39,21 @@ This program will also try to read the environment variables from a `.env` file 
 SONIOX_API_KEY="your-key-goes-in-here"
 ```
 
+### Optional: LLM translation refinement
+
+You can optionally enable an "auto-refine completed translations" feature. The UI toggle is only shown when the required LLM settings are present.
+
+Configure an OpenAI-compatible endpoint via:
+
+```env
+LLM_BASE_URL="https://openrouter.ai/api/v1"
+LLM_MODEL="openai/gpt-oss-120b:google-vertex"
+LLM_API_KEY="your-key"
+LLM_REFINE_CONTEXT_COUNT=3
+LLM_REFINE_SHOW_DIFF=0
+LLM_REFINE_SHOW_DELETIONS=0
+```
+
 ## Run
 
 ```bash

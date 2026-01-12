@@ -31,6 +31,10 @@
             restart_failed_try_again: 'Failed to restart. Please try again.',
             speaker_label: 'SPEAKER {speaker}',
 
+            translation_language: 'Translation language',
+            translation_refine_on: 'Auto-refine completed translations (click to disable)',
+            translation_refine_off: 'Auto-refine completed translations',
+
             backend_manual_restart_disabled: 'Manual restart is disabled by server config',
             backend_pause_disabled: 'Pause is disabled by server config',
             backend_resume_disabled: 'Resume is disabled by server config',
@@ -67,13 +71,16 @@
             restart_failed_try_again: '重启失败，请重试。',
             speaker_label: '说话人 {speaker}',
 
+            translation_language: '翻译语言',
+            translation_refine_on: '译文自动修复已开启（点击关闭）',
+            translation_refine_off: '译文自动修复',
+
             backend_manual_restart_disabled: '服务器已禁用手动重启',
             backend_pause_disabled: '服务器已禁用暂停',
             backend_resume_disabled: '服务器已禁用继续',
             backend_audio_source_disabled: '服务器已禁用切换音频源',
             backend_osc_disabled: '服务器已禁用 OSC 翻译开关',
-                        translation_language: 'Translation language',
-                        error_title: 'Error',
+            backend_furigana_unavailable: '服务器未启用假名注音功能',
         },
         ja: {
             empty_state: '字幕はここに表示されます…',
@@ -103,7 +110,10 @@
             connection_error_try_again: '接続エラーです。もう一度お試しください。',
             restart_failed_try_again: '再起動に失敗しました。もう一度お試しください。',
             speaker_label: '話者 {speaker}',
-                        translation_language: '翻译语言',
+
+            translation_language: '翻訳言語',
+            translation_refine_on: '翻訳の自動修正が有効（クリックで無効）',
+            translation_refine_off: '翻訳を自動修正',
 
             backend_manual_restart_disabled: 'サーバー設定により手動再起動は無効です',
             backend_pause_disabled: 'サーバー設定により一時停止は無効です',
