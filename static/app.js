@@ -97,24 +97,66 @@ const refineFailedSentences = new Set(); // sentenceId (do not retry within curr
 // We only trigger refinement on "newly observed finalize events" (separator / forced sentence split).
 let lastRefineFinalizeEventSeqIndex = -1;
 
-// Cache refine results by stable input (source+translation) so switching segment mode
-// can still show previously refined output without calling LLM again.
+// Avoid triggering OSC sends for historical tokens when user toggles UI modes.
+let lastOscFinalizeEventSeqIndex = -1;
+
+// Cache refine results by stable input (source+translation+context+target_lang).
+// This avoids reusing a refined output when the referenced context differs.
 const refineResultCache = new Map(); // key -> refinedTranslation
 
 // When backend/model indicates there is no severe issue, we store this sentinel in cache
 // to avoid re-sending refine requests for the same input.
 const REFINE_NO_CHANGE_SENTINEL = '__NO_CHANGE__';
 
-function makeRefineCacheKey(source, translation) {
+function normalizeContextItemsForKey(contextItems) {
+    if (!Array.isArray(contextItems) || contextItems.length === 0) {
+        return [];
+    }
+
+    const out = [];
+    const maxItems = Math.min(contextItems.length, 20);
+    for (let idx = 0; idx < maxItems; idx++) {
+        const item = contextItems[idx];
+        if (!item || typeof item !== 'object') {
+            continue;
+        }
+        const src = (item.source || '').toString().trim();
+        const tr = (item.translation || '').toString().trim();
+        if (!src || !tr) {
+            continue;
+        }
+        out.push({ source: src, translation: tr });
+    }
+    return out;
+}
+
+function makeRefineCacheKey(source, translation, contextItems = null, targetLang = '') {
     const s = (source || '').toString().trim();
     const t = (translation || '').toString().trim();
-    return `${s}\n---\n${t}`;
+    const lang = (targetLang || '').toString().trim().toLowerCase();
+
+    const ctx = normalizeContextItemsForKey(contextItems);
+    let ctxBlock = '';
+    if (ctx.length > 0) {
+        ctxBlock = ctx
+            .map((item, i) => `${i + 1}.S:${item.source}\n${i + 1}.T:${item.translation}`)
+            .join('\n');
+    }
+
+    return `${s}\n---\n${t}\n---\nlang:${lang}\n---\nctx:\n${ctxBlock}`;
 }
 
 // 上文语境：按“已完结句子”维护，避免每 token 重复拼接。
 const refineContextHistory = []; // [{ sentenceId, source, translation }]
 const finalizedSentenceIds = new Set(); // sentenceId (history appended)
 const MAX_REFINE_CONTEXT_HISTORY = 200;
+
+// Per sentence finalize-event metadata used for caching and safe reuse.
+// We only reuse cached refine results when the referenced context (and target language) match.
+const refineSentenceMeta = new Map(); // sentenceId -> { contextItems: [...], targetLang: string }
+
+// Avoid duplicate OSC sends per sentence.
+const oscSentSentenceIds = new Set();
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -291,11 +333,10 @@ function updateTranslationRefineButton() {
         return;
     }
 
-    // 没有配置 LLM key/base_url 时，隐藏开关并强制关闭
+    // 没有配置 LLM key/base_url 时，隐藏开关。
+    // 注意：不要覆盖用户保存的开关偏好（localStorage），否则会导致每次都需要手动重新打开。
     if (!llmRefineAvailable) {
         translationRefineButton.style.display = 'none';
-        llmRefineEnabled = false;
-        localStorage.setItem('llmRefineEnabled', 'false');
         return;
     }
 
@@ -477,18 +518,60 @@ async function fetchUiConfig() {
     }
 }
 
-function tokenizeForDiff(text) {
-    // Character-level diff, but ignore whitespace differences.
-    // We keep only non-whitespace characters for alignment, while rendering refined whitespace unhighlighted.
+function containsCjkOrJapanese(text) {
+    // Han (CJK ideographs), Hiragana, Katakana.
+    // We intentionally do NOT include Hangul here; Korean generally benefits from word-level diff.
+    const value = (text || '').toString();
+    return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value);
+}
+
+function shouldUseCharDiff(original, refined) {
+    return containsCjkOrJapanese(original) || containsCjkOrJapanese(refined);
+}
+
+function tokenizeForDiff(text, mode) {
+    // Tokenize for alignment while ignoring whitespace differences.
+    // mode: 'char' | 'word'
     const value = (text || '').toString();
     const out = [];
-    for (let idx = 0; idx < value.length; idx++) {
+
+    if (mode === 'char') {
+        for (let idx = 0; idx < value.length; idx++) {
+            const ch = value[idx];
+            if (/\s/.test(ch)) {
+                continue;
+            }
+            out.push({ text: ch, start: idx, end: idx + 1 });
+        }
+        return out;
+    }
+
+    // Word-level tokenization for non-CJK languages.
+    // We align on words; punctuation becomes its own token.
+    // Uses Unicode character properties (modern Chromium / modern browsers).
+    const wordRe = /[\p{L}\p{N}]+(?:[’'\-][\p{L}\p{N}]+)*/gu;
+    let idx = 0;
+    while (idx < value.length) {
         const ch = value[idx];
         if (/\s/.test(ch)) {
+            idx++;
             continue;
         }
-        out.push({ ch, idx });
+
+        wordRe.lastIndex = idx;
+        const m = wordRe.exec(value);
+        if (m && m.index === idx) {
+            const w = m[0] || '';
+            out.push({ text: w, start: idx, end: idx + w.length });
+            idx += w.length;
+            continue;
+        }
+
+        // Punctuation / symbol as a single-character token.
+        out.push({ text: ch, start: idx, end: idx + 1 });
+        idx++;
     }
+
     return out;
 }
 
@@ -501,8 +584,9 @@ function renderTranslationDiffHtml(original, refined) {
         return escapeHtml(b);
     }
 
-    const A = tokenizeForDiff(a);
-    const B = tokenizeForDiff(b);
+    const mode = shouldUseCharDiff(a, b) ? 'char' : 'word';
+    const A = tokenizeForDiff(a, mode);
+    const B = tokenizeForDiff(b, mode);
 
     const n = A.length;
     const m = B.length;
@@ -518,11 +602,11 @@ function renderTranslationDiffHtml(original, refined) {
     // LCS DP table (typed arrays for lower overhead).
     const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
     for (let i = 1; i <= n; i++) {
-        const ai = A[i - 1].ch;
+        const ai = A[i - 1].text;
         const row = dp[i];
         const prevRow = dp[i - 1];
         for (let j = 1; j <= m; j++) {
-            if (ai === B[j - 1].ch) {
+            if (ai === B[j - 1].text) {
                 row[j] = prevRow[j - 1] + 1;
             } else {
                 const up = prevRow[j];
@@ -536,15 +620,15 @@ function renderTranslationDiffHtml(original, refined) {
     let i = n;
     let j = m;
     while (i > 0 || j > 0) {
-        if (i > 0 && j > 0 && A[i - 1].ch === B[j - 1].ch) {
-            ops.push({ type: 'eq', idx: B[j - 1].idx });
+        if (i > 0 && j > 0 && A[i - 1].text === B[j - 1].text) {
+            ops.push({ type: 'eq', start: B[j - 1].start, end: B[j - 1].end });
             i--;
             j--;
         } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-            ops.push({ type: 'ins', idx: B[j - 1].idx });
+            ops.push({ type: 'ins', start: B[j - 1].start, end: B[j - 1].end });
             j--;
         } else {
-            ops.push({ type: 'del', ch: A[i - 1].ch });
+            ops.push({ type: 'del', text: A[i - 1].text });
             i--;
         }
     }
@@ -565,6 +649,31 @@ function renderTranslationDiffHtml(original, refined) {
     let refinedPos = 0;
     let delBuffer = '';
     let insBuffer = '';
+
+    const isWordChar = (s) => {
+        if (!s) return false;
+        try {
+            return /[\p{L}\p{N}]/u.test(s);
+        } catch (e) {
+            return /[A-Za-z0-9]/.test(s);
+        }
+    };
+
+    const appendDeletedToken = (tokenText) => {
+        if (!showDeletions) {
+            return;
+        }
+        const t = (tokenText || '').toString();
+        if (!t) return;
+        if (mode === 'word' && delBuffer) {
+            const last = delBuffer[delBuffer.length - 1];
+            const first = t[0];
+            if (isWordChar(last) && isWordChar(first)) {
+                delBuffer += ' ';
+            }
+        }
+        delBuffer += t;
+    };
 
     const flushDel = () => {
         if (!showDeletions) {
@@ -594,30 +703,39 @@ function renderTranslationDiffHtml(original, refined) {
         if (op.type === 'del') {
             // Deleted non-whitespace characters are shown in red with strikethrough.
             if (showDeletions) {
-                delBuffer += op.ch;
+                appendDeletedToken(op.text);
             }
             continue;
         }
 
-        const idx = op.idx;
-        if (typeof idx !== 'number' || idx < 0 || idx > b.length) {
+        const start = op.start;
+        const end = op.end;
+        if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start || end > b.length) {
             continue;
         }
 
-        // Always output refined whitespace (and any other chars between aligned non-ws chars) as plain.
-        if (idx > refinedPos) {
-            parts.push(escapeHtml(b.slice(refinedPos, idx)));
+        // Important: when we ignore whitespace in the alignment, two consecutive non-whitespace insertions
+        // may still be separated by whitespace in the refined string (e.g. inserted multi-word phrase).
+        // If we buffer insertions across that gap, we'd output the whitespace *before* the buffered letters,
+        // which breaks languages that use spaces (English, etc.).
+        if (op.type === 'ins' && start > refinedPos) {
+            flushIns();
         }
 
-        const ch = b[idx] || '';
+        // Always output refined whitespace (and any other chars between aligned non-ws chars) as plain.
+        if (start > refinedPos) {
+            parts.push(escapeHtml(b.slice(refinedPos, start)));
+        }
+
+        const tokenText = b.slice(start, end);
         if (op.type === 'eq') {
-            parts.push(escapeHtml(ch));
+            parts.push(escapeHtml(tokenText));
         } else if (op.type === 'ins') {
             // Inserted non-whitespace characters are shown in green.
-            insBuffer += ch;
+            insBuffer += tokenText;
         }
 
-        refinedPos = idx + 1;
+        refinedPos = end;
     }
 
     flushIns();
@@ -647,6 +765,7 @@ function appendFinalizedSentenceToContextHistory({ sentenceId, source, translati
         for (const item of removed) {
             if (item && item.sentenceId) {
                 finalizedSentenceIds.delete(item.sentenceId);
+                refineSentenceMeta.delete(item.sentenceId);
             }
         }
     }
@@ -1325,36 +1444,42 @@ function joinTokenText(tokens) {
 
 async function refineTranslationSegment({ sentenceId, source, translation, contextItems }) {
     if (!llmRefineAvailable || !llmRefineEnabled) {
-        return;
+        return { status: 'skipped' };
     }
     if (!sentenceId || !source || !translation) {
-        return;
+        return { status: 'invalid' };
     }
 
-    const cacheKey = makeRefineCacheKey(source, translation);
+    const context_items = Array.isArray(contextItems) ? contextItems : [];
+    const target_lang = (currentTranslationTargetLang || defaultTranslationTargetLang || '').toString().trim().toLowerCase();
+
+    const cacheKey = makeRefineCacheKey(source, translation, context_items, target_lang);
     if (refineResultCache.has(cacheKey)) {
         // We already have a refined result for exactly this input.
-        return;
+        const cached = refineResultCache.get(cacheKey);
+        return {
+            status: 'cached',
+            no_change: cached === REFINE_NO_CHANGE_SENTINEL,
+            refined: (cached && cached !== REFINE_NO_CHANGE_SENTINEL) ? String(cached) : null
+        };
     }
 
     // If we already failed once for this sentence, do not retry.
     if (refineFailedSentences.has(sentenceId)) {
-        return;
+        return { status: 'failed_once' };
     }
 
     if (refineInFlight.has(sentenceId)) {
-        return;
+        return { status: 'in_flight' };
     }
 
     const previous = refinedInputs.get(sentenceId);
     if (previous && previous.source === source && previous.translation === translation) {
-        return;
+        return { status: 'duplicate_input' };
     }
 
     refineInFlight.add(sentenceId);
     try {
-        const context_items = Array.isArray(contextItems) ? contextItems : [];
-        const target_lang = (currentTranslationTargetLang || defaultTranslationTargetLang || '').toString().trim().toLowerCase();
         const response = await fetch('/translation-refine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -1372,7 +1497,7 @@ async function refineTranslationSegment({ sentenceId, source, translation, conte
             const message = result?.message || `Server responded with status ${response.status}`;
             console.error('Translation refine failed:', message);
             refineFailedSentences.add(sentenceId);
-            return;
+            return { status: 'error' };
         }
 
         // New protocol: backend may indicate "no severe issue".
@@ -1380,13 +1505,13 @@ async function refineTranslationSegment({ sentenceId, source, translation, conte
             refineResultCache.set(cacheKey, REFINE_NO_CHANGE_SENTINEL);
             refinedInputs.set(sentenceId, { source, translation });
             refineFailedSentences.delete(sentenceId);
-            return;
+            return { status: 'ok', no_change: true, refined: null };
         }
 
         const refined = (result.refined_translation || '').toString().trim();
         if (!refined) {
             refineFailedSentences.add(sentenceId);
-            return;
+            return { status: 'error_empty' };
         }
 
         refineResultCache.set(cacheKey, refined);
@@ -1400,9 +1525,11 @@ async function refineTranslationSegment({ sentenceId, source, translation, conte
         refineFailedSentences.delete(sentenceId);
 
         renderSubtitles();
+        return { status: 'ok', no_change: false, refined };
     } catch (error) {
         console.error('Error refining translation:', error);
         refineFailedSentences.add(sentenceId);
+        return { status: 'error_exception' };
     } finally {
         refineInFlight.delete(sentenceId);
     }
@@ -1641,9 +1768,75 @@ function clearSubtitleState() {
 
     lastRefineFinalizeEventSeqIndex = -1;
     refineResultCache.clear();
+    refineSentenceMeta.clear();
+
+    lastOscFinalizeEventSeqIndex = -1;
+    oscSentSentenceIds.clear();
 
     refineContextHistory.length = 0;
     finalizedSentenceIds.clear();
+}
+
+async function sendTranslationToOsc({ text, speaker }) {
+    if (!oscTranslationEnabled) {
+        return;
+    }
+
+    const safeText = (text || '').toString().trim();
+    if (!safeText) {
+        return;
+    }
+
+    const payload = {
+        text: safeText,
+        speaker: (speaker === null || speaker === undefined) ? '?' : String(speaker)
+    };
+
+    try {
+        const response = await fetch('/osc-translation/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) {
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (parseError) {
+                // ignore
+            }
+            console.error('OSC send failed:', response.status, data?.message || '');
+        }
+    } catch (error) {
+        console.error('Error sending OSC translation:', error);
+    }
+}
+
+function getFinalTranslationForOsc({ sentenceId, source, translation, contextItems = null, targetLang = '' }) {
+    const baseTranslationTrimmed = (translation || '').toString().trim();
+    if (!baseTranslationTrimmed) {
+        return '';
+    }
+
+    const override = translationOverrides.get(sentenceId);
+    const overrideBase = translationOverrideBase.get(sentenceId);
+    if (override && typeof override === 'string') {
+        const base = (overrideBase || '').toString().trim();
+        if (base && base === baseTranslationTrimmed) {
+            return override;
+        }
+    }
+
+    const cacheKey = makeRefineCacheKey(source, baseTranslationTrimmed, contextItems, targetLang);
+    if (refineResultCache.has(cacheKey)) {
+        const cached = refineResultCache.get(cacheKey);
+        if (cached && cached !== REFINE_NO_CHANGE_SENTINEL) {
+            return String(cached);
+        }
+    }
+
+    return baseTranslationTrimmed;
 }
 
 function renderTokenSpan(token, useRubyHtml = null) {
@@ -1698,9 +1891,6 @@ function renderSubtitles() {
         if (typeof finalizeEventSeqIndex !== 'number' || !Number.isFinite(finalizeEventSeqIndex)) {
             return;
         }
-        if (finalizeEventSeqIndex <= lastRefineFinalizeEventSeqIndex) {
-            return;
-        }
 
         const allFinal = sentence.originalTokens.every(t => t && t.is_final) && sentence.translationTokens.every(t => t && t.is_final);
         if (!allFinal) return;
@@ -1710,15 +1900,58 @@ function renderSubtitles() {
         const translation = joinTokenText(sentence.translationTokens).trim();
         if (!source || !translation) return;
 
+        const shouldTriggerRefine = finalizeEventSeqIndex > lastRefineFinalizeEventSeqIndex;
+        const shouldTriggerOsc = finalizeEventSeqIndex > lastOscFinalizeEventSeqIndex;
+
+        // Always advance seen-finalize indexes, to avoid back-sending/refine on later toggles.
         lastRefineFinalizeEventSeqIndex = Math.max(lastRefineFinalizeEventSeqIndex, finalizeEventSeqIndex);
+        lastOscFinalizeEventSeqIndex = Math.max(lastOscFinalizeEventSeqIndex, finalizeEventSeqIndex);
 
         // Build context from previously finalized sentences (excluding current).
         const contextItems = getRefineContextItems();
 
+        const targetLang = (currentTranslationTargetLang || defaultTranslationTargetLang || '').toString().trim().toLowerCase();
+        refineSentenceMeta.set(sentenceId, { contextItems: Array.isArray(contextItems) ? contextItems : [], targetLang });
+
         // Record current sentence for future context.
         appendFinalizedSentenceToContextHistory({ sentenceId, source, translation });
 
-        void refineTranslationSegment({ sentenceId, source, translation, contextItems });
+        const speaker = sentence.speaker;
+
+        void (async () => {
+            // If we saw a new finalize event and refine is enabled, run refine.
+            // When OSC is enabled, we must wait for refine to finish (success or failure) before sending.
+            if (shouldTriggerRefine && llmRefineAvailable && llmRefineEnabled) {
+                try {
+                    await refineTranslationSegment({ sentenceId, source, translation, contextItems });
+                } catch (error) {
+                    // ignore; we still want to send original translation to OSC
+                }
+            }
+
+            if (!shouldTriggerOsc || !oscTranslationEnabled) {
+                return;
+            }
+
+            if (oscSentSentenceIds.has(sentenceId)) {
+                return;
+            }
+
+            oscSentSentenceIds.add(sentenceId);
+            const meta = refineSentenceMeta.get(sentenceId);
+            const finalText = getFinalTranslationForOsc({
+                sentenceId,
+                source,
+                translation,
+                contextItems: meta?.contextItems || contextItems,
+                targetLang: meta?.targetLang || targetLang
+            });
+            if (!finalText) {
+                return;
+            }
+
+            await sendTranslationToOsc({ text: finalText, speaker });
+        })();
     };
 
     const ensureSpeakerValue = (speaker) => {
@@ -2010,7 +2243,10 @@ function renderSubtitles() {
                 if (isEligibleForCachedRefine) {
                     const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
                     if (sourceText && baseTranslationNormalized) {
-                        const cached = refineResultCache.get(makeRefineCacheKey(sourceText, baseTranslationNormalized));
+                        const meta = refineSentenceMeta.get(sentenceId);
+                        const cached = meta
+                            ? refineResultCache.get(makeRefineCacheKey(sourceText, baseTranslationNormalized, meta.contextItems, meta.targetLang))
+                            : null;
                         if (cached && cached !== REFINE_NO_CHANGE_SENTINEL) {
                             const html = llmRefineShowDiff
                                 ? renderTranslationDiffHtml(baseTranslationNormalized, cached)

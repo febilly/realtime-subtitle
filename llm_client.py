@@ -61,6 +61,9 @@ async def chat_completion(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
+        # "provider": {
+        #     'order': ['google-vertex'],
+        # }
     }
 
     headers = {
