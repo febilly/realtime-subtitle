@@ -143,15 +143,21 @@ _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 
 
 def extract_answer_tag(text: str) -> str:
-    """Extract <answer>...</answer> if present; otherwise return trimmed text."""
+    """Extract <answer>...</answer> if present; otherwise return trimmed text.
+
+    If multiple <answer>...</answer> blocks exist, prefer the LAST one.
+    """
     if text is None:
         return ""
     raw = str(text).strip()
     if not raw:
         return ""
 
-    match = _ANSWER_RE.search(raw)
-    if not match:
+    last_match = None
+    for match in _ANSWER_RE.finditer(raw):
+        last_match = match
+
+    if last_match is None:
         return raw
 
-    return (match.group(1) or "").strip()
+    return (last_match.group(1) or "").strip()

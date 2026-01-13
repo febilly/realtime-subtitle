@@ -5,6 +5,7 @@ import os
 import sys
 import locale
 import time
+import threading
 from dotenv import load_dotenv
 
 
@@ -161,24 +162,59 @@ LLM_REFINE_SHOW_DELETIONS = _env_bool("LLM_REFINE_SHOW_DELETIONS", False)
 
 # LLM refine 时携带的“上文语境”条数（已完结句子对：原文+译文）。
 # - 可设为 0 表示不携带上文
-# - 默认 3
-LLM_REFINE_CONTEXT_COUNT = max(0, _env_int("LLM_REFINE_CONTEXT_COUNT", 3))
+# - 默认 5
+LLM_REFINE_CONTEXT_COUNT = max(0, _env_int("LLM_REFINE_CONTEXT_COUNT", 5))
+
+
+def _parse_llm_api_keys(raw: str) -> list[str]:
+        """Parse LLM_API_KEY which may contain multiple keys separated by commas.
+
+        Example:
+            "keyA, keyB,keyC" -> ["keyA", "keyB", "keyC"]
+        """
+        if raw is None:
+                return []
+        parts = [p.strip() for p in str(raw).split(",")]
+        # Filter empties and common placeholder values.
+        keys = [p for p in parts if p and p != "LLM_API_KEY"]
+        return keys
+
+
+_LLM_API_KEYS: list[str] = _parse_llm_api_keys(LLM_API_KEY)
+_LLM_API_KEY_LOCK = threading.Lock()
+_LLM_API_KEY_INDEX = 0
 
 
 def get_llm_api_key() -> str:
-    """Return the configured LLM API key.
+    """Return one configured LLM API key.
 
-    Only uses LLM_API_KEY.
+    Supports multiple keys via comma-separated LLM_API_KEY and returns them in round-robin.
     """
-    return (LLM_API_KEY or "").strip()
+    global _LLM_API_KEY_INDEX
+
+    keys = _LLM_API_KEYS
+    if not keys:
+        return ""
+    if len(keys) == 1:
+        return keys[0]
+
+    with _LLM_API_KEY_LOCK:
+        key = keys[_LLM_API_KEY_INDEX % len(keys)]
+        _LLM_API_KEY_INDEX += 1
+        return key
+
+
+def get_llm_api_keys() -> list[str]:
+    """Return all configured LLM API keys (after parsing/stripping)."""
+    return list(_LLM_API_KEYS)
 
 
 def is_llm_refine_available() -> bool:
     """Whether the backend has enough configuration to use LLM refine feature."""
-    api_key = get_llm_api_key()
+    keys = get_llm_api_keys()
     base_url = (LLM_BASE_URL or "").strip()
     model = (LLM_MODEL or "").strip()
-    if not api_key or api_key == "LLM_API_KEY":
+    if not keys:
         return False
     if not base_url or not model:
         return False
