@@ -9,7 +9,7 @@ from aiohttp import web
 from aiohttp import WSMsgType
 
 from config import get_resource_path, LOCK_MANUAL_CONTROLS
-from config import is_llm_refine_available, LLM_BASE_URL, LLM_MODEL, LLM_TEMPERATURE, get_llm_api_key, LLM_REFINE_CONTEXT_COUNT
+from config import is_llm_refine_available, LLM_BASE_URL, LLM_MODEL, LLM_TEMPERATURE, get_llm_api_key, LLM_REFINE_CONTEXT_COUNT, LLM_PROMPT_SUFFIX, LLM_REFINE_MAX_TOKENS
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError, close_llm_http_session
@@ -215,6 +215,9 @@ class WebServer:
                 lines.append(f"   Translation: {item['translation']}")
             context_block = "\n".join(lines) + "\n\n"
 
+        prompt_suffix = (LLM_PROMPT_SUFFIX or "").strip()
+        suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
+
         prompt = (
             f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
             "You are a strict QA system for real-time translation. Your task is to verify a draft translation against the source text.\n"
@@ -236,7 +239,8 @@ class WebServer:
             "```\n\n"
             "Draft translation:\n```\n"
             f"{translation}\n"
-            "```"
+            "```\n"
+            f"{suffix_block}"
         )
 
         config = LlmConfig(
@@ -253,7 +257,7 @@ class WebServer:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=float(LLM_TEMPERATURE),
-                max_tokens=4096,
+                max_tokens=int(LLM_REFINE_MAX_TOKENS),
                 timeout_seconds=60.0,
             )
         except (asyncio.CancelledError, Exception) as exc:
