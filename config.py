@@ -147,6 +147,10 @@ LLM_BASE_URL = _env_str("LLM_BASE_URL", "")
 LLM_API_KEY = _env_str("LLM_API_KEY", "")
 LLM_MODEL = _env_str("LLM_MODEL", "openai/gpt-oss-120b:google-vertex")
 
+# Optional suffix appended to the end of the LLM prompt.
+# Default: empty string (no suffix). Example: "/no_think"
+LLM_PROMPT_SUFFIX = _env_str("LLM_PROMPT_SUFFIX", "")
+
 # LLM temperature (0.0-2.0). Lower is more deterministic.
 LLM_TEMPERATURE = min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.2)))
 
@@ -164,6 +168,10 @@ LLM_REFINE_SHOW_DELETIONS = _env_bool("LLM_REFINE_SHOW_DELETIONS", False)
 # - 可设为 0 表示不携带上文
 # - 默认 5
 LLM_REFINE_CONTEXT_COUNT = max(0, _env_int("LLM_REFINE_CONTEXT_COUNT", 5))
+
+# LLM refine 的最大输出 tokens。
+# 注意：不同服务商/模型对 max_tokens 上限不同。
+LLM_REFINE_MAX_TOKENS = min(8192, max(1, _env_int("LLM_REFINE_MAX_TOKENS", 1024)))
 
 
 def _parse_llm_api_keys(raw: str) -> list[str]:

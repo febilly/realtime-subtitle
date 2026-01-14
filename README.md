@@ -48,9 +48,12 @@ You can get some free quota from [Cerebras(recommended)](https://cerebras.net/) 
 Configure an OpenAI-compatible endpoint via:
 
 ```env
+# Example configuration
 LLM_BASE_URL="https://api.cerebras.ai/v1"
-LLM_MODEL="gpt-oss-120b"
-LLM_API_KEY="your-key-goes-here"
+LLM_MODEL="qwen-3-32b"
+LLM_API_KEY="<your-key-goes-here>"
+LLM_PROMPT_SUFFIX="/no_think"
+LLM_TEMPERATURE="0.6"
 ```
 
 ## Run
