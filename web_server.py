@@ -270,7 +270,13 @@ class WebServer:
             # If model didn't follow format, treat as no-change to avoid accidental hallucinated edits.
             return web.json_response({"status": "ok", "no_change": True})
 
+        # Sanitize output: remove leading/trailing whitespace/newlines and formatting backticks.
         refined = refined.strip()
+        if refined.startswith("```"):
+            # Remove optional fenced code block wrapper.
+            refined = re.sub(r"^```[^\n]*\n", "", refined)
+            refined = re.sub(r"\n```$", "", refined.strip())
+        refined = refined.strip("`").strip()
         if refined == NO_CHANGE_MARKER:
             return web.json_response({"status": "ok", "no_change": True})
 
