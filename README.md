@@ -64,6 +64,9 @@ python server.py
 
 Add `--debug` flag to enable debug mode.
 
+## Tip
+- Since the interface is just a webpage, you can use `ctrl/cmd + mousewheel` (or `ctrl/cmd + plus/minus` if you prefer) to zoom in/out the text size.
+
 ## Build
 
 ```bash
