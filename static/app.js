@@ -245,8 +245,12 @@ const SCROLL_STICKY_THRESHOLD = 50;
 let autoStickToBottom = true;
 let tokenSequenceCounter = 0;
 
-// 分段模式: 'translation' 或 'endpoint'（默认按 <end> 分段）
+// 分段模式: 'translation' | 'endpoint' | 'punctuation'（默认按 <end> 分段）
 let segmentMode = localStorage.getItem('segmentMode') || 'endpoint';
+const SEGMENT_MODES = ['translation', 'endpoint', 'punctuation'];
+if (!SEGMENT_MODES.includes(segmentMode)) {
+    segmentMode = 'endpoint';
+}
 
 // 显示模式: 'both', 'original', 'translation'
 let displayMode = localStorage.getItem('displayMode') || 'both';
@@ -387,8 +391,10 @@ function updateSegmentModeButton() {
 
     if (segmentMode === 'translation') {
         segmentModeButton.title = t('segment_translation');
-    } else {
+    } else if (segmentMode === 'endpoint') {
         segmentModeButton.title = t('segment_endpoint');
+    } else {
+        segmentModeButton.title = t('segment_punctuation');
     }
 }
 
@@ -982,7 +988,9 @@ async function fetchInitialAudioSource() {
 
 // 分段模式切换
 segmentModeButton.addEventListener('click', () => {
-    segmentMode = segmentMode === 'translation' ? 'endpoint' : 'translation';
+    const currentIndex = SEGMENT_MODES.indexOf(segmentMode);
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % SEGMENT_MODES.length : 0;
+    segmentMode = SEGMENT_MODES[nextIndex];
     localStorage.setItem('segmentMode', segmentMode);
     updateSegmentModeButton();
     renderSubtitles();
@@ -1378,6 +1386,7 @@ function handleMessage(data) {
     
     if (data.type === 'update') {
         let separatorFromTokens = false;
+        let punctuationSeparatorAdded = false;
         let hasNewFinalContent = false;
         if (data.final_tokens && data.final_tokens.length > 0) {
             data.final_tokens.forEach(token => {
@@ -1388,6 +1397,13 @@ function handleMessage(data) {
                 }
                 hasNewFinalContent = true;
                 insertFinalToken(token);
+                const tokenStatus = token.translation_status || 'original';
+                if (tokenStatus !== 'translation' && isSentenceEndPunctuation(token.text)) {
+                    pushSeparator('punctuation');
+                    if (segmentMode === 'punctuation') {
+                        punctuationSeparatorAdded = true;
+                    }
+                }
             });
         }
         
@@ -1395,7 +1411,7 @@ function handleMessage(data) {
         currentNonFinalTokens = (data.non_final_tokens || []).filter(token => token.text !== '<end>');
         currentNonFinalTokens.forEach(assignSequenceIndex);
         
-        let separatorAdded = separatorFromTokens;
+        let separatorAdded = separatorFromTokens || punctuationSeparatorAdded;
         
         if (data.has_translation && hasNewFinalContent) {
             separatorAdded = true;
@@ -1440,6 +1456,17 @@ function joinTokenText(tokens) {
         return '';
     }
     return tokens.map(t => (t && t.text) ? String(t.text) : '').join('');
+}
+
+const SENTENCE_END_PUNCT_RE = /(?:[.!?。！？]+|…+)$/;
+
+function isSentenceEndPunctuation(text) {
+    const raw = (text ?? '').toString().trim();
+    if (!raw) {
+        return false;
+    }
+    const normalized = raw.replace(/["'”’）)\]]+$/g, '');
+    return SENTENCE_END_PUNCT_RE.test(normalized);
 }
 
 async function refineTranslationSegment({ sentenceId, source, translation, contextItems }) {
@@ -2049,7 +2076,9 @@ function renderSubtitles() {
             translationLang: null,
             requiresTranslation: options.requiresTranslation !== undefined ? options.requiresTranslation : null, // null means undecided
             isTranslationOnly: !!options.translationOnly,
-            hasFakeTranslation: false
+            hasFakeTranslation: false,
+            pendingFinalizeSeqIndex: null,
+            pendingFinalizeReason: null
         };
         sentences.push(sentence);
         if (!sentence.isTranslationOnly) {
@@ -2085,43 +2114,106 @@ function renderSubtitles() {
         return true;
     };
 
-    const findLastSentenceForSpeaker = (speaker, predicate = () => true) => {
+    const findLastSentenceForSpeaker = (speaker, predicate = () => true, options = {}) => {
         const normalizedSpeaker = ensureSpeakerValue(speaker);
+        const stopOnFakeTranslation = !!options.stopOnFakeTranslation;
+        const stopOnPendingFinalize = !!options.stopOnPendingFinalize;
         for (let i = sentences.length - 1; i >= 0; i--) {
             const sentence = sentences[i];
             if (sentence.speaker === normalizedSpeaker && predicate(sentence)) {
                 return sentence;
             }
+            if (stopOnFakeTranslation && sentence.speaker === normalizedSpeaker && sentence.hasFakeTranslation) {
+                break;
+            }
+            if (
+                stopOnPendingFinalize &&
+                sentence.speaker === normalizedSpeaker &&
+                sentence.pendingFinalizeSeqIndex !== null &&
+                sentence.translationTokens.length === 0
+            ) {
+                break;
+            }
         }
         return null;
+    };
+
+    const sentenceEndsWithPunctuation = (sentence) => {
+        if (!sentence || !sentence.translationTokens || sentence.translationTokens.length === 0) {
+            return false;
+        }
+        const text = joinTokenText(sentence.translationTokens);
+        return isSentenceEndPunctuation(text);
     };
 
     tokens.forEach(token => {
         if (token.is_separator) {
             const separatorType = token.separator_type || 'translation';
+            const isPunctuationSeparator = separatorType === 'punctuation';
+
+            if (isPunctuationSeparator && segmentMode !== 'punctuation') {
+                return;
+            }
+
+            const shouldFinalize = (
+                (separatorType === 'endpoint' && (segmentMode === 'endpoint' || segmentMode === 'punctuation')) ||
+                (separatorType === 'translation' && segmentMode === 'translation') ||
+                (separatorType === 'punctuation' && segmentMode === 'punctuation')
+            );
 
             // 只有在当前分段模式会“断句”的时候，才把上一句视为已完结
-            if ((separatorType === 'endpoint' && segmentMode === 'endpoint') || (separatorType === 'translation' && segmentMode === 'translation')) {
-                if (currentSentence) {
+            if (shouldFinalize && currentSentence) {
+                if (segmentMode === 'punctuation' && separatorType === 'punctuation') {
+                    if (!sentenceEndsWithPunctuation(currentSentence)) {
+                        currentSentence.pendingFinalizeSeqIndex = token._sequenceIndex;
+                        currentSentence.pendingFinalizeReason = 'punctuation';
+                    } else {
+                        currentSentence.pendingFinalizeSeqIndex = null;
+                        currentSentence.pendingFinalizeReason = null;
+                        maybeFinalizeSentence(currentSentence, token._sequenceIndex);
+                    }
+                } else {
+                    currentSentence.pendingFinalizeSeqIndex = null;
+                    currentSentence.pendingFinalizeReason = null;
                     maybeFinalizeSentence(currentSentence, token._sequenceIndex);
                 }
+            }
+
+            if (
+                segmentMode === 'punctuation' &&
+                shouldFinalize &&
+                currentSentence &&
+                currentSentence.translationTokens.length === 0
+            ) {
+                currentSentence.pendingFinalizeSeqIndex = token._sequenceIndex;
+                currentSentence.pendingFinalizeReason = separatorType;
             }
             
             // 当遇到分隔符时，如果当前句子需要翻译但还没有译文，
             // 我们添加一个"假"的翻译标记，表示这个句子已经"完结"了。
             // 这样后续迟到的译文就不会匹配到这个已经完结的句子，而是会另起一行。
-            if (currentSentence && currentSentence.requiresTranslation !== false && currentSentence.translationTokens.length === 0) {
+            // 但在标点分段模式下，标点分隔符不应直接阻断迟到的译文（避免末句译文丢失）。
+            if (
+                currentSentence &&
+                currentSentence.requiresTranslation !== false &&
+                currentSentence.translationTokens.length === 0 &&
+                segmentMode !== 'punctuation'
+            ) {
                 currentSentence.hasFakeTranslation = true;
             }
 
             if (separatorType === 'endpoint') {
                 if (currentSentence) {
-                    if (segmentMode === 'endpoint') {
+                    if (segmentMode === 'endpoint' || segmentMode === 'punctuation') {
                         currentSentence = null;
                     }
                 }
             } else if (separatorType === 'translation') {
                 if (segmentMode === 'translation') {
+                    currentSentence = null;
+                }
+            } else if (separatorType === 'punctuation') {
+                if (segmentMode === 'punctuation') {
                     currentSentence = null;
                 }
             }
@@ -2143,11 +2235,23 @@ function renderSubtitles() {
 
             // 2. 尝试匹配该说话人最近的一个可接受译文的句子
             if (!targetSentence) {
-                targetSentence = findLastSentenceForSpeaker(speaker, (sentence) => canAcceptTranslation(sentence, token));
+                targetSentence = findLastSentenceForSpeaker(
+                    speaker,
+                    (sentence) => canAcceptTranslation(sentence, token),
+                    {
+                        stopOnFakeTranslation: true,
+                        stopOnPendingFinalize: segmentMode === 'punctuation'
+                    }
+                );
             }
 
             // 3. 如果都匹配不到，创建一个纯译文句子
             if (!targetSentence) {
+                if (segmentMode === 'punctuation') {
+                    // In punctuation segmentation, skip creating translation-only sentences
+                    // when no matching original sentence is found.
+                    return;
+                }
                 targetSentence = startSentence(speaker, { translationOnly: true });
             }
 
@@ -2161,6 +2265,23 @@ function renderSubtitles() {
 
             targetSentence.translationTokens.push(token);
             pendingTranslationSentence = targetSentence;
+
+            if (segmentMode === 'punctuation' && targetSentence.pendingFinalizeSeqIndex !== null) {
+                const allFinal =
+                    targetSentence.originalTokens.length > 0 &&
+                    targetSentence.translationTokens.length > 0 &&
+                    targetSentence.originalTokens.every(t => t && t.is_final) &&
+                    targetSentence.translationTokens.every(t => t && t.is_final);
+                if (allFinal) {
+                    const reason = targetSentence.pendingFinalizeReason;
+                    if (reason !== 'punctuation' || sentenceEndsWithPunctuation(targetSentence)) {
+                        const seqIndex = targetSentence.pendingFinalizeSeqIndex;
+                        targetSentence.pendingFinalizeSeqIndex = null;
+                        targetSentence.pendingFinalizeReason = null;
+                        maybeFinalizeSentence(targetSentence, seqIndex);
+                    }
+                }
+            }
         } else {
             // 原文 token (original 或 none)
             const tokenRequiresTranslation = (translationStatus !== 'none');
