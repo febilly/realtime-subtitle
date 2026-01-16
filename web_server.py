@@ -135,6 +135,8 @@ class WebServer:
         """对已完成的译文段落做最小改动修复（由前端触发）。"""
 
         NO_CHANGE_MARKER = "__NO_CHANGE__"
+        PLACEHOLDER_ANSWER = "...corrected translation..."
+        MAX_REFINE_ATTEMPTS = 3
 
         if not is_llm_refine_available():
             return web.json_response(
@@ -231,7 +233,7 @@ class WebServer:
             "If NO major error exists (even if wording/style is poor): output exactly:\n"
             f"<answer>{NO_CHANGE_MARKER}</answer>\n\n"
             "If a major error exists: output ONLY the corrected translation wrapped exactly as:\n"
-            "<answer>(corrected translation)</answer>\n\n"
+            f"<answer>{PLACEHOLDER_ANSWER}</answer>\n\n"
             "Do NOT add explanations.\n\n"
             f"{context_block}"
             "Source:\n```\n"
@@ -249,38 +251,56 @@ class WebServer:
             model=(LLM_MODEL or "").strip(),
         )
 
-        try:
-            content = await chat_completion(
-                config,
-                messages=[
-                    {"role": "system", "content": "You are a precise translation reviewer."},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=float(LLM_TEMPERATURE),
-                max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                timeout_seconds=60.0,
-            )
-        except (asyncio.CancelledError, Exception) as exc:
-            if isinstance(exc, LlmError):
-                return web.json_response({"status": "error", "message": str(exc)}, status=502)
-            return web.json_response({"status": "error", "message": "LLM request failed"}, status=502)
+        refined = ""
+        for attempt in range(MAX_REFINE_ATTEMPTS):
+            try:
+                content = await chat_completion(
+                    config,
+                    messages=[
+                        {"role": "system", "content": "You are a precise translation reviewer."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=float(LLM_TEMPERATURE),
+                    max_tokens=int(LLM_REFINE_MAX_TOKENS),
+                    timeout_seconds=60.0,
+                )
+            except (asyncio.CancelledError, Exception) as exc:
+                # Do not retry network/LLM errors.
+                if isinstance(exc, LlmError):
+                    return web.json_response({"status": "error", "message": str(exc)}, status=502)
+                return web.json_response({"status": "error", "message": "LLM request failed"}, status=502)
 
-        refined = extract_answer_tag(content)
-        if not refined:
-            # If model didn't follow format, treat as no-change to avoid accidental hallucinated edits.
-            return web.json_response({"status": "ok", "no_change": True})
+            raw_content = str(content or "").strip()
+            
+            last_match = None
+            for match in re.finditer(r"<answer>(.*?)</answer>", raw_content, flags=re.DOTALL | re.IGNORECASE):
+                last_match = match
+            refined = (last_match.group(1) if last_match else "")
 
-        # Sanitize output: remove leading/trailing whitespace/newlines and formatting backticks.
-        refined = refined.strip()
-        if refined.startswith("```"):
-            # Remove optional fenced code block wrapper.
-            refined = re.sub(r"^```[^\n]*\n", "", refined)
-            refined = re.sub(r"\n```$", "", refined.strip())
-        refined = refined.strip("`").strip()
-        if refined == NO_CHANGE_MARKER:
-            return web.json_response({"status": "ok", "no_change": True})
+            if not refined:
+                if attempt < MAX_REFINE_ATTEMPTS - 1:
+                    continue
+                return web.json_response({"status": "ok", "no_change": True})
 
-        return web.json_response({"status": "ok", "no_change": False, "refined_translation": refined})
+            # Sanitize output: remove leading/trailing whitespace/newlines and formatting backticks.
+            refined = refined.strip()
+            if refined.startswith("```"):
+                # Remove optional fenced code block wrapper.
+                refined = re.sub(r"^```[^\n]*\n", "", refined)
+                refined = re.sub(r"\n```$", "", refined.strip())
+            refined = refined.strip("`").strip()
+
+            if refined == PLACEHOLDER_ANSWER:
+                if attempt < MAX_REFINE_ATTEMPTS - 1:
+                    continue
+                return web.json_response({"status": "ok", "no_change": True})
+
+            if refined == NO_CHANGE_MARKER:
+                return web.json_response({"status": "ok", "no_change": True})
+
+            return web.json_response({"status": "ok", "no_change": False, "refined_translation": refined})
+
+        return web.json_response({"status": "ok", "no_change": True})
     
     async def restart_handler(self, request):
         """重启识别端点"""
