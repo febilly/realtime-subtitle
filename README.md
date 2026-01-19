@@ -12,10 +12,10 @@ A real-time speech-to-subtitle tool based on Soniox API. Captures system audio a
 
 ## Features
 
-- Capture audio from system default output or default microphone
 - Speech recognition powered by Soniox
 - Real-time translation (uses system language as target by default)
-- Toggle sentence segmentation mode and source/target language display
+- Use LLM to refine completed translations (optional)
+- And more (I'm too lazy to list them all; just hover over the buttons and check the tooltips)
 
 ## Installation
 
