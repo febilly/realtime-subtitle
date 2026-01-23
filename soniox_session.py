@@ -4,6 +4,8 @@ Soniox会话模块 - 管理与Soniox服务的WebSocket会话
 import json
 import threading
 import asyncio
+import time
+import re
 from typing import Optional, Tuple
 
 from websockets import ConnectionClosedOK
@@ -15,10 +17,21 @@ from config import (
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
     FFMPEG_PATH,
+    DEFAULT_SEGMENT_MODE,
+    is_llm_refine_available,
+    LLM_REFINE_CONTEXT_COUNT,
+    LLM_PROMPT_SUFFIX,
+    LLM_REFINE_MAX_TOKENS,
+    LLM_BASE_URL,
+    LLM_MODEL,
+    LLM_TEMPERATURE,
+    get_llm_api_key,
+    LLM_REFINE_DEFAULT_ENABLED,
 )
 from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
+from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 
 
 class SonioxSession:
@@ -43,8 +56,10 @@ class SonioxSession:
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
         self.osc_translation_enabled = False
-        self._osc_buffer_lock = threading.Lock()
-        self._osc_translation_tokens: list[dict] = []
+        self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
+        self._sentence_buffers: dict[str, dict] = {}
+        self._refine_context_history: list[dict] = []
+        self._llm_refine_enabled = bool(LLM_REFINE_DEFAULT_ENABLED)
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -76,10 +91,11 @@ class SonioxSession:
         self.audio_format = audio_format
         self.translation = translation
         self.loop = loop
+        self._sentence_buffers.clear()
+        self._refine_context_history.clear()
 
         if translation_target_lang is not None:
             self.set_translation_target_lang(translation_target_lang)
-        self._reset_osc_buffer()
         osc_manager.clear_history()
         
         # 初始化日志文件（如果还没有创建）
@@ -124,19 +140,12 @@ class SonioxSession:
     def set_osc_translation_enabled(self, enabled: bool):
         """开启或关闭翻译结果通过 OSC 发送"""
         value = bool(enabled)
-        with self._osc_buffer_lock:
-            self.osc_translation_enabled = value
-            if not value:
-                self._osc_translation_tokens.clear()
-                osc_manager.clear_history()
+        self.osc_translation_enabled = value
+        if not value:
+            osc_manager.clear_history()
 
     def get_osc_translation_enabled(self) -> bool:
-        with self._osc_buffer_lock:
-            return self.osc_translation_enabled
-
-    def _reset_osc_buffer(self):
-        with self._osc_buffer_lock:
-            self._osc_translation_tokens.clear()
+        return self.osc_translation_enabled
     
     def resume(self, api_key: Optional[str] = None, audio_format: Optional[str] = None,
                translation: Optional[str] = None, loop: Optional[asyncio.AbstractEventLoop] = None,
@@ -202,8 +211,8 @@ class SonioxSession:
 
         if self.thread is None:
             self.stop_event = None
-            self._reset_osc_buffer()
             osc_manager.clear_history()
+            self._sentence_buffers.clear()
 
     def get_audio_source(self) -> str:
         """返回当前配置的音频源"""
@@ -282,54 +291,268 @@ class SonioxSession:
         if streamer:
             streamer.stop()
 
-    def _flush_osc_translation_segment(self):
-        """将缓存的译文片段通过 OSC 发送（遵循历史拼接规则）"""
-        with self._osc_buffer_lock:
-            if not self.osc_translation_enabled:
-                self._osc_translation_tokens.clear()
-                return
+    def _make_separator_token(self, separator_type: str) -> dict:
+        return {
+            "is_separator": True,
+            "is_final": True,
+            "separator_type": separator_type,
+        }
 
-            tokens = list(self._osc_translation_tokens)
-            self._osc_translation_tokens.clear()
+    def _process_token_for_sentence(self, token: dict) -> list[dict]:
+        """处理 token 并根据断句模式检测句子结束。"""
+        separators: list[dict] = []
+        text = token.get("text", "")
+        speaker = str(token.get("speaker", "?"))
+        translation_status = token.get("translation_status", "original")
 
-        speaker_value = "?"
-        for tok in reversed(tokens):
-            spk = tok.get("speaker")
-            if spk is not None and spk != "":
-                speaker_value = str(spk)
-                break
+        # <end> 标记处理
+        if text == "<end>":
+            if self._segment_mode == "translation" and speaker in self._sentence_buffers:
+                if self._trigger_sentence_finalization(speaker):
+                    separators.append(self._make_separator_token("translation"))
+            return separators
 
-        text = "".join([tok.get("text", "") for tok in tokens]).strip()
+        if speaker not in self._sentence_buffers:
+            self._sentence_buffers[speaker] = {
+                "original_tokens": [],
+                "translation_tokens": [],
+            }
 
-        if text:
-            osc_manager.add_message_and_send(text, ongoing=False, speaker=speaker_value)
+        buffer = self._sentence_buffers[speaker]
 
-    def _handle_osc_final_tokens(self, final_tokens: list[dict]):
-        """处理新增的 final tokens，用 <end> 断句并缓存译文"""
-        # When frontend drives OSC sending, backend should not auto-send.
-        try:
-            from config import OSC_TRANSLATION_FRONTEND_DRIVEN
-            if OSC_TRANSLATION_FRONTEND_DRIVEN:
-                return
-        except Exception:
-            # If config import fails for any reason, fall back to existing behavior.
-            pass
+        if translation_status == "translation":
+            buffer["translation_tokens"].append(token)
+        else:
+            buffer["original_tokens"].append(token)
 
-        if not self.get_osc_translation_enabled():
+        if self._segment_mode == "punctuation" and translation_status == "translation":
+            if self._is_sentence_ending_punctuation(text):
+                if self._trigger_sentence_finalization(speaker):
+                    separators.append(self._make_separator_token("punctuation"))
+
+        return separators
+
+    def _is_sentence_ending_punctuation(self, text: str) -> bool:
+        """检测是否为句末标点"""
+        value = (text or "").strip()
+        if not value:
+            return False
+        ending_chars = ("。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…")
+        return value.endswith(ending_chars)
+
+    def _trigger_sentence_finalization(self, speaker: str) -> bool:
+        """触发句子完成处理"""
+        buffer = self._sentence_buffers.pop(speaker, None)
+        if not buffer:
+            return False
+
+        original_tokens = buffer.get("original_tokens") or []
+        translation_tokens = buffer.get("translation_tokens") or []
+
+        if not original_tokens or not translation_tokens:
+            return False
+
+        if not self.loop:
+            return False
+
+        asyncio.run_coroutine_threadsafe(
+            self._finalize_sentence_async(speaker, original_tokens, translation_tokens),
+            self.loop,
+        )
+        return True
+
+    async def _finalize_sentence_async(self, speaker: str, original_tokens: list, translation_tokens: list):
+        """异步执行 LLM 改进与 OSC 发送"""
+        source = "".join([t.get("text", "") for t in original_tokens]).strip()
+        translation = "".join([t.get("text", "") for t in translation_tokens]).strip()
+
+        if not source or not translation:
             return
 
-        for token in final_tokens:
-            if not token.get("is_final"):
-                continue
+        sentence_id = f"backend-{int(time.time() * 1000)}-{speaker}"
+        context_items = list(self._refine_context_history[-LLM_REFINE_CONTEXT_COUNT:])
 
-            text = token.get("text") or ""
-            if text == "<end>":
-                self._flush_osc_translation_segment()
-                continue
+        refined_translation = translation
+        no_change = True
 
-            if token.get("translation_status") == "translation" and text:
-                with self._osc_buffer_lock:
-                    self._osc_translation_tokens.append(token)
+        if is_llm_refine_available() and self._llm_refine_enabled:
+            try:
+                result = await self._perform_refine(source, translation, context_items)
+                if result.get("status") == "ok" and not result.get("no_change"):
+                    refined_translation = result.get("refined_translation") or translation
+                    no_change = False
+            except Exception as error:
+                print(f"LLM refine error: {error}")
+
+        await self.broadcast_callback({
+            "type": "refine_result",
+            "sentence_id": sentence_id,
+            "source": source,
+            "original_translation": translation,
+            "refined_translation": refined_translation if not no_change else None,
+            "no_change": no_change,
+            "speaker": speaker,
+        })
+
+        if self.get_osc_translation_enabled():
+            try:
+                osc_manager.add_message_and_send(refined_translation, ongoing=False, speaker=speaker)
+            except Exception as error:
+                print(f"OSC send failed: {error}")
+
+        self._refine_context_history.append({"source": source, "translation": refined_translation})
+        if len(self._refine_context_history) > 20:
+            self._refine_context_history = self._refine_context_history[-20:]
+
+    async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:
+        """执行 LLM 翻译改进"""
+        NO_CHANGE_MARKER = "__NO_CHANGE__"
+        PLACEHOLDER_ANSWER = "...corrected translation..."
+        MAX_REFINE_ATTEMPTS = 3
+
+        source = (source or "").strip()
+        translation = (translation or "").strip()
+        if not source or not translation:
+            return {"status": "error", "no_change": True}
+
+        target_lang_value = ""
+        try:
+            tl = self.get_translation_target_lang()
+            if isinstance(tl, str) and tl.strip():
+                target_lang_value = tl.strip().lower()[:16]
+        except Exception:
+            target_lang_value = ""
+
+        normalized_context: list[dict[str, str]] = []
+        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_COUNT > 0:
+            max_items = min(int(LLM_REFINE_CONTEXT_COUNT), 20)
+            for item in context_items[:max_items]:
+                if not isinstance(item, dict):
+                    continue
+                ctx_source = item.get("source")
+                ctx_translation = item.get("translation")
+                if not isinstance(ctx_source, str) or not isinstance(ctx_translation, str):
+                    continue
+                ctx_source = ctx_source.strip()
+                ctx_translation = ctx_translation.strip()
+                if not ctx_source or not ctx_translation:
+                    continue
+                if len(ctx_source) > 5000 or len(ctx_translation) > 5000:
+                    continue
+                normalized_context.append({"source": ctx_source, "translation": ctx_translation})
+
+        context_block = ""
+        if normalized_context:
+            lines = [
+                "Context (for coherence only; do NOT quote it; do NOT merge or rewrite it into the current translation; "
+                "even if the source/translation is short, do NOT output the context; use it only to resolve pronouns, references, and coherence):",
+            ]
+            for idx, item in enumerate(normalized_context, start=1):
+                lines.append(f"{idx}. Source: {item['source']}")
+                lines.append(f"   Translation: {item['translation']}")
+            context_block = "\n".join(lines) + "\n\n"
+
+        prompt_suffix = (LLM_PROMPT_SUFFIX or "").strip()
+        suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
+
+        prompt = (
+            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
+            "You are a strict QA system for real-time translation. Your task is to verify a draft translation against the source text.\n"
+            "\n\n"
+            "Rules:\n"
+            "1. Readability vs Accuracy: This is real-time subtitles. Large rewrites disrupt the user's reading flow. Balance minimal changes with correctness: only rewrite when needed to fix a major error or severe sentence-structure issue.\n"
+            "2. Preserve Question Form: If the draft translation is a question, keep it a question in the output (preserve question intent and punctuation such as '?' where appropriate).\n"
+            "3. Major Errors Only: Fix only mistranslations, hallucinations, opposite meanings, missing key entities, or sentence structure issues that make the translation hard to understand.\n"
+            "   - Do NOT fix minor word-order awkwardness or small grammar issues if the meaning is already correct.\n"
+            "4. Minimal Edits: Keep the draft as-is unless a major error requires change.\n\n"
+            "If NO major error exists (even if wording/style is poor): output exactly:\n"
+            f"<answer>{NO_CHANGE_MARKER}</answer>\n\n"
+            "If a major error exists: output ONLY the corrected translation wrapped exactly as:\n"
+            f"<answer>{PLACEHOLDER_ANSWER}</answer>\n\n"
+            "Do NOT add explanations.\n\n"
+            f"{context_block}"
+            "Source:\n```\n"
+            f"{source}\n"
+            "```\n\n"
+            "Draft translation:\n```\n"
+            f"{translation}\n"
+            "```\n"
+            f"{suffix_block}"
+        )
+
+        config = LlmConfig(
+            base_url=(LLM_BASE_URL or "").strip(),
+            api_key=get_llm_api_key(),
+            model=(LLM_MODEL or "").strip(),
+        )
+
+        for attempt in range(MAX_REFINE_ATTEMPTS):
+            try:
+                content = await chat_completion(
+                    config,
+                    messages=[
+                        {"role": "system", "content": "You are a precise translation reviewer."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=float(LLM_TEMPERATURE),
+                    max_tokens=int(LLM_REFINE_MAX_TOKENS),
+                    timeout_seconds=60.0,
+                )
+            except (asyncio.CancelledError, Exception) as exc:
+                if isinstance(exc, LlmError):
+                    return {"status": "error", "message": str(exc), "no_change": True}
+                return {"status": "error", "message": "LLM request failed", "no_change": True}
+
+            raw_content = str(content or "").strip()
+            refined = extract_answer_tag(raw_content).strip()
+
+            if not refined:
+                if attempt < MAX_REFINE_ATTEMPTS - 1:
+                    continue
+                return {"status": "ok", "no_change": True}
+
+            if refined.startswith("```"):
+                refined = re.sub(r"^```[^\n]*\n", "", refined)
+                refined = re.sub(r"\n```$", "", refined.strip())
+            refined = refined.strip("`").strip()
+
+            if refined == PLACEHOLDER_ANSWER:
+                if attempt < MAX_REFINE_ATTEMPTS - 1:
+                    continue
+                return {"status": "ok", "no_change": True}
+
+            if refined == NO_CHANGE_MARKER:
+                return {"status": "ok", "no_change": True}
+
+            return {"status": "ok", "no_change": False, "refined_translation": refined}
+
+        return {"status": "ok", "no_change": True}
+
+    def set_segment_mode(self, mode: str) -> tuple[bool, str]:
+        """设置断句模式并广播给所有前端"""
+        if mode not in ("translation", "endpoint", "punctuation"):
+            return False, f"Invalid segment mode: {mode}"
+
+        self._segment_mode = mode
+        self._sentence_buffers.clear()
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast_callback({
+                    "type": "segment_mode_changed",
+                    "mode": mode,
+                }),
+                self.loop,
+            )
+        return True, "ok"
+
+    def get_segment_mode(self) -> str:
+        return self._segment_mode
+
+    def set_llm_refine_enabled(self, enabled: bool):
+        self._llm_refine_enabled = bool(enabled)
+
+    def get_llm_refine_enabled(self) -> bool:
+        return self._llm_refine_enabled
     
     def _run_session(
         self,
@@ -381,43 +604,58 @@ class SonioxSession:
 
                         # Parse tokens from current response.
                         non_final_tokens: list[dict] = []
-                        has_translation = False  # 标记本次响应是否包含翻译token
-                        
+
                         for token in res.get("tokens", []):
                             if token.get("text"):
                                 if token.get("is_final"):
                                     # Final tokens累积添加
                                     all_final_tokens.append(token)
-                                    # 检查是否是翻译token
-                                    if token.get("translation_status") == "translation":
-                                        has_translation = True
                                 else:
                                     # Non-final tokens每次重置
                                     non_final_tokens.append(token)
 
                         # 计算新增的final tokens（增量部分）
                         new_final_tokens = all_final_tokens[self.last_sent_count:]
+                        endpoint_detected = bool(res.get("endpoint_detected", False))
+
+                        separator_tokens: list[dict] = []
+                        outgoing_final_tokens: list[dict] = []
 
                         if new_final_tokens:
-                            self._handle_osc_final_tokens(new_final_tokens)
-                        
+                            for token in new_final_tokens:
+                                if token.get("text") is None:
+                                    continue
+                                separator_tokens.extend(self._process_token_for_sentence(token))
+                                if token.get("text") != "<end>":
+                                    outgoing_final_tokens.append(token)
+
+                        if endpoint_detected and self._segment_mode == "endpoint":
+                            speaker_value = None
+                            for token in reversed(new_final_tokens):
+                                spk = token.get("speaker")
+                                if spk is not None and spk != "":
+                                    speaker_value = str(spk)
+                                    break
+                            if speaker_value is None and self._sentence_buffers:
+                                speaker_value = next(iter(self._sentence_buffers.keys()))
+                            if speaker_value and self._trigger_sentence_finalization(speaker_value):
+                                separator_tokens.append(self._make_separator_token("endpoint"))
+
                         # 将新的final tokens写入日志
-                        if new_final_tokens and not self.is_paused:
-                            self.logger.write_to_log(new_final_tokens)
-                        
+                        if outgoing_final_tokens and not self.is_paused:
+                            self.logger.write_to_log([t for t in outgoing_final_tokens if not t.get("is_separator")])
+
                         # 如果有新的数据，发送给前端（暂停时也显示，只是不记录）
-                        if new_final_tokens or non_final_tokens:
+                        if outgoing_final_tokens or separator_tokens or non_final_tokens:
                             asyncio.run_coroutine_threadsafe(
                                 self.broadcast_callback({
                                     "type": "update",
-                                    "final_tokens": new_final_tokens,  # 只发送新增的final tokens
-                                    "non_final_tokens": non_final_tokens,  # 当前所有non-final tokens
-                                    "has_translation": has_translation,  # 本次响应是否包含翻译
-                                    "endpoint_detected": res.get("endpoint_detected", False)  # 是否检测到endpoint
+                                    "final_tokens": outgoing_final_tokens + separator_tokens,
+                                    "non_final_tokens": [t for t in non_final_tokens if t.get("text") != "<end>"],
                                 }),
                                 loop
                             )
-                            
+
                             # 更新已发送的计数
                             self.last_sent_count = len(all_final_tokens)
 

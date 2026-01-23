@@ -80,6 +80,12 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     refine_del_group.add_argument('--no-llm-refine-show-deletions', dest='llm_refine_show_deletions', action='store_false', default=None,
                                  help='When diff is enabled, do not show deleted text (default)')
 
+    refine_toggle_group = parser.add_mutually_exclusive_group()
+    refine_toggle_group.add_argument('--llm-refine', dest='llm_refine_default_enabled', action='store_true', default=None,
+                                     help='Enable LLM refine by default (can be toggled in UI if unlocked)')
+    refine_toggle_group.add_argument('--no-llm-refine', dest='llm_refine_default_enabled', action='store_false', default=None,
+                                     help='Disable LLM refine by default (can be toggled in UI if unlocked)')
+
     return parser.parse_known_args(argv)
 
 
@@ -109,6 +115,7 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
 
     _set_env_bool_if_provided('LLM_REFINE_SHOW_DIFF', args.llm_refine_show_diff)
     _set_env_bool_if_provided('LLM_REFINE_SHOW_DELETIONS', args.llm_refine_show_deletions)
+    _set_env_bool_if_provided('LLM_REFINE_DEFAULT_ENABLED', args.llm_refine_default_enabled)
 
 
 def run_server(app, sock):
