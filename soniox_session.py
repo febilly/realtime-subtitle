@@ -298,6 +298,28 @@ class SonioxSession:
             "separator_type": separator_type,
         }
 
+    def _minify_token(self, token: dict, *, is_final: Optional[bool] = None) -> dict:
+        """将 token 精简为前端需要的字段以减少带宽。"""
+        if token.get("is_separator"):
+            return {
+                "is_separator": True,
+                "is_final": True,
+                "separator_type": token.get("separator_type", "translation"),
+            }
+
+        value: dict = {
+            "text": token.get("text", ""),
+            "speaker": token.get("speaker", "?"),
+            "translation_status": token.get("translation_status", "original"),
+            "language": token.get("language"),
+            "source_language": token.get("source_language"),
+        }
+        if is_final is None:
+            value["is_final"] = bool(token.get("is_final", False))
+        else:
+            value["is_final"] = bool(is_final)
+        return value
+
     def _process_token_for_sentence(self, token: dict) -> list[dict]:
         """处理 token 并根据断句模式检测句子结束。"""
         separators: list[dict] = []
@@ -386,12 +408,10 @@ class SonioxSession:
 
         await self.broadcast_callback({
             "type": "refine_result",
-            "sentence_id": sentence_id,
             "source": source,
             "original_translation": translation,
             "refined_translation": refined_translation if not no_change else None,
             "no_change": no_change,
-            "speaker": speaker,
         })
 
         if self.get_osc_translation_enabled():
@@ -627,7 +647,7 @@ class SonioxSession:
                                     continue
                                 separator_tokens.extend(self._process_token_for_sentence(token))
                                 if token.get("text") != "<end>":
-                                    outgoing_final_tokens.append(token)
+                                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
 
                         if endpoint_detected and self._segment_mode == "endpoint":
                             speaker_value = None
@@ -643,15 +663,15 @@ class SonioxSession:
 
                         # 将新的final tokens写入日志
                         if outgoing_final_tokens and not self.is_paused:
-                            self.logger.write_to_log([t for t in outgoing_final_tokens if not t.get("is_separator")])
+                            self.logger.write_to_log([t for t in new_final_tokens if t.get("text") != "<end>"])
 
                         # 如果有新的数据，发送给前端（暂停时也显示，只是不记录）
                         if outgoing_final_tokens or separator_tokens or non_final_tokens:
                             asyncio.run_coroutine_threadsafe(
                                 self.broadcast_callback({
                                     "type": "update",
-                                    "final_tokens": outgoing_final_tokens + separator_tokens,
-                                    "non_final_tokens": [t for t in non_final_tokens if t.get("text") != "<end>"],
+                                    "final_tokens": outgoing_final_tokens + [self._minify_token(t) for t in separator_tokens],
+                                    "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if t.get("text") != "<end>"]
                                 }),
                                 loop
                             )
