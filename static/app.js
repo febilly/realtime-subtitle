@@ -85,6 +85,9 @@ let llmRefineShowDiff = false;
 // 由后端下发：diff 高亮时是否显示“被删除”的文本（无前端开关）
 let llmRefineShowDeletions = false;
 
+// 由后端下发：是否启用说话人分离
+let speakerDiarizationEnabled = true;
+
 // 译文自动修复开关（默认关闭）
 let llmRefineEnabled = localStorage.getItem('llmRefineEnabled') === 'true';
 
@@ -460,6 +463,9 @@ async function fetchUiConfig() {
             segmentMode = data.segment_mode.trim();
             localStorage.setItem('segmentMode', segmentMode);
             updateSegmentModeButton();
+        }
+        if (data && typeof data.speaker_diarization_enabled === 'boolean') {
+            speakerDiarizationEnabled = data.speaker_diarization_enabled;
         }
         applyLockPauseRestartControlsUI();
         updateTranslationRefineButton();
@@ -1997,7 +2003,7 @@ function renderSubtitles() {
 
         let blockHtml = '';
 
-        if (block.speaker !== previousSpeaker) {
+        if (speakerDiarizationEnabled && block.speaker !== previousSpeaker) {
             blockHtml += `<div class="speaker-label ${getSpeakerClass(block.speaker)}">${escapeHtml(t('speaker_label', { speaker: block.speaker }))}</div>`;
         }
 

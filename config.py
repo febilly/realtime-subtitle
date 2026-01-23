@@ -118,6 +118,11 @@ LOCK_MANUAL_CONTROLS = _env_bool("LOCK_MANUAL_CONTROLS", False)
 # False: 使用本机系统音频/麦克风采集
 USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 
+# 说话人分离开关（默认开启）
+# True: 启用说话人分离（前端显示说话人标签）
+# False: 关闭说话人分离（前端隐藏说话人标签）
+ENABLE_SPEAKER_DIARIZATION = _env_bool("ENABLE_SPEAKER_DIARIZATION", True)
+
 # 默认断句模式: 'translation' | 'endpoint' | 'punctuation'
 # - translation: 基于 Soniox 的 <end> 标记
 # - endpoint: 基于 Soniox 的 endpoint_detected 标志
