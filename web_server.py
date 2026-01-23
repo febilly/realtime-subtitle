@@ -154,7 +154,7 @@ class WebServer:
         return web.json_response({"status": "ok", "mode": mode})
 
     async def llm_refine_get_handler(self, request):
-        """获取 LLM 翻译模式状态"""
+        """Get LLM translation mode status"""
         mode = self.soniox_session.get_llm_translation_mode()
         # For backward compatibility, also return enabled flag
         enabled = (mode == "refine" or mode == "llm_only")
@@ -165,7 +165,7 @@ class WebServer:
         })
 
     async def llm_refine_set_handler(self, request):
-        """设置 LLM 翻译模式"""
+        """Set LLM translation mode"""
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "LLM refine toggle is disabled by server config"},

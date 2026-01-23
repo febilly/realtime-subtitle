@@ -567,7 +567,7 @@ class SonioxSession:
         return {"status": "ok", "no_change": True}
 
     async def _perform_llm_only_translation(self, source: str, context_items: list) -> dict:
-        """执行 LLM 直接翻译（不依赖 Soniox 翻译）"""
+        """Perform LLM-only translation (without relying on Soniox translation)"""
         PLACEHOLDER_ANSWER = "...translation..."
         MAX_TRANSLATION_ATTEMPTS = 3
 
@@ -681,7 +681,7 @@ class SonioxSession:
 
 
     def set_segment_mode(self, mode: str) -> tuple[bool, str]:
-        """设置断句模式并广播给所有前端"""
+        """Set segment mode and broadcast to all frontends"""
         if mode not in ("translation", "endpoint", "punctuation"):
             return False, f"Invalid segment mode: {mode}"
 
@@ -705,7 +705,7 @@ class SonioxSession:
         return self._segment_mode
 
     def set_llm_translation_mode(self, mode: str) -> tuple[bool, str]:
-        """设置 LLM 翻译模式: off, refine, llm_only"""
+        """Set LLM translation mode: off, refine, llm_only"""
         if mode not in ("off", "refine", "llm_only"):
             return False, f"Invalid LLM translation mode: {mode}"
         
