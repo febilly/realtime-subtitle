@@ -320,19 +320,14 @@ class SonioxSession:
             value["is_final"] = bool(is_final)
         return value
 
-    def _process_token_for_sentence(self, token: dict) -> list[dict]:
-        """处理 token 并根据断句模式检测句子结束。"""
-        separators: list[dict] = []
+    def _process_token_for_sentence(self, token: dict) -> None:
+        """缓存 token 供后续断句/改进使用。"""
         text = token.get("text", "")
+        if text == "<end>":
+            return
+
         speaker = str(token.get("speaker", "?"))
         translation_status = token.get("translation_status", "original")
-
-        # <end> 标记处理
-        if text == "<end>":
-            if self._segment_mode == "translation" and speaker in self._sentence_buffers:
-                if self._trigger_sentence_finalization(speaker):
-                    separators.append(self._make_separator_token("translation"))
-            return separators
 
         if speaker not in self._sentence_buffers:
             self._sentence_buffers[speaker] = {
@@ -347,13 +342,6 @@ class SonioxSession:
         else:
             buffer["original_tokens"].append(token)
 
-        if self._segment_mode == "punctuation" and translation_status == "translation":
-            if self._is_sentence_ending_punctuation(text):
-                if self._trigger_sentence_finalization(speaker):
-                    separators.append(self._make_separator_token("punctuation"))
-
-        return separators
-
     def _is_sentence_ending_punctuation(self, text: str) -> bool:
         """检测是否为句末标点"""
         value = (text or "").strip()
@@ -364,7 +352,7 @@ class SonioxSession:
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""
-        buffer = self._sentence_buffers.pop(speaker, None)
+        buffer = self._sentence_buffers.get(speaker)
         if not buffer:
             return False
 
@@ -373,6 +361,8 @@ class SonioxSession:
 
         if not original_tokens or not translation_tokens:
             return False
+
+        self._sentence_buffers.pop(speaker, None)
 
         if not self.loop:
             return False
@@ -645,21 +635,74 @@ class SonioxSession:
                             for token in new_final_tokens:
                                 if token.get("text") is None:
                                     continue
-                                separator_tokens.extend(self._process_token_for_sentence(token))
+                                self._process_token_for_sentence(token)
                                 if token.get("text") != "<end>":
                                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
 
-                        if endpoint_detected and self._segment_mode == "endpoint":
-                            speaker_value = None
-                            for token in reversed(new_final_tokens):
-                                spk = token.get("speaker")
-                                if spk is not None and spk != "":
-                                    speaker_value = str(spk)
-                                    break
-                            if speaker_value is None and self._sentence_buffers:
-                                speaker_value = next(iter(self._sentence_buffers.keys()))
-                            if speaker_value and self._trigger_sentence_finalization(speaker_value):
-                                separator_tokens.append(self._make_separator_token("endpoint"))
+                        if new_final_tokens or endpoint_detected:
+                            if self._segment_mode == "translation":
+                                translation_hit = any(
+                                    t.get("text") not in (None, "<end>")
+                                    and t.get("translation_status") == "translation"
+                                    for t in new_final_tokens
+                                )
+                                if translation_hit:
+                                    speaker_value = None
+                                    for token in reversed(new_final_tokens):
+                                        if token.get("translation_status") == "translation":
+                                            spk = token.get("speaker")
+                                            if spk is not None and spk != "":
+                                                speaker_value = str(spk)
+                                                break
+                                    if speaker_value is None:
+                                        for token in reversed(new_final_tokens):
+                                            spk = token.get("speaker")
+                                            if spk is not None and spk != "":
+                                                speaker_value = str(spk)
+                                                break
+                                    if speaker_value is None and self._sentence_buffers:
+                                        speaker_value = next(iter(self._sentence_buffers.keys()))
+                                    if speaker_value:
+                                        self._trigger_sentence_finalization(speaker_value)
+                                    separator_tokens.append(self._make_separator_token("translation"))
+
+                            elif self._segment_mode == "endpoint":
+                                endpoint_hit = endpoint_detected or any(
+                                    t.get("text") == "<end>"
+                                    for t in new_final_tokens
+                                )
+                                if endpoint_hit:
+                                    speaker_value = None
+                                    for token in reversed(new_final_tokens):
+                                        spk = token.get("speaker")
+                                        if spk is not None and spk != "":
+                                            speaker_value = str(spk)
+                                            break
+                                    if speaker_value is None and self._sentence_buffers:
+                                        speaker_value = next(iter(self._sentence_buffers.keys()))
+                                    if speaker_value:
+                                        self._trigger_sentence_finalization(speaker_value)
+                                    separator_tokens.append(self._make_separator_token("endpoint"))
+
+                            elif self._segment_mode == "punctuation":
+                                punctuation_hit = any(
+                                    t.get("text")
+                                    and t.get("translation_status") == "translation"
+                                    and self._is_sentence_ending_punctuation(t.get("text", ""))
+                                    for t in new_final_tokens
+                                )
+                                if punctuation_hit:
+                                    speaker_value = None
+                                    for token in reversed(new_final_tokens):
+                                        if token.get("translation_status") == "translation" and token.get("text"):
+                                            spk = token.get("speaker")
+                                            if spk is not None and spk != "":
+                                                speaker_value = str(spk)
+                                                break
+                                    if speaker_value is None and self._sentence_buffers:
+                                        speaker_value = next(iter(self._sentence_buffers.keys()))
+                                    if speaker_value and self._trigger_sentence_finalization(speaker_value):
+                                        separator_tokens.append(self._make_separator_token("punctuation"))
 
                         # 将新的final tokens写入日志
                         if outgoing_final_tokens and not self.is_paused:
