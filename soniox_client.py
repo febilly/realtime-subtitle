@@ -3,7 +3,7 @@ Soniox客户端模块 - 处理与Soniox STT服务的连接和音频流
 """
 import os
 import requests
-from config import SONIOX_TEMP_KEY_URL, TARGET_LANG_1, TARGET_LANG_2
+from config import SONIOX_TEMP_KEY_URL, TARGET_LANG_1, TARGET_LANG_2, ENABLE_SPEAKER_DIARIZATION
 
 
 def get_api_key() -> str:
@@ -56,7 +56,7 @@ def get_config(api_key: str, audio_format: str, translation: str, translation_ta
         "model": "stt-rt-v3",
         "language_hints": ["en", "zh", "ja", "ko", "ru"],
         "enable_language_identification": True,
-        "enable_speaker_diarization": True,
+        "enable_speaker_diarization": bool(ENABLE_SPEAKER_DIARIZATION),
         "enable_endpoint_detection": True,
     }
 

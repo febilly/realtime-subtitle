@@ -7,7 +7,7 @@ import os
 from aiohttp import web
 from aiohttp import WSMsgType
 
-from config import get_resource_path, LOCK_MANUAL_CONTROLS
+from config import get_resource_path, LOCK_MANUAL_CONTROLS, ENABLE_SPEAKER_DIARIZATION
 from config import is_llm_refine_available, LLM_REFINE_CONTEXT_COUNT
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
@@ -127,6 +127,7 @@ class WebServer:
             "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
             "segment_mode": self.soniox_session.get_segment_mode(),
+            "speaker_diarization_enabled": bool(ENABLE_SPEAKER_DIARIZATION),
         })
 
     async def segment_mode_get_handler(self, request):
