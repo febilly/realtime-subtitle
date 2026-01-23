@@ -14,7 +14,10 @@ A real-time speech-to-subtitle tool based on Soniox API. Captures system audio a
 
 - Speech recognition powered by Soniox
 - Real-time translation (uses system language as target by default)
-- Use LLM to refine completed translations (optional)
+- LLM translation enhancement with 3 modes:
+  - **Off**: No LLM enhancement
+  - **Refine**: Use LLM to improve Soniox translations
+  - **LLM-only**: Disable Soniox translation and use LLM for direct translation
 - And more (I'm too lazy to list them all; just hover over the buttons and check the tooltips)
 
 ## Installation
@@ -39,9 +42,16 @@ This program will also try to read the environment variables from a `.env` file 
 SONIOX_API_KEY="your-key-goes-in-here"
 ```
 
-### Optional: LLM translation refinement
+### Optional: LLM translation enhancement
 
-You can optionally enable an "auto-refine completed translations" feature. The UI toggle is only shown when the required LLM settings are present.
+You can optionally enable LLM translation enhancement. The UI toggle is only shown when the required LLM settings are present.
+
+**Three modes available:**
+- **Off** (default): No LLM enhancement
+- **Refine**: LLM improves Soniox translations (click the 🪄 magic wand button once)
+- **LLM-only**: Disable Soniox translation, use LLM for direct translation (click twice to see 🤖 robot icon)
+
+Note: In LLM-only mode, the "translation" segment mode is automatically disabled and falls back to "punctuation" mode.
 
 You can get some free quota from [Cerebras(recommended)](https://cerebras.net/) or [OpenRouter](https://openrouter.ai/).
 
