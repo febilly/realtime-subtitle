@@ -33,8 +33,10 @@
             speaker_label: 'SPEAKER {speaker}',
 
             translation_language: 'Translation language',
-            translation_refine_on: 'Auto-refine completed translations (click to disable)',
+            translation_mode_off: 'Translation enhancement off (click to enable refine mode)',
+            translation_refine_on: 'Auto-refine completed translations (click to switch to LLM-only mode)',
             translation_refine_off: 'Auto-refine completed translations',
+            translation_llm_only: 'LLM-only translation mode (click to turn off)',
 
             backend_manual_restart_disabled: 'Manual restart is disabled by server config',
             backend_pause_disabled: 'Pause is disabled by server config',
@@ -76,8 +78,10 @@
             speaker_label: '说话人 {speaker}',
 
             translation_language: '翻译语言',
-            translation_refine_on: '译文自动修复已开启（点击关闭）',
+            translation_mode_off: '翻译增强已关闭（点击开启修复模式）',
+            translation_refine_on: '译文自动修复已开启（点击切换到纯LLM翻译）',
             translation_refine_off: '译文自动修复',
+            translation_llm_only: '纯LLM翻译模式（点击关闭）',
 
             backend_manual_restart_disabled: '服务器已禁用手动重启',
             backend_pause_disabled: '服务器已禁用暂停',
@@ -119,8 +123,10 @@
             speaker_label: '話者 {speaker}',
 
             translation_language: '翻訳言語',
-            translation_refine_on: '翻訳の自動修正が有効（クリックで無効）',
+            translation_mode_off: '翻訳強化オフ（クリックして修正モードを有効化）',
+            translation_refine_on: '翻訳の自動修正が有効（クリックしてLLMのみモードに切替）',
             translation_refine_off: '翻訳を自動修正',
+            translation_llm_only: 'LLMのみ翻訳モード（クリックでオフ）',
 
             backend_manual_restart_disabled: 'サーバー設定により手動再起動は無効です',
             backend_pause_disabled: 'サーバー設定により一時停止は無効です',
@@ -162,8 +168,10 @@
             speaker_label: '화자 {speaker}',
 
             translation_language: '번역 언어',
-            translation_refine_on: '번역 자동 개선 켜짐(클릭하여 끄기)',
+            translation_mode_off: '번역 개선 꺼짐 (클릭하여 개선 모드 활성화)',
+            translation_refine_on: '번역 자동 개선 켜짐(클릭하여 LLM 전용 모드로 전환)',
             translation_refine_off: '번역 자동 개선',
+            translation_llm_only: 'LLM 전용 번역 모드 (클릭하여 끄기)',
 
             backend_manual_restart_disabled: '서버 설정으로 수동 재시작이 비활성화되었습니다',
             backend_pause_disabled: '서버 설정으로 일시정지가 비활성화되었습니다',
@@ -205,8 +213,10 @@
             speaker_label: 'Говорящий {speaker}',
 
             translation_language: 'Язык перевода',
-            translation_refine_on: 'Автоисправление перевода включено (нажмите, чтобы выключить)',
+            translation_mode_off: 'Улучшение перевода выключено (нажмите для включения режима улучшения)',
+            translation_refine_on: 'Автоисправление перевода включено (нажмите для переключения в режим только LLM)',
             translation_refine_off: 'Автоисправление перевода',
+            translation_llm_only: 'Режим перевода только LLM (нажмите для выключения)',
 
             backend_manual_restart_disabled: 'Ручной перезапуск отключён настройками сервера',
             backend_pause_disabled: 'Пауза отключена настройками сервера',
@@ -248,8 +258,10 @@
             speaker_label: 'Hablante {speaker}',
 
             translation_language: 'Idioma de traducción',
-            translation_refine_on: 'Corrección automática de traducciones activada (clic para desactivar)',
+            translation_mode_off: 'Mejora de traducción desactivada (clic para activar modo de corrección)',
+            translation_refine_on: 'Corrección automática de traducciones activada (clic para cambiar a modo solo LLM)',
             translation_refine_off: 'Corrección automática de traducciones',
+            translation_llm_only: 'Modo de traducción solo LLM (clic para desactivar)',
 
             backend_manual_restart_disabled: 'El reinicio manual está deshabilitado por configuración del servidor',
             backend_pause_disabled: 'La pausa está deshabilitada por configuración del servidor',
@@ -291,8 +303,10 @@
             speaker_label: 'Falante {speaker}',
 
             translation_language: 'Idioma da tradução',
-            translation_refine_on: 'Refino automático de traduções ativado (clique para desativar)',
+            translation_mode_off: 'Melhoria de tradução desativada (clique para ativar modo de refinamento)',
+            translation_refine_on: 'Refino automático de traduções ativado (clique para mudar para modo apenas LLM)',
             translation_refine_off: 'Refino automático de traduções',
+            translation_llm_only: 'Modo de tradução apenas LLM (clique para desativar)',
             backend_manual_restart_disabled: 'O reinício manual está desativado pela configuração do servidor',
             backend_pause_disabled: 'A pausa está desativada pela configuração do servidor',
             backend_resume_disabled: 'A retomada está desativada pela configuração do servidor',

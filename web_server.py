@@ -154,14 +154,18 @@ class WebServer:
         return web.json_response({"status": "ok", "mode": mode})
 
     async def llm_refine_get_handler(self, request):
-        """获取 LLM 改进开关状态"""
+        """获取 LLM 翻译模式状态"""
+        mode = self.soniox_session.get_llm_translation_mode()
+        # For backward compatibility, also return enabled flag
+        enabled = (mode == "refine" or mode == "llm_only")
         return web.json_response({
-            "enabled": self.soniox_session.get_llm_refine_enabled(),
+            "mode": mode,  # "off", "refine", "llm_only"
+            "enabled": enabled,  # Legacy compatibility
             "available": bool(is_llm_refine_available()),
         })
 
     async def llm_refine_set_handler(self, request):
-        """设置 LLM 改进开关"""
+        """设置 LLM 翻译模式"""
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "LLM refine toggle is disabled by server config"},
@@ -173,9 +177,24 @@ class WebServer:
         except Exception:
             return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
 
-        enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
-        self.soniox_session.set_llm_refine_enabled(enabled)
-        return web.json_response({"status": "ok", "enabled": enabled})
+        # Support both new 'mode' and legacy 'enabled' parameters
+        if isinstance(payload, dict):
+            if "mode" in payload:
+                mode = payload.get("mode")
+                ok, message = self.soniox_session.set_llm_translation_mode(mode)
+                if not ok:
+                    return web.json_response({"status": "error", "message": message}, status=400)
+                return web.json_response({"status": "ok", "mode": mode})
+            elif "enabled" in payload:
+                # Legacy support
+                enabled = bool(payload.get("enabled"))
+                mode = "refine" if enabled else "off"
+                ok, message = self.soniox_session.set_llm_translation_mode(mode)
+                if not ok:
+                    return web.json_response({"status": "error", "message": message}, status=400)
+                return web.json_response({"status": "ok", "enabled": enabled, "mode": mode})
+        
+        return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
 
     async def restart_handler(self, request):
         """重启识别端点"""

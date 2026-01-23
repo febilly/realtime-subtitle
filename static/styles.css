@@ -413,6 +413,17 @@ body.dark-theme .control-button.active {
     color: #60a5fa;
 }
 
+/* LLM-only mode - different color to distinguish from refine mode */
+.control-button.llm-only-mode {
+    background: rgba(168, 85, 247, 0.2);
+    color: #a855f7;
+}
+
+body.dark-theme .control-button.llm-only-mode {
+    background: rgba(192, 132, 252, 0.2);
+    color: #c084fc;
+}
+
 /* Ruby 假名注音样式 */
 ruby {
     ruby-align: center;

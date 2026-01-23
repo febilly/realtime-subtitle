@@ -88,8 +88,23 @@ let llmRefineShowDeletions = false;
 // 由后端下发：是否启用说话人分离
 let speakerDiarizationEnabled = true;
 
-// 译文自动修复开关（默认关闭）
-let llmRefineEnabled = localStorage.getItem('llmRefineEnabled') === 'true';
+// LLM 翻译模式：'off', 'refine', 'llm_only'
+let llmTranslationMode = localStorage.getItem('llmTranslationMode') || 'off';
+// Validate stored mode
+if (!['off', 'refine', 'llm_only'].includes(llmTranslationMode)) {
+    llmTranslationMode = 'off';
+}
+
+// Legacy compatibility: migrate from old boolean storage
+const legacyLlmRefineEnabled = localStorage.getItem('llmRefineEnabled');
+if (legacyLlmRefineEnabled !== null && !localStorage.getItem('llmTranslationMode')) {
+    llmTranslationMode = legacyLlmRefineEnabled === 'true' ? 'refine' : 'off';
+    localStorage.setItem('llmTranslationMode', llmTranslationMode);
+    localStorage.removeItem('llmRefineEnabled');
+}
+
+// Legacy compatibility variable for backward compat
+let llmRefineEnabled = (llmTranslationMode === 'refine' || llmTranslationMode === 'llm_only');
 
 // 存储后端改进结果
 const backendRefinedResults = new Map();
@@ -274,7 +289,6 @@ function updateTranslationRefineButton() {
     }
 
     // 没有配置 LLM key/base_url 时，隐藏开关。
-    // 注意：不要覆盖用户保存的开关偏好（localStorage），否则会导致每次都需要手动重新打开。
     if (!llmRefineAvailable || lockManualControls) {
         translationRefineButton.style.display = 'none';
         return;
@@ -282,12 +296,20 @@ function updateTranslationRefineButton() {
 
     translationRefineButton.style.display = '';
 
-    if (llmRefineEnabled) {
+    // Update button appearance based on mode
+    if (llmTranslationMode === 'off') {
+        translationRefineButton.classList.remove('active', 'llm-only-mode');
+        translationRefineIcon.textContent = '🪄';
+        translationRefineButton.title = t('translation_mode_off');
+    } else if (llmTranslationMode === 'refine') {
         translationRefineButton.classList.add('active');
+        translationRefineButton.classList.remove('llm-only-mode');
+        translationRefineIcon.textContent = '🪄';
         translationRefineButton.title = t('translation_refine_on');
-    } else {
-        translationRefineButton.classList.remove('active');
-        translationRefineButton.title = t('translation_refine_off');
+    } else if (llmTranslationMode === 'llm_only') {
+        translationRefineButton.classList.add('active', 'llm-only-mode');
+        translationRefineIcon.textContent = '🤖';
+        translationRefineButton.title = t('translation_llm_only');
     }
 }
 
@@ -481,34 +503,75 @@ async function fetchLlmRefineStatus() {
             return;
         }
         const data = await response.json();
-        if (!data || typeof data.enabled !== 'boolean') {
+        if (!data) {
             return;
         }
 
-        const stored = localStorage.getItem('llmRefineEnabled');
-        const hasStored = stored === 'true' || stored === 'false';
+        // Handle new mode-based API response
+        if (data.mode) {
+            const storedMode = localStorage.getItem('llmTranslationMode');
+            const hasStoredMode = storedMode && ['off', 'refine', 'llm_only'].includes(storedMode);
 
-        if (lockManualControls) {
-            llmRefineEnabled = data.enabled;
-            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
-            updateTranslationRefineButton();
-            return;
-        }
-
-        if (hasStored) {
-            const desired = stored === 'true';
-            if (desired !== data.enabled) {
-                void setLlmRefineEnabled(desired);
-            } else {
-                llmRefineEnabled = desired;
+            if (lockManualControls) {
+                llmTranslationMode = data.mode;
+                llmRefineEnabled = (data.mode === 'refine' || data.mode === 'llm_only');
+                localStorage.setItem('llmTranslationMode', llmTranslationMode);
+                localStorage.removeItem('llmRefineEnabled');
                 updateTranslationRefineButton();
+                return;
             }
-            return;
-        }
 
-        llmRefineEnabled = data.enabled;
-        localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
-        updateTranslationRefineButton();
+            if (hasStoredMode) {
+                if (storedMode !== data.mode) {
+                    void setLlmTranslationMode(storedMode);
+                } else {
+                    llmTranslationMode = storedMode;
+                    llmRefineEnabled = (storedMode === 'refine' || storedMode === 'llm_only');
+                    updateTranslationRefineButton();
+                }
+                return;
+            }
+
+            llmTranslationMode = data.mode;
+            llmRefineEnabled = (data.mode === 'refine' || data.mode === 'llm_only');
+            localStorage.setItem('llmTranslationMode', llmTranslationMode);
+            localStorage.removeItem('llmRefineEnabled');
+            updateTranslationRefineButton();
+        }
+        // Legacy backward compatibility for old boolean API
+        else if (typeof data.enabled === 'boolean') {
+            const stored = localStorage.getItem('llmRefineEnabled');
+            const hasStored = stored === 'true' || stored === 'false';
+
+            if (lockManualControls) {
+                llmRefineEnabled = data.enabled;
+                llmTranslationMode = data.enabled ? 'refine' : 'off';
+                localStorage.setItem('llmTranslationMode', llmTranslationMode);
+                localStorage.removeItem('llmRefineEnabled');
+                updateTranslationRefineButton();
+                return;
+            }
+
+            if (hasStored) {
+                const desired = stored === 'true';
+                if (desired !== data.enabled) {
+                    void setLlmRefineEnabled(desired);
+                } else {
+                    llmRefineEnabled = desired;
+                    llmTranslationMode = desired ? 'refine' : 'off';
+                    localStorage.setItem('llmTranslationMode', llmTranslationMode);
+                    localStorage.removeItem('llmRefineEnabled');
+                    updateTranslationRefineButton();
+                }
+                return;
+            }
+
+            llmRefineEnabled = data.enabled;
+            llmTranslationMode = data.enabled ? 'refine' : 'off';
+            localStorage.setItem('llmTranslationMode', llmTranslationMode);
+            localStorage.removeItem('llmRefineEnabled');
+            updateTranslationRefineButton();
+        }
     } catch (error) {
         console.error('Error fetching LLM refine status:', error);
     }
@@ -916,27 +979,46 @@ if (translationRefineButton) {
         if (!llmRefineAvailable) {
             return;
         }
-        void setLlmRefineEnabled(!llmRefineEnabled);
+        // Cycle through modes: off -> refine -> llm_only -> off
+        const modes = ['off', 'refine', 'llm_only'];
+        const currentIndex = modes.indexOf(llmTranslationMode);
+        const nextIndex = (currentIndex + 1) % modes.length;
+        const nextMode = modes[nextIndex];
+        void setLlmTranslationMode(nextMode);
     });
 }
 
-async function setLlmRefineEnabled(enabled) {
+async function setLlmTranslationMode(mode) {
     try {
         const response = await fetch('/llm-refine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled })
+            body: JSON.stringify({ mode })
         });
         if (response.ok) {
-            llmRefineEnabled = !!enabled;
-            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
+            llmTranslationMode = mode;
+            llmRefineEnabled = (mode === 'refine' || mode === 'llm_only');
+            localStorage.setItem('llmTranslationMode', mode);
+            // Remove legacy storage key
+            localStorage.removeItem('llmRefineEnabled');
             updateTranslationRefineButton();
         } else {
-            console.error('Failed to set LLM refine');
+            const data = await response.json();
+            console.error('Failed to set LLM translation mode:', data.message || 'Unknown error');
+            // Show error to user if segment mode constraint violated
+            if (data.message && data.message.includes('segment mode')) {
+                alert(localizeBackendMessage(data.message));
+            }
         }
     } catch (error) {
-        console.error('Error setting LLM refine:', error);
+        console.error('Error setting LLM translation mode:', error);
     }
+}
+
+// Legacy function for backward compatibility
+async function setLlmRefineEnabled(enabled) {
+    const mode = enabled ? 'refine' : 'off';
+    await setLlmTranslationMode(mode);
 }
 
 function updateAudioSourceButton() {
