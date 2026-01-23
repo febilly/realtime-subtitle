@@ -4,17 +4,14 @@ Web服务器模块 - 处理HTTP和WebSocket连接
 import json
 import asyncio
 import os
-import re
 from aiohttp import web
 from aiohttp import WSMsgType
 
 from config import get_resource_path, LOCK_MANUAL_CONTROLS
-from config import is_llm_refine_available, LLM_BASE_URL, LLM_MODEL, LLM_TEMPERATURE, get_llm_api_key, LLM_REFINE_CONTEXT_COUNT, LLM_PROMPT_SUFFIX, LLM_REFINE_MAX_TOKENS
+from config import is_llm_refine_available, LLM_REFINE_CONTEXT_COUNT
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
-from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError, close_llm_http_session
-
-from osc_manager import osc_manager
+from llm_client import close_llm_http_session
 
 # 日语假名注音支持
 try:
@@ -129,179 +126,56 @@ class WebServer:
             "llm_refine_context_count": int(LLM_REFINE_CONTEXT_COUNT),
             "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
+            "segment_mode": self.soniox_session.get_segment_mode(),
         })
 
-    async def translation_refine_handler(self, request):
-        """对已完成的译文段落做最小改动修复（由前端触发）。"""
+    async def segment_mode_get_handler(self, request):
+        """获取当前断句模式"""
+        return web.json_response({"mode": self.soniox_session.get_segment_mode()})
 
-        NO_CHANGE_MARKER = "__NO_CHANGE__"
-        PLACEHOLDER_ANSWER = "...corrected translation..."
-        MAX_REFINE_ATTEMPTS = 3
-
-        if not is_llm_refine_available():
+    async def segment_mode_set_handler(self, request):
+        """设置断句模式（会广播给所有前端）"""
+        if LOCK_MANUAL_CONTROLS:
             return web.json_response(
-                {
-                    "status": "error",
-                    "message": "LLM refine feature is not available (missing API key or configuration)",
-                },
+                {"status": "error", "message": "Segment mode switching is disabled"},
                 status=403,
             )
 
         try:
             payload = await request.json()
         except Exception:
-            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
 
-        if not isinstance(payload, dict):
-            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        mode = payload.get("mode") if isinstance(payload, dict) else None
+        ok, message = self.soniox_session.set_segment_mode(mode)
+        if not ok:
+            return web.json_response({"status": "error", "message": message}, status=400)
+        return web.json_response({"status": "ok", "mode": mode})
 
-        source = payload.get("source")
-        translation = payload.get("translation")
-        context_items = payload.get("context_items")
-        target_lang = payload.get("target_lang")
+    async def llm_refine_get_handler(self, request):
+        """获取 LLM 改进开关状态"""
+        return web.json_response({
+            "enabled": self.soniox_session.get_llm_refine_enabled(),
+            "available": bool(is_llm_refine_available()),
+        })
 
-        if not isinstance(source, str) or not source.strip():
-            return web.json_response({"status": "error", "message": "Missing 'source'"}, status=400)
-        if not isinstance(translation, str) or not translation.strip():
-            return web.json_response({"status": "error", "message": "Missing 'translation'"}, status=400)
-
-        # Basic guardrail to avoid accidental huge prompts.
-        source = source.strip()
-        translation = translation.strip()
-        if len(source) > 20000 or len(translation) > 20000:
+    async def llm_refine_set_handler(self, request):
+        """设置 LLM 改进开关"""
+        if LOCK_MANUAL_CONTROLS:
             return web.json_response(
-                {"status": "error", "message": "Input too long"},
-                status=413,
+                {"status": "error", "message": "LLM refine toggle is disabled by server config"},
+                status=403,
             )
 
-        target_lang_value = ""
-        if isinstance(target_lang, str) and target_lang.strip():
-            # Keep it short and safe (ISO 639-1 expected).
-            target_lang_value = target_lang.strip().lower()[:16]
-        if not target_lang_value:
-            try:
-                tl = self.soniox_session.get_translation_target_lang()
-                if isinstance(tl, str) and tl.strip():
-                    target_lang_value = tl.strip().lower()[:16]
-            except Exception:
-                target_lang_value = ""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
 
-        # Optional context: list of recent finalized sentences, used only to provide coherence.
-        # Payload format: { context_items: [ { source: str, translation: str }, ... ] }
-        normalized_context: list[dict[str, str]] = []
-        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_COUNT > 0:
-            max_items = min(int(LLM_REFINE_CONTEXT_COUNT), 20)
-            for item in context_items[:max_items]:
-                if not isinstance(item, dict):
-                    continue
-                ctx_source = item.get("source")
-                ctx_translation = item.get("translation")
-                if not isinstance(ctx_source, str) or not isinstance(ctx_translation, str):
-                    continue
-                ctx_source = ctx_source.strip()
-                ctx_translation = ctx_translation.strip()
-                if not ctx_source or not ctx_translation:
-                    continue
-                if len(ctx_source) > 5000 or len(ctx_translation) > 5000:
-                    continue
-                normalized_context.append({"source": ctx_source, "translation": ctx_translation})
+        enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
+        self.soniox_session.set_llm_refine_enabled(enabled)
+        return web.json_response({"status": "ok", "enabled": enabled})
 
-        context_block = ""
-        if normalized_context:
-            lines = [
-                "Context (for coherence only; do NOT quote it; do NOT merge or rewrite it into the current translation; "
-                "even if the source/translation is short, do NOT output the context; use it only to resolve pronouns, references, and coherence):",
-            ]
-            for idx, item in enumerate(normalized_context, start=1):
-                lines.append(f"{idx}. Source: {item['source']}")
-                lines.append(f"   Translation: {item['translation']}")
-            context_block = "\n".join(lines) + "\n\n"
-
-        prompt_suffix = (LLM_PROMPT_SUFFIX or "").strip()
-        suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
-
-        prompt = (
-            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
-            "You are a strict QA system for real-time translation. Your task is to verify a draft translation against the source text.\n"
-            "\n\n"
-            "Rules:\n"
-            "1. Readability vs Accuracy: This is real-time subtitles. Large rewrites disrupt the user's reading flow. Balance minimal changes with correctness: only rewrite when needed to fix a major error or severe sentence-structure issue.\n"
-            "2. Preserve Question Form: If the draft translation is a question, keep it a question in the output (preserve question intent and punctuation such as '?' where appropriate).\n"
-            "3. Major Errors Only: Fix only mistranslations, hallucinations, opposite meanings, missing key entities, or sentence structure issues that make the translation hard to understand.\n"
-            "   - Do NOT fix minor word-order awkwardness or small grammar issues if the meaning is already correct.\n"
-            "4. Minimal Edits: Keep the draft as-is unless a major error requires change.\n\n"
-            "If NO major error exists (even if wording/style is poor): output exactly:\n"
-            f"<answer>{NO_CHANGE_MARKER}</answer>\n\n"
-            "If a major error exists: output ONLY the corrected translation wrapped exactly as:\n"
-            f"<answer>{PLACEHOLDER_ANSWER}</answer>\n\n"
-            "Do NOT add explanations.\n\n"
-            f"{context_block}"
-            "Source:\n```\n"
-            f"{source}\n"
-            "```\n\n"
-            "Draft translation:\n```\n"
-            f"{translation}\n"
-            "```\n"
-            f"{suffix_block}"
-        )
-
-        config = LlmConfig(
-            base_url=(LLM_BASE_URL or "").strip(),
-            api_key=get_llm_api_key(),
-            model=(LLM_MODEL or "").strip(),
-        )
-
-        refined = ""
-        for attempt in range(MAX_REFINE_ATTEMPTS):
-            try:
-                content = await chat_completion(
-                    config,
-                    messages=[
-                        {"role": "system", "content": "You are a precise translation reviewer."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=float(LLM_TEMPERATURE),
-                    max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                    timeout_seconds=60.0,
-                )
-            except (asyncio.CancelledError, Exception) as exc:
-                # Do not retry network/LLM errors.
-                if isinstance(exc, LlmError):
-                    return web.json_response({"status": "error", "message": str(exc)}, status=502)
-                return web.json_response({"status": "error", "message": "LLM request failed"}, status=502)
-
-            raw_content = str(content or "").strip()
-            
-            last_match = None
-            for match in re.finditer(r"<answer>(.*?)</answer>", raw_content, flags=re.DOTALL | re.IGNORECASE):
-                last_match = match
-            refined = (last_match.group(1) if last_match else "")
-
-            if not refined:
-                if attempt < MAX_REFINE_ATTEMPTS - 1:
-                    continue
-                return web.json_response({"status": "ok", "no_change": True})
-
-            # Sanitize output: remove leading/trailing whitespace/newlines and formatting backticks.
-            refined = refined.strip()
-            if refined.startswith("```"):
-                # Remove optional fenced code block wrapper.
-                refined = re.sub(r"^```[^\n]*\n", "", refined)
-                refined = re.sub(r"\n```$", "", refined.strip())
-            refined = refined.strip("`").strip()
-
-            if refined == PLACEHOLDER_ANSWER:
-                if attempt < MAX_REFINE_ATTEMPTS - 1:
-                    continue
-                return web.json_response({"status": "ok", "no_change": True})
-
-            if refined == NO_CHANGE_MARKER:
-                return web.json_response({"status": "ok", "no_change": True})
-
-            return web.json_response({"status": "ok", "no_change": False, "refined_translation": refined})
-
-        return web.json_response({"status": "ok", "no_change": True})
-    
     async def restart_handler(self, request):
         """重启识别端点"""
         if LOCK_MANUAL_CONTROLS:
@@ -400,58 +274,6 @@ class WebServer:
         self.soniox_session.set_osc_translation_enabled(enabled)
         return web.json_response({"enabled": self.soniox_session.get_osc_translation_enabled()})
 
-    async def osc_translation_send_handler(self, request):
-        """由前端触发：将“已定稿”的译文通过 OSC 发送。
-
-        说明：
-        - 前端会在 LLM refine 结束后（成功或失败）调用此接口
-        - 后端仅负责校验开关/锁定并发送，不做分段/拼接
-        """
-        if LOCK_MANUAL_CONTROLS:
-            return web.json_response(
-                {"status": "error", "message": "OSC translation send is disabled by server config"},
-                status=403,
-            )
-
-        if not self.soniox_session.get_osc_translation_enabled():
-            return web.json_response(
-                {"status": "error", "message": "OSC translation is disabled"},
-                status=409,
-            )
-
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
-
-        if not isinstance(payload, dict):
-            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
-
-        text = payload.get("text")
-        if text is None:
-            # Backward/alt key
-            text = payload.get("translation")
-
-        speaker = payload.get("speaker")
-
-        if not isinstance(text, str) or not text.strip():
-            return web.json_response({"status": "error", "message": "Missing 'text'"}, status=400)
-
-        safe_text = text.strip()
-        if len(safe_text) > 5000:
-            return web.json_response({"status": "error", "message": "Input too long"}, status=413)
-
-        speaker_value = "?"
-        if isinstance(speaker, str) and speaker.strip():
-            speaker_value = speaker.strip()[:16]
-
-        try:
-            osc_manager.add_message_and_send(safe_text, ongoing=False, speaker=speaker_value)
-        except Exception:
-            return web.json_response({"status": "error", "message": "OSC send failed"}, status=502)
-
-        return web.json_response({"status": "ok"})
-    
     async def pause_handler(self, request):
         """暂停识别端点"""
         if LOCK_MANUAL_CONTROLS:
@@ -590,14 +412,16 @@ class WebServer:
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/health', self.health_handler)
         app.router.add_get('/ui-config', self.ui_config_handler)
+        app.router.add_get('/segment-mode', self.segment_mode_get_handler)
+        app.router.add_post('/segment-mode', self.segment_mode_set_handler)
+        app.router.add_get('/llm-refine', self.llm_refine_get_handler)
+        app.router.add_post('/llm-refine', self.llm_refine_set_handler)
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
-        app.router.add_post('/translation-refine', self.translation_refine_handler)
         app.router.add_post('/restart', self.restart_handler)
         app.router.add_post('/pause', self.pause_handler)
         app.router.add_post('/resume', self.resume_handler)
         app.router.add_get('/osc-translation', self.osc_translation_get_handler)
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
-        app.router.add_post('/osc-translation/send', self.osc_translation_send_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_post('/furigana', self.furigana_handler)

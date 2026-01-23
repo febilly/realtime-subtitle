@@ -118,10 +118,11 @@ LOCK_MANUAL_CONTROLS = _env_bool("LOCK_MANUAL_CONTROLS", False)
 # False: 使用本机系统音频/麦克风采集
 USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 
-# OSC 翻译发送触发方：默认由前端驱动。
-# - True: 后端不再按 token/<end> 自动发送译文到 OSC；前端在句子定稿后（可等待 LLM refine）调用 /osc-translation/send
-# - False: 保持旧行为：后端按 <end> 拼段并自动发送译文到 OSC
-OSC_TRANSLATION_FRONTEND_DRIVEN = _env_bool("OSC_TRANSLATION_FRONTEND_DRIVEN", True)
+# 默认断句模式: 'translation' | 'endpoint' | 'punctuation'
+# - translation: 基于 Soniox 的 <end> 标记
+# - endpoint: 基于 Soniox 的 endpoint_detected 标志
+# - punctuation: 基于句末标点符号（默认）
+DEFAULT_SEGMENT_MODE = _env_str("DEFAULT_SEGMENT_MODE", "punctuation")
 
 # Twitch 频道名（不含 https://www.twitch.tv/ 前缀）
 TWITCH_CHANNEL = _env_str("TWITCH_CHANNEL", "")
@@ -146,6 +147,9 @@ SERVER_PORT = _env_int("SERVER_PORT", 8080)
 LLM_BASE_URL = _env_str("LLM_BASE_URL", "")
 LLM_API_KEY = _env_str("LLM_API_KEY", "")
 LLM_MODEL = _env_str("LLM_MODEL", "openai/gpt-oss-120b:google-vertex")
+
+# LLM refine 默认开关（启动时的默认值；若前端未锁定，可被用户手动切换）
+LLM_REFINE_DEFAULT_ENABLED = _env_bool("LLM_REFINE_DEFAULT_ENABLED", True)
 
 # Optional suffix appended to the end of the LLM prompt.
 # Default: empty string (no suffix). Example: "/no_think"

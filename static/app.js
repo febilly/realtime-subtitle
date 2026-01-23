@@ -52,6 +52,8 @@ function localizeBackendMessage(message) {
         'Resume is disabled by server config': 'backend_resume_disabled',
         'Audio source switching is disabled by server config': 'backend_audio_source_disabled',
         'OSC translation toggle is disabled by server config': 'backend_osc_disabled',
+        'Segment mode switching is disabled': 'backend_segment_mode_disabled',
+        'LLM refine toggle is disabled by server config': 'backend_llm_refine_disabled',
         'Furigana feature not available (pykakasi not installed)': 'backend_furigana_unavailable',
     };
 
@@ -86,77 +88,8 @@ let llmRefineShowDeletions = false;
 // 译文自动修复开关（默认关闭）
 let llmRefineEnabled = localStorage.getItem('llmRefineEnabled') === 'true';
 
-// 译文覆盖：避免下一次 renderSubtitles 被 token 覆盖
-const translationOverrides = new Map(); // sentenceId -> refinedTranslation
-const translationOverrideBase = new Map(); // sentenceId -> baseTranslationAtRefine
-const refineInFlight = new Set(); // sentenceId
-const refinedInputs = new Map(); // sentenceId -> { source, translation }
-const refineFailedSentences = new Set(); // sentenceId (do not retry within current session)
-
-// Avoid triggering refinement for historical tokens when user toggles UI modes.
-// We only trigger refinement on "newly observed finalize events" (separator / forced sentence split).
-let lastRefineFinalizeEventSeqIndex = -1;
-
-// Avoid triggering OSC sends for historical tokens when user toggles UI modes.
-let lastOscFinalizeEventSeqIndex = -1;
-
-// Cache refine results by stable input (source+translation+context+target_lang).
-// This avoids reusing a refined output when the referenced context differs.
-const refineResultCache = new Map(); // key -> refinedTranslation
-
-// When backend/model indicates there is no severe issue, we store this sentinel in cache
-// to avoid re-sending refine requests for the same input.
-const REFINE_NO_CHANGE_SENTINEL = '__NO_CHANGE__';
-
-function normalizeContextItemsForKey(contextItems) {
-    if (!Array.isArray(contextItems) || contextItems.length === 0) {
-        return [];
-    }
-
-    const out = [];
-    const maxItems = Math.min(contextItems.length, 20);
-    for (let idx = 0; idx < maxItems; idx++) {
-        const item = contextItems[idx];
-        if (!item || typeof item !== 'object') {
-            continue;
-        }
-        const src = (item.source || '').toString().trim();
-        const tr = (item.translation || '').toString().trim();
-        if (!src || !tr) {
-            continue;
-        }
-        out.push({ source: src, translation: tr });
-    }
-    return out;
-}
-
-function makeRefineCacheKey(source, translation, contextItems = null, targetLang = '') {
-    const s = (source || '').toString().trim();
-    const t = (translation || '').toString().trim();
-    const lang = (targetLang || '').toString().trim().toLowerCase();
-
-    const ctx = normalizeContextItemsForKey(contextItems);
-    let ctxBlock = '';
-    if (ctx.length > 0) {
-        ctxBlock = ctx
-            .map((item, i) => `${i + 1}.S:${item.source}\n${i + 1}.T:${item.translation}`)
-            .join('\n');
-    }
-
-    return `${s}\n---\n${t}\n---\nlang:${lang}\n---\nctx:\n${ctxBlock}`;
-}
-
-// 上文语境：按“已完结句子”维护，避免每 token 重复拼接。
-const refineContextHistory = []; // [{ sentenceId, source, translation }]
-const finalizedSentenceIds = new Set(); // sentenceId (history appended)
-const MAX_REFINE_CONTEXT_HISTORY = 200;
-
-// Per sentence finalize-event metadata used for caching and safe reuse.
-// We only reuse cached refine results when the referenced context (and target language) match.
-const refineSentenceMeta = new Map(); // sentenceId -> { contextItems: [...], targetLang: string }
-
-// Avoid duplicate OSC sends per sentence.
-const oscSentSentenceIds = new Set();
+// 存储后端改进结果
+const backendRefinedResults = new Map();
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -245,11 +178,11 @@ const SCROLL_STICKY_THRESHOLD = 50;
 let autoStickToBottom = true;
 let tokenSequenceCounter = 0;
 
-// 分段模式: 'translation' | 'endpoint' | 'punctuation'（默认按 <end> 分段）
-let segmentMode = localStorage.getItem('segmentMode') || 'endpoint';
+// 分段模式: 'translation' | 'endpoint' | 'punctuation'
+let segmentMode = localStorage.getItem('segmentMode') || 'punctuation';
 const SEGMENT_MODES = ['translation', 'endpoint', 'punctuation'];
 if (!SEGMENT_MODES.includes(segmentMode)) {
-    segmentMode = 'endpoint';
+    segmentMode = 'punctuation';
 }
 
 // 显示模式: 'both', 'original', 'translation'
@@ -339,7 +272,7 @@ function updateTranslationRefineButton() {
 
     // 没有配置 LLM key/base_url 时，隐藏开关。
     // 注意：不要覆盖用户保存的开关偏好（localStorage），否则会导致每次都需要手动重新打开。
-    if (!llmRefineAvailable) {
+    if (!llmRefineAvailable || lockManualControls) {
         translationRefineButton.style.display = 'none';
         return;
     }
@@ -492,6 +425,12 @@ function applyLockPauseRestartControlsUI() {
     if (translationLangButton) {
         translationLangButton.style.display = lockManualControls ? 'none' : '';
     }
+    if (segmentModeButton) {
+        segmentModeButton.style.display = lockManualControls ? 'none' : '';
+    }
+    if (translationRefineButton) {
+        translationRefineButton.style.display = lockManualControls ? 'none' : '';
+    }
 
     if (lockManualControls) {
         autoRestartEnabled = true;
@@ -517,10 +456,55 @@ async function fetchUiConfig() {
             defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
             currentTranslationTargetLang = defaultTranslationTargetLang;
         }
+        if (data && typeof data.segment_mode === 'string' && data.segment_mode.trim()) {
+            segmentMode = data.segment_mode.trim();
+            localStorage.setItem('segmentMode', segmentMode);
+            updateSegmentModeButton();
+        }
         applyLockPauseRestartControlsUI();
         updateTranslationRefineButton();
     } catch (error) {
         console.error('Error fetching UI config:', error);
+    }
+}
+
+async function fetchLlmRefineStatus() {
+    try {
+        const response = await fetch('/llm-refine');
+        if (!response.ok) {
+            return;
+        }
+        const data = await response.json();
+        if (!data || typeof data.enabled !== 'boolean') {
+            return;
+        }
+
+        const stored = localStorage.getItem('llmRefineEnabled');
+        const hasStored = stored === 'true' || stored === 'false';
+
+        if (lockManualControls) {
+            llmRefineEnabled = data.enabled;
+            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
+            updateTranslationRefineButton();
+            return;
+        }
+
+        if (hasStored) {
+            const desired = stored === 'true';
+            if (desired !== data.enabled) {
+                void setLlmRefineEnabled(desired);
+            } else {
+                llmRefineEnabled = desired;
+                updateTranslationRefineButton();
+            }
+            return;
+        }
+
+        llmRefineEnabled = data.enabled;
+        localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
+        updateTranslationRefineButton();
+    } catch (error) {
+        console.error('Error fetching LLM refine status:', error);
     }
 }
 
@@ -754,47 +738,39 @@ function renderTranslationDiffHtml(original, refined) {
     return parts.join('');
 }
 
-function appendFinalizedSentenceToContextHistory({ sentenceId, source, translation }) {
-    if (!sentenceId || !source || !translation) {
-        return;
-    }
-    if (finalizedSentenceIds.has(sentenceId)) {
-        return;
-    }
-
-    finalizedSentenceIds.add(sentenceId);
-    refineContextHistory.push({ sentenceId, source, translation });
-
-    if (refineContextHistory.length > MAX_REFINE_CONTEXT_HISTORY) {
-        const overflow = refineContextHistory.length - MAX_REFINE_CONTEXT_HISTORY;
-        const removed = refineContextHistory.splice(0, overflow);
-        for (const item of removed) {
-            if (item && item.sentenceId) {
-                finalizedSentenceIds.delete(item.sentenceId);
-                refineSentenceMeta.delete(item.sentenceId);
-            }
-        }
-    }
+function getDisplayTranslation(source, originalTranslation) {
+    const key = `${source}||${originalTranslation}`;
+    const refined = backendRefinedResults.get(key);
+    return refined || originalTranslation;
 }
 
-function getRefineContextItems() {
-    const n = Math.max(0, Math.trunc(llmRefineContextCount || 0));
-    if (n <= 0) {
-        return [];
+function handleBackendRefineResult(data) {
+    if (!data) {
+        return;
     }
-    const slice = refineContextHistory.slice(-n);
-    return slice
-        .map(item => {
-            if (!item) {
-                return null;
-            }
-            const overriddenTranslation = translationOverrides.get(item.sentenceId);
-            return {
-                source: (item.source || '').toString(),
-                translation: (overriddenTranslation || item.translation || '').toString(),
-            };
-        })
-        .filter(x => x && x.source && x.translation);
+    const source = (data.source || '').toString().trim();
+    const originalTranslation = (data.original_translation || '').toString().trim();
+    const refinedTranslation = (data.refined_translation || '').toString().trim();
+    const noChange = !!data.no_change;
+
+    if (!source || !originalTranslation) {
+        return;
+    }
+
+    if (!noChange && refinedTranslation) {
+        const key = `${source}||${originalTranslation}`;
+        backendRefinedResults.set(key, refinedTranslation);
+    }
+    renderSubtitles();
+}
+
+function handleSegmentModeChanged(data) {
+    if (!data || typeof data.mode !== 'string') {
+        return;
+    }
+    segmentMode = data.mode;
+    localStorage.setItem('segmentMode', data.mode);
+    updateSegmentModeButton();
 }
 
 function ensureLangPopover() {
@@ -934,10 +910,27 @@ if (translationRefineButton) {
         if (!llmRefineAvailable) {
             return;
         }
-        llmRefineEnabled = !llmRefineEnabled;
-        localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
-        updateTranslationRefineButton();
+        void setLlmRefineEnabled(!llmRefineEnabled);
     });
+}
+
+async function setLlmRefineEnabled(enabled) {
+    try {
+        const response = await fetch('/llm-refine', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled })
+        });
+        if (response.ok) {
+            llmRefineEnabled = !!enabled;
+            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
+            updateTranslationRefineButton();
+        } else {
+            console.error('Failed to set LLM refine');
+        }
+    } catch (error) {
+        console.error('Error setting LLM refine:', error);
+    }
 }
 
 function updateAudioSourceButton() {
@@ -986,15 +979,30 @@ async function fetchInitialAudioSource() {
     }
 }
 
+async function setSegmentMode(mode) {
+    if (lockManualControls) {
+        return;
+    }
+    try {
+        const response = await fetch('/segment-mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode })
+        });
+        if (!response.ok) {
+            console.error('Failed to set segment mode');
+        }
+    } catch (error) {
+        console.error('Error setting segment mode:', error);
+    }
+}
+
 // 分段模式切换
 segmentModeButton.addEventListener('click', () => {
     const currentIndex = SEGMENT_MODES.indexOf(segmentMode);
     const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % SEGMENT_MODES.length : 0;
-    segmentMode = SEGMENT_MODES[nextIndex];
-    localStorage.setItem('segmentMode', segmentMode);
-    updateSegmentModeButton();
-    renderSubtitles();
-    console.log(`Segmentation mode switched to: ${segmentMode}`);
+    const nextMode = SEGMENT_MODES[nextIndex];
+    void setSegmentMode(nextMode);
 });
 
 // 显示模式切换
@@ -1376,6 +1384,14 @@ function handleMessage(data) {
         displayErrorMessage(data.message);
         return;
     }
+    if (data.type === 'refine_result') {
+        handleBackendRefineResult(data);
+        return;
+    }
+    if (data.type === 'segment_mode_changed') {
+        handleSegmentModeChanged(data);
+        return;
+    }
     if (data.type === 'clear') {
         // 清空所有数据
         console.log('Clearing all subtitles...');
@@ -1385,65 +1401,37 @@ function handleMessage(data) {
     }
     
     if (data.type === 'update') {
-        let separatorFromTokens = false;
-        let punctuationSeparatorAdded = false;
         let hasNewFinalContent = false;
+        let hasSeparator = false;
         if (data.final_tokens && data.final_tokens.length > 0) {
             data.final_tokens.forEach(token => {
                 if (token.text === '<end>') {
-                    separatorFromTokens = true;
-                    pushSeparator('endpoint');
                     return;
+                }
+                if (token.is_separator) {
+                    hasSeparator = true;
                 }
                 hasNewFinalContent = true;
                 insertFinalToken(token);
-                const tokenStatus = token.translation_status || 'original';
-                if (tokenStatus !== 'translation' && isSentenceEndPunctuation(token.text)) {
-                    pushSeparator('punctuation');
-                    if (segmentMode === 'punctuation') {
-                        punctuationSeparatorAdded = true;
-                    }
-                }
             });
         }
-        
+
         // 更新non-final tokens并过滤 <end>
         currentNonFinalTokens = (data.non_final_tokens || []).filter(token => token.text !== '<end>');
         currentNonFinalTokens.forEach(assignSequenceIndex);
-        
-        let separatorAdded = separatorFromTokens || punctuationSeparatorAdded;
-        
-        if (data.has_translation && hasNewFinalContent) {
-            separatorAdded = true;
-            pushSeparator('translation');
-        }
-        
-        if (data.endpoint_detected) {
-            separatorAdded = true;
-            pushSeparator('endpoint');
-        }
-        
-        if (separatorAdded) {
+
+        if (hasSeparator) {
             currentNonFinalTokens = [];
         }
-        
+
         // 合并新增的final tokens
         if (hasNewFinalContent) {
             mergeFinalTokens();
         }
-        
+
         // 重新渲染
         renderSubtitles();
     }
-}
-
-function pushSeparator(type) {
-    const separatorToken = {
-        is_separator: true,
-        is_final: true,
-        separator_type: type
-    };
-    allFinalTokens.push(separatorToken);
 }
 
 function insertFinalToken(token) {
@@ -1456,110 +1444,6 @@ function joinTokenText(tokens) {
         return '';
     }
     return tokens.map(t => (t && t.text) ? String(t.text) : '').join('');
-}
-
-const SENTENCE_END_PUNCT_RE = /(?:[.!?。！？]+|…+)$/;
-
-function isSentenceEndPunctuation(text) {
-    const raw = (text ?? '').toString().trim();
-    if (!raw) {
-        return false;
-    }
-    const normalized = raw.replace(/["'”’）)\]]+$/g, '');
-    return SENTENCE_END_PUNCT_RE.test(normalized);
-}
-
-async function refineTranslationSegment({ sentenceId, source, translation, contextItems }) {
-    if (!llmRefineAvailable || !llmRefineEnabled) {
-        return { status: 'skipped' };
-    }
-    if (!sentenceId || !source || !translation) {
-        return { status: 'invalid' };
-    }
-
-    const context_items = Array.isArray(contextItems) ? contextItems : [];
-    const target_lang = (currentTranslationTargetLang || defaultTranslationTargetLang || '').toString().trim().toLowerCase();
-
-    const cacheKey = makeRefineCacheKey(source, translation, context_items, target_lang);
-    if (refineResultCache.has(cacheKey)) {
-        // We already have a refined result for exactly this input.
-        const cached = refineResultCache.get(cacheKey);
-        return {
-            status: 'cached',
-            no_change: cached === REFINE_NO_CHANGE_SENTINEL,
-            refined: (cached && cached !== REFINE_NO_CHANGE_SENTINEL) ? String(cached) : null
-        };
-    }
-
-    // If we already failed once for this sentence, do not retry.
-    if (refineFailedSentences.has(sentenceId)) {
-        return { status: 'failed_once' };
-    }
-
-    if (refineInFlight.has(sentenceId)) {
-        return { status: 'in_flight' };
-    }
-
-    const previous = refinedInputs.get(sentenceId);
-    if (previous && previous.source === source && previous.translation === translation) {
-        return { status: 'duplicate_input' };
-    }
-
-    refineInFlight.add(sentenceId);
-    try {
-        const response = await fetch('/translation-refine', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source, translation, context_items, target_lang })
-        });
-
-        let result = null;
-        try {
-            result = await response.json();
-        } catch (parseError) {
-            console.error('Failed to parse translation refine response:', parseError);
-        }
-
-        if (!response.ok || !result || result.status !== 'ok') {
-            const message = result?.message || `Server responded with status ${response.status}`;
-            console.error('Translation refine failed:', message);
-            refineFailedSentences.add(sentenceId);
-            return { status: 'error' };
-        }
-
-        // New protocol: backend may indicate "no severe issue".
-        if (result.no_change === true || result.refined_translation === REFINE_NO_CHANGE_SENTINEL) {
-            refineResultCache.set(cacheKey, REFINE_NO_CHANGE_SENTINEL);
-            refinedInputs.set(sentenceId, { source, translation });
-            refineFailedSentences.delete(sentenceId);
-            return { status: 'ok', no_change: true, refined: null };
-        }
-
-        const refined = (result.refined_translation || '').toString().trim();
-        if (!refined) {
-            refineFailedSentences.add(sentenceId);
-            return { status: 'error_empty' };
-        }
-
-        refineResultCache.set(cacheKey, refined);
-
-        // 记录 base，确保 token 变化时自动失效
-        translationOverrides.set(sentenceId, refined);
-        translationOverrideBase.set(sentenceId, translation);
-        refinedInputs.set(sentenceId, { source, translation });
-
-        // Mark as handled; no need to retry.
-        refineFailedSentences.delete(sentenceId);
-
-        renderSubtitles();
-        return { status: 'ok', no_change: false, refined };
-    } catch (error) {
-        console.error('Error refining translation:', error);
-        refineFailedSentences.add(sentenceId);
-        return { status: 'error_exception' };
-    } finally {
-        refineInFlight.delete(sentenceId);
-    }
 }
 
 /**
@@ -1787,83 +1671,7 @@ function clearSubtitleState() {
     tokenSequenceCounter = 0;
     pendingFuriganaRequests.clear();
 
-    translationOverrides.clear();
-    translationOverrideBase.clear();
-    refineInFlight.clear();
-    refinedInputs.clear();
-    refineFailedSentences.clear();
-
-    lastRefineFinalizeEventSeqIndex = -1;
-    refineResultCache.clear();
-    refineSentenceMeta.clear();
-
-    lastOscFinalizeEventSeqIndex = -1;
-    oscSentSentenceIds.clear();
-
-    refineContextHistory.length = 0;
-    finalizedSentenceIds.clear();
-}
-
-async function sendTranslationToOsc({ text, speaker }) {
-    if (!oscTranslationEnabled) {
-        return;
-    }
-
-    const safeText = (text || '').toString().trim();
-    if (!safeText) {
-        return;
-    }
-
-    const payload = {
-        text: safeText,
-        speaker: (speaker === null || speaker === undefined) ? '?' : String(speaker)
-    };
-
-    try {
-        const response = await fetch('/osc-translation/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            let data = null;
-            try {
-                data = await response.json();
-            } catch (parseError) {
-                // ignore
-            }
-            console.error('OSC send failed:', response.status, data?.message || '');
-        }
-    } catch (error) {
-        console.error('Error sending OSC translation:', error);
-    }
-}
-
-function getFinalTranslationForOsc({ sentenceId, source, translation, contextItems = null, targetLang = '' }) {
-    const baseTranslationTrimmed = (translation || '').toString().trim();
-    if (!baseTranslationTrimmed) {
-        return '';
-    }
-
-    const override = translationOverrides.get(sentenceId);
-    const overrideBase = translationOverrideBase.get(sentenceId);
-    if (override && typeof override === 'string') {
-        const base = (overrideBase || '').toString().trim();
-        if (base && base === baseTranslationTrimmed) {
-            return override;
-        }
-    }
-
-    const cacheKey = makeRefineCacheKey(source, baseTranslationTrimmed, contextItems, targetLang);
-    if (refineResultCache.has(cacheKey)) {
-        const cached = refineResultCache.get(cacheKey);
-        if (cached && cached !== REFINE_NO_CHANGE_SENTINEL) {
-            return String(cached);
-        }
-    }
-
-    return baseTranslationTrimmed;
+    backendRefinedResults.clear();
 }
 
 function renderTokenSpan(token, useRubyHtml = null) {
@@ -1985,83 +1793,6 @@ function renderSubtitles() {
     let currentSentence = null;
     let pendingTranslationSentence = null;
 
-    const maybeFinalizeSentence = (sentence, finalizeEventSeqIndex = null) => {
-        if (!sentence) return;
-        if (sentence.isTranslationOnly) return;
-        if (sentence.hasFakeTranslation) return;
-        if (!sentence.originalTokens || sentence.originalTokens.length === 0) return;
-        if (!sentence.translationTokens || sentence.translationTokens.length === 0) return;
-
-        // Only trigger refinement for new finalize events (not during pure re-render).
-        if (finalizeEventSeqIndex === null || finalizeEventSeqIndex === undefined) {
-            return;
-        }
-        if (typeof finalizeEventSeqIndex !== 'number' || !Number.isFinite(finalizeEventSeqIndex)) {
-            return;
-        }
-
-        const allFinal = sentence.originalTokens.every(t => t && t.is_final) && sentence.translationTokens.every(t => t && t.is_final);
-        if (!allFinal) return;
-
-        const sentenceId = getSentenceId(sentence, 0);
-        const source = joinTokenText(sentence.originalTokens).trim();
-        const translation = joinTokenText(sentence.translationTokens).trim();
-        if (!source || !translation) return;
-
-        const shouldTriggerRefine = finalizeEventSeqIndex > lastRefineFinalizeEventSeqIndex;
-        const shouldTriggerOsc = finalizeEventSeqIndex > lastOscFinalizeEventSeqIndex;
-
-        // Always advance seen-finalize indexes, to avoid back-sending/refine on later toggles.
-        lastRefineFinalizeEventSeqIndex = Math.max(lastRefineFinalizeEventSeqIndex, finalizeEventSeqIndex);
-        lastOscFinalizeEventSeqIndex = Math.max(lastOscFinalizeEventSeqIndex, finalizeEventSeqIndex);
-
-        // Build context from previously finalized sentences (excluding current).
-        const contextItems = getRefineContextItems();
-
-        const targetLang = (currentTranslationTargetLang || defaultTranslationTargetLang || '').toString().trim().toLowerCase();
-        refineSentenceMeta.set(sentenceId, { contextItems: Array.isArray(contextItems) ? contextItems : [], targetLang });
-
-        // Record current sentence for future context.
-        appendFinalizedSentenceToContextHistory({ sentenceId, source, translation });
-
-        const speaker = sentence.speaker;
-
-        void (async () => {
-            // If we saw a new finalize event and refine is enabled, run refine.
-            // When OSC is enabled, we must wait for refine to finish (success or failure) before sending.
-            if (shouldTriggerRefine && llmRefineAvailable && llmRefineEnabled) {
-                try {
-                    await refineTranslationSegment({ sentenceId, source, translation, contextItems });
-                } catch (error) {
-                    // ignore; we still want to send original translation to OSC
-                }
-            }
-
-            if (!shouldTriggerOsc || !oscTranslationEnabled) {
-                return;
-            }
-
-            if (oscSentSentenceIds.has(sentenceId)) {
-                return;
-            }
-
-            oscSentSentenceIds.add(sentenceId);
-            const meta = refineSentenceMeta.get(sentenceId);
-            const finalText = getFinalTranslationForOsc({
-                sentenceId,
-                source,
-                translation,
-                contextItems: meta?.contextItems || contextItems,
-                targetLang: meta?.targetLang || targetLang
-            });
-            if (!finalText) {
-                return;
-            }
-
-            await sendTranslationToOsc({ text: finalText, speaker });
-        })();
-    };
-
     const ensureSpeakerValue = (speaker) => {
         return (speaker === null || speaker === undefined) ? 'undefined' : speaker;
     };
@@ -2076,9 +1807,7 @@ function renderSubtitles() {
             translationLang: null,
             requiresTranslation: options.requiresTranslation !== undefined ? options.requiresTranslation : null, // null means undecided
             isTranslationOnly: !!options.translationOnly,
-            hasFakeTranslation: false,
-            pendingFinalizeSeqIndex: null,
-            pendingFinalizeReason: null
+            hasFakeTranslation: false
         };
         sentences.push(sentence);
         if (!sentence.isTranslationOnly) {
@@ -2117,7 +1846,6 @@ function renderSubtitles() {
     const findLastSentenceForSpeaker = (speaker, predicate = () => true, options = {}) => {
         const normalizedSpeaker = ensureSpeakerValue(speaker);
         const stopOnFakeTranslation = !!options.stopOnFakeTranslation;
-        const stopOnPendingFinalize = !!options.stopOnPendingFinalize;
         for (let i = sentences.length - 1; i >= 0; i--) {
             const sentence = sentences[i];
             if (sentence.speaker === normalizedSpeaker && predicate(sentence)) {
@@ -2126,97 +1854,21 @@ function renderSubtitles() {
             if (stopOnFakeTranslation && sentence.speaker === normalizedSpeaker && sentence.hasFakeTranslation) {
                 break;
             }
-            if (
-                stopOnPendingFinalize &&
-                sentence.speaker === normalizedSpeaker &&
-                sentence.pendingFinalizeSeqIndex !== null &&
-                sentence.translationTokens.length === 0
-            ) {
-                break;
-            }
         }
         return null;
     };
 
-    const sentenceEndsWithPunctuation = (sentence) => {
-        if (!sentence || !sentence.translationTokens || sentence.translationTokens.length === 0) {
-            return false;
-        }
-        const text = joinTokenText(sentence.translationTokens);
-        return isSentenceEndPunctuation(text);
-    };
-
     tokens.forEach(token => {
         if (token.is_separator) {
-            const separatorType = token.separator_type || 'translation';
-            const isPunctuationSeparator = separatorType === 'punctuation';
-
-            if (isPunctuationSeparator && segmentMode !== 'punctuation') {
-                return;
-            }
-
-            const shouldFinalize = (
-                (separatorType === 'endpoint' && (segmentMode === 'endpoint' || segmentMode === 'punctuation')) ||
-                (separatorType === 'translation' && segmentMode === 'translation') ||
-                (separatorType === 'punctuation' && segmentMode === 'punctuation')
-            );
-
-            // 只有在当前分段模式会“断句”的时候，才把上一句视为已完结
-            if (shouldFinalize && currentSentence) {
-                if (segmentMode === 'punctuation' && separatorType === 'punctuation') {
-                    if (!sentenceEndsWithPunctuation(currentSentence)) {
-                        currentSentence.pendingFinalizeSeqIndex = token._sequenceIndex;
-                        currentSentence.pendingFinalizeReason = 'punctuation';
-                    } else {
-                        currentSentence.pendingFinalizeSeqIndex = null;
-                        currentSentence.pendingFinalizeReason = null;
-                        maybeFinalizeSentence(currentSentence, token._sequenceIndex);
-                    }
-                } else {
-                    currentSentence.pendingFinalizeSeqIndex = null;
-                    currentSentence.pendingFinalizeReason = null;
-                    maybeFinalizeSentence(currentSentence, token._sequenceIndex);
-                }
-            }
-
-            if (
-                segmentMode === 'punctuation' &&
-                shouldFinalize &&
-                currentSentence &&
-                currentSentence.translationTokens.length === 0
-            ) {
-                currentSentence.pendingFinalizeSeqIndex = token._sequenceIndex;
-                currentSentence.pendingFinalizeReason = separatorType;
-            }
-            
-            // 当遇到分隔符时，如果当前句子需要翻译但还没有译文，
-            // 我们添加一个"假"的翻译标记，表示这个句子已经"完结"了。
-            // 这样后续迟到的译文就不会匹配到这个已经完结的句子，而是会另起一行。
-            // 但在标点分段模式下，标点分隔符不应直接阻断迟到的译文（避免末句译文丢失）。
             if (
                 currentSentence &&
                 currentSentence.requiresTranslation !== false &&
-                currentSentence.translationTokens.length === 0 &&
-                segmentMode !== 'punctuation'
+                currentSentence.translationTokens.length === 0
             ) {
                 currentSentence.hasFakeTranslation = true;
             }
 
-            if (separatorType === 'endpoint') {
-                if (currentSentence) {
-                    if (segmentMode === 'endpoint' || segmentMode === 'punctuation') {
-                        currentSentence = null;
-                    }
-                }
-            } else if (separatorType === 'translation') {
-                if (segmentMode === 'translation') {
-                    currentSentence = null;
-                }
-            } else if (separatorType === 'punctuation') {
-                if (segmentMode === 'punctuation') {
-                    currentSentence = null;
-                }
-            }
+            currentSentence = null;
             // 分隔符也会打断 pending 状态，迫使新的译文重新寻找匹配
             pendingTranslationSentence = null;
             return;
@@ -2239,19 +1891,13 @@ function renderSubtitles() {
                     speaker,
                     (sentence) => canAcceptTranslation(sentence, token),
                     {
-                        stopOnFakeTranslation: true,
-                        stopOnPendingFinalize: segmentMode === 'punctuation'
+                        stopOnFakeTranslation: true
                     }
                 );
             }
 
             // 3. 如果都匹配不到，创建一个纯译文句子
             if (!targetSentence) {
-                if (segmentMode === 'punctuation') {
-                    // In punctuation segmentation, skip creating translation-only sentences
-                    // when no matching original sentence is found.
-                    return;
-                }
                 targetSentence = startSentence(speaker, { translationOnly: true });
             }
 
@@ -2266,22 +1912,6 @@ function renderSubtitles() {
             targetSentence.translationTokens.push(token);
             pendingTranslationSentence = targetSentence;
 
-            if (segmentMode === 'punctuation' && targetSentence.pendingFinalizeSeqIndex !== null) {
-                const allFinal =
-                    targetSentence.originalTokens.length > 0 &&
-                    targetSentence.translationTokens.length > 0 &&
-                    targetSentence.originalTokens.every(t => t && t.is_final) &&
-                    targetSentence.translationTokens.every(t => t && t.is_final);
-                if (allFinal) {
-                    const reason = targetSentence.pendingFinalizeReason;
-                    if (reason !== 'punctuation' || sentenceEndsWithPunctuation(targetSentence)) {
-                        const seqIndex = targetSentence.pendingFinalizeSeqIndex;
-                        targetSentence.pendingFinalizeSeqIndex = null;
-                        targetSentence.pendingFinalizeReason = null;
-                        maybeFinalizeSentence(targetSentence, seqIndex);
-                    }
-                }
-            }
         } else {
             // 原文 token (original 或 none)
             const tokenRequiresTranslation = (translationStatus !== 'none');
@@ -2297,9 +1927,6 @@ function renderSubtitles() {
             }
 
             if (shouldStartNew) {
-                if (currentSentence) {
-                    maybeFinalizeSentence(currentSentence, token._sequenceIndex);
-                }
                 currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
             }
 
@@ -2312,9 +1939,6 @@ function renderSubtitles() {
                 currentSentence.originalLang = token.language;
             } else if (currentSentence.originalLang && token.language && currentSentence.originalLang !== token.language) {
                 // 语言变了，新起一句
-                if (currentSentence) {
-                    maybeFinalizeSentence(currentSentence, token._sequenceIndex);
-                }
                 currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
                 currentSentence.originalLang = token.language;
             }
@@ -2432,56 +2056,19 @@ function renderSubtitles() {
                 const baseTranslation = sentence.translationTokens.map(t => (t && t.text) ? String(t.text) : '').join('');
                 const baseTranslationNormalized = baseTranslation.trim();
 
-                let usedCachedRefine = false;
+                const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
+                const displayTranslation = (sourceText && baseTranslationNormalized)
+                    ? getDisplayTranslation(sourceText, baseTranslationNormalized)
+                    : baseTranslationNormalized;
 
-                const isEligibleForCachedRefine =
-                    !sentence.isTranslationOnly &&
-                    !sentence.hasFakeTranslation &&
-                    sentence.originalTokens && sentence.originalTokens.length > 0 &&
-                    sentence.translationTokens && sentence.translationTokens.length > 0 &&
-                    sentence.originalTokens.every(t => t && t.is_final) &&
-                    sentence.translationTokens.every(t => t && t.is_final);
-
-                if (isEligibleForCachedRefine) {
-                    const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
-                    if (sourceText && baseTranslationNormalized) {
-                        const meta = refineSentenceMeta.get(sentenceId);
-                        const cached = meta
-                            ? refineResultCache.get(makeRefineCacheKey(sourceText, baseTranslationNormalized, meta.contextItems, meta.targetLang))
-                            : null;
-                        if (cached && cached !== REFINE_NO_CHANGE_SENTINEL) {
-                            const html = llmRefineShowDiff
-                                ? renderTranslationDiffHtml(baseTranslationNormalized, cached)
-                                : escapeHtml(cached);
-                            sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
-                            usedCachedRefine = true;
-                        }
-                    }
-                }
-
-                if (usedCachedRefine) {
-                    // Translation line already rendered from cache; keep rendering the rest of the sentence.
-                } else {
-
-                const overrideBase = translationOverrideBase.get(sentenceId);
-                if (overrideBase && overrideBase !== baseTranslationNormalized) {
-                    translationOverrideBase.delete(sentenceId);
-                    translationOverrides.delete(sentenceId);
-                }
-
-                // Failure is sticky per sentenceId; do nothing here.
-
-                const override = translationOverrides.get(sentenceId);
-                if (override && translationOverrideBase.get(sentenceId) === baseTranslationNormalized) {
+                if (displayTranslation && displayTranslation !== baseTranslationNormalized) {
                     const html = llmRefineShowDiff
-                        ? renderTranslationDiffHtml(baseTranslationNormalized, override)
-                        : escapeHtml(override);
+                        ? renderTranslationDiffHtml(baseTranslationNormalized, displayTranslation)
+                        : escapeHtml(displayTranslation);
                     sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
                 } else {
                     const lineContent = renderTokenSpansTrimmed(sentence.translationTokens);
                     sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
-                }
-
                 }
             }
 
@@ -2687,6 +2274,7 @@ function escapeHtml(text) {
 document.addEventListener('DOMContentLoaded', () => {
     (async () => {
         await fetchUiConfig();
+        await fetchLlmRefineStatus();
         fetchApiKeyStatus();
         fetchOscTranslationStatus();
         connect();
