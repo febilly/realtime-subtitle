@@ -76,6 +76,11 @@ python build_exe.py
 
 The executable will be located at `dist/RealtimeSubtitle.exe`.
 
+## Acknowledgements
+
+This project uses [kuromoji.js](https://github.com/takuyaa/kuromoji.js) for Japanese tokenization in the browser.
+kuromoji.js is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
 ## Configuration Options
 
 Please run `python server.py --help` to see all the avaliable options.

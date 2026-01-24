@@ -19,53 +19,22 @@ from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
 from llm_client import close_llm_http_session
 
-# 日语假名注音支持
-try:
-    import pykakasi
-    kakasi = pykakasi.kakasi()
-    FURIGANA_AVAILABLE = True
-except ImportError:
-    kakasi = None
-    FURIGANA_AVAILABLE = False
-    print("⚠️  pykakasi not installed, furigana feature disabled")
-
 @web.middleware
 async def cache_bypass_middleware(request, handler):
     """Add no-cache headers to all non-WS responses."""
     response = await handler(request)
     if isinstance(response, web.StreamResponse):
-        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
+        path = str(request.path or "")
+        if path.startswith("/kuromoji/"):
+            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            response.headers.pop('Pragma', None)
+            response.headers.pop('Expires', None)
+        else:
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
     return response
 
-
-def add_furigana(text):
-    """为日语文本添加假名注音，返回带有ruby标签的HTML"""
-    if not FURIGANA_AVAILABLE or not text:
-        return text
-    
-    result = kakasi.convert(text)
-    html_parts = []
-    
-    for item in result:
-        orig = item['orig']
-        hira = item['hira']
-        
-        # 检查是否包含汉字（需要注音）
-        has_kanji = any('\u4e00' <= c <= '\u9fff' for c in orig)
-        
-        # 检查是否包含片假名（需要注音）
-        has_katakana = any('\u30a0' <= c <= '\u30ff' for c in orig)
-        
-        if (has_kanji or has_katakana) and orig != hira:
-            # 有汉字或片假名且读音不同，添加ruby注音
-            html_parts.append(f'<ruby>{orig}<rp>(</rp><rt>{hira}</rt><rp>)</rp></ruby>')
-        else:
-            # 无需注音
-            html_parts.append(orig)
-    
-    return ''.join(html_parts)
 
 
 class WebServer:
@@ -389,26 +358,6 @@ class WebServer:
         }
         return web.json_response(response, status=status_code)
 
-    async def furigana_handler(self, request):
-        """为日语文本添加假名注音"""
-        if not FURIGANA_AVAILABLE:
-            return web.json_response({
-                "status": "error",
-                "message": "Furigana feature not available (pykakasi not installed)"
-            }, status=503)
-        
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
-        
-        text = payload.get("text", "")
-        if not text:
-            return web.json_response({"status": "ok", "html": ""})
-        
-        html = add_furigana(text)
-        return web.json_response({"status": "ok", "html": html})
-    
     async def index_handler(self, request):
         """静态文件处理"""
         index_path = get_resource_path(os.path.join('static', 'index.html'))
@@ -453,7 +402,6 @@ class WebServer:
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
-        app.router.add_post('/furigana', self.furigana_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径

@@ -6,7 +6,6 @@ aiohttp
 aiohttp-jinja2
 requests
 pywebview
-pykakasi
 python-osc
 # streamlink
 pyinstaller
