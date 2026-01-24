@@ -442,6 +442,7 @@ class SonioxSession:
         """执行 LLM 翻译改进"""
         NO_CHANGE_MARKER = "__NO_CHANGE__"
         PLACEHOLDER_ANSWER = "...corrected translation..."
+        DEFAULT_SEVERITY = "low"
         MAX_REFINE_ATTEMPTS = 3
 
         source = (source or "").strip()
@@ -491,19 +492,26 @@ class SonioxSession:
 
         prompt = (
             f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
-            "You are a strict QA system for real-time translation. Your task is to verify a draft translation against the source text.\n"
-            "\n\n"
-            "Rules:\n"
-            "1. Readability vs Accuracy: This is real-time subtitles. Large rewrites disrupt the user's reading flow. Balance minimal changes with correctness: only rewrite when needed to fix a major error or severe sentence-structure issue.\n"
-            "2. Preserve Question Form: If the draft translation is a question, keep it a question in the output (preserve question intent and punctuation such as '?' where appropriate).\n"
-            "3. Major Errors Only: Fix only mistranslations, hallucinations, opposite meanings, missing key entities, or sentence structure issues that make the translation hard to understand.\n"
-            "   - Do NOT fix minor word-order awkwardness or small grammar issues if the meaning is already correct.\n"
-            "4. Minimal Edits: Keep the draft as-is unless a major error requires change.\n\n"
-            "If NO major error exists (even if wording/style is poor): output exactly:\n"
-            f"<answer>{NO_CHANGE_MARKER}</answer>\n\n"
-            "If a major error exists: output ONLY the corrected translation wrapped exactly as:\n"
-            f"<answer>{PLACEHOLDER_ANSWER}</answer>\n\n"
-            "Do NOT add explanations.\n\n"
+            "Role: Strict Translation QA. Strategy: Surgical corrections for accuracy violations only.\n\n"
+            "## 1. IGNORE (Allow 'Ugly' but Accurate)\n"
+            "Output <answer>{NO_CHANGE_MARKER}</answer> if the meaning is correct, even if:\n"
+            " - Grammar is broken/pidgin but understandable (e.g., 'Me want buy').\n"
+            " - Style/Tone is unnatural.\n"
+            " - Input has extra spaces (streaming artifacts) or loose punctuation.\n\n"
+            "## 2. MUST FIX (Accuracy Violations)\n"
+            "You MUST correct the translation if:\n"
+            " - MISTRANSLATION: Factual errors, wrong numbers/names, or opposite meaning.\n"
+            " - HALLUCINATION: Information added that is NOT in the source.\n"
+            " - LOGIC REVERSAL: Subject/Object flipped (e.g., 'Dog bites man' vs 'Man bites dog').\n"
+            " - CONFUSING SYNTAX: Word order is so wrong that it causes misunderstanding.\n\n"
+            "## 3. EDITING RULE: MINIMAL EDITS\n"
+            "If you fix, apply SURGICAL edits only. Change the minimum number of words necessary to restore accuracy. DO NOT rewrite the whole sentence to improve flow.\n\n"
+            "## 4. When in doubt, PREFER NO CHANGE.\n\n"
+            "## Output Format\n"
+            f" - NO CHANGE: <answer>{NO_CHANGE_MARKER}</answer>\n"
+            f" - Correction: <answer>{PLACEHOLDER_ANSWER}</answer>\n"
+            "   - Severity (only when Correction): <severity>low|medium|high|critical</severity>\n\n"
+            "Do NOT explain. Do NOT add preamble.\n\n"
             f"{context_block}"
             "Source:\n```\n"
             f"{source}\n"
@@ -539,6 +547,14 @@ class SonioxSession:
 
             raw_content = str(content or "").strip()
             refined = extract_answer_tag(raw_content).strip()
+            severity = DEFAULT_SEVERITY
+            severity_match = re.findall(r"<severity>(.*?)</severity>", raw_content or "", flags=re.IGNORECASE | re.DOTALL)
+            if severity_match:
+                severity = str(severity_match[-1]).strip().lower()
+            if severity not in ("low", "medium", "high", "critical"):
+                severity = DEFAULT_SEVERITY
+
+            print(f"severity={severity}, draft='{translation}', refined='{refined}'")
 
             if not refined:
                 if attempt < MAX_REFINE_ATTEMPTS - 1:
@@ -556,6 +572,9 @@ class SonioxSession:
                 return {"status": "ok", "no_change": True}
 
             if refined == NO_CHANGE_MARKER:
+                return {"status": "ok", "no_change": True}
+
+            if severity not in ("high", "critical"):
                 return {"status": "ok", "no_change": True}
 
             return {"status": "ok", "no_change": False, "refined_translation": refined}
