@@ -43,6 +43,8 @@ SONIOX_API_KEY="your-key-goes-in-here"
 
 You can optionally enable an "auto-refine completed translations" feature. The UI toggle is only shown when the required LLM settings are present.
 
+The same toggle also provides a **Pure LLM Translation** mode, which skips Soniox translations in the UI and lets the LLM translate directly. You can cycle between Off / Refine / Pure LLM Translation on the wand button.
+
 You can get some free quota from [Cerebras(recommended)](https://cerebras.net/) or [OpenRouter](https://openrouter.ai/).
 
 Configure an OpenAI-compatible endpoint via:
