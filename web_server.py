@@ -7,7 +7,13 @@ import os
 from aiohttp import web
 from aiohttp import WSMsgType
 
-from config import get_resource_path, LOCK_MANUAL_CONTROLS, ENABLE_SPEAKER_DIARIZATION
+from config import (
+    get_resource_path,
+    LOCK_MANUAL_CONTROLS,
+    ENABLE_SPEAKER_DIARIZATION,
+    HIDE_SPEAKER_LABELS,
+    LLM_REFINE_DEFAULT_MODE,
+)
 from config import is_llm_refine_available, LLM_REFINE_CONTEXT_COUNT
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
@@ -123,11 +129,14 @@ class WebServer:
             "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
             "translation_target_lang": self.soniox_session.get_translation_target_lang(),
             "llm_refine_available": bool(is_llm_refine_available()),
+            "llm_refine_mode": self.soniox_session.get_llm_refine_mode(),
+            "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
             "llm_refine_context_count": int(LLM_REFINE_CONTEXT_COUNT),
             "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
             "segment_mode": self.soniox_session.get_segment_mode(),
             "speaker_diarization_enabled": bool(ENABLE_SPEAKER_DIARIZATION),
+            "hide_speaker_labels": bool(HIDE_SPEAKER_LABELS),
         })
 
     async def segment_mode_get_handler(self, request):
@@ -155,8 +164,10 @@ class WebServer:
 
     async def llm_refine_get_handler(self, request):
         """获取 LLM 改进开关状态"""
+        mode = self.soniox_session.get_llm_refine_mode()
         return web.json_response({
             "enabled": self.soniox_session.get_llm_refine_enabled(),
+            "mode": mode,
             "available": bool(is_llm_refine_available()),
         })
 
@@ -173,9 +184,26 @@ class WebServer:
         except Exception:
             return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
 
-        enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
-        self.soniox_session.set_llm_refine_enabled(enabled)
-        return web.json_response({"status": "ok", "enabled": enabled})
+        mode = None
+        if isinstance(payload, dict):
+            if "mode" in payload:
+                mode = payload.get("mode")
+            elif "enabled" in payload:
+                enabled = bool(payload.get("enabled"))
+                mode = "refine" if enabled else "off"
+
+        if not mode:
+            return web.json_response({"status": "error", "message": "Missing 'mode' field"}, status=400)
+
+        ok, message = self.soniox_session.set_llm_refine_mode(str(mode))
+        if not ok:
+            return web.json_response({"status": "error", "message": message}, status=400)
+
+        return web.json_response({
+            "status": "ok",
+            "mode": self.soniox_session.get_llm_refine_mode(),
+            "enabled": self.soniox_session.get_llm_refine_enabled(),
+        })
 
     async def restart_handler(self, request):
         """重启识别端点"""

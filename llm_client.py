@@ -140,6 +140,7 @@ async def chat_completion(
 
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
 def extract_answer_tag(text: str) -> str:
@@ -153,11 +154,24 @@ def extract_answer_tag(text: str) -> str:
     if not raw:
         return ""
 
+    # Strip any chain-of-thought tags to avoid leaking them.
+    raw = _THINK_RE.sub("", raw).strip()
+    if not raw:
+        return ""
+
     last_match = None
     for match in _ANSWER_RE.finditer(raw):
         last_match = match
 
     if last_match is None:
+        # Fallback: if <answer> exists without a closing tag, return content after the last <answer>.
+        lowered = raw.lower()
+        tag = "<answer>"
+        if tag in lowered:
+            idx = lowered.rfind(tag)
+            candidate = raw[idx + len(tag):].strip()
+            candidate = re.sub(r"</answer>\s*$", "", candidate, flags=re.IGNORECASE).strip()
+            return candidate
         return raw
 
     return (last_match.group(1) or "").strip()
