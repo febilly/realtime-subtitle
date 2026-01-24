@@ -106,6 +106,8 @@ let llmTranslateHideAfterSequence = llmRefineMode === 'translate' ? 0 : null;
 
 // 存储后端改进结果
 const backendRefinedResults = new Map();
+// LLM 直译模式下覆盖 Soniox 译文
+const llmTranslationOverrides = new Map();
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -917,6 +919,9 @@ function handleBackendRefineResult(data) {
     if (!noChange && refinedTranslation) {
         const key = `${source}||${originalTranslation}`;
         backendRefinedResults.set(key, refinedTranslation);
+        if (isLlmTranslateMode()) {
+            llmTranslationOverrides.set(key, refinedTranslation);
+        }
     }
     renderSubtitles();
 }
@@ -1907,6 +1912,7 @@ function clearSubtitleState() {
     pendingFuriganaRequests.clear();
 
     backendRefinedResults.clear();
+    llmTranslationOverrides.clear();
 }
 
 function renderTokenSpan(token, useRubyHtml = null) {
@@ -2289,25 +2295,34 @@ function renderSubtitles() {
             if (showTranslation && sentence.translationTokens.length > 0) {
                 const langTag = getLanguageTag(sentence.translationLang);
                 const baseTranslation = sentence.translationTokens.map(t => (t && t.text) ? String(t.text) : '').join('');
-                const baseTranslationNormalized = baseTranslation.trim();
+                let baseTranslationNormalized = baseTranslation.trim();
 
                 const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
                 const key = (sourceText && baseTranslationNormalized)
                     ? `${sourceText}||${baseTranslationNormalized}`
                     : null;
+                const overrideTranslation = key ? llmTranslationOverrides.get(key) : null;
+                if (overrideTranslation) {
+                    baseTranslationNormalized = overrideTranslation;
+                }
                 const hasRefined = key ? backendRefinedResults.has(key) : false;
                 const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined);
 
                 if (!shouldHide) {
-                    const displayTranslation = (sourceText && baseTranslationNormalized)
-                        ? getDisplayTranslation(sourceText, baseTranslationNormalized)
-                        : baseTranslationNormalized;
+                    const displayTranslation = overrideTranslation
+                        ? overrideTranslation
+                        : ((sourceText && baseTranslationNormalized)
+                            ? getDisplayTranslation(sourceText, baseTranslationNormalized)
+                            : baseTranslationNormalized);
 
                     if (displayTranslation && displayTranslation !== baseTranslationNormalized) {
                         const showDiff = llmRefineShowDiff && !isLlmTranslateMode();
                         const html = showDiff
                             ? renderTranslationDiffHtml(baseTranslationNormalized, displayTranslation)
                             : escapeHtml(displayTranslation);
+                        sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
+                    } else if (overrideTranslation) {
+                        const html = escapeHtml(displayTranslation || '');
                         sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
                     } else {
                         const lineContent = renderTokenSpansTrimmed(sentence.translationTokens);
