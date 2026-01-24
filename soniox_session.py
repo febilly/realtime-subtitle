@@ -554,7 +554,7 @@ class SonioxSession:
             if severity not in ("low", "medium", "high", "critical"):
                 severity = DEFAULT_SEVERITY
 
-            print(f"severity={severity}, draft='{translation}', refined='{refined}'")
+            # print(f"severity={severity}, draft='{translation}', refined='{refined}'")
 
             if not refined:
                 if attempt < MAX_REFINE_ATTEMPTS - 1:
