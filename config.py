@@ -301,5 +301,5 @@ print(f"✅ Translation target language set to: {TRANSLATION_TARGET_LANG}")
 # 强校验：如果既没有提供永久 API Key，也没有提供用于获取临时 key 的 URL，则退出。
 if not os.environ.get("SONIOX_API_KEY") and not SONIOX_TEMP_KEY_URL:
     print("❌ Configuration error: neither SONIOX_API_KEY nor SONIOX_TEMP_KEY_URL is set.\nPlease set one of them in your environment or in the .env file.")
-    time.sleep(5)
+    input("Press Enter to exit...")
     sys.exit(1)
