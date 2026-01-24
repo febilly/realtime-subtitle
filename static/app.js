@@ -221,6 +221,7 @@ try {
 // 假名注音缓存（避免重复请求）
 let furiganaCache = new Map();
 const pendingFuriganaRequests = new Set();
+let kuromojiTokenizerPromise = null;
 
 // 移动端底部留白开关（默认关闭）
 let bottomSafeAreaEnabled = localStorage.getItem('bottomSafeAreaEnabled') === 'true';
@@ -1766,6 +1767,82 @@ function getSpeakerClass(speaker) {
     return `speaker-${speaker}`;
 }
 
+function getKuromojiTokenizer() {
+    if (kuromojiTokenizerPromise) {
+        return kuromojiTokenizerPromise;
+    }
+
+    if (!window.kuromoji || typeof window.kuromoji.builder !== 'function') {
+        kuromojiTokenizerPromise = Promise.resolve(null);
+        return kuromojiTokenizerPromise;
+    }
+
+    kuromojiTokenizerPromise = new Promise((resolve) => {
+        try {
+            window.kuromoji.builder({ dicPath: '/kuromoji/dict/' })
+                .build((err, tokenizer) => {
+                    if (err) {
+                        console.error('Failed to init kuromoji:', err);
+                        resolve(null);
+                        return;
+                    }
+                    resolve(tokenizer);
+                });
+        } catch (error) {
+            console.error('Failed to init kuromoji:', error);
+            resolve(null);
+        }
+    });
+
+    return kuromojiTokenizerPromise;
+}
+
+function toHiragana(katakana) {
+    const value = (katakana || '').toString();
+    let out = '';
+    for (let i = 0; i < value.length; i++) {
+        const code = value.charCodeAt(i);
+        if (code >= 0x30a1 && code <= 0x30f6) {
+            out += String.fromCharCode(code - 0x60);
+        } else {
+            out += value[i];
+        }
+    }
+    return out;
+}
+
+function hasKanji(text) {
+    return /[\u4e00-\u9fff]/.test(text || '');
+}
+
+function hasKatakana(text) {
+    return /[\u30a0-\u30ff]/.test(text || '');
+}
+
+function buildFuriganaHtml(tokens) {
+    if (!Array.isArray(tokens) || tokens.length === 0) {
+        return null;
+    }
+
+    const htmlParts = [];
+    tokens.forEach((token) => {
+        const surface = (token.surface_form || token.surface || token.basic_form || '').toString();
+        if (!surface) {
+            return;
+        }
+        const readingRaw = (token.reading || token.pronunciation || '').toString();
+        const reading = readingRaw ? toHiragana(readingRaw) : '';
+        const needsRuby = (hasKanji(surface) || hasKatakana(surface)) && reading && reading !== surface;
+        if (needsRuby) {
+            htmlParts.push(`<ruby>${escapeHtml(surface)}<rp>(</rp><rt>${escapeHtml(reading)}</rt><rp>)</rp></ruby>`);
+        } else {
+            htmlParts.push(escapeHtml(surface));
+        }
+    });
+
+    return htmlParts.join('');
+}
+
 // 异步获取假名注音
 async function getFuriganaHtml(text) {
     if (!text || !furiganaEnabled) {
@@ -1776,27 +1853,23 @@ async function getFuriganaHtml(text) {
     if (furiganaCache.has(text)) {
         return furiganaCache.get(text);
     }
-    
+
+    const tokenizer = await getKuromojiTokenizer();
+    if (!tokenizer) {
+        return null;
+    }
+
     try {
-        const response = await fetch('/furigana', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text })
-        });
-        
-        if (!response.ok) {
-            return null;
-        }
-        
-        const data = await response.json();
-        if (data.status === 'ok' && data.html) {
-            furiganaCache.set(text, data.html);
-            return data.html;
+        const tokens = tokenizer.tokenize(text) || [];
+        const html = buildFuriganaHtml(tokens);
+        if (html) {
+            furiganaCache.set(text, html);
+            return html;
         }
     } catch (error) {
-        console.error('Failed to fetch furigana:', error);
+        console.error('Failed to tokenize furigana:', error);
     }
-    
+
     return null;
 }
 
