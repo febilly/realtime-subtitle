@@ -123,6 +123,11 @@ USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 # False: 关闭说话人分离（前端隐藏说话人标签）
 ENABLE_SPEAKER_DIARIZATION = _env_bool("ENABLE_SPEAKER_DIARIZATION", True)
 
+# 隐藏说话人标签（默认关闭）
+# True: 前端隐藏说话人序号标签（即使启用说话人分离）
+# False: 正常显示说话人标签
+HIDE_SPEAKER_LABELS = _env_bool("HIDE_SPEAKER_LABELS", False)
+
 # 默认断句模式: 'translation' | 'endpoint' | 'punctuation'
 # - translation: 基于 Soniox 的 <end> 标记
 # - endpoint: 基于 Soniox 的 endpoint_detected 标志
@@ -155,6 +160,14 @@ LLM_MODEL = _env_str("LLM_MODEL", "openai/gpt-oss-120b:google-vertex")
 
 # LLM refine 默认开关（启动时的默认值；若前端未锁定，可被用户手动切换）
 LLM_REFINE_DEFAULT_ENABLED = _env_bool("LLM_REFINE_DEFAULT_ENABLED", True)
+
+# LLM 默认翻译模式: off | refine | translate
+# 仅在浏览器没有历史记录或开启 LOCK_MANUAL_CONTROLS 时生效
+_LLM_DEFAULT_MODE_RAW = _env_str("LLM_REFINE_DEFAULT_MODE", "")
+_LLM_DEFAULT_MODE = str(_LLM_DEFAULT_MODE_RAW).strip().lower()
+if _LLM_DEFAULT_MODE not in ("off", "refine", "translate"):
+    _LLM_DEFAULT_MODE = "refine" if LLM_REFINE_DEFAULT_ENABLED else "off"
+LLM_REFINE_DEFAULT_MODE = _LLM_DEFAULT_MODE
 
 # Optional suffix appended to the end of the LLM prompt.
 # Default: empty string (no suffix). Example: "/no_think"

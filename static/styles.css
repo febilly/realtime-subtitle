@@ -292,6 +292,12 @@ body.dark-theme .control-button:hover {
     margin-bottom: 8px;
 }
 
+.hide-speaker-labels .subtitle-block,
+.hide-speaker-labels .subtitle-block.same-speaker {
+    margin-top: 0;
+    margin-bottom: 4px;
+}
+
 .subtitle-line {
     margin-bottom: 2px;
     line-height: 1.2;
@@ -317,6 +323,10 @@ body.dark-theme .control-button:hover {
     font-size: 1em;
     color: #1f2937;
     font-weight: 400;
+}
+
+.subtitle-text.placeholder {
+    visibility: hidden;
 }
 
 body.dark-theme .subtitle-text {

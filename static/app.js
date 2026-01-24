@@ -87,9 +87,22 @@ let llmRefineShowDeletions = false;
 
 // 由后端下发：是否启用说话人分离
 let speakerDiarizationEnabled = true;
+// 由后端下发：是否隐藏说话人标签
+let hideSpeakerLabels = false;
+
+const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
+const LLM_REFINE_ICON = '🪄';
+const LLM_TRANSLATE_ICON = '🤖';
+let defaultLlmRefineMode = null;
 
 // 译文自动修复开关（默认关闭）
-let llmRefineEnabled = localStorage.getItem('llmRefineEnabled') === 'true';
+let llmRefineMode = localStorage.getItem('llmRefineMode');
+if (!LLM_REFINE_MODES.includes(llmRefineMode)) {
+    const legacy = localStorage.getItem('llmRefineEnabled');
+    llmRefineMode = legacy === 'true' ? 'refine' : 'off';
+}
+let llmRefineEnabled = llmRefineMode !== 'off';
+let llmTranslateHideAfterSequence = llmRefineMode === 'translate' ? 0 : null;
 
 // 存储后端改进结果
 const backendRefinedResults = new Map();
@@ -227,6 +240,8 @@ updateOscTranslationButton();
 updateAutoRestartButton();
 updateBottomSafeAreaButton();
 updateTranslationRefineButton();
+enforceTranslateSegmentMode();
+applySpeakerLabelVisibility();
 applyBottomSafeArea();
 applyLockPauseRestartControlsUI();
 applyStaticUiText();
@@ -253,7 +268,7 @@ function applyStaticUiText() {
     }
 
     if (translationRefineButton) {
-        translationRefineButton.title = llmRefineEnabled ? t('translation_refine_on') : t('translation_refine_off');
+        translationRefineButton.title = t(getLlmRefineTitleKey());
     }
 
     if (pauseButton) {
@@ -266,6 +281,97 @@ function applyStaticUiText() {
             emptyNode.textContent = t('empty_state');
         }
     }
+}
+
+function applySpeakerLabelVisibility() {
+    if (!subtitleContainer) {
+        return;
+    }
+    subtitleContainer.classList.toggle('hide-speaker-labels', !!hideSpeakerLabels);
+}
+
+function normalizeLlmRefineMode(mode) {
+    const value = (mode || '').toString().trim().toLowerCase();
+    if (LLM_REFINE_MODES.includes(value)) {
+        return value;
+    }
+    return 'off';
+}
+
+function isLlmTranslateMode() {
+    return llmRefineMode === 'translate';
+}
+
+function getLlmRefineTitleKey() {
+    if (llmRefineMode === 'translate') {
+        return 'translation_refine_translate';
+    }
+    if (llmRefineMode === 'refine') {
+        return 'translation_refine_on';
+    }
+    return 'translation_refine_off';
+}
+
+function applyLlmRefineMode(mode, options = {}) {
+    const normalized = normalizeLlmRefineMode(mode);
+    const previous = llmRefineMode;
+    const wasTranslate = previous === 'translate';
+    llmRefineMode = normalized;
+    llmRefineEnabled = llmRefineMode !== 'off';
+
+    const shouldPersist = options.persist !== false;
+    if (shouldPersist) {
+        try {
+            localStorage.setItem('llmRefineMode', llmRefineMode);
+            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
+        } catch (storageError) {
+            console.warn('Unable to persist LLM refine mode:', storageError);
+        }
+    }
+
+    if (llmRefineMode === 'translate') {
+        if (previous !== 'translate') {
+            llmTranslateHideAfterSequence = tokenSequenceCounter + 1;
+        } else if (llmTranslateHideAfterSequence === null) {
+            llmTranslateHideAfterSequence = tokenSequenceCounter + 1;
+        }
+        enforceTranslateSegmentMode();
+    } else {
+        llmTranslateHideAfterSequence = null;
+    }
+
+    updateTranslationRefineButton();
+    updateSegmentModeButton();
+
+    if (wasTranslate && llmRefineMode !== 'translate') {
+        renderSubtitles();
+    }
+}
+
+function enforceTranslateSegmentMode() {
+    if (!isLlmTranslateMode()) {
+        return;
+    }
+    if (segmentMode === 'translation') {
+        segmentMode = 'punctuation';
+        localStorage.setItem('segmentMode', segmentMode);
+        updateSegmentModeButton();
+        void setSegmentMode('punctuation');
+    }
+}
+
+function getNextLlmRefineMode(currentMode) {
+    if (currentMode === 'off') {
+        return 'refine';
+    }
+    if (currentMode === 'refine') {
+        return 'translate';
+    }
+    return 'off';
+}
+
+function getSegmentModes() {
+    return isLlmTranslateMode() ? ['endpoint', 'punctuation'] : SEGMENT_MODES;
 }
 
 function updateTranslationRefineButton() {
@@ -282,13 +388,18 @@ function updateTranslationRefineButton() {
 
     translationRefineButton.style.display = '';
 
-    if (llmRefineEnabled) {
+    const isTranslate = isLlmTranslateMode();
+
+    translationRefineIcon.textContent = isTranslate ? LLM_TRANSLATE_ICON : LLM_REFINE_ICON;
+    translationRefineButton.title = t(getLlmRefineTitleKey());
+
+    if (llmRefineMode !== 'off') {
         translationRefineButton.classList.add('active');
-        translationRefineButton.title = t('translation_refine_on');
     } else {
         translationRefineButton.classList.remove('active');
-        translationRefineButton.title = t('translation_refine_off');
     }
+
+    translationRefineButton.classList.toggle('mode-translate', isTranslate);
 }
 
 
@@ -325,12 +436,14 @@ function updateSegmentModeButton() {
         return;
     }
 
+    const translateLocked = isLlmTranslateMode();
+
     if (segmentMode === 'translation') {
         segmentModeButton.title = t('segment_translation');
     } else if (segmentMode === 'endpoint') {
-        segmentModeButton.title = t('segment_endpoint');
+        segmentModeButton.title = translateLocked ? t('segment_endpoint_no_translation') : t('segment_endpoint');
     } else {
-        segmentModeButton.title = t('segment_punctuation');
+        segmentModeButton.title = translateLocked ? t('segment_punctuation_no_translation') : t('segment_punctuation');
     }
 }
 
@@ -452,6 +565,9 @@ async function fetchUiConfig() {
         llmRefineAvailable = !!data.llm_refine_available;
         llmRefineShowDiff = !!data.llm_refine_show_diff;
         llmRefineShowDeletions = !!data.llm_refine_show_deletions;
+        if (data && typeof data.llm_refine_default_mode === 'string') {
+            defaultLlmRefineMode = normalizeLlmRefineMode(data.llm_refine_default_mode);
+        }
         if (data && Number.isFinite(data.llm_refine_context_count)) {
             llmRefineContextCount = Math.max(0, Math.trunc(data.llm_refine_context_count));
         }
@@ -467,8 +583,13 @@ async function fetchUiConfig() {
         if (data && typeof data.speaker_diarization_enabled === 'boolean') {
             speakerDiarizationEnabled = data.speaker_diarization_enabled;
         }
+        if (data && typeof data.hide_speaker_labels === 'boolean') {
+            hideSpeakerLabels = data.hide_speaker_labels;
+        }
+        applySpeakerLabelVisibility();
         applyLockPauseRestartControlsUI();
         updateTranslationRefineButton();
+        enforceTranslateSegmentMode();
     } catch (error) {
         console.error('Error fetching UI config:', error);
     }
@@ -481,34 +602,41 @@ async function fetchLlmRefineStatus() {
             return;
         }
         const data = await response.json();
-        if (!data || typeof data.enabled !== 'boolean') {
+        if (!data) {
             return;
         }
 
-        const stored = localStorage.getItem('llmRefineEnabled');
-        const hasStored = stored === 'true' || stored === 'false';
+        const serverMode = normalizeLlmRefineMode(
+            typeof data.mode === 'string'
+                ? data.mode
+                : (data.enabled ? 'refine' : 'off')
+        );
+
+        const preferredDefault = normalizeLlmRefineMode(defaultLlmRefineMode || serverMode);
+
+        const rawStoredMode = localStorage.getItem('llmRefineMode');
+        const hasStoredMode = LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase());
+        const storedMode = hasStoredMode ? normalizeLlmRefineMode(rawStoredMode) : null;
 
         if (lockManualControls) {
-            llmRefineEnabled = data.enabled;
-            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
-            updateTranslationRefineButton();
+            applyLlmRefineMode(preferredDefault);
             return;
         }
 
-        if (hasStored) {
-            const desired = stored === 'true';
-            if (desired !== data.enabled) {
-                void setLlmRefineEnabled(desired);
+        if (hasStoredMode && storedMode) {
+            if (storedMode !== serverMode) {
+                void setLlmRefineMode(storedMode);
             } else {
-                llmRefineEnabled = desired;
-                updateTranslationRefineButton();
+                applyLlmRefineMode(storedMode);
             }
             return;
         }
 
-        llmRefineEnabled = data.enabled;
-        localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
-        updateTranslationRefineButton();
+        if (preferredDefault !== serverMode) {
+            void setLlmRefineMode(preferredDefault);
+        } else {
+            applyLlmRefineMode(preferredDefault);
+        }
     } catch (error) {
         console.error('Error fetching LLM refine status:', error);
     }
@@ -750,6 +878,28 @@ function getDisplayTranslation(source, originalTranslation) {
     return refined || originalTranslation;
 }
 
+function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
+    if (!isLlmTranslateMode()) {
+        return false;
+    }
+    if (!sourceText) {
+        return false;
+    }
+    if (hasRefined) {
+        return false;
+    }
+    if (llmTranslateHideAfterSequence === null) {
+        return false;
+    }
+    if (!sentence || !Array.isArray(sentence.translationTokens)) {
+        return false;
+    }
+    return sentence.translationTokens.some((token) => {
+        const seq = token && typeof token._sequenceIndex === 'number' ? token._sequenceIndex : null;
+        return seq !== null && seq >= llmTranslateHideAfterSequence;
+    });
+}
+
 function handleBackendRefineResult(data) {
     if (!data) {
         return;
@@ -777,6 +927,7 @@ function handleSegmentModeChanged(data) {
     segmentMode = data.mode;
     localStorage.setItem('segmentMode', data.mode);
     updateSegmentModeButton();
+    enforceTranslateSegmentMode();
 }
 
 function ensureLangPopover() {
@@ -916,21 +1067,22 @@ if (translationRefineButton) {
         if (!llmRefineAvailable) {
             return;
         }
-        void setLlmRefineEnabled(!llmRefineEnabled);
+        const nextMode = getNextLlmRefineMode(llmRefineMode);
+        void setLlmRefineMode(nextMode);
     });
 }
 
-async function setLlmRefineEnabled(enabled) {
+async function setLlmRefineMode(mode) {
     try {
         const response = await fetch('/llm-refine', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ enabled })
+            body: JSON.stringify({ mode })
         });
         if (response.ok) {
-            llmRefineEnabled = !!enabled;
-            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
-            updateTranslationRefineButton();
+            const data = await response.json();
+            const nextMode = normalizeLlmRefineMode(data && data.mode ? data.mode : mode);
+            applyLlmRefineMode(nextMode);
         } else {
             console.error('Failed to set LLM refine');
         }
@@ -989,6 +1141,9 @@ async function setSegmentMode(mode) {
     if (lockManualControls) {
         return;
     }
+    if (isLlmTranslateMode() && mode === 'translation') {
+        return;
+    }
     try {
         const response = await fetch('/segment-mode', {
             method: 'POST',
@@ -1005,9 +1160,10 @@ async function setSegmentMode(mode) {
 
 // 分段模式切换
 segmentModeButton.addEventListener('click', () => {
-    const currentIndex = SEGMENT_MODES.indexOf(segmentMode);
-    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % SEGMENT_MODES.length : 0;
-    const nextMode = SEGMENT_MODES[nextIndex];
+    const availableModes = getSegmentModes();
+    const currentIndex = availableModes.indexOf(segmentMode);
+    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % availableModes.length : 0;
+    const nextMode = availableModes[nextIndex];
     void setSegmentMode(nextMode);
 });
 
@@ -2003,7 +2159,7 @@ function renderSubtitles() {
 
         let blockHtml = '';
 
-        if (speakerDiarizationEnabled && block.speaker !== previousSpeaker) {
+        if (speakerDiarizationEnabled && !hideSpeakerLabels && block.speaker !== previousSpeaker) {
             blockHtml += `<div class="speaker-label ${getSpeakerClass(block.speaker)}">${escapeHtml(t('speaker_label', { speaker: block.speaker }))}</div>`;
         }
 
@@ -2063,18 +2219,30 @@ function renderSubtitles() {
                 const baseTranslationNormalized = baseTranslation.trim();
 
                 const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
-                const displayTranslation = (sourceText && baseTranslationNormalized)
-                    ? getDisplayTranslation(sourceText, baseTranslationNormalized)
-                    : baseTranslationNormalized;
+                const key = (sourceText && baseTranslationNormalized)
+                    ? `${sourceText}||${baseTranslationNormalized}`
+                    : null;
+                const hasRefined = key ? backendRefinedResults.has(key) : false;
+                const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined);
 
-                if (displayTranslation && displayTranslation !== baseTranslationNormalized) {
-                    const html = llmRefineShowDiff
-                        ? renderTranslationDiffHtml(baseTranslationNormalized, displayTranslation)
-                        : escapeHtml(displayTranslation);
-                    sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
+                if (!shouldHide) {
+                    const displayTranslation = (sourceText && baseTranslationNormalized)
+                        ? getDisplayTranslation(sourceText, baseTranslationNormalized)
+                        : baseTranslationNormalized;
+
+                    if (displayTranslation && displayTranslation !== baseTranslationNormalized) {
+                        const showDiff = llmRefineShowDiff && !isLlmTranslateMode();
+                        const html = showDiff
+                            ? renderTranslationDiffHtml(baseTranslationNormalized, displayTranslation)
+                            : escapeHtml(displayTranslation);
+                        sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
+                    } else {
+                        const lineContent = renderTokenSpansTrimmed(sentence.translationTokens);
+                        sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
+                    }
                 } else {
-                    const lineContent = renderTokenSpansTrimmed(sentence.translationTokens);
-                    sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
+                    const placeholderText = '&nbsp;';
+                    sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text placeholder">${placeholderText}</span></div>`);
                 }
             }
 
