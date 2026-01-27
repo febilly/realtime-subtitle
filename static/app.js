@@ -1913,6 +1913,12 @@ function clearSubtitleState() {
 
     backendRefinedResults.clear();
     llmTranslationOverrides.clear();
+
+    if (isLlmTranslateMode()) {
+        llmTranslateHideAfterSequence = tokenSequenceCounter;
+    } else {
+        llmTranslateHideAfterSequence = null;
+    }
 }
 
 function renderTokenSpan(token, useRubyHtml = null) {
