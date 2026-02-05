@@ -53,7 +53,7 @@ def get_config(api_key: str, audio_format: str, translation: str, translation_ta
 
     config = {
         "api_key": api_key,
-        "model": "stt-rt-v3",
+        "model": "stt-rt-v4",
         "language_hints": ["en", "zh", "ja", "ko", "ru"],
         "enable_language_identification": True,
         "enable_speaker_diarization": bool(ENABLE_SPEAKER_DIARIZATION),
