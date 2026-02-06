@@ -6,14 +6,19 @@
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: transparent;
     min-height: 100vh;
     overflow: hidden;
-    transition: background 0.3s ease;
+    transition: background-color 0.3s ease;
+}
+
+:root {
+    --panel-bg-rgb: 255, 255, 255;
+    --panel-alpha: 1;
 }
 
 body.dark-theme {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    --panel-bg-rgb: 30, 30, 46;
 }
 
 .main-container {
@@ -25,7 +30,7 @@ body.dark-theme {
 .button-bar {
     width: 48px;
     height: 100vh;
-    background: rgba(255, 255, 255, 0.95);
+    background: rgba(var(--panel-bg-rgb), var(--panel-alpha));
     border-left: 1px solid rgba(0, 0, 0, 0.1);
     display: flex;
     flex-direction: column;
@@ -39,7 +44,6 @@ body.dark-theme {
 }
 
 body.dark-theme .button-bar {
-    background: rgba(30, 30, 46, 0.95);
     border-left-color: rgba(255, 255, 255, 0.1);
 }
 
@@ -72,7 +76,7 @@ body.dark-theme .button-bar::-webkit-scrollbar-thumb:hover {
 .subtitle-container {
     flex: 1;
     height: 100vh;
-    background: rgba(255, 255, 255, 0.95);
+    background: rgba(var(--panel-bg-rgb), var(--panel-alpha));
     padding: 12px;
     overflow-y: auto;
     transition: background 0.3s ease, color 0.3s ease;
@@ -92,9 +96,6 @@ body.dark-theme .button-bar::-webkit-scrollbar-thumb:hover {
     }
 }
 
-body.dark-theme .subtitle-container {
-    background: rgba(30, 30, 46, 0.95);
-}
 
 .control-button {
     width: 36px;

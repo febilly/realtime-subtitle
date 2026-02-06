@@ -5,6 +5,7 @@
         en: {
             empty_state: 'Subtitles will appear here...',
             theme_toggle: 'Toggle theme',
+            background_opacity: 'Background opacity',
             restart: 'Restart recognition',
             auto_restart_on: 'Auto restart enabled (click to disable)',
             auto_restart_off: 'Auto restart recognition on disconnect',
@@ -51,6 +52,7 @@
         zh: {
             empty_state: '字幕将显示在这里…',
             theme_toggle: '切换主题',
+            background_opacity: '背景透明度',
             restart: '重启识别',
             auto_restart_on: '断线自动重启已开启（点击关闭）',
             auto_restart_off: '断线自动重启识别',
@@ -97,6 +99,7 @@
         ja: {
             empty_state: '字幕はここに表示されます…',
             theme_toggle: 'テーマを切り替え',
+            background_opacity: '背景の透明度',
             restart: '認識を再起動',
             auto_restart_on: '自動再起動が有効（クリックで無効）',
             auto_restart_off: '切断時に自動で再起動',
@@ -143,6 +146,7 @@
         ko: {
             empty_state: '자막이 여기에 표시됩니다…',
             theme_toggle: '테마 전환',
+            background_opacity: '배경 투명도',
             restart: '인식 재시작',
             auto_restart_on: '자동 재시작 켜짐(클릭하여 끄기)',
             auto_restart_off: '연결 끊김 시 자동 재시작',
@@ -189,6 +193,7 @@
         ru: {
             empty_state: 'Субтитры появятся здесь…',
             theme_toggle: 'Переключить тему',
+            background_opacity: 'Прозрачность фона',
             restart: 'Перезапустить распознавание',
             auto_restart_on: 'Автоперезапуск включён (нажмите, чтобы выключить)',
             auto_restart_off: 'Автоперезапуск при разрыве соединения',
@@ -235,6 +240,7 @@
         es: {
             empty_state: 'Los subtítulos aparecerán aquí…',
             theme_toggle: 'Cambiar tema',
+            background_opacity: 'Opacidad del fondo',
             restart: 'Reiniciar reconocimiento',
             auto_restart_on: 'Reinicio automático activado (clic para desactivar)',
             auto_restart_off: 'Reiniciar automáticamente al desconectarse',
@@ -278,6 +284,7 @@
         pt: {
             empty_state: 'As legendas aparecerão aqui…',
             theme_toggle: 'Alternar tema',
+            background_opacity: 'Opacidade do fundo',
             restart: 'Reiniciar reconhecimento',
             auto_restart_on: 'Reinício automático ativado (clique para desativar)',
             auto_restart_off: 'Reiniciar automaticamente ao desconectar',

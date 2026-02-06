@@ -254,8 +254,22 @@ def main():
                 logger.close_log_file()
                 os._exit(0)
 
+        webview.settings['DRAG_REGION_DIRECT_TARGET_ONLY'] = True
+
         title = "Real-time Subtitle"
-        window = webview.create_window(title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
+        window = webview.create_window(
+            title,
+            server_url,
+            width=350,
+            height=600,
+            resizable=True,
+            on_top=True,
+            text_select=True,
+            zoomable=True,
+            transparent=True,
+            frameless=True,
+            # easy_drag=True
+        )
 
         if not debug and os.name == 'nt':
             try:

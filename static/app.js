@@ -2,6 +2,8 @@ let ws;
 const subtitleContainer = document.getElementById('subtitleContainer');
 const themeToggle = document.getElementById('themeToggle');
 const themeIcon = document.getElementById('themeIcon');
+const backgroundOpacityButton = document.getElementById('backgroundOpacityButton');
+const backgroundOpacityIcon = document.getElementById('backgroundOpacityIcon');
 const restartButton = document.getElementById('restartButton');
 const pauseButton = document.getElementById('pauseButton');
 const pauseIcon = document.getElementById('pauseIcon');
@@ -228,6 +230,20 @@ let kuromojiTokenizerPromise = null;
 // 移动端底部留白开关（默认关闭）
 let bottomSafeAreaEnabled = localStorage.getItem('bottomSafeAreaEnabled') === 'true';
 
+const BACKGROUND_OPACITY_LEVELS = [1, 0.8, 0.6, 0.4, 0];
+const BACKGROUND_OPACITY_ICON = '🪟';
+let backgroundOpacityIndex = 0;
+try {
+    const storedOpacityIndex = Number.parseInt(localStorage.getItem('backgroundOpacityIndex'), 10);
+    if (Number.isFinite(storedOpacityIndex)
+        && storedOpacityIndex >= 0
+        && storedOpacityIndex < BACKGROUND_OPACITY_LEVELS.length) {
+        backgroundOpacityIndex = storedOpacityIndex;
+    }
+} catch (storageError) {
+    console.warn('Unable to access background opacity preference:', storageError);
+}
+
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
 let isRestarting = false;    // 是否正在重启中
@@ -242,10 +258,12 @@ updateFuriganaButton();
 updateOscTranslationButton();
 updateAutoRestartButton();
 updateBottomSafeAreaButton();
+updateBackgroundOpacityButton();
 updateTranslationRefineButton();
 enforceTranslateSegmentMode();
 applySpeakerLabelVisibility();
 applyBottomSafeArea();
+applyBackgroundOpacity();
 applyLockPauseRestartControlsUI();
 applyStaticUiText();
 
@@ -277,6 +295,8 @@ function applyStaticUiText() {
     if (pauseButton) {
         pauseButton.title = isPaused ? t('resume') : t('pause_resume');
     }
+
+    updateBackgroundOpacityButton();
 
     if (subtitleContainer) {
         const emptyNode = subtitleContainer.querySelector('.empty-state');
@@ -433,6 +453,19 @@ themeToggle.addEventListener('click', () => {
     }
 });
 
+if (backgroundOpacityButton) {
+    backgroundOpacityButton.addEventListener('click', () => {
+        backgroundOpacityIndex = (backgroundOpacityIndex + 1) % BACKGROUND_OPACITY_LEVELS.length;
+        try {
+            localStorage.setItem('backgroundOpacityIndex', `${backgroundOpacityIndex}`);
+        } catch (persistError) {
+            console.warn('Unable to persist background opacity preference:', persistError);
+        }
+        applyBackgroundOpacity();
+        updateBackgroundOpacityButton();
+    });
+}
+
 // 更新分段模式按钮文本
 function updateSegmentModeButton() {
     if (!segmentModeButton) {
@@ -503,6 +536,30 @@ function applyBottomSafeArea() {
     }
     const shouldAdd = isMobileBrowser && bottomSafeAreaEnabled;
     subtitleContainer.classList.toggle('mobile-bottom-safe-area', shouldAdd);
+}
+
+function getBackgroundOpacityLevel() {
+    if (BACKGROUND_OPACITY_LEVELS[backgroundOpacityIndex] === undefined) {
+        return BACKGROUND_OPACITY_LEVELS[0] ?? 1;
+    }
+    return BACKGROUND_OPACITY_LEVELS[backgroundOpacityIndex];
+}
+
+function applyBackgroundOpacity() {
+    const level = getBackgroundOpacityLevel();
+    const clamped = Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : 1;
+    document.documentElement.style.setProperty('--panel-alpha', `${clamped}`);
+}
+
+function updateBackgroundOpacityButton() {
+    if (!backgroundOpacityButton || !backgroundOpacityIcon) {
+        return;
+    }
+
+    const level = getBackgroundOpacityLevel();
+    const percent = Math.round(level * 100);
+    backgroundOpacityIcon.textContent = BACKGROUND_OPACITY_ICON;
+    backgroundOpacityButton.title = `${t('background_opacity')}: ${percent}%`;
 }
 
 function updateAutoRestartButton() {
