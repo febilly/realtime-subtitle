@@ -95,6 +95,11 @@ const LLM_REFINE_ICON = '🪄';
 const LLM_TRANSLATE_ICON = '🤖';
 let defaultLlmRefineMode = null;
 
+function normalizeSegmentMode(mode) {
+    const value = (mode || '').toString().trim();
+    return SEGMENT_MODES.includes(value) ? value : null;
+}
+
 // 译文自动修复开关（默认关闭）
 let llmRefineMode = localStorage.getItem('llmRefineMode');
 if (!LLM_REFINE_MODES.includes(llmRefineMode)) {
@@ -578,11 +583,29 @@ async function fetchUiConfig() {
             defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
             currentTranslationTargetLang = defaultTranslationTargetLang;
         }
-        if (data && typeof data.segment_mode === 'string' && data.segment_mode.trim()) {
-            segmentMode = data.segment_mode.trim();
+        const backendSegmentMode = normalizeSegmentMode(data && data.segment_mode);
+        const storedSegmentMode = normalizeSegmentMode(localStorage.getItem('segmentMode'));
+
+        // Segment mode priority:
+        // 1) LOCK_MANUAL_CONTROLS=true -> always backend value
+        // 2) stored browser value (if valid)
+        // 3) backend value
+        if (lockManualControls) {
+            if (backendSegmentMode) {
+                segmentMode = backendSegmentMode;
+                localStorage.setItem('segmentMode', segmentMode);
+            }
+        } else if (storedSegmentMode) {
+            segmentMode = storedSegmentMode;
+            if (backendSegmentMode && backendSegmentMode !== storedSegmentMode) {
+                void setSegmentMode(storedSegmentMode);
+            }
+        } else if (backendSegmentMode) {
+            segmentMode = backendSegmentMode;
             localStorage.setItem('segmentMode', segmentMode);
-            updateSegmentModeButton();
         }
+        updateSegmentModeButton();
+
         if (data && typeof data.speaker_diarization_enabled === 'boolean') {
             speakerDiarizationEnabled = data.speaker_diarization_enabled;
         }
