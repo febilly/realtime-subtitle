@@ -102,6 +102,16 @@ TARGET_LANG = _env_str("TARGET_LANG", "ja")
 TARGET_LANG_1 = _env_str("TARGET_LANG_1", "en")
 TARGET_LANG_2 = _env_str("TARGET_LANG_2", "zh")
 
+# 翻译模式: none | one_way | two_way
+# - none: 不启用翻译
+# - one_way: 单向翻译（目标语言由 TRANSLATION_TARGET_LANG 决定）
+# - two_way: 双向翻译（语言对由 TARGET_LANG_1/TARGET_LANG_2 决定）
+_TRANSLATION_MODE_RAW = _env_str("TRANSLATION_MODE", "one_way")
+TRANSLATION_MODE = str(_TRANSLATION_MODE_RAW).strip().lower()
+if TRANSLATION_MODE not in ("none", "one_way", "two_way"):
+    print(f"⚠️  Invalid TRANSLATION_MODE: {_TRANSLATION_MODE_RAW}, fallback to: one_way")
+    TRANSLATION_MODE = "one_way"
+
 # 自动打开内置 WebView（默认开启）
 # True: 启动后创建嵌入式 webview 窗口
 # False: 仅在命令行打印访问 URL，需要手动在浏览器打开；关闭网页时不会自动退出程序

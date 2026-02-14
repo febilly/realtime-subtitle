@@ -237,8 +237,8 @@ class SonioxSession:
         if USE_TWITCH_AUDIO_STREAM:
             return False, "Twitch streaming mode is enabled; audio source switching is disabled."
 
-        if source not in ("system", "microphone"):
-            return False, "Invalid audio source (expected 'system' or 'microphone')."
+        if source not in ("system", "microphone", "mix"):
+            return False, "Invalid audio source (expected 'system', 'microphone' or 'mix')."
 
         with self.audio_lock:
             previous_source = self.audio_source
