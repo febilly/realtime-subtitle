@@ -238,6 +238,18 @@ let shouldReconnect = true;  // 是否应该自动重连
 let isRestarting = false;    // 是否正在重启中
 let isPaused = false;        // 是否暂停中
 let audioSource = 'system';  // 音频输入来源
+const AUDIO_SOURCES = ['system', 'microphone', 'mix'];
+
+function normalizeAudioSource(source) {
+    const value = (source || '').toString().trim().toLowerCase();
+    return AUDIO_SOURCES.includes(value) ? value : 'system';
+}
+
+function getNextAudioSource(source) {
+    const current = normalizeAudioSource(source);
+    const index = AUDIO_SOURCES.indexOf(current);
+    return AUDIO_SOURCES[(index + 1) % AUDIO_SOURCES.length];
+}
 
 // 初始化按钮文本
 updateSegmentModeButton();
@@ -1125,22 +1137,29 @@ function updateAudioSourceButton() {
         return;
     }
 
+    audioSource = normalizeAudioSource(audioSource);
+
     if (audioSource === 'microphone') {
         audioSourceIcon.textContent = '🎤';
-        audioSourceButton.title = t('audio_to_system');
-    } else {
-        audioSourceIcon.textContent = '🔊';
-        audioSourceButton.title = t('audio_to_mic');
+        audioSourceButton.title = t('audio_to_mix');
+        return;
     }
+
+    if (audioSource === 'mix') {
+        audioSourceIcon.textContent = '🎛️';
+        audioSourceButton.title = t('audio_to_system');
+        return;
+    }
+
+    audioSourceIcon.textContent = '🔊';
+    audioSourceButton.title = t('audio_to_mic');
 }
 
 async function fetchInitialAudioSource() {
     try {
         const stored = localStorage.getItem('audioSource');
-        if (stored === 'system' || stored === 'microphone') {
-            audioSource = stored;
-            updateAudioSourceButton();
-        }
+        audioSource = normalizeAudioSource(stored);
+        updateAudioSourceButton();
     } catch (storageError) {
         console.warn('Unable to access stored audio source preference:', storageError);
     }
@@ -1152,8 +1171,8 @@ async function fetchInitialAudioSource() {
         }
 
         const data = await response.json();
-        if (data && (data.source === 'system' || data.source === 'microphone')) {
-            audioSource = data.source;
+        if (data && typeof data.source === 'string') {
+            audioSource = normalizeAudioSource(data.source);
             updateAudioSourceButton();
             try {
                 localStorage.setItem('audioSource', audioSource);
@@ -1424,7 +1443,7 @@ if (audioSourceButton) {
         if (lockManualControls) {
             return;
         }
-        const nextSource = audioSource === 'system' ? 'microphone' : 'system';
+        const nextSource = getNextAudioSource(audioSource);
 
         try {
             const response = await fetch('/audio-source', {
@@ -1443,7 +1462,7 @@ if (audioSourceButton) {
             }
 
             if (response.ok && result && result.source) {
-                audioSource = result.source;
+                audioSource = normalizeAudioSource(result.source);
                 updateAudioSourceButton();
                 localStorage.setItem('audioSource', audioSource);
                 if (result.message) {

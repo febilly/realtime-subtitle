@@ -135,7 +135,7 @@ def main():
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
-    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW
+    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, TRANSLATION_MODE
     from logger import TranscriptLogger
     from soniox_session import SonioxSession
     from web_server import WebServer
@@ -183,7 +183,7 @@ def main():
             raise
         
         loop = asyncio.get_event_loop()
-        translation_mode = "one_way"
+        translation_mode = TRANSLATION_MODE
         soniox_session.start(api_key, "pcm_s16le", translation_mode, loop)
     
     app.on_startup.append(start_background_tasks)

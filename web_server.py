@@ -13,6 +13,7 @@ from config import (
     ENABLE_SPEAKER_DIARIZATION,
     HIDE_SPEAKER_LABELS,
     LLM_REFINE_DEFAULT_MODE,
+    TRANSLATION_MODE,
 )
 from config import is_llm_refine_available, LLM_REFINE_CONTEXT_COUNT
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
@@ -233,7 +234,7 @@ class WebServer:
             print("[Server] Starting new recognition session...")
             api_key = get_api_key()
             audio_format = "pcm_s16le"
-            translation = "one_way"  # 总是启用翻译
+            translation = TRANSLATION_MODE
             
             loop = asyncio.get_event_loop()
             self.soniox_session.start(
@@ -314,7 +315,7 @@ class WebServer:
         resumed = self.soniox_session.resume(
             api_key=api_key,
             audio_format="pcm_s16le",
-            translation="one_way",
+            translation=TRANSLATION_MODE,
             loop=loop
         )
 
