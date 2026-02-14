@@ -54,7 +54,6 @@ Configure an OpenAI-compatible endpoint via:
 LLM_BASE_URL="https://api.cerebras.ai/v1"
 LLM_MODEL="gpt-oss-120b"
 LLM_API_KEY="<your-key-goes-here>"
-LLM_PROMPT_SUFFIX="/no_think"
 LLM_TEMPERATURE="0.6"
 ```
 
