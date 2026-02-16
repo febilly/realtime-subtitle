@@ -4,10 +4,10 @@ on:
   push:
     branches:
       - main
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:  # Allow manual trigger
 
 permissions:
-  contents: write  # 允许创建 release 和推送 tag
+  contents: write  # Allow creating releases and pushing tags
 
 jobs:
   build:
@@ -49,11 +49,11 @@ jobs:
         tag_name: ${{ steps.commit_info.outputs.tag }}
         name: RealtimeSubtitle ${{ steps.commit_info.outputs.tag }}
         body: |
-          ## 自动构建版本
+          ## Auto-built Release
           
-          **提交信息**: ${{ steps.commit_info.outputs.message }}
-          **提交 SHA**: ${{ steps.commit_info.outputs.sha }}
-          **构建时间**: ${{ steps.commit_info.outputs.timestamp }}
+          **Commit Message**: ${{ steps.commit_info.outputs.message }}
+          **Commit SHA**: ${{ steps.commit_info.outputs.sha }}
+          **Build Time**: ${{ steps.commit_info.outputs.timestamp }}
         files: ./dist/RealtimeSubtitle.exe
         draft: false
         prerelease: true
