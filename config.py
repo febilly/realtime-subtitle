@@ -128,6 +128,13 @@ LOCK_MANUAL_CONTROLS = _env_bool("LOCK_MANUAL_CONTROLS", False)
 # False: 使用本机系统音频/麦克风采集
 USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 
+# 当 VRChat 游戏内麦克风静音(MuteSelf=true)时，是否静音发送中的“麦克风音频分量”
+# - True(默认):
+#   - microphone 模式：发送静音帧（保持发送节奏，不暂停）
+#   - mix 模式：仅将麦克风分量置零，系统分量继续发送
+# - False: 忽略 VRChat 的 MuteSelf 状态
+MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = _env_bool("MUTE_MIC_WHEN_VRCHAT_SELF_MUTED", True)
+
 # 混合音频权重（仅在音频源为 mix 时生效）
 # 约定：
 # - "自己" = 麦克风（microphone）

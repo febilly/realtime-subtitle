@@ -82,6 +82,8 @@ The executable will be located at `dist/RealtimeSubtitle.exe`.
 This project uses [kuromoji.js](https://github.com/takuyaa/kuromoji.js) for Japanese tokenization in the browser.
 kuromoji.js is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
+This project uses [vrchat_oscquery](https://github.com/theepicsnail/vrchat_oscquery) for VRChat OSCQuery integration.
+
 ## Configuration Options
 
 Please run `python server.py --help` to see all the avaliable options.

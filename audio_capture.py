@@ -34,7 +34,14 @@ def _convert_float32_to_int16(channel_data: np.ndarray) -> bytes:
 class AudioStreamer:
     """音频流控制器 - 支持系统输出、麦克风与混合模式"""
 
-    def __init__(self, ws, initial_source: str = "system", sample_rate: int = 16000, chunk_size: int = 3840):
+    def __init__(
+        self,
+        ws,
+        initial_source: str = "system",
+        sample_rate: int = 16000,
+        chunk_size: int = 3840,
+        mute_mic_when_vrchat_muted: bool = True,
+    ):
         self.ws = ws
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
@@ -48,6 +55,17 @@ class AudioStreamer:
         self._thread: Optional[threading.Thread] = None
         self.mix_mic_gain = float(MIX_OWN_VOLUME)
         self.mix_system_gain = float(MIX_OTHER_VOLUME)
+        self._mute_state_lock = threading.Lock()
+        self._mute_mic_when_vrchat_muted = bool(mute_mic_when_vrchat_muted)
+        self._vrchat_mic_muted = False
+
+    def set_vrchat_mic_muted(self, muted: bool) -> None:
+        with self._mute_state_lock:
+            self._vrchat_mic_muted = bool(muted)
+
+    def _should_mute_microphone_component(self) -> bool:
+        with self._mute_state_lock:
+            return self._mute_mic_when_vrchat_muted and self._vrchat_mic_muted
 
     def start(self) -> None:
         """启动音频流线程"""
@@ -118,6 +136,8 @@ class AudioStreamer:
                         continue
 
                     normalized = self._resample_to_chunk(channel_data, self.chunk_size)
+                    if source == "microphone" and self._should_mute_microphone_component():
+                        normalized = np.zeros_like(normalized, dtype=np.float32)
                     payload = _convert_float32_to_int16(normalized)
                     try:
                         self.ws.send(payload)
@@ -261,6 +281,9 @@ class AudioStreamer:
             mix_len = min(min_mix_frames, system_available, microphone_available)
             system_data, system_segments, system_available = self._consume_segments(system_segments, system_available, mix_len)
             microphone_data, microphone_segments, microphone_available = self._consume_segments(microphone_segments, microphone_available, mix_len)
+
+            if self._should_mute_microphone_component():
+                microphone_data = np.zeros_like(microphone_data, dtype=np.float32)
 
             mixed = (system_data * self.mix_system_gain) + (microphone_data * self.mix_mic_gain)
             peak = float(np.max(np.abs(mixed))) if mixed.size else 0.0
