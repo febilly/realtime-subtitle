@@ -128,6 +128,16 @@ LOCK_MANUAL_CONTROLS = _env_bool("LOCK_MANUAL_CONTROLS", False)
 # False: 使用本机系统音频/麦克风采集
 USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 
+# 混合音频权重（仅在音频源为 mix 时生效）
+# 约定：
+# - "自己" = 麦克风（microphone）
+# - "别人" = 系统/扬声器环回（system）
+#
+# 你只需要设置其中一个变量，另一个会自动按 1-该值 计算。
+_MIX_OWN_VOLUME_RAW = _env_float("MIX_OWN_VOLUME", 0.5)
+MIX_OWN_VOLUME = min(1.0, max(0.0, _MIX_OWN_VOLUME_RAW))
+MIX_OTHER_VOLUME = 1.0 - MIX_OWN_VOLUME
+
 # 说话人分离开关（默认开启）
 # True: 启用说话人分离（前端显示说话人标签）
 # False: 关闭说话人分离（前端隐藏说话人标签）
