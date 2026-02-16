@@ -93,6 +93,8 @@ let hideSpeakerLabels = false;
 const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
 const LLM_REFINE_ICON = '🪄';
 const LLM_TRANSLATE_ICON = '🤖';
+const LLM_REFINE_MODE_STORAGE_KEY = 'llmRefineMode';
+const LLM_TRANSLATION_MODE_STORAGE_KEY = 'llmTranslationMode';
 let defaultLlmRefineMode = null;
 
 function normalizeSegmentMode(mode) {
@@ -101,7 +103,10 @@ function normalizeSegmentMode(mode) {
 }
 
 // 译文自动修复开关（默认关闭）
-let llmRefineMode = localStorage.getItem('llmRefineMode');
+let llmRefineMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
+if (!LLM_REFINE_MODES.includes((llmRefineMode || '').toString().trim().toLowerCase())) {
+    llmRefineMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
+}
 if (!LLM_REFINE_MODES.includes(llmRefineMode)) {
     const legacy = localStorage.getItem('llmRefineEnabled');
     llmRefineMode = legacy === 'true' ? 'refine' : 'off';
@@ -342,7 +347,8 @@ function applyLlmRefineMode(mode, options = {}) {
     const shouldPersist = options.persist !== false;
     if (shouldPersist) {
         try {
-            localStorage.setItem('llmRefineMode', llmRefineMode);
+            localStorage.setItem(LLM_REFINE_MODE_STORAGE_KEY, llmRefineMode);
+            localStorage.setItem(LLM_TRANSLATION_MODE_STORAGE_KEY, llmRefineMode);
             localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
         } catch (storageError) {
             console.warn('Unable to persist LLM refine mode:', storageError);
@@ -652,7 +658,10 @@ async function fetchLlmRefineStatus() {
 
         const preferredDefault = normalizeLlmRefineMode(defaultLlmRefineMode || serverMode);
 
-        const rawStoredMode = localStorage.getItem('llmRefineMode');
+        let rawStoredMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
+        if (!LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())) {
+            rawStoredMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
+        }
         const hasStoredMode = LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase());
         const storedMode = hasStoredMode ? normalizeLlmRefineMode(rawStoredMode) : null;
 

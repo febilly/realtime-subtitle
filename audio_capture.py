@@ -7,6 +7,7 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
+from config import MIX_OWN_VOLUME, MIX_OTHER_VOLUME
 
 try:
     import soundcard as sc
@@ -45,6 +46,8 @@ class AudioStreamer:
 
         self._current_source = initial_source
         self._thread: Optional[threading.Thread] = None
+        self.mix_mic_gain = float(MIX_OWN_VOLUME)
+        self.mix_system_gain = float(MIX_OTHER_VOLUME)
 
     def start(self) -> None:
         """启动音频流线程"""
@@ -151,6 +154,7 @@ class AudioStreamer:
         )
 
         print("🎛️  Capturing mixed audio: system + microphone")
+        print(f"🎚️  Mix gains -> microphone(self): {self.mix_mic_gain:.2f}, system(other): {self.mix_system_gain:.2f}")
 
         system_thread.start()
         microphone_thread.start()
@@ -258,7 +262,7 @@ class AudioStreamer:
             system_data, system_segments, system_available = self._consume_segments(system_segments, system_available, mix_len)
             microphone_data, microphone_segments, microphone_available = self._consume_segments(microphone_segments, microphone_available, mix_len)
 
-            mixed = (system_data + microphone_data) * 0.5
+            mixed = (system_data * self.mix_system_gain) + (microphone_data * self.mix_mic_gain)
             peak = float(np.max(np.abs(mixed))) if mixed.size else 0.0
             if peak > 0.98:
                 mixed = mixed * (0.98 / peak)
