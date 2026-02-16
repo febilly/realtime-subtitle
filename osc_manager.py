@@ -63,7 +63,7 @@ class OSCManager:
             self._client = None
             self._mute_callback = None  # 静音状态变化的回调函数
             self._oscquery_enabled = str(os.environ.get("OSC_QUERY_ENABLED", "1")).strip().lower() in ("1", "true", "yes", "on")
-            self._oscquery_app_name = str(os.environ.get("OSCQUERY_APP_NAME", "RealtimeSubtitle")).strip() or "RealtimeSubtitle"
+            self._oscquery_app_name = str(os.environ.get("OSCQUERY_APP_NAME", "DeafaultAppName")).strip() or "DeafaultAppName"
             
             self._last_mute_value: Optional[bool] = None
             self._oscquery_lock = threading.Lock()
@@ -153,11 +153,16 @@ class OSCManager:
                 self._emit("[OSCQuery] Linked with VRChat (received first MuteSelf event)")
             self._notify_mute_callback(mute_value)
     
-    async def start_server(self):
+    async def start_server(self, app_name: Optional[str] = None):
         """Start OSCQuery service and wait for VRChat callbacks."""
         if not self._oscquery_enabled:
             self._emit("[OSC] OSCQuery is disabled by config; skipping startup", level="warning")
             return None
+
+        if app_name is not None:
+            normalized_name = str(app_name).strip()
+            if normalized_name:
+                self._oscquery_app_name = normalized_name
 
         with self._oscquery_lock:
             if self._oscquery_httpd is not None:
