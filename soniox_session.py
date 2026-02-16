@@ -14,6 +14,7 @@ from websockets.sync.client import connect as sync_connect
 from config import (
     SONIOX_WEBSOCKET_URL,
     USE_TWITCH_AUDIO_STREAM,
+    MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
     FFMPEG_PATH,
@@ -59,6 +60,7 @@ class SonioxSession:
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
+        self._vrchat_self_muted = False
         self.osc_translation_enabled = False
         self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
         self._sentence_buffers: dict[str, dict] = {}
@@ -74,6 +76,9 @@ class SonioxSession:
             self.translation_target_lang = str(TRANSLATION_TARGET_LANG)
         except Exception:
             self.translation_target_lang = "en"
+
+        if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED:
+            osc_manager.set_mute_callback(self._handle_vrchat_mute_self)
     
     def start(
         self,
@@ -102,6 +107,12 @@ class SonioxSession:
         self._sentence_buffers.clear()
         self._refine_context_history.clear()
         self._llm_translate_state.clear()
+
+        if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
+            try:
+                asyncio.run_coroutine_threadsafe(osc_manager.start_server(), self.loop)
+            except Exception as error:
+                print(f"⚠️  Failed to start OSC listener for MuteSelf: {error}")
 
         if translation_target_lang is not None:
             self.set_translation_target_lang(translation_target_lang)
@@ -285,13 +296,33 @@ class SonioxSession:
                 ws,
                 initial_source=self.get_audio_source(),
                 sample_rate=self.sample_rate,
-                chunk_size=self.chunk_size
+                chunk_size=self.chunk_size,
+                mute_mic_when_vrchat_muted=bool(MUTE_MIC_WHEN_VRCHAT_SELF_MUTED),
             )
+            streamer.set_vrchat_mic_muted(self._vrchat_self_muted)
 
         with self.audio_lock:
             self.audio_streamer = streamer
 
         streamer.start()
+
+    def _handle_vrchat_mute_self(self, mute_value) -> None:
+        muted = bool(mute_value)
+        previous = self._vrchat_self_muted
+        self._vrchat_self_muted = muted
+
+        with self.audio_lock:
+            streamer = self.audio_streamer
+
+        if streamer and hasattr(streamer, "set_vrchat_mic_muted"):
+            try:
+                streamer.set_vrchat_mic_muted(muted)
+            except Exception as error:
+                print(f"⚠️  Failed to update microphone mute state from OSC: {error}")
+
+        if previous != muted:
+            state_text = "muted" if muted else "unmuted"
+            print(f"🔇 VRChat MuteSelf changed: microphone is now {state_text} in capture pipeline")
 
     def _stop_audio_streamer(self) -> None:
         with self.audio_lock:

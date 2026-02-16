@@ -170,7 +170,7 @@ def main():
     
     # 创建应用
     app = web_server.create_app()
-    
+
     # 启动后台任务
     async def start_background_tasks(app_instance):
         try:

@@ -7,5 +7,7 @@ aiohttp-jinja2
 requests
 pywebview
 python-osc
+zeroconf
+vrchat_oscquery @ git+https://github.com/theepicsnail/vrchat_oscquery@main
 # streamlink
 pyinstaller
