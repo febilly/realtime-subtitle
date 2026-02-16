@@ -110,7 +110,7 @@ class SonioxSession:
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
             try:
-                asyncio.run_coroutine_threadsafe(osc_manager.start_server(), self.loop)
+                asyncio.run_coroutine_threadsafe(osc_manager.start_server(app_name="RealtimeSubtitle"), self.loop)
             except Exception as error:
                 print(f"⚠️  Failed to start OSC listener for MuteSelf: {error}")
 
