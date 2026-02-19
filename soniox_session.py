@@ -20,7 +20,8 @@ from config import (
     FFMPEG_PATH,
     DEFAULT_SEGMENT_MODE,
     is_llm_refine_available,
-    LLM_REFINE_CONTEXT_COUNT,
+    LLM_REFINE_CONTEXT_MIN_COUNT,
+    LLM_REFINE_CONTEXT_MAX_COUNT,
     LLM_PROMPT_SUFFIX,
     LLM_REFINE_MAX_TOKENS,
     LLM_BASE_URL,
@@ -65,6 +66,7 @@ class SonioxSession:
         self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
         self._sentence_buffers: dict[str, dict] = {}
         self._refine_context_history: list[dict] = []
+        self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         default_mode = str(LLM_REFINE_DEFAULT_MODE or "").strip().lower()
         if default_mode not in LLM_REFINE_MODES:
             default_mode = "refine" if bool(LLM_REFINE_DEFAULT_ENABLED) else "off"
@@ -106,6 +108,7 @@ class SonioxSession:
         self.loop = loop
         self._sentence_buffers.clear()
         self._refine_context_history.clear()
+        self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         self._llm_translate_state.clear()
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
@@ -423,7 +426,7 @@ class SonioxSession:
             return
 
         sentence_id = f"backend-{int(time.time() * 1000)}-{speaker}"
-        context_items = list(self._refine_context_history[-LLM_REFINE_CONTEXT_COUNT:])
+        context_items = self._get_dynamic_context_items()
 
         refined_translation = translation
         no_change = True
@@ -469,6 +472,31 @@ class SonioxSession:
         if len(self._refine_context_history) > 20:
             self._refine_context_history = self._refine_context_history[-20:]
 
+    def _get_dynamic_context_items(self) -> list[dict]:
+        """Return context items with cyclical window: min -> ... -> max -> min."""
+        history = list(self._refine_context_history)
+        if not history:
+            return []
+
+        min_count = max(1, int(LLM_REFINE_CONTEXT_MIN_COUNT))
+        max_count = max(min_count, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+
+        if len(history) < min_count:
+            return history
+
+        current = int(self._llm_context_cycle_count)
+        current = max(min_count, min(current, max_count))
+
+        use_count = min(current, len(history))
+        items = history[-use_count:]
+
+        if current >= max_count:
+            self._llm_context_cycle_count = min_count
+        else:
+            self._llm_context_cycle_count = current + 1
+
+        return items
+
     async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:
         """执行 LLM 翻译改进"""
         NO_CHANGE_MARKER = "__NO_CHANGE__"
@@ -490,8 +518,8 @@ class SonioxSession:
             target_lang_value = ""
 
         normalized_context: list[dict[str, str]] = []
-        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_COUNT > 0:
-            max_items = min(int(LLM_REFINE_CONTEXT_COUNT), 20)
+        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
+            max_items = min(int(LLM_REFINE_CONTEXT_MAX_COUNT), 20)
             for item in context_items[:max_items]:
                 if not isinstance(item, dict):
                     continue
@@ -630,8 +658,8 @@ class SonioxSession:
             target_lang_value = ""
 
         normalized_context: list[dict[str, str]] = []
-        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_COUNT > 0:
-            max_items = min(int(LLM_REFINE_CONTEXT_COUNT), 20)
+        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
+            max_items = min(int(LLM_REFINE_CONTEXT_MAX_COUNT), 20)
             for item in context_items[:max_items]:
                 if not isinstance(item, dict):
                     continue
@@ -796,8 +824,6 @@ class SonioxSession:
         if not self.loop:
             return
 
-        context_items = list(self._refine_context_history[-LLM_REFINE_CONTEXT_COUNT:])
-
         for speaker, state in list(self._llm_translate_state.items()):
             translation_tokens = (state.get("final_translation_tokens") or []) + (state.get("non_final_translation_tokens") or [])
             if not translation_tokens:
@@ -819,6 +845,7 @@ class SonioxSession:
             state["last_trigger_key"] = trigger_key
             state["request_id"] = int(state.get("request_id", 0)) + 1
             request_id = state["request_id"]
+            context_items = self._get_dynamic_context_items()
 
             asyncio.run_coroutine_threadsafe(
                 self._perform_translate_and_broadcast(

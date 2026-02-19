@@ -76,9 +76,6 @@ let lockManualControls = false;
 // 由后端下发：LLM 译文修复能力是否可用（缺少 API key 时为 false）
 let llmRefineAvailable = false;
 
-// 由后端下发：refine 时携带的上文条数（默认 3，可为 0）
-let llmRefineContextCount = 3;
-
 // 由后端下发：是否展示 refined 译文的修订 diff（无前端开关）
 let llmRefineShowDiff = false;
 
@@ -593,9 +590,6 @@ async function fetchUiConfig() {
         llmRefineShowDeletions = !!data.llm_refine_show_deletions;
         if (data && typeof data.llm_refine_default_mode === 'string') {
             defaultLlmRefineMode = normalizeLlmRefineMode(data.llm_refine_default_mode);
-        }
-        if (data && Number.isFinite(data.llm_refine_context_count)) {
-            llmRefineContextCount = Math.max(0, Math.trunc(data.llm_refine_context_count));
         }
         if (data && typeof data.translation_target_lang === 'string' && data.translation_target_lang.trim()) {
             defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
