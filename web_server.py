@@ -15,7 +15,11 @@ from config import (
     LLM_REFINE_DEFAULT_MODE,
     TRANSLATION_MODE,
 )
-from config import is_llm_refine_available, LLM_REFINE_CONTEXT_COUNT
+from config import (
+    is_llm_refine_available,
+    LLM_REFINE_CONTEXT_MIN_COUNT,
+    LLM_REFINE_CONTEXT_MAX_COUNT,
+)
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
 from llm_client import close_llm_http_session
@@ -101,7 +105,8 @@ class WebServer:
             "llm_refine_available": bool(is_llm_refine_available()),
             "llm_refine_mode": self.soniox_session.get_llm_refine_mode(),
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
-            "llm_refine_context_count": int(LLM_REFINE_CONTEXT_COUNT),
+            "llm_refine_context_min_count": int(LLM_REFINE_CONTEXT_MIN_COUNT),
+            "llm_refine_context_max_count": int(LLM_REFINE_CONTEXT_MAX_COUNT),
             "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
             "segment_mode": self.soniox_session.get_segment_mode(),

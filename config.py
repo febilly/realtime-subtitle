@@ -213,10 +213,16 @@ LLM_REFINE_SHOW_DIFF = _env_bool("LLM_REFINE_SHOW_DIFF", True)
 # - False: 只标绿新增内容，不显示被删内容（默认）
 LLM_REFINE_SHOW_DELETIONS = _env_bool("LLM_REFINE_SHOW_DELETIONS", False)
 
-# LLM refine 时携带的“上文语境”条数（已完结句子对：原文+译文）。
-# - 可设为 0 表示不携带上文
-# - 默认 5
-LLM_REFINE_CONTEXT_COUNT = max(0, _env_int("LLM_REFINE_CONTEXT_COUNT", 5))
+# LLM refine / translate 时携带的“上文语境”条数范围（已完结句子对：原文+译文）。
+# 使用策略：
+# - 每次请求从最小值开始，逐次 +1 到最大值
+# - 达到最大值后的下一次请求，立即回到最小值，再继续递增
+# 这样可在“前缀尽量稳定”的同时周期性控制上下文长度。
+_LLM_REFINE_CONTEXT_MIN_COUNT_RAW = _env_int("LLM_REFINE_CONTEXT_MIN_COUNT", 5)
+_LLM_REFINE_CONTEXT_MAX_COUNT_RAW = _env_int("LLM_REFINE_CONTEXT_MAX_COUNT", 5)
+
+LLM_REFINE_CONTEXT_MIN_COUNT = max(1, _LLM_REFINE_CONTEXT_MIN_COUNT_RAW)
+LLM_REFINE_CONTEXT_MAX_COUNT = max(LLM_REFINE_CONTEXT_MIN_COUNT, _LLM_REFINE_CONTEXT_MAX_COUNT_RAW)
 
 # LLM refine 的最大输出 tokens。
 # 注意：不同服务商/模型对 max_tokens 上限不同。

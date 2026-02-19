@@ -28,18 +28,28 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Choose one of the following methods to provide your Soniox API key.
-
-- Set the `SONIOX_API_KEY` environment variable to your API key
-- Set the `SONIOX_TEMP_KEY_URL` environment variable to point to a temporary key endpoint
+Set the `SONIOX_API_KEY` environment variable to your API key.
 
 This program will also try to read the environment variables from a `.env` file if it exists, like this:
 
 ```env
-SONIOX_API_KEY="your-key-goes-in-here"
+SONIOX_API_KEY="<your-key-goes-in-here>"
 ```
 
-### Optional: LLM translation refinement
+<details>
+<summary>Optional configuration</summary>
+
+### Hide speaker labels in UI
+
+If speaker labels are too noisy/inaccurate for your use case, you can hide them in the UI:
+
+```env
+HIDE_SPEAKER_LABELS="True"
+```
+
+This only hides the speaker tags in frontend display. Backend speaker diarization can still stay enabled, so transcripts from different speakers are less likely to be merged into the same sentence.
+
+### LLM translation refinement
 
 You can optionally enable an "auto-refine completed translations" feature. The UI toggle is only shown when the required LLM settings are present.
 
@@ -53,9 +63,22 @@ Configure an OpenAI-compatible endpoint via:
 # Example configuration
 LLM_BASE_URL="https://api.cerebras.ai/v1"
 LLM_MODEL="gpt-oss-120b"
-LLM_API_KEY="<your-key-goes-here>"
+LLM_API_KEY="<your-key-goes-in-here>"
 LLM_TEMPERATURE="0.6"
+
+# Dynamic context window for LLM refine/translate (optional)
+# Request context size cycles as: MIN -> ... -> MAX -> MIN -> ...
+LLM_REFINE_CONTEXT_MIN_COUNT="5"
+LLM_REFINE_CONTEXT_MAX_COUNT="10"
 ```
+
+The dynamic context window above is mainly recommended when your LLM provider offers a prefix-caching discount (which is NOT the case for Cerebras). Otherwise, increasing context size may only increase token cost/latency.
+
+### Extras
+
+Please check `config.py` for more configuration options.
+
+</details>
 
 ## Run
 
