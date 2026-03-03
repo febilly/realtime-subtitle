@@ -2414,6 +2414,9 @@ function renderSubtitles() {
         return;
     }
 
+    const previousRenderedSentences = new Map(renderedSentences);
+    const previousRenderedBlocks = new Map(renderedBlocks);
+
     pendingSentenceUpdates.forEach(({ id, html }) => renderedSentences.set(id, html));
     sentencesToRemove.forEach(id => renderedSentences.delete(id));
 
@@ -2452,7 +2455,7 @@ function renderSubtitles() {
     });
 
     try {
-        // 以 subtitle-block 为单位进行增量更新，保证 speaker label 与分块结构被保留
+        // 以 subtitle-block 为结构单位，但尽量只更新/追加 sentence-block，避免替换历史 DOM（否则会打断文本选中）
         const newBlocks = Array.from(frag.querySelectorAll('.subtitle-block'));
         const existingBlocks = Array.from(subtitleContainer.querySelectorAll('.subtitle-block'));
 
@@ -2470,14 +2473,117 @@ function renderSubtitles() {
                 node.dataset.blockId = id;
             }
             existingIndex.set(id, node);
+            if (!renderedBlocks.has(id)) {
+                renderedBlocks.set(id, node.innerHTML);
+            }
         });
 
         const keepIds = new Set();
 
-        // 遍历新的 subtitle-block，比较并替换/插入
+        const syncSpeakerLabel = (existingBlock, newBlock) => {
+            const getDirectSpeakerLabel = (block) => {
+                const first = block ? block.firstElementChild : null;
+                if (first && first.classList && first.classList.contains('speaker-label')) {
+                    return first;
+                }
+                return null;
+            };
+
+            const newLabel = getDirectSpeakerLabel(newBlock);
+            const existingLabel = getDirectSpeakerLabel(existingBlock);
+
+            if (!newLabel && existingLabel) {
+                existingLabel.remove();
+                return;
+            }
+
+            if (newLabel && !existingLabel) {
+                existingBlock.insertBefore(newLabel.cloneNode(true), existingBlock.firstChild);
+                return;
+            }
+
+            if (newLabel && existingLabel) {
+                if (existingLabel.className !== newLabel.className) {
+                    existingLabel.className = newLabel.className;
+                }
+                if (existingLabel.textContent !== newLabel.textContent) {
+                    existingLabel.textContent = newLabel.textContent;
+                }
+            }
+        };
+
+        const updateSentenceBlocksInPlace = (existingBlock, newBlock) => {
+            const newSentences = Array.from(newBlock.querySelectorAll('.sentence-block'));
+            const newSentenceIds = new Set();
+
+            const existingSentenceNodes = Array.from(existingBlock.querySelectorAll('.sentence-block'));
+            const existingById = new Map();
+            existingSentenceNodes.forEach(node => {
+                if (node && node.dataset && node.dataset.sentenceId) {
+                    existingById.set(node.dataset.sentenceId, node);
+                }
+            });
+
+            for (let i = 0; i < newSentences.length; i++) {
+                const newSentence = newSentences[i];
+                const sentenceId = newSentence.dataset.sentenceId;
+                if (!sentenceId) {
+                    continue;
+                }
+                newSentenceIds.add(sentenceId);
+
+                const existingSentence = existingById.get(sentenceId);
+                const oldHtml = previousRenderedSentences.get(sentenceId);
+                const newHtml = renderedSentences.get(sentenceId) || newSentence.outerHTML;
+                const hasChanged = oldHtml !== newHtml;
+
+                if (existingSentence) {
+                    if (hasChanged) {
+                        if (existingSentence.className !== newSentence.className) {
+                            existingSentence.className = newSentence.className;
+                        }
+                        // 只更新句子内部内容，保留 sentence-block 节点本身，避免影响已渲染历史的 DOM 引用/选择范围
+                        if (existingSentence.innerHTML !== newSentence.innerHTML) {
+                            existingSentence.innerHTML = newSentence.innerHTML;
+                        }
+                    }
+                    continue;
+                }
+
+                // 新句子：尽量插入到正确的位置；若找不到插入点则追加到末尾
+                const clone = newSentence.cloneNode(true);
+                let inserted = false;
+                for (let j = i + 1; j < newSentences.length; j++) {
+                    const nextId = newSentences[j].dataset.sentenceId;
+                    if (!nextId) {
+                        continue;
+                    }
+                    const nextExisting = existingById.get(nextId);
+                    if (nextExisting && nextExisting.parentNode) {
+                        nextExisting.parentNode.insertBefore(clone, nextExisting);
+                        inserted = true;
+                        break;
+                    }
+                }
+
+                if (!inserted) {
+                    existingBlock.appendChild(clone);
+                }
+
+                existingById.set(sentenceId, clone);
+            }
+
+            // 删除不再存在的句子块（通常发生在切换显示模式/隐藏翻译等手动操作）
+            existingById.forEach((node, id) => {
+                if (!newSentenceIds.has(id)) {
+                    node.remove();
+                }
+            });
+        };
+
+        // 遍历新的 subtitle-block，进行就地更新/插入
         for (let i = 0; i < newBlocks.length; i++) {
             const newBlock = newBlocks[i];
-            // 为新块生成稳定 id（基于其首个 sentence 的 id）
             let id = newBlock.dataset.blockId;
             if (!id) {
                 const firstSent = newBlock.querySelector('.sentence-block');
@@ -2489,48 +2595,51 @@ function renderSubtitles() {
                 newBlock.dataset.blockId = id;
             }
 
-            const newHtml = newBlock.innerHTML;
             const existingNode = existingIndex.get(id);
+            const newInnerHtml = newBlock.innerHTML;
 
             if (existingNode) {
-                // 内容相同则跳过
-                if (renderedBlocks.get(id) === newHtml) {
-                    keepIds.add(id);
+                // 结构块存在：尽量不替换节点，只更新 class/speaker label/发生变化的句子
+                if (existingNode.className !== newBlock.className) {
+                    existingNode.className = newBlock.className;
+                }
+
+                const oldBlockHtml = previousRenderedBlocks.get(id);
+                const hasBlockChanged = oldBlockHtml !== newInnerHtml;
+                if (hasBlockChanged) {
+                    syncSpeakerLabel(existingNode, newBlock);
+                    updateSentenceBlocksInPlace(existingNode, newBlock);
+                }
+
+                renderedBlocks.set(id, newInnerHtml);
+                keepIds.add(id);
+                continue;
+            }
+
+            // 新的 subtitle-block：插入完整节点（不会触碰历史块）
+            const wrapper = newBlock.cloneNode(true);
+            wrapper.dataset.blockId = id;
+
+            let inserted = false;
+            for (let j = i + 1; j < newBlocks.length; j++) {
+                const nextFirst = newBlocks[j].querySelector('.sentence-block');
+                const nextId = nextFirst && nextFirst.dataset.sentenceId ? `block-${nextFirst.dataset.sentenceId}` : newBlocks[j].dataset.blockId;
+                if (!nextId) {
                     continue;
                 }
-                // 替换整个 subtitle-block 节点（保留新的 speaker label 和结构）
-                const wrapper = document.createElement('div');
-                wrapper.className = newBlock.className || 'subtitle-block';
-                wrapper.dataset.blockId = id;
-                wrapper.innerHTML = newHtml;
-                existingNode.replaceWith(wrapper);
-                renderedBlocks.set(id, newHtml);
-                keepIds.add(id);
-            } else {
-                // 新的 subtitle-block，需要插入：尝试按新Blocks 中下一个已有块定位插入点
-                const wrapper = document.createElement('div');
-                wrapper.className = newBlock.className || 'subtitle-block';
-                wrapper.dataset.blockId = id;
-                wrapper.innerHTML = newHtml;
-
-                let inserted = false;
-                for (let j = i + 1; j < newBlocks.length; j++) {
-                    const nextFirst = newBlocks[j].querySelector('.sentence-block');
-                    const nextId = nextFirst && nextFirst.dataset.sentenceId ? `block-${nextFirst.dataset.sentenceId}` : newBlocks[j].dataset.blockId;
-                    if (!nextId) continue;
-                    const nextExisting = subtitleContainer.querySelector(`.subtitle-block[data-block-id="${nextId}"]`);
-                    if (nextExisting) {
-                        subtitleContainer.insertBefore(wrapper, nextExisting);
-                        inserted = true;
-                        break;
-                    }
+                const nextExisting = subtitleContainer.querySelector(`.subtitle-block[data-block-id="${nextId}"]`);
+                if (nextExisting) {
+                    subtitleContainer.insertBefore(wrapper, nextExisting);
+                    inserted = true;
+                    break;
                 }
-                if (!inserted) {
-                    subtitleContainer.appendChild(wrapper);
-                }
-                renderedBlocks.set(id, newHtml);
-                keepIds.add(id);
             }
+            if (!inserted) {
+                subtitleContainer.appendChild(wrapper);
+            }
+
+            renderedBlocks.set(id, wrapper.innerHTML);
+            keepIds.add(id);
         }
 
         // 移除旧的、不再需要的块
