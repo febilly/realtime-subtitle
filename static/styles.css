@@ -309,6 +309,7 @@ body.dark-theme .control-button:hover {
 
 .language-tag {
     display: inline-block;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.6em;
     font-weight: 600;
     padding: 2px 6px;
