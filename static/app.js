@@ -427,30 +427,60 @@ function updateTranslationRefineButton() {
 
 
 // 主题切换功能（默认深色）
-let isDarkTheme = true;
-document.body.classList.add('dark-theme');
-themeIcon.textContent = '🌙';
+const THEMES = ['dark', 'light', 'chroma'];
+const THEME_ICONS = {
+    dark: '🌙',
+    light: '☀️',
+    chroma: '🟩',
+};
+let currentTheme = 'dark';
+let lastWindowOnTopState = null;
+
+async function syncWindowOnTopByTheme(theme) {
+    const shouldOnTop = theme !== 'chroma';
+    if (lastWindowOnTopState === shouldOnTop) {
+        return;
+    }
+
+    lastWindowOnTopState = shouldOnTop;
+
+    try {
+        await fetch('/window-on-top', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ on_top: shouldOnTop }),
+        });
+    } catch (error) {
+        // 浏览器模式或接口不可用时静默忽略。
+    }
+}
+
+function applyTheme(theme) {
+    const normalizedTheme = THEMES.includes(theme) ? theme : 'dark';
+
+    currentTheme = normalizedTheme;
+
+    document.body.classList.remove('dark-theme', 'chroma-theme');
+
+    if (normalizedTheme === 'dark') {
+        document.body.classList.add('dark-theme');
+    } else if (normalizedTheme === 'chroma') {
+        document.body.classList.add('chroma-theme');
+    }
+
+    themeIcon.textContent = THEME_ICONS[normalizedTheme];
+    localStorage.setItem('theme', normalizedTheme);
+    void syncWindowOnTopByTheme(normalizedTheme);
+}
 
 // 从localStorage加载主题偏好，覆盖默认值
 const savedTheme = localStorage.getItem('theme');
-if (savedTheme === 'light') {
-    isDarkTheme = false;
-    document.body.classList.remove('dark-theme');
-    themeIcon.textContent = '☀️';
-}
+applyTheme(savedTheme);
 
 themeToggle.addEventListener('click', () => {
-    isDarkTheme = !isDarkTheme;
-    
-    if (isDarkTheme) {
-        document.body.classList.add('dark-theme');
-        themeIcon.textContent = '🌙';
-        localStorage.setItem('theme', 'dark');
-    } else {
-        document.body.classList.remove('dark-theme');
-        themeIcon.textContent = '☀️';
-        localStorage.setItem('theme', 'light');
-    }
+    const currentIndex = THEMES.indexOf(currentTheme);
+    const nextTheme = THEMES[(currentIndex + 1) % THEMES.length];
+    applyTheme(nextTheme);
 });
 
 // 更新分段模式按钮文本
