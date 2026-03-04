@@ -16,6 +16,10 @@ body.dark-theme {
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
 }
 
+body.chroma-theme {
+    background: #00ff00;
+}
+
 .main-container {
     display: flex;
     width: 100vw;
@@ -41,6 +45,11 @@ body.dark-theme {
 body.dark-theme .button-bar {
     background: rgba(30, 30, 46, 0.95);
     border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+body.chroma-theme .button-bar {
+    background: #00ff00;
+    border-left-color: #00ff00;
 }
 
 /* 右侧菜单栏滚动条 */
@@ -94,6 +103,10 @@ body.dark-theme .button-bar::-webkit-scrollbar-thumb:hover {
 
 body.dark-theme .subtitle-container {
     background: rgba(30, 30, 46, 0.95);
+}
+
+body.chroma-theme .subtitle-container {
+    background: #00ff00;
 }
 
 .control-button {
@@ -334,12 +347,27 @@ body.dark-theme .subtitle-text {
     color: #e5e7eb;
 }
 
+body.chroma-theme .subtitle-text {
+    /* font-family: "Hiragino Kaku Gothic Pro", "Yu Gothic", "Meiryo", sans-serif;
+    font-weight: 900; */
+    /* color: #ff3399; */
+    color: #e5e7eb;
+    /* -webkit-text-fill-color: #ff3399; */
+    /* -webkit-text-stroke: 3px #ffffff; */
+    /* paint-order: stroke fill; */
+}
+
 .subtitle-text.non-final {
     color: #3b82f6;
 }
 
 body.dark-theme .subtitle-text.non-final {
     color: #60a5fa;
+}
+
+body.chroma-theme .subtitle-text.non-final {
+    color: #ff66b3;
+    -webkit-text-fill-color: #ff66b3;
 }
 
 /* LLM refine diff highlights */
@@ -381,6 +409,11 @@ body.dark-theme .empty-state {
     color: #6b7280;
 }
 
+body.chroma-theme .empty-state {
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+
 /* 滚动条样式 - 亮色模式 */
 .subtitle-container::-webkit-scrollbar {
     width: 8px;
@@ -404,13 +437,26 @@ body.dark-theme .subtitle-container::-webkit-scrollbar-track {
     background: rgba(30, 30, 46, 0.5);
 }
 
+body.chroma-theme .subtitle-container::-webkit-scrollbar-track {
+    background: #00ff00;
+}
+
 body.dark-theme .subtitle-container::-webkit-scrollbar-thumb {
     background: rgba(100, 100, 120, 0.6);
     border-radius: 4px;
 }
 
+body.chroma-theme .subtitle-container::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.28);
+    border-radius: 4px;
+}
+
 body.dark-theme .subtitle-container::-webkit-scrollbar-thumb:hover {
     background: rgba(120, 120, 140, 0.8);
+}
+
+body.chroma-theme .subtitle-container::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.36);
 }
 
 /* 按钮激活状态 */
