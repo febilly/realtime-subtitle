@@ -147,7 +147,6 @@ def main():
     # 创建Web服务器（会在创建session时传入）
     web_server = None
     window = None
-    window_title = "Real-time Subtitle"
     
     # 创建Soniox会话（传入logger和broadcast回调）
     def broadcast_callback(data):
@@ -159,44 +158,6 @@ def main():
     
     # 创建Web服务器
     web_server = WebServer(soniox_session, logger)
-
-    def set_window_on_top(on_top: bool) -> bool:
-        """动态切换 WebView 窗口置顶状态。"""
-        if not AUTO_OPEN_WEBVIEW or window is None:
-            return False
-
-        try:
-            if hasattr(window, 'on_top'):
-                window.on_top = bool(on_top)
-                return True
-        except Exception:
-            pass
-
-        if os.name != 'nt':
-            return False
-
-        try:
-            import ctypes
-
-            user32 = ctypes.windll.user32
-            hwnd = user32.FindWindowW(None, window_title)
-            if not hwnd:
-                return False
-
-            HWND_TOPMOST = -1
-            HWND_NOTOPMOST = -2
-            SWP_NOSIZE = 0x0001
-            SWP_NOMOVE = 0x0002
-            SWP_NOACTIVATE = 0x0010
-
-            insert_after = HWND_TOPMOST if bool(on_top) else HWND_NOTOPMOST
-            flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-
-            return bool(user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags))
-        except Exception:
-            return False
-
-    web_server.set_window_on_top_callback(set_window_on_top)
     
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
@@ -293,7 +254,8 @@ def main():
                 logger.close_log_file()
                 os._exit(0)
 
-        window = webview.create_window(window_title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
+        title = "Real-time Subtitle"
+        window = webview.create_window(title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
 
         if not debug and os.name == 'nt':
             try:
