@@ -51,10 +51,6 @@ class WebServer:
         self.websocket_clients = set()
         self.app_runner = None
         self.api_key_error_message = None # 新增属性
-        self.window_on_top_callback = None
-
-    def set_window_on_top_callback(self, callback):
-        self.window_on_top_callback = callback
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
@@ -368,27 +364,6 @@ class WebServer:
         }
         return web.json_response(response, status=status_code)
 
-    async def window_on_top_handler(self, request):
-        """切换窗口始终置顶状态（仅 WebView 模式有效）"""
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
-
-        if not isinstance(payload, dict) or "on_top" not in payload:
-            return web.json_response({"status": "error", "message": "Missing 'on_top' field"}, status=400)
-
-        on_top = bool(payload.get("on_top"))
-
-        if not callable(self.window_on_top_callback):
-            return web.json_response({"status": "ignored", "message": "Window on-top control unavailable"})
-
-        try:
-            applied = bool(self.window_on_top_callback(on_top))
-            return web.json_response({"status": "ok", "on_top": on_top, "applied": applied})
-        except Exception as error:
-            return web.json_response({"status": "error", "message": str(error)}, status=500)
-
     async def index_handler(self, request):
         """静态文件处理"""
         index_path = get_resource_path(os.path.join('static', 'index.html'))
@@ -433,7 +408,6 @@ class WebServer:
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
-        app.router.add_post('/window-on-top', self.window_on_top_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径
