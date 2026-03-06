@@ -9,6 +9,7 @@ import threading
 import socket
 import os
 import time
+import queue
 from dotenv import load_dotenv
 from aiohttp import web
 
@@ -147,6 +148,8 @@ def main():
     # 创建Web服务器（会在创建session时传入）
     web_server = None
     window = None
+    window_title = "Real-time Subtitle"
+    window_on_top_requests: queue.SimpleQueue[bool | None] = queue.SimpleQueue()
     
     # 创建Soniox会话（传入logger和broadcast回调）
     def broadcast_callback(data):
@@ -158,6 +161,56 @@ def main():
     
     # 创建Web服务器
     web_server = WebServer(soniox_session, logger)
+
+    def apply_window_on_top_fallback(on_top: bool) -> bool:
+        """在 pywebview 动态置顶失败时，使用 Win32 兜底。"""
+        if os.name != 'nt' or window is None:
+            return False
+
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+
+            hwnd = None
+            native = getattr(window, 'native', None)
+            handle = getattr(native, 'Handle', None) if native is not None else None
+            if handle is not None:
+                if hasattr(handle, 'ToInt64'):
+                    hwnd = int(handle.ToInt64())
+                elif hasattr(handle, 'ToInt32'):
+                    hwnd = int(handle.ToInt32())
+
+            if not hwnd:
+                hwnd = user32.FindWindowW(None, window_title)
+            if not hwnd:
+                return False
+
+            HWND_TOPMOST = -1
+            HWND_NOTOPMOST = -2
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOACTIVATE = 0x0010
+
+            insert_after = HWND_TOPMOST if bool(on_top) else HWND_NOTOPMOST
+            flags = SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+
+            return bool(user32.SetWindowPos(hwnd, insert_after, 0, 0, 0, 0, flags))
+        except Exception:
+            return False
+
+    def set_window_on_top(on_top: bool) -> bool:
+        """请求动态切换 WebView 窗口置顶状态。"""
+        if not AUTO_OPEN_WEBVIEW or window is None:
+            return False
+
+        try:
+            window_on_top_requests.put_nowait(bool(on_top))
+            return True
+        except Exception:
+            return False
+
+    web_server.set_window_on_top_callback(set_window_on_top)
     
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
@@ -253,9 +306,7 @@ def main():
             finally:
                 logger.close_log_file()
                 os._exit(0)
-
-        title = "Real-time Subtitle"
-        window = webview.create_window(title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
+        window = webview.create_window(window_title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
 
         if not debug and os.name == 'nt':
             try:
@@ -268,16 +319,49 @@ def main():
 
         def on_closed():
             print("👋 Window closed, shutting down application...")
+            try:
+                window_on_top_requests.put_nowait(None)
+            except Exception:
+                pass
             logger.close_log_file()
             os._exit(0)
 
         window.events.closed += on_closed
 
+        def process_window_commands(window_instance):
+            last_applied = True
+
+            while True:
+                requested = window_on_top_requests.get()
+                if requested is None:
+                    return
+
+                requested = bool(requested)
+                if requested == last_applied:
+                    continue
+
+                applied = False
+                try:
+                    window_instance.on_top = requested
+                    applied = True
+                except Exception:
+                    applied = False
+
+                if not applied:
+                    applied = apply_window_on_top_fallback(requested)
+
+                if applied:
+                    last_applied = requested
+
         try:
-            webview.start(debug=debug, private_mode=False)
+            webview.start(process_window_commands, window, debug=debug, private_mode=False)
         except KeyboardInterrupt:
             print("\n👋 Server closed by user")
         finally:
+            try:
+                window_on_top_requests.put_nowait(None)
+            except Exception:
+                pass
             if window:
                 window.destroy()
             logger.close_log_file()
