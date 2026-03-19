@@ -2,8 +2,37 @@
 Soniox客户端模块 - 处理与Soniox STT服务的连接和音频流
 """
 import os
+import json
 import requests
 from config import SONIOX_TEMP_KEY_URL, TARGET_LANG_1, TARGET_LANG_2, ENABLE_SPEAKER_DIARIZATION
+
+
+def _get_temp_key_request_headers() -> dict | None:
+    """Read optional temp-key request headers from .env via environment variable.
+
+    Expected format:
+    SONIOX_TEMP_KEY_HEADERS={"Authorization":"Bearer xxx","X-Token":"yyy"}
+    """
+    raw = os.environ.get("SONIOX_TEMP_KEY_HEADERS", "").strip()
+    if not raw:
+        return None
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Invalid SONIOX_TEMP_KEY_HEADERS JSON: {e}")
+
+    if not isinstance(parsed, dict):
+        raise RuntimeError("SONIOX_TEMP_KEY_HEADERS must be a JSON object")
+
+    headers = {}
+    for key, value in parsed.items():
+        header_name = str(key).strip()
+        header_value = str(value).strip()
+        if header_name and header_value:
+            headers[header_name] = header_value
+
+    return headers or None
 
 
 def get_api_key() -> str:
@@ -22,20 +51,22 @@ def get_api_key() -> str:
     # 如果没有，获取临时key
     print("⏳ API Key not found in environment, fetching temporary key...")
     try:
-        response = requests.post(SONIOX_TEMP_KEY_URL, timeout=10)
+        headers = _get_temp_key_request_headers()
+        request_kwargs = {"timeout": 10}
+        if headers:
+            request_kwargs["headers"] = headers
+
+        response = requests.get(SONIOX_TEMP_KEY_URL, **request_kwargs)
         response.raise_for_status()
-        
-        data = response.json()
-        temp_key = data.get("apiKey")
-        expires_at = data.get("expiresAt")
+
+        temp_key = response.text.strip()
         
         if temp_key:
             print(f"✅ Successfully obtained temporary API Key")
             print(f"   Key: {temp_key}")
-            print(f"   Expires at: {expires_at}")
             return temp_key
         else:
-            raise RuntimeError("Invalid temporary key response format")
+            raise RuntimeError("Temporary key response is empty")
             
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to fetch temporary API Key: {e}")
