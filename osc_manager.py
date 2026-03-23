@@ -258,8 +258,8 @@ class OSCManager:
         ttl = getattr(self, "_history_ttl_seconds", 10.0)
         self._message_history = [msg for msg in self._message_history if now - msg.timestamp <= ttl]
 
-    def _build_combined_history_locked(self) -> str:
-        """组合历史消息，最多9行且超长时优先丢弃旧消息，始终保留头部（需要在锁内调用）"""
+    def _build_combined_history_from_messages(self, history: list[HistoryMessage]) -> str:
+        """基于给定消息列表组合文本（会就地调整传入列表）"""
         header = getattr(self, "_header_line", "") or ""
         header_enabled = bool(header)
         max_lines = 9
@@ -269,7 +269,7 @@ class OSCManager:
         if header_enabled:
             lines.append(header)
 
-        for msg in self._message_history:
+        for msg in history:
             prefix = f"S{msg.speaker}：" if msg.speaker else "S？："
             lines.append(f"{prefix}{msg.text}")
 
@@ -281,12 +281,12 @@ class OSCManager:
             if header_enabled and len(lines) > 1:
                 # 删除 header 之后的第一条消息
                 lines.pop(1)
-                if self._message_history:
-                    self._message_history.pop(0)
+                if history:
+                    history.pop(0)
             else:
                 lines.pop(0)
-                if self._message_history:
-                    self._message_history.pop(0)
+                if history:
+                    history.pop(0)
 
         def assemble(line_list):
             return "\n".join(line_list)
@@ -301,8 +301,8 @@ class OSCManager:
             drop_index = 1 if header_enabled and len(lines) > 1 else 0
             if drop_index < len(lines):
                 lines.pop(drop_index)
-            if self._message_history:
-                self._message_history.pop(0)
+            if history:
+                history.pop(0)
             combined = assemble(lines)
 
         if len(combined) > MAX_LENGTH and len(lines) >= 1:
@@ -314,11 +314,11 @@ class OSCManager:
                 body = lines[latest_idx]
                 truncated_body = self._truncate_text(body, max_length=budget if budget > 0 else 0)
                 lines[latest_idx] = truncated_body
-                if self._message_history:
-                    self._message_history[-1] = HistoryMessage(
+                if history:
+                    history[-1] = HistoryMessage(
                         text=truncated_body.split("：", 1)[-1] if "：" in truncated_body else truncated_body,
-                        timestamp=self._message_history[-1].timestamp,
-                        speaker=self._message_history[-1].speaker,
+                        timestamp=history[-1].timestamp,
+                        speaker=history[-1].speaker,
                     )
                 combined = assemble(lines)
             elif not header_enabled and lines:
@@ -327,15 +327,19 @@ class OSCManager:
                 body = lines[latest_idx]
                 truncated_body = self._truncate_text(body, max_length=budget)
                 lines[latest_idx] = truncated_body
-                if self._message_history:
-                    self._message_history[-1] = HistoryMessage(
+                if history:
+                    history[-1] = HistoryMessage(
                         text=truncated_body.split("：", 1)[-1] if "：" in truncated_body else truncated_body,
-                        timestamp=self._message_history[-1].timestamp,
-                        speaker=self._message_history[-1].speaker,
+                        timestamp=history[-1].timestamp,
+                        speaker=history[-1].speaker,
                     )
                 combined = assemble(lines)
 
         return combined
+
+    def _build_combined_history_locked(self) -> str:
+        """组合历史消息，最多9行且超长时优先丢弃旧消息，始终保留头部（需要在锁内调用）"""
+        return self._build_combined_history_from_messages(self._message_history)
 
     def clear_history(self):
         """清空历史消息（线程安全）"""
@@ -359,6 +363,25 @@ class OSCManager:
 
         if combined:
             # 使用已有的发送节流逻辑
+            self.send_text_sync(combined, ongoing)
+
+    def send_preview_message_with_history(self, text: str, ongoing: bool = True, speaker: Optional[str] = None):
+        """按与最终消息相同格式发送中间结果，但不写入历史记录"""
+        safe_text = (text or "").strip()
+        if not safe_text:
+            return
+
+        speaker_label = (speaker or "").strip()
+        speaker_label = speaker_label if speaker_label else "?"
+
+        now = time.time()
+        with self._state_lock:
+            self._prune_history_locked(now)
+            preview_history = list(self._message_history)
+            preview_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label))
+            combined = self._build_combined_history_from_messages(preview_history)
+
+        if combined:
             self.send_text_sync(combined, ongoing)
     
     def _schedule_pending_send_locked(self):

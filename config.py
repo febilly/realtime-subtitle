@@ -112,6 +112,16 @@ if TRANSLATION_MODE not in ("none", "one_way", "two_way"):
     print(f"⚠️  Invalid TRANSLATION_MODE: {_TRANSLATION_MODE_RAW}, fallback to: one_way")
     TRANSLATION_MODE = "one_way"
 
+# OSC text selection mode for translation sending
+# - smart: send translation when available; if translation is unavailable and source language equals target language, send source text
+# - translation_only: send translation text only
+# - source_only: send source text only (regardless of language)
+_OSC_SEND_TEXT_MODE_RAW = _env_str("OSC_SEND_TEXT_MODE", "smart")
+OSC_SEND_TEXT_MODE = str(_OSC_SEND_TEXT_MODE_RAW).strip().lower()
+if OSC_SEND_TEXT_MODE not in ("smart", "translation_only", "source_only"):
+    print(f"⚠️  Invalid OSC_SEND_TEXT_MODE: {_OSC_SEND_TEXT_MODE_RAW}, fallback to: smart")
+    OSC_SEND_TEXT_MODE = "smart"
+
 # Auto-open built-in WebView (enabled by default)
 # True: create embedded webview window on startup
 # False: only print URL in console; open browser manually, and closing webpage won't exit app

@@ -28,6 +28,8 @@ from config import (
     LLM_MODEL,
     LLM_TEMPERATURE,
     get_llm_api_key,
+    normalize_language_code,
+    OSC_SEND_TEXT_MODE,
     LLM_REFINE_DEFAULT_ENABLED,
     LLM_REFINE_DEFAULT_MODE,
 )
@@ -65,12 +67,14 @@ class SonioxSession:
         self.osc_translation_enabled = False
         self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
         self._sentence_buffers: dict[str, dict] = {}
+        self._osc_live_last_text_by_speaker: dict[str, str] = {}
         self._refine_context_history: list[dict] = []
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         default_mode = str(LLM_REFINE_DEFAULT_MODE or "").strip().lower()
         if default_mode not in LLM_REFINE_MODES:
             default_mode = "refine" if bool(LLM_REFINE_DEFAULT_ENABLED) else "off"
         self._llm_refine_mode = default_mode
+        self._osc_send_text_mode = str(OSC_SEND_TEXT_MODE or "smart").strip().lower()
         self._llm_translate_state: dict[str, dict] = {}
 
         try:
@@ -110,6 +114,7 @@ class SonioxSession:
         self._refine_context_history.clear()
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         self._llm_translate_state.clear()
+        self._reset_osc_live_state()
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
             try:
@@ -166,6 +171,7 @@ class SonioxSession:
         self.osc_translation_enabled = value
         if not value:
             osc_manager.clear_history()
+            self._reset_osc_live_state()
 
     def get_osc_translation_enabled(self) -> bool:
         return self.osc_translation_enabled
@@ -237,6 +243,7 @@ class SonioxSession:
             osc_manager.clear_history()
             self._sentence_buffers.clear()
             self._llm_translate_state.clear()
+            self._reset_osc_live_state()
 
     def get_audio_source(self) -> str:
         """返回当前配置的音频源"""
@@ -386,6 +393,104 @@ class SonioxSession:
         else:
             buffer["original_tokens"].append(token)
 
+    def _join_token_texts(self, tokens: list[dict]) -> str:
+        return "".join(
+            str(t.get("text", ""))
+            for t in (tokens or [])
+            if t.get("text") not in (None, "<end>")
+        ).strip()
+
+    def _infer_source_language(self, tokens: list[dict]) -> str:
+        for token in reversed(tokens or []):
+            source_language = normalize_language_code(token.get("source_language") or "")
+            if source_language:
+                return source_language
+            language = normalize_language_code(token.get("language") or "")
+            if language:
+                return language
+        return ""
+
+    def _can_use_source_as_translation(self, source_tokens: list[dict]) -> bool:
+        source_lang = self._infer_source_language(source_tokens)
+        target_lang = normalize_language_code(self.get_translation_target_lang())
+        return bool(source_lang and target_lang and source_lang == target_lang)
+
+    def _select_osc_text(self, translation_text: str, source_text: str, source_tokens: list[dict]) -> str:
+        mode = str(self._osc_send_text_mode or "smart").strip().lower()
+        translation_value = (translation_text or "").strip()
+        source_value = (source_text or "").strip()
+
+        if mode == "translation_only":
+            return translation_value
+        if mode == "source_only":
+            return source_value
+
+        if translation_value:
+            return translation_value
+        if source_value and self._can_use_source_as_translation(source_tokens):
+            return source_value
+        return ""
+
+    def _reset_osc_live_state(self, speaker: Optional[str] = None) -> None:
+        if speaker is None:
+            self._osc_live_last_text_by_speaker.clear()
+            return
+        self._osc_live_last_text_by_speaker.pop(str(speaker), None)
+
+    def _maybe_send_live_osc_translation(self, non_final_tokens: list[dict]) -> None:
+        """在非 Pure LLM 模式下，实时发送最新翻译（ongoing=True）。"""
+        if not self.get_osc_translation_enabled():
+            return
+        if self.get_llm_refine_mode() == "translate":
+            return
+
+        non_final_translation_by_speaker: dict[str, list[str]] = {}
+        non_final_original_by_speaker: dict[str, list[dict]] = {}
+        for token in non_final_tokens or []:
+            text = token.get("text")
+            if text is None or text == "<end>":
+                continue
+            speaker = str(token.get("speaker", "?"))
+            if token.get("translation_status") == "translation":
+                non_final_translation_by_speaker.setdefault(speaker, []).append(str(text))
+            else:
+                non_final_original_by_speaker.setdefault(speaker, []).append(token)
+
+        active_speakers = (
+            set(self._sentence_buffers.keys())
+            | set(non_final_translation_by_speaker.keys())
+            | set(non_final_original_by_speaker.keys())
+        )
+
+        for speaker in active_speakers:
+            buffer = self._sentence_buffers.get(speaker) or {}
+            final_translation_tokens = buffer.get("translation_tokens") or []
+            final_original_tokens = buffer.get("original_tokens") or []
+
+            final_translation_text = self._join_token_texts(final_translation_tokens)
+            non_final_translation_text = "".join(non_final_translation_by_speaker.get(speaker, []))
+            translation_text = f"{final_translation_text}{non_final_translation_text}".strip()
+
+            source_tokens = list(final_original_tokens) + list(non_final_original_by_speaker.get(speaker, []))
+            source_text = self._join_token_texts(source_tokens)
+            current_text = self._select_osc_text(translation_text, source_text, source_tokens)
+            if not current_text:
+                continue
+
+            if self._osc_live_last_text_by_speaker.get(speaker) == current_text:
+                continue
+
+            self._osc_live_last_text_by_speaker[speaker] = current_text
+
+            try:
+                osc_manager.send_preview_message_with_history(current_text, ongoing=True, speaker=speaker)
+            except Exception as error:
+                print(f"OSC live send failed: {error}")
+
+        for speaker in list(self._osc_live_last_text_by_speaker.keys()):
+            if speaker not in active_speakers:
+                self._osc_live_last_text_by_speaker.pop(speaker, None)
+
     def _is_sentence_ending_punctuation(self, text: str) -> bool:
         """检测是否为句末标点"""
         value = (text or "").strip()
@@ -403,10 +508,14 @@ class SonioxSession:
         original_tokens = buffer.get("original_tokens") or []
         translation_tokens = buffer.get("translation_tokens") or []
 
-        if not original_tokens or not translation_tokens:
+        if not original_tokens:
+            return False
+
+        if not translation_tokens and not self._can_use_source_as_translation(original_tokens):
             return False
 
         self._sentence_buffers.pop(speaker, None)
+        self._reset_osc_live_state(speaker)
 
         if not self.loop:
             return False
@@ -419,20 +528,25 @@ class SonioxSession:
 
     async def _finalize_sentence_async(self, speaker: str, original_tokens: list, translation_tokens: list):
         """异步执行 LLM 改进与 OSC 发送"""
-        source = "".join([t.get("text", "") for t in original_tokens]).strip()
-        translation = "".join([t.get("text", "") for t in translation_tokens]).strip()
+        source = self._join_token_texts(original_tokens)
+        translation = self._join_token_texts(translation_tokens)
 
-        if not source or not translation:
+        if not source:
+            return
+
+        fallback_to_source = not translation and self._can_use_source_as_translation(original_tokens)
+        display_translation = translation if translation else (source if fallback_to_source else "")
+        if not display_translation:
             return
 
         sentence_id = f"backend-{int(time.time() * 1000)}-{speaker}"
         context_items = self._get_dynamic_context_items()
 
-        refined_translation = translation
+        refined_translation = display_translation
         no_change = True
 
         mode = self.get_llm_refine_mode()
-        if is_llm_refine_available() and mode != "off":
+        if is_llm_refine_available() and mode != "off" and translation:
             try:
                 if mode == "refine":
                     result = await self._perform_refine(source, translation, context_items)
@@ -457,14 +571,16 @@ class SonioxSession:
         await self.broadcast_callback({
             "type": "refine_result",
             "source": source,
-            "original_translation": translation,
+            "original_translation": display_translation,
             "refined_translation": refined_translation if not no_change else None,
             "no_change": no_change,
         })
 
         if self.get_osc_translation_enabled():
             try:
-                osc_manager.add_message_and_send(refined_translation, ongoing=False, speaker=speaker)
+                osc_text = self._select_osc_text(refined_translation, source, original_tokens)
+                if osc_text:
+                    osc_manager.add_message_and_send(osc_text, ongoing=False, speaker=speaker)
             except Exception as error:
                 print(f"OSC send failed: {error}")
 
@@ -894,7 +1010,9 @@ class SonioxSession:
 
         if self.get_osc_translation_enabled():
             try:
-                osc_manager.add_message_and_send(refined_translation, ongoing=False, speaker=speaker)
+                osc_text = self._select_osc_text(refined_translation, source_text, [])
+                if osc_text:
+                    osc_manager.add_message_and_send(osc_text, ongoing=False, speaker=speaker)
             except Exception as error:
                 print(f"OSC send failed: {error}")
 
@@ -913,6 +1031,7 @@ class SonioxSession:
         self._segment_mode = mode
         self._sentence_buffers.clear()
         self._llm_translate_state.clear()
+        self._reset_osc_live_state()
         if self.loop:
             asyncio.run_coroutine_threadsafe(
                 self.broadcast_callback({
@@ -933,6 +1052,7 @@ class SonioxSession:
 
         self._llm_refine_mode = value
         self._llm_translate_state.clear()
+        self._reset_osc_live_state()
 
         if value == "translate" and self._segment_mode == "translation":
             # Force punctuation segmentation when LLM translate mode is enabled.
@@ -1028,6 +1148,8 @@ class SonioxSession:
                                 self._process_token_for_sentence(token)
                                 if token.get("text") != "<end>":
                                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
+
+                        self._maybe_send_live_osc_translation(non_final_tokens)
 
                         if new_final_tokens or endpoint_detected:
                             if self._segment_mode == "translation":
