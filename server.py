@@ -55,6 +55,13 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--target-lang', dest='target_lang', default=None, help='Translation target language (ISO 639-1)')
     parser.add_argument('--target-lang-1', dest='target_lang_1', default=None)
     parser.add_argument('--target-lang-2', dest='target_lang_2', default=None)
+    parser.add_argument(
+        '--osc-send-text-mode',
+        dest='osc_send_text_mode',
+        choices=('smart', 'translation_only', 'source_only'),
+        default=None,
+        help='OSC text selection mode: smart | translation_only | source_only',
+    )
 
     parser.add_argument('--server-host', dest='server_host', default=None)
     parser.add_argument('--server-port', dest='server_port', type=int, default=None)
@@ -98,6 +105,7 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     _set_env_if_provided('TARGET_LANG', args.target_lang)
     _set_env_if_provided('TARGET_LANG_1', args.target_lang_1)
     _set_env_if_provided('TARGET_LANG_2', args.target_lang_2)
+    _set_env_if_provided('OSC_SEND_TEXT_MODE', args.osc_send_text_mode)
 
     if args.target_lang is not None and args.use_system_language is None:
         os.environ['USE_SYSTEM_LANGUAGE'] = '0'
