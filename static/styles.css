@@ -311,9 +311,18 @@ body.dark-theme .control-button:hover {
     margin-bottom: 4px;
 }
 
+/* 标签 float 在行文起点侧：首行环绕标签，换行后占满整宽，避免标签下方左侧空白竖条 */
 .subtitle-line {
+    display: flow-root;
     margin-bottom: 2px;
     line-height: 1.2;
+}
+
+.subtitle-line-body {
+    display: block;
+    min-width: 0;
+    unicode-bidi: isolate;
+    text-align: start;
 }
 
 .sentence-block {
@@ -322,12 +331,14 @@ body.dark-theme .control-button:hover {
 
 .language-tag {
     display: inline-block;
+    float: inline-start;
+    margin-inline-end: 6px;
+    unicode-bidi: isolate;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
     font-size: 0.6em;
     font-weight: 600;
     padding: 2px 6px;
     border-radius: 3px;
-    margin-right: 6px;
     text-transform: uppercase;
     background: #e5e7eb;
     color: #374151;

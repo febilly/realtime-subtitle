@@ -1757,11 +1757,24 @@ function mergeFinalTokens() {
     lastMergedIndex = allFinalTokens.length;
 }
 
+const RTL_LANGUAGES = new Set(['ar', 'he', 'fa', 'ur', 'yi', 'ps', 'sd', 'ckb', 'dv']);
+
+function isRtlLanguage(langCode) {
+    if (!langCode) return false;
+    return RTL_LANGUAGES.has(langCode.toLowerCase());
+}
+
+function getLangDir(langCode) {
+    return isRtlLanguage(langCode) ? 'rtl' : 'ltr';
+}
+
 function getLanguageTag(language) {
     if (!language) return '';
-    
-    // 直接显示语言代码，支持任何语言
     return `<span class="language-tag">${language.toUpperCase()}</span>`;
+}
+
+function wrapSubtitleLineBody(innerHtml, dir) {
+    return `<span class="subtitle-line-body" dir="${dir || 'auto'}">${innerHtml}</span>`;
 }
 
 function assignSequenceIndex(token) {
@@ -2317,6 +2330,7 @@ function renderSubtitles() {
         }
 
         let blockHtml = '';
+        const firstSentenceDir = block.sentences.length > 0 ? getLangDir(block.sentences[0].originalLang) : 'ltr';
 
         if (speakerDiarizationEnabled && !hideSpeakerLabels && block.speaker !== previousSpeaker) {
             blockHtml += `<div class="speaker-label ${getSpeakerClass(block.speaker)}">${escapeHtml(t('speaker_label', { speaker: block.speaker }))}</div>`;
@@ -2329,6 +2343,7 @@ function renderSubtitles() {
             activeSentenceIds.add(sentenceId);
 
             const sentenceParts = [];
+            const sentenceDir = getLangDir(sentence.originalLang);
 
             if (showOriginal && sentence.originalTokens.length > 0) {
                 const langTag = getLanguageTag(sentence.originalLang);
@@ -2340,7 +2355,7 @@ function renderSubtitles() {
 
                     if (plainText.trim().length === 0) {
                         const lineContent = sentence.originalTokens.map(t => renderTokenSpan(t)).join('');
-                        sentenceParts.push(`<div class="subtitle-line original-line">${langTag}${lineContent}</div>`);
+                        sentenceParts.push(`<div class="subtitle-line original-line" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(lineContent, sentenceDir)}</div>`);
                     } else {
                         const rubyHtml = furiganaCache.get(plainText);
 
@@ -2350,7 +2365,7 @@ function renderSubtitles() {
                                 classes.push('non-final');
                             }
                             const rubySpan = `<span class="${classes.join(' ')}">${rubyHtml}</span>`;
-                            sentenceParts.push(`<div class="subtitle-line original-line">${langTag}${rubySpan}</div>`);
+                            sentenceParts.push(`<div class="subtitle-line original-line" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(rubySpan, sentenceDir)}</div>`);
                         } else {
                             requestFurigana(plainText);
                             const previousHtml = renderedSentences.get(sentenceId);
@@ -2364,7 +2379,7 @@ function renderSubtitles() {
                     }
                 } else {
                     const lineContent = renderTokenSpansTrimmed(sentence.originalTokens);
-                    sentenceParts.push(`<div class="subtitle-line original-line">${langTag}${lineContent}</div>`);
+                    sentenceParts.push(`<div class="subtitle-line original-line" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(lineContent, sentenceDir)}</div>`);
                 }
             }
 
@@ -2373,6 +2388,7 @@ function renderSubtitles() {
             }
 
             if (showTranslation && sentence.translationTokens.length > 0) {
+                const translationDir = getLangDir(sentence.translationLang);
                 const langTag = getLanguageTag(sentence.translationLang);
                 const baseTranslation = sentence.translationTokens.map(t => (t && t.text) ? String(t.text) : '').join('');
                 let baseTranslationNormalized = baseTranslation.trim();
@@ -2400,17 +2416,17 @@ function renderSubtitles() {
                         const html = showDiff
                             ? renderTranslationDiffHtml(baseTranslationNormalized, displayTranslation)
                             : escapeHtml(displayTranslation);
-                        sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
+                        sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text">${html}</span>`, translationDir)}</div>`);
                     } else if (overrideTranslation) {
                         const html = escapeHtml(displayTranslation || '');
-                        sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text">${html}</span></div>`);
+                        sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text">${html}</span>`, translationDir)}</div>`);
                     } else {
                         const lineContent = renderTokenSpansTrimmed(sentence.translationTokens);
-                        sentenceParts.push(`<div class="subtitle-line">${langTag}${lineContent}</div>`);
+                        sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(lineContent, translationDir)}</div>`);
                     }
                 } else {
                     const placeholderText = '&nbsp;';
-                    sentenceParts.push(`<div class="subtitle-line">${langTag}<span class="subtitle-text placeholder">${placeholderText}</span></div>`);
+                    sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text placeholder">${placeholderText}</span>`, translationDir)}</div>`);
                 }
             }
 
@@ -2434,7 +2450,7 @@ function renderSubtitles() {
 
         if (blockHtml.trim().length > 0) {
             const blockClass = (block.speaker === previousSpeaker) ? 'subtitle-block same-speaker' : 'subtitle-block';
-            html += `<div class="${blockClass}">${blockHtml}</div>`;
+            html += `<div class="${blockClass}" dir="${firstSentenceDir}">${blockHtml}</div>`;
             previousSpeaker = block.speaker;
         }
     }
