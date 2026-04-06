@@ -32,6 +32,8 @@ from config import (
     OSC_SEND_TEXT_MODE,
     LLM_REFINE_DEFAULT_ENABLED,
     LLM_REFINE_DEFAULT_MODE,
+    TARGET_LANG_1,
+    TARGET_LANG_2,
 )
 from soniox_client import get_config
 from audio_capture import AudioStreamer
@@ -410,10 +412,74 @@ class SonioxSession:
                 return language
         return ""
 
+    def _two_way_partner_lang(self, lang: str) -> str:
+        """Return the other language in TARGET_LANG_1/TARGET_LANG_2, or '' if unknown."""
+        code = normalize_language_code(lang or "")
+        l1 = normalize_language_code(TARGET_LANG_1)
+        l2 = normalize_language_code(TARGET_LANG_2)
+        if not (l1 and l2):
+            return ""
+        if code == l1:
+            return l2
+        if code == l2:
+            return l1
+        return ""
+
+    def _osc_translation_language_for_comparison(self, source_tokens: list[dict]) -> str:
+        """
+        Language code used for smart OSC / finalize: "recognition language == this ⇒ use source
+        when there is no translation text".
+
+        - one_way / none / etc.: fixed session translation target (TRANSLATION_TARGET_LANG).
+        - two_way: per-utterance target is the partner of the detected source within
+          TARGET_LANG_1/TARGET_LANG_2; if source is outside the pair, fall back to session target.
+        """
+        mode = (self.translation or "").strip().lower()
+        t_sess = normalize_language_code(self.get_translation_target_lang())
+
+        if mode != "two_way":
+            return t_sess
+
+        source_lang = self._infer_source_language(source_tokens)
+        l1 = normalize_language_code(TARGET_LANG_1)
+        l2 = normalize_language_code(TARGET_LANG_2)
+        if not (l1 and l2) or not source_lang:
+            return t_sess
+        if source_lang not in (l1, l2):
+            return t_sess
+        return self._two_way_partner_lang(source_lang)
+
     def _can_use_source_as_translation(self, source_tokens: list[dict]) -> bool:
         source_lang = self._infer_source_language(source_tokens)
-        target_lang = normalize_language_code(self.get_translation_target_lang())
-        return bool(source_lang and target_lang and source_lang == target_lang)
+        if not source_lang:
+            return False
+
+        mode = (self.translation or "").strip().lower()
+        t_sess = normalize_language_code(self.get_translation_target_lang())
+        if mode != "two_way":
+            return bool(t_sess and source_lang == t_sess)
+
+        l1 = normalize_language_code(TARGET_LANG_1)
+        l2 = normalize_language_code(TARGET_LANG_2)
+        if not (l1 and l2):
+            return bool(t_sess and source_lang == t_sess)
+
+        cmp_lang = self._osc_translation_language_for_comparison(source_tokens)
+        if cmp_lang and source_lang == cmp_lang:
+            return True
+
+        # Recognizer + session both say we are in the UI language, but translation tokens are
+        # empty: treat like one-way "already target language". For two-way, suppress this when
+        # TARGET_LANG_1 matches both speech and session — that is the "speaking L1 while waiting
+        # for partner(L1)" case (e.g. en + T=en + pair en/zh) which must not pass English through.
+        # Default TARGET_LANG_1=en / TARGET_LANG_2=zh keeps zh + T=zh passing here; if you swap
+        # TARGET_LANG_1/2, put the code you mostly wait for translation *from* in TARGET_LANG_1.
+        if t_sess and source_lang == t_sess:
+            if l1 and source_lang == l1 and t_sess == l1:
+                return False
+            return True
+
+        return False
 
     def _select_osc_text(self, translation_text: str, source_text: str, source_tokens: list[dict]) -> str:
         mode = str(self._osc_send_text_mode or "smart").strip().lower()
