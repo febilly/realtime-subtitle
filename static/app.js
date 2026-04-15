@@ -2365,7 +2365,7 @@ function renderSubtitles() {
                                 classes.push('non-final');
                             }
                             const rubySpan = `<span class="${classes.join(' ')}">${rubyHtml}</span>`;
-                            sentenceParts.push(`<div class="subtitle-line original-line" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(rubySpan, sentenceDir)}</div>`);
+                            sentenceParts.push(`<div class="subtitle-line original-line subtitle-line--furigana" dir="${sentenceDir}">${wrapSubtitleLineBody(`${langTag}${rubySpan}`, sentenceDir)}</div>`);
                         } else {
                             requestFurigana(plainText);
                             const previousHtml = renderedSentences.get(sentenceId);
