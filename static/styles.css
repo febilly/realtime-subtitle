@@ -325,6 +325,13 @@ body.dark-theme .control-button:hover {
     text-align: start;
 }
 
+/* 假名行：标签在正文行内（非 float），与 ruby 基线对齐；换行后后续行顶到 body 左缘，不留侧栏空列 */
+.subtitle-line--furigana .language-tag {
+    float: none;
+    display: inline-block;
+    vertical-align: baseline;
+}
+
 .sentence-block {
     margin-bottom: 4px;
 }
