@@ -42,6 +42,27 @@ from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 
 
 LLM_REFINE_MODES = ("off", "refine", "translate")
+EAST_ASIAN_TIGHT_SPACING_CLASS = (
+    r"\u3000-\u303F"
+    r"\u3040-\u30FF"
+    r"\u31F0-\u31FF"
+    r"\u3400-\u4DBF"
+    r"\u4E00-\u9FFF"
+    r"\uF900-\uFAFF"
+    r"\uFF01-\uFF60"
+    r"\uFF66-\uFF9D"
+    r"\uFFE0-\uFFEE"
+)
+EAST_ASIAN_TIGHT_SPACING_RE = re.compile(
+    rf"([{EAST_ASIAN_TIGHT_SPACING_CLASS}])\s+([{EAST_ASIAN_TIGHT_SPACING_CLASS}])"
+)
+
+
+def normalize_east_asian_translation_spacing(text: str) -> str:
+    value = "" if text is None else str(text)
+    if not value:
+        return ""
+    return EAST_ASIAN_TIGHT_SPACING_RE.sub(r"\1\2", value)
 
 
 class SonioxSession:
@@ -483,7 +504,7 @@ class SonioxSession:
 
     def _select_osc_text(self, translation_text: str, source_text: str, source_tokens: list[dict]) -> str:
         mode = str(self._osc_send_text_mode or "smart").strip().lower()
-        translation_value = (translation_text or "").strip()
+        translation_value = normalize_east_asian_translation_spacing((translation_text or "").strip())
         source_value = (source_text or "").strip()
 
         if mode == "translation_only":
