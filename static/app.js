@@ -1622,6 +1622,13 @@ function connect() {
 }
 
 function handleMessage(data) {
+    if (data.type === 'ipc_status') {
+        const btn = document.getElementById('ipcStatusButton');
+        if (btn) {
+            btn.style.display = data.connected ? 'block' : 'none';
+        }
+        return;
+    }
     if (data.type === 'error') {
         displayErrorMessage(data.message);
         return;

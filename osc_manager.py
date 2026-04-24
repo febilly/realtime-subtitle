@@ -348,18 +348,31 @@ class OSCManager:
 
     def add_message_and_send(self, text: str, ongoing: bool = False, speaker: Optional[str] = None):
         """记录消息并按历史拼接发送，自动清理过期消息"""
+        self._add_message_with_history(text, ongoing, speaker, record_history=True)
+
+    def add_external_message(self, text: str, ongoing: bool = False):
+        self._add_message_with_history(text, ongoing, speaker="EXT", record_history=not ongoing)
+
+    def _add_message_with_history(self, text: str, ongoing: bool, speaker: Optional[str], record_history: bool):
         safe_text = (text or "").strip()
         if not safe_text:
             return
 
         speaker_label = (speaker or "").strip()
         speaker_label = speaker_label if speaker_label else "?"
+        if len(speaker_label) > 3:
+            speaker_label = speaker_label[:3]
 
         now = time.time()
         with self._state_lock:
             self._prune_history_locked(now)
-            self._message_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label))
-            combined = self._build_combined_history_locked()
+            if record_history:
+                self._message_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label))
+                combined = self._build_combined_history_locked()
+            else:
+                preview_history = list(self._message_history)
+                preview_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label))
+                combined = self._build_combined_history_from_messages(preview_history)
 
         if combined:
             # 使用已有的发送节流逻辑
@@ -367,22 +380,7 @@ class OSCManager:
 
     def send_preview_message_with_history(self, text: str, ongoing: bool = True, speaker: Optional[str] = None):
         """按与最终消息相同格式发送中间结果，但不写入历史记录"""
-        safe_text = (text or "").strip()
-        if not safe_text:
-            return
-
-        speaker_label = (speaker or "").strip()
-        speaker_label = speaker_label if speaker_label else "?"
-
-        now = time.time()
-        with self._state_lock:
-            self._prune_history_locked(now)
-            preview_history = list(self._message_history)
-            preview_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label))
-            combined = self._build_combined_history_from_messages(preview_history)
-
-        if combined:
-            self.send_text_sync(combined, ongoing)
+        self._add_message_with_history(text, ongoing, speaker, record_history=False)
     
     def _schedule_pending_send_locked(self):
         """在锁内调用，安排发送待处理消息"""

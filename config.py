@@ -348,3 +348,21 @@ if not os.environ.get("SONIOX_API_KEY") and not SONIOX_TEMP_KEY_URL:
     print("❌ Configuration error: neither SONIOX_API_KEY nor SONIOX_TEMP_KEY_URL is set.\nPlease set one of them in your environment or in the .env file.")
     input("Press Enter to exit...")
     sys.exit(1)
+
+# ============ IPC Configuration (realtime-subtitle <-> Yakutan) ============
+
+# Whether to enable IPC functionality
+IPC_ENABLED = _env_bool("IPC_ENABLED", True)
+
+# IPC server host
+IPC_HOST = _env_str("IPC_HOST", "127.0.0.1")
+
+# IPC port range
+IPC_PORT_RANGE = range(17353, 17364)
+
+# IPC discovery file path
+import tempfile
+IPC_DISCOVERY_FILE = _env_str(
+    "IPC_DISCOVERY_FILE",
+    os.path.join(tempfile.gettempdir(), "vrchat_bridge_discovery.json")
+)

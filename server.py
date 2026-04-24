@@ -144,11 +144,12 @@ def main():
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
-    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, TRANSLATION_MODE
+    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, TRANSLATION_MODE, MUTE_MIC_WHEN_VRCHAT_SELF_MUTED
     from logger import TranscriptLogger
     from soniox_session import SonioxSession
     from web_server import WebServer
     from soniox_client import get_api_key
+    from ipc_server import IPCServer
 
     # 创建日志记录器
     logger = TranscriptLogger()
@@ -169,6 +170,9 @@ def main():
     
     # 创建Web服务器
     web_server = WebServer(soniox_session, logger)
+
+    ipc_server = IPCServer()
+    web_server.ipc_server = ipc_server
 
     def apply_window_on_top_fallback(on_top: bool) -> bool:
         """在 pywebview 动态置顶失败时，使用 Win32 兜底。"""
@@ -232,7 +236,6 @@ def main():
     # 创建应用
     app = web_server.create_app()
 
-    # 启动后台任务
     async def start_background_tasks(app_instance):
         try:
             api_key = get_api_key()
@@ -242,12 +245,31 @@ def main():
             if window:
                 window.destroy()
             raise
-        
+
         loop = asyncio.get_event_loop()
         translation_mode = TRANSLATION_MODE
         soniox_session.start(api_key, "pcm_s16le", translation_mode, loop)
-    
+
+        from config import IPC_ENABLED
+        if IPC_ENABLED and TRANSLATION_MODE != "none":
+            try:
+                await ipc_server.start()
+            except Exception as e:
+                print(f"⚠️  Failed to start IPC server: {e}")
+        else:
+            if not IPC_ENABLED:
+                print("[IPC] IPC is disabled in config")
+            elif TRANSLATION_MODE == "none":
+                print("[IPC] IPC server not started because translation is disabled")
+
+    async def cleanup_background_tasks(app_instance):
+        try:
+            await ipc_server.stop()
+        except Exception:
+            pass
+
     app.on_startup.append(start_background_tasks)
+    app.on_cleanup.append(cleanup_background_tasks)
     
     def create_listening_socket(host: str, preferred_port: int) -> tuple[socket.socket, int]:
         candidates = []
