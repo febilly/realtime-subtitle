@@ -45,6 +45,10 @@ class IPCServer:
         self._discovery_file: Optional[str] = None
         self._running = False
         self._lock = asyncio.Lock()
+        self._soniox_session = None
+
+    def set_soniox_session(self, session):
+        self._soniox_session = session
 
     async def start(
         self,
@@ -120,6 +124,9 @@ class IPCServer:
         msg_type = message.get("type")
         addr = writer.get_extra_info("peername")
 
+        # 打印接收到的消息到命令行
+        # print(f"[IPC] Received message from {addr}: {message}")
+
         if msg_type == MessageType.YAKUTAN_MESSAGE.value:
             text = message.get("text", "")
             ongoing = bool(message.get("ongoing", False))
@@ -129,7 +136,12 @@ class IPCServer:
                 text,
                 ongoing,
             )
-            osc_manager.add_external_message(text, ongoing)
+            if self._soniox_session is not None:
+                self._soniox_session.update_ipc_message(text, ongoing)
+            if ongoing:
+                osc_manager.send_preview_message_with_history(text, ongoing=True, speaker="0")
+            else:
+                osc_manager.add_message_and_send(text, ongoing=False, speaker="0")
 
         elif msg_type == MessageType.HEARTBEAT.value:
             logger.debug("[IPC] Received HEARTBEAT from %s", addr)

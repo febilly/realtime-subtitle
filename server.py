@@ -172,6 +172,7 @@ def main():
     web_server = WebServer(soniox_session, logger)
 
     ipc_server = IPCServer()
+    ipc_server.set_soniox_session(soniox_session)
     web_server.ipc_server = ipc_server
 
     def apply_window_on_top_fallback(on_top: bool) -> bool:
