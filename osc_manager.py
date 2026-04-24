@@ -375,7 +375,6 @@ class OSCManager:
                 combined = self._build_combined_history_from_messages(preview_history)
 
         if combined:
-            # 使用已有的发送节流逻辑
             self.send_text_sync(combined, ongoing)
 
     def send_preview_message_with_history(self, text: str, ongoing: bool = True, speaker: Optional[str] = None):

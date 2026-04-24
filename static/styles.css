@@ -232,6 +232,10 @@ body.dark-theme .control-button:hover {
     margin-bottom: 3px;
 }
 
+.speaker-label.speaker-0 {
+    background: #93c5fd;
+}
+
 .speaker-label.speaker-1 {
     background: #a5b4fc;
 }
