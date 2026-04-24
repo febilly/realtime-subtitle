@@ -52,9 +52,46 @@ class WebServer:
         self.app_runner = None
         self.api_key_error_message = None # 新增属性
         self.window_on_top_callback = None
+        self.ipc_server = None
+        self._ipc_polling_task = None
 
     def set_window_on_top_callback(self, callback):
         self.window_on_top_callback = callback
+        
+    async def _start_ipc_status_polling(self, app):
+        self._ipc_polling_task = asyncio.create_task(self._poll_ipc_status())
+        
+    async def _stop_ipc_status_polling(self, app):
+        if self._ipc_polling_task:
+            self._ipc_polling_task.cancel()
+            try:
+                await self._ipc_polling_task
+            except asyncio.CancelledError:
+                pass
+                
+    async def _poll_ipc_status(self):
+        last_status = None
+        while True:
+            try:
+                connected = False
+                if self.ipc_server is not None:
+                    connected = len(self.ipc_server._clients) > 0
+                
+                if last_status != connected:
+                    last_status = connected
+                    await self.broadcast_to_clients({
+                        "type": "ipc_status",
+                        "connected": connected
+                    })
+            except Exception as e:
+                self.logger.error(f"Error polling IPC status: {e}")
+            await asyncio.sleep(2)
+
+    async def ipc_status_handler(self, request):
+        connected = False
+        if self.ipc_server is not None:
+            connected = len(self.ipc_server._clients) > 0
+        return web.json_response({"connected": connected})
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
@@ -81,6 +118,14 @@ class WebServer:
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
         
+        try:
+            connected = False
+            if self.ipc_server is not None:
+                connected = len(self.ipc_server._clients) > 0
+            await ws.send_str(json.dumps({"type": "ipc_status", "connected": connected}))
+        except Exception as e:
+            self.logger.error(f"Failed to send initial IPC status to client: {e}")
+
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
@@ -407,6 +452,9 @@ class WebServer:
         """创建aiohttp应用"""
         app = web.Application(middlewares=[cache_bypass_middleware])
 
+        app.on_startup.append(self._start_ipc_status_polling)
+        app.on_cleanup.append(self._stop_ipc_status_polling)
+
         async def _cleanup_llm_session(app_instance):
             try:
                 await close_llm_http_session()
@@ -421,6 +469,7 @@ class WebServer:
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/health', self.health_handler)
         app.router.add_get('/ui-config', self.ui_config_handler)
+        app.router.add_get('/api/ipc_status', self.ipc_status_handler)
         app.router.add_get('/segment-mode', self.segment_mode_get_handler)
         app.router.add_post('/segment-mode', self.segment_mode_set_handler)
         app.router.add_get('/llm-refine', self.llm_refine_get_handler)

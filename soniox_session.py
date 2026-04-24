@@ -35,6 +35,10 @@ from config import (
     TARGET_LANG_1,
     TARGET_LANG_2,
 )
+try:
+    from ipc_server import ipc_server
+except ImportError:
+    ipc_server = None
 from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
@@ -620,6 +624,13 @@ class SonioxSession:
 
         if not source:
             return
+
+        if ipc_server and hasattr(ipc_server, "broadcast_foreign_speech"):
+            try:
+                detected_lang = self._infer_source_language(original_tokens)
+                asyncio.create_task(ipc_server.broadcast_foreign_speech(source, detected_lang))
+            except Exception as e:
+                print(f"⚠️ [IPC] Failed to fire-and-forget broadcast: {e}")
 
         fallback_to_source = not translation and self._can_use_source_as_translation(original_tokens)
         display_translation = translation if translation else (source if fallback_to_source else "")
