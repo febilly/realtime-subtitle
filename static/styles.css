@@ -507,3 +507,13 @@ body.dark-theme ruby rt {
         line-height: 1.1;
     }
 }
+
+.control-button.ipc-connected {
+    color: #4caf50;
+    background: rgba(76, 175, 80, 0.15);
+}
+
+body.dark-theme .control-button.ipc-connected {
+    color: #4caf50;
+    background: rgba(76, 175, 80, 0.2);
+}

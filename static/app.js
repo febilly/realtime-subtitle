@@ -1625,7 +1625,13 @@ function handleMessage(data) {
     if (data.type === 'ipc_status') {
         const btn = document.getElementById('ipcStatusButton');
         if (btn) {
-            btn.style.display = data.connected ? 'block' : 'none';
+            if (data.connected) {
+                btn.style.display = 'flex';
+                btn.classList.add('ipc-connected');
+            } else {
+                btn.style.display = 'none';
+                btn.classList.remove('ipc-connected');
+            }
         }
         return;
     }
