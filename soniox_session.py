@@ -6,6 +6,7 @@ import threading
 import asyncio
 import time
 import re
+import logging
 from typing import Optional, Tuple
 
 from websockets import ConnectionClosedOK
@@ -35,14 +36,13 @@ from config import (
     TARGET_LANG_1,
     TARGET_LANG_2,
 )
-try:
-    from ipc_server import ipc_server
-except ImportError:
-    ipc_server = None
+ipc_server = None
 from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
+
+logger = logging.getLogger(__name__)
 
 
 LLM_REFINE_MODES = ("off", "refine", "translate")
@@ -214,6 +214,12 @@ class SonioxSession:
         if not value:
             osc_manager.clear_history()
             self._reset_osc_live_state()
+        
+        if ipc_server and hasattr(ipc_server, "broadcast_osc_state"):
+            try:
+                asyncio.create_task(ipc_server.broadcast_osc_state(value))
+            except Exception as e:
+                logger.warning("[IPC] Failed to broadcast OSC state: %s", e)
 
     def get_osc_translation_enabled(self) -> bool:
         return self.osc_translation_enabled

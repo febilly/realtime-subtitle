@@ -362,7 +362,8 @@ IPC_PORT_RANGE = range(17353, 17364)
 
 # IPC discovery file path
 import tempfile
+from shared.vrchat_bridge import get_discovery_path
 IPC_DISCOVERY_FILE = _env_str(
     "IPC_DISCOVERY_FILE",
-    os.path.join(tempfile.gettempdir(), "vrchat_bridge_discovery.json")
+    get_discovery_path()
 )
