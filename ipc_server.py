@@ -16,6 +16,7 @@ from shared.vrchat_bridge import (
     YakutanMessage,
     ForeignSpeech,
     Heartbeat,
+    OscState,
     serialize_message,
     deserialize_message,
     start_server_with_discovery,
@@ -88,6 +89,10 @@ class IPCServer:
         async with self._lock:
             self._clients.append(writer)
 
+        if self._soniox_session is not None:
+            enabled = self._soniox_session.get_osc_translation_enabled()
+            await self.send_osc_state_to_client(writer, enabled)
+
         try:
             while self._running:
                 line = await reader.readline()
@@ -138,6 +143,7 @@ class IPCServer:
             )
             if self._soniox_session is not None:
                 self._soniox_session.update_ipc_message(text, ongoing)
+            
             if ongoing:
                 osc_manager.send_preview_message_with_history(text, ongoing=True, speaker="0")
             else:
@@ -156,6 +162,38 @@ class IPCServer:
             logger.warning(
                 "[IPC] Unknown message type from %s: %s", addr, msg_type
             )
+
+    async def send_osc_state_to_client(self, writer, enabled):
+        try:
+            msg = OscState(enabled=enabled)
+            writer.write(serialize_message(msg).encode("utf-8"))
+            await writer.drain()
+        except Exception as exc:
+            logger.warning("[IPC] Failed to send OSC state to client: %s", exc)
+
+    async def broadcast_osc_state(self, enabled):
+        if not self._clients:
+            return
+        payload = serialize_message(OscState(enabled=enabled)).encode("utf-8")
+        disconnected = []
+        for writer in list(self._clients):
+            try:
+                writer.write(payload)
+                await writer.drain()
+            except Exception as exc:
+                logger.warning("[IPC] Failed to broadcast OSC state: %s", exc)
+                disconnected.append(writer)
+        if disconnected:
+            async with self._lock:
+                for writer in disconnected:
+                    if writer in self._clients:
+                        self._clients.remove(writer)
+                for writer in disconnected:
+                    try:
+                        writer.close()
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
 
     async def broadcast_foreign_speech(
         self, source_text: str, detected_language: Optional[str] = None

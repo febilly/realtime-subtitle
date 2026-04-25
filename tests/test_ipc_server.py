@@ -41,6 +41,7 @@ from shared.vrchat_bridge import (
     deserialize_message,
     YakutanMessage,
     ForeignSpeech,
+    OscState,
 )
 
 
@@ -87,8 +88,8 @@ class TestIPCServerDispatch:
     @pytest.mark.asyncio
     async def test_yakutan_message_dispatch(self):
         received = []
-        original_add = rt_osc.add_external_message
-        rt_osc.add_external_message = lambda text, ongoing: received.append((text, ongoing))
+        original_add = rt_osc.add_message_and_send
+        rt_osc.add_message_and_send = lambda text, ongoing, speaker: received.append((text, ongoing, speaker))
 
         server = IPCServer()
         try:
@@ -104,9 +105,9 @@ class TestIPCServerDispatch:
             await writer.wait_closed()
 
             assert len(received) == 1
-            assert received[0] == ("hello", False)
+            assert received[0] == ("hello", False, "0")
         finally:
-            rt_osc.add_external_message = original_add
+            rt_osc.add_message_and_send = original_add
             await server.stop()
 
     @pytest.mark.asyncio
@@ -130,6 +131,62 @@ class TestIPCServerDispatch:
             await server.stop()
 
 
+class TestIPCServerOscState:
+    @pytest.mark.asyncio
+    async def test_osc_state_sent_on_connect(self):
+        server = IPCServer()
+        mock_session = MagicMock()
+        mock_session.get_osc_translation_enabled.return_value = True
+        server.set_soniox_session(mock_session)
+        try:
+            await server.start()
+            host = mock_config.IPC_HOST
+            port = server._port
+            reader, writer = await asyncio.open_connection(host, port)
+            await asyncio.sleep(0.1)
+            response = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            data = deserialize_message(response.decode("utf-8"))
+            assert data is not None
+            assert data["type"] == "OSC_STATE"
+            assert data["enabled"] is True
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_osc_state_broadcasted_on_change(self):
+        server = IPCServer()
+        mock_session = MagicMock()
+        mock_session.get_osc_translation_enabled.return_value = True
+        server.set_soniox_session(mock_session)
+        try:
+            await server.start()
+            host = mock_config.IPC_HOST
+            port = server._port
+            r1, w1 = await asyncio.open_connection(host, port)
+            r2, w2 = await asyncio.open_connection(host, port)
+            await asyncio.sleep(0.1)
+            await r1.readline()
+            await r2.readline()
+
+            await server.broadcast_osc_state(False)
+            await asyncio.sleep(0.1)
+
+            data1 = deserialize_message((await asyncio.wait_for(r1.readline(), timeout=1.0)).decode("utf-8"))
+            data2 = deserialize_message((await asyncio.wait_for(r2.readline(), timeout=1.0)).decode("utf-8"))
+
+            assert data1["type"] == "OSC_STATE"
+            assert data1["enabled"] is False
+            assert data2["type"] == "OSC_STATE"
+            assert data2["enabled"] is False
+
+            w1.close(); await w1.wait_closed()
+            w2.close(); await w2.wait_closed()
+        finally:
+            await server.stop()
+
+
 class TestIPCServerBroadcast:
     @pytest.mark.asyncio
     async def test_broadcast_foreign_speech(self):
@@ -142,6 +199,10 @@ class TestIPCServerBroadcast:
             # Connect two clients
             r1, w1 = await asyncio.open_connection(host, port)
             r2, w2 = await asyncio.open_connection(host, port)
+
+            await asyncio.sleep(0.1)
+            while r1._buffer: await r1.readline()
+            while r2._buffer: await r2.readline()
 
             await server.broadcast_foreign_speech("bonjour", "fr")
             await asyncio.sleep(0.1)
