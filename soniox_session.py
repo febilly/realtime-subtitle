@@ -104,7 +104,6 @@ class SonioxSession:
             default_mode = "refine" if bool(LLM_REFINE_DEFAULT_ENABLED) else "off"
         self._llm_refine_mode = default_mode
         self._osc_send_text_mode = str(OSC_SEND_TEXT_MODE or "smart").strip().lower()
-        self._llm_translate_state: dict[str, dict] = {}
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -157,7 +156,6 @@ class SonioxSession:
         self._sentence_buffers.clear()
         self._refine_context_history.clear()
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
-        self._llm_translate_state.clear()
         self._reset_osc_live_state()
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
@@ -292,7 +290,6 @@ class SonioxSession:
             self.stop_event = None
             osc_manager.clear_history()
             self._sentence_buffers.clear()
-            self._llm_translate_state.clear()
             self._reset_osc_live_state()
             with self._ipc_lock:
                 self._ipc_ongoing_text = ""
@@ -996,158 +993,6 @@ class SonioxSession:
 
         return {"status": "error", "message": "translation failed"}
 
-    def _get_llm_translate_state(self, speaker: str) -> dict:
-        if speaker not in self._llm_translate_state:
-            self._llm_translate_state[speaker] = {
-                "final_original_tokens": [],
-                "final_translation_tokens": [],
-                "non_final_original_tokens": [],
-                "non_final_translation_tokens": [],
-                "last_trigger_key": None,
-                "request_id": 0,
-            }
-        return self._llm_translate_state[speaker]
-
-    def _reset_llm_translate_state(self, speaker: Optional[str] = None) -> None:
-        if speaker is None:
-            self._llm_translate_state.clear()
-            return
-        self._llm_translate_state.pop(speaker, None)
-
-    def _update_llm_translate_state(self, new_final_tokens: list, non_final_tokens: list) -> None:
-        if self.get_llm_refine_mode() != "translate":
-            return
-
-        for token in new_final_tokens:
-            text = token.get("text")
-            if text is None or text == "<end>":
-                continue
-            speaker = str(token.get("speaker", "?"))
-            translation_status = token.get("translation_status", "original")
-            state = self._get_llm_translate_state(speaker)
-            if translation_status == "translation":
-                state["final_translation_tokens"].append(token)
-            else:
-                state["final_original_tokens"].append(token)
-
-        non_final_by_speaker: dict[str, dict[str, list]] = {}
-        for token in non_final_tokens:
-            text = token.get("text")
-            if text is None or text == "<end>":
-                continue
-            speaker = str(token.get("speaker", "?"))
-            translation_status = token.get("translation_status", "original")
-            bucket = non_final_by_speaker.setdefault(
-                speaker,
-                {"original": [], "translation": []},
-            )
-            if translation_status == "translation":
-                bucket["translation"].append(token)
-            else:
-                bucket["original"].append(token)
-
-        all_speakers = set(self._llm_translate_state.keys()) | set(non_final_by_speaker.keys())
-        for speaker in all_speakers:
-            state = self._get_llm_translate_state(speaker)
-            bucket = non_final_by_speaker.get(speaker) or {"original": [], "translation": []}
-            state["non_final_original_tokens"] = bucket.get("original", [])
-            state["non_final_translation_tokens"] = bucket.get("translation", [])
-
-    def _has_sentence_ending_punctuation_tokens(self, tokens: list) -> bool:
-        for token in tokens or []:
-            text = token.get("text", "")
-            if text and self._is_sentence_ending_punctuation(str(text)):
-                return True
-        return False
-
-    def _maybe_trigger_llm_translate(self) -> None:
-        if self.get_llm_refine_mode() != "translate":
-            return
-        if not is_llm_refine_available():
-            return
-        if not self.loop:
-            return
-
-        for speaker, state in list(self._llm_translate_state.items()):
-            translation_tokens = (state.get("final_translation_tokens") or []) + (state.get("non_final_translation_tokens") or [])
-            if not translation_tokens:
-                continue
-            if not self._has_sentence_ending_punctuation_tokens(translation_tokens):
-                continue
-
-            original_tokens = (state.get("final_original_tokens") or []) + (state.get("non_final_original_tokens") or [])
-            source_text = "".join([t.get("text", "") for t in original_tokens]).strip()
-            translation_text = "".join([t.get("text", "") for t in translation_tokens]).strip()
-
-            if not source_text or not translation_text:
-                continue
-
-            trigger_key = f"{source_text}||{translation_text}"
-            if trigger_key == state.get("last_trigger_key"):
-                continue
-
-            state["last_trigger_key"] = trigger_key
-            state["request_id"] = int(state.get("request_id", 0)) + 1
-            request_id = state["request_id"]
-            context_items = self._get_dynamic_context_items()
-
-            asyncio.run_coroutine_threadsafe(
-                self._perform_translate_and_broadcast(
-                    speaker,
-                    source_text,
-                    translation_text,
-                    context_items,
-                    request_id,
-                ),
-                self.loop,
-            )
-
-    async def _perform_translate_and_broadcast(
-        self,
-        speaker: str,
-        source_text: str,
-        translation_text: str,
-        context_items: list,
-        request_id: int,
-    ) -> None:
-        state = self._llm_translate_state.get(speaker)
-        if not state or state.get("request_id") != request_id:
-            return
-
-        refined_translation = translation_text
-        try:
-            result = await self._perform_translate(source_text, context_items)
-            if result.get("status") == "ok":
-                translated = (result.get("translation") or "").strip()
-                if translated:
-                    refined_translation = translated
-        except Exception as error:
-            print(f"LLM translate error: {error}")
-
-        state = self._llm_translate_state.get(speaker)
-        if not state or state.get("request_id") != request_id:
-            return
-
-        await self.broadcast_callback({
-            "type": "refine_result",
-            "source": source_text,
-            "original_translation": translation_text,
-            "refined_translation": refined_translation,
-            "no_change": False,
-        })
-
-        if self.get_osc_translation_enabled():
-            try:
-                osc_text = self._select_osc_text(refined_translation, source_text, [])
-                if osc_text:
-                    osc_manager.add_message_and_send(osc_text, ongoing=False, speaker=speaker)
-            except Exception as error:
-                print(f"OSC send failed: {error}")
-
-        self._refine_context_history.append({"source": source_text, "translation": refined_translation})
-        if len(self._refine_context_history) > 20:
-            self._refine_context_history = self._refine_context_history[-20:]
-
     def set_segment_mode(self, mode: str) -> tuple[bool, str]:
         """设置断句模式并广播给所有前端"""
         if mode not in ("translation", "endpoint", "punctuation"):
@@ -1158,7 +1003,6 @@ class SonioxSession:
 
         self._segment_mode = mode
         self._sentence_buffers.clear()
-        self._llm_translate_state.clear()
         self._reset_osc_live_state()
         if self.loop:
             asyncio.run_coroutine_threadsafe(
@@ -1179,7 +1023,6 @@ class SonioxSession:
             return False, f"Invalid LLM refine mode: {mode}"
 
         self._llm_refine_mode = value
-        self._llm_translate_state.clear()
         self._reset_osc_live_state()
 
         if value == "translate" and self._segment_mode == "translation":
@@ -1262,10 +1105,6 @@ class SonioxSession:
                         new_final_tokens = all_final_tokens[self.last_sent_count:]
                         endpoint_detected = bool(res.get("endpoint_detected", False))
 
-                        self._update_llm_translate_state(new_final_tokens, non_final_tokens)
-                        if self._segment_mode == "punctuation":
-                            self._maybe_trigger_llm_translate()
-
                         separator_tokens: list[dict] = []
                         outgoing_final_tokens: list[dict] = []
 
@@ -1304,7 +1143,6 @@ class SonioxSession:
                                         speaker_value = next(iter(self._sentence_buffers.keys()))
                                     if speaker_value:
                                         self._trigger_sentence_finalization(speaker_value)
-                                        self._reset_llm_translate_state(speaker_value)
                                     separator_tokens.append(self._make_separator_token("translation"))
 
                             elif self._segment_mode == "endpoint":
@@ -1323,7 +1161,6 @@ class SonioxSession:
                                         speaker_value = next(iter(self._sentence_buffers.keys()))
                                     if speaker_value:
                                         self._trigger_sentence_finalization(speaker_value)
-                                        self._reset_llm_translate_state(speaker_value)
                                     separator_tokens.append(self._make_separator_token("endpoint"))
 
                             elif self._segment_mode == "punctuation":
@@ -1347,7 +1184,6 @@ class SonioxSession:
                                     if speaker_value is None and self._sentence_buffers:
                                         speaker_value = next(iter(self._sentence_buffers.keys()))
                                     if speaker_value and self._trigger_sentence_finalization(speaker_value):
-                                        self._reset_llm_translate_state(speaker_value)
                                         separator_tokens.append(self._make_separator_token("punctuation"))
 
                         # 将新的final tokens写入日志
