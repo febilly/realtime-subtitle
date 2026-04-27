@@ -159,7 +159,7 @@ async def chat_completion(
 
     print(
         f"⚡ LLM ({config.model}) {_elapsed_ms:>4}ms  "
-        f"↑{uncached_tokens:<3} + {cached_tokens:<3}c  ↓{completion_tokens:<3}  "
+        f"↑{uncached_tokens:<4} + {cached_tokens:<4}c  ↓{completion_tokens:<3}  "
         f"total: ↑{_llm_total_uncached}+{_llm_total_cached}c  ↓{_llm_total_completion}"
     )
 
