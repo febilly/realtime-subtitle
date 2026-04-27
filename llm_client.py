@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -24,6 +25,8 @@ class LlmConfig:
     base_url: str
     api_key: str
     model: str
+    extra_headers: Optional[Dict[str, str]] = None
+    extra_json: Optional[Dict[str, Any]] = None
 
 
 class LlmError(RuntimeError):
@@ -107,20 +110,27 @@ async def chat_completion(
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": False,
-        # "provider": {
-        #     'order': ['google-vertex'],
-        # }
     }
+
+    # Merge extra JSON body fields (may override standard fields)
+    if config.extra_json:
+        payload.update(config.extra_json)
 
     headers = {
         "Authorization": f"Bearer {config.api_key}",
         "Content-Type": "application/json",
     }
 
+    # Merge extra HTTP headers (may override default headers)
+    if config.extra_headers:
+        headers.update(config.extra_headers)
+
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     session = await _get_http_session()
+    _t0 = time.perf_counter()
     async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
         text = await resp.text()
+        _elapsed_ms = int((time.perf_counter() - _t0) * 1000)
         if resp.status >= 400:
             raise LlmError(f"LLM request failed: HTTP {resp.status}: {text[:4000]}")
 
@@ -128,6 +138,24 @@ async def chat_completion(
             data = json.loads(text)
         except Exception as exc:
             raise LlmError(f"LLM returned non-JSON response: {text[:4000]}") from exc
+
+    # Extract usage info
+    usage = data.get("usage") or {}
+    prompt_tokens = usage.get("prompt_tokens", 0)
+    cached_tokens = 0
+    details = usage.get("prompt_tokens_details") or {}
+    if isinstance(details, dict):
+        cached_tokens = details.get("cached_tokens", 0) or 0
+    # Some providers use a different key
+    if not cached_tokens:
+        cached_tokens = usage.get("prompt_cache_hit_tokens", 0) or 0
+    uncached_tokens = max(0, prompt_tokens - cached_tokens)
+    completion_tokens = usage.get("completion_tokens", 0)
+
+    print(
+        f"⚡ LLM ({config.model}) {_elapsed_ms}ms  "
+        f"↑{uncached_tokens}+{cached_tokens}c  ↓{completion_tokens}"
+    )
 
     try:
         return (

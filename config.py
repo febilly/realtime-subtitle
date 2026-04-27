@@ -1,6 +1,7 @@
 """
 Configuration file - stores all configuration options and constants.
 """
+import json
 import os
 import sys
 import locale
@@ -87,6 +88,27 @@ def _env_float(name: str, default: float) -> float:
 def _env_str(name: str, default: str) -> str:
     value = os.environ.get(name)
     return default if value is None else str(value)
+
+
+def _env_json(name: str, default: dict | None = None) -> dict:
+    """Parse an environment variable as a JSON object (dict).
+
+    Returns the default (or empty dict) if the env var is unset, empty, or invalid.
+    """
+    if default is None:
+        default = {}
+    value = os.environ.get(name)
+    if not value:
+        return default
+    try:
+        parsed = json.loads(str(value).strip())
+        if isinstance(parsed, dict):
+            return parsed
+        print(f"⚠️  {name} is not a JSON object, ignoring")
+        return default
+    except json.JSONDecodeError:
+        print(f"⚠️  {name} is not valid JSON, ignoring")
+        return default
 
 # Soniox API configuration
 SONIOX_WEBSOCKET_URL = _env_str("SONIOX_WEBSOCKET_URL", "wss://stt-rt.soniox.com/transcribe-websocket")
@@ -239,6 +261,16 @@ LLM_REFINE_CONTEXT_MAX_COUNT = max(LLM_REFINE_CONTEXT_MIN_COUNT, _LLM_REFINE_CON
 # Maximum output tokens for LLM refine.
 # Note: max_tokens limits vary across providers/models.
 LLM_REFINE_MAX_TOKENS = min(8192, max(1, _env_int("LLM_REFINE_MAX_TOKENS", 1024)))
+
+# Optional extra HTTP headers to include in every LLM request.
+# Set as a JSON object string, e.g.: {"X-Custom-Header": "value", "X-API-Version": "2"}
+# These are merged into (and may override) the default Authorization/Content-Type headers.
+LLM_REQUEST_HEADERS = _env_json("LLM_REQUEST_HEADERS")
+
+# Optional extra JSON body fields to merge into every LLM request payload.
+# Set as a JSON object string, e.g.: {"provider": {"order": ["google-vertex"]}}
+# These are merged into the top-level request body (may override standard fields).
+LLM_REQUEST_JSON = _env_json("LLM_REQUEST_JSON")
 
 
 def _parse_llm_api_keys(raw: str) -> list[str]:

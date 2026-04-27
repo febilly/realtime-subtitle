@@ -28,6 +28,8 @@ from config import (
     LLM_BASE_URL,
     LLM_MODEL,
     LLM_TEMPERATURE,
+    LLM_REQUEST_HEADERS,
+    LLM_REQUEST_JSON,
     get_llm_api_key,
     normalize_language_code,
     OSC_SEND_TEXT_MODE,
@@ -823,6 +825,8 @@ class SonioxSession:
             base_url=(LLM_BASE_URL or "").strip(),
             api_key=get_llm_api_key(),
             model=(LLM_MODEL or "").strip(),
+            extra_headers=LLM_REQUEST_HEADERS or None,
+            extra_json=LLM_REQUEST_JSON or None,
         )
 
         for attempt in range(MAX_REFINE_ATTEMPTS):
@@ -949,6 +953,8 @@ class SonioxSession:
             base_url=(LLM_BASE_URL or "").strip(),
             api_key=get_llm_api_key(),
             model=(LLM_MODEL or "").strip(),
+            extra_headers=LLM_REQUEST_HEADERS or None,
+            extra_json=LLM_REQUEST_JSON or None,
         )
 
         for attempt in range(MAX_TRANSLATE_ATTEMPTS):
