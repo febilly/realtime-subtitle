@@ -152,9 +152,15 @@ async def chat_completion(
     uncached_tokens = max(0, prompt_tokens - cached_tokens)
     completion_tokens = usage.get("completion_tokens", 0)
 
+    global _llm_total_uncached, _llm_total_cached, _llm_total_completion
+    _llm_total_uncached += uncached_tokens
+    _llm_total_cached += cached_tokens
+    _llm_total_completion += completion_tokens
+
     print(
-        f"⚡ LLM ({config.model}) {_elapsed_ms}ms  "
-        f"↑{uncached_tokens}+{cached_tokens}c  ↓{completion_tokens}"
+        f"⚡ LLM ({config.model}) {_elapsed_ms:>4}ms  "
+        f"↑{uncached_tokens:<3} + {cached_tokens:<3}c  ↓{completion_tokens:<3}  "
+        f"total: ↑{_llm_total_uncached}+{_llm_total_cached}c  ↓{_llm_total_completion}"
     )
 
     try:
@@ -169,6 +175,11 @@ async def chat_completion(
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+# Cumulative token counters across all LLM calls in this process
+_llm_total_uncached: int = 0
+_llm_total_cached: int = 0
+_llm_total_completion: int = 0
 
 
 def extract_answer_tag(text: str) -> str:
