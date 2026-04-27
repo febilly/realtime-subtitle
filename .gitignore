@@ -31,3 +31,5 @@ Thumbs.db
 .pytest_cache/
 
 # *.spec
+
+.codex/
