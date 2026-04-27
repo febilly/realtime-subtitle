@@ -706,8 +706,9 @@ class SonioxSession:
                 print(f"OSC send failed: {error}")
 
         self._refine_context_history.append({"source": source, "translation": refined_translation})
-        if len(self._refine_context_history) > 20:
-            self._refine_context_history = self._refine_context_history[-20:]
+        max_history = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+        if len(self._refine_context_history) > max_history:
+            self._refine_context_history = self._refine_context_history[-max_history:]
 
     def _get_dynamic_context_items(self) -> list[dict]:
         """Return context items with cyclical window: min -> ... -> max -> min."""
@@ -756,8 +757,8 @@ class SonioxSession:
 
         normalized_context: list[dict[str, str]] = []
         if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
-            max_items = min(int(LLM_REFINE_CONTEXT_MAX_COUNT), 20)
-            for item in context_items[:max_items]:
+            max_items = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+            for item in context_items[-max_items:]:
                 if not isinstance(item, dict):
                     continue
                 ctx_source = item.get("source")
@@ -898,8 +899,8 @@ class SonioxSession:
 
         normalized_context: list[dict[str, str]] = []
         if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
-            max_items = min(int(LLM_REFINE_CONTEXT_MAX_COUNT), 20)
-            for item in context_items[:max_items]:
+            max_items = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+            for item in context_items[-max_items:]:
                 if not isinstance(item, dict):
                     continue
                 ctx_source = item.get("source")
