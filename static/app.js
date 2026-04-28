@@ -615,6 +615,13 @@ async function fetchUiConfig() {
         const data = await response.json();
         lockManualControls = !!data.lock_manual_controls;
         llmRefineAvailable = !!data.llm_refine_available;
+        if (!llmRefineAvailable) {
+            // LLM 环境变量缺失时，忽略前端记忆的 LLM 模式，直接禁用 LLM。
+            // 不读取也不修改保存的 LLM 翻译模式（localStorage）。
+            llmRefineMode = 'off';
+            llmRefineEnabled = false;
+            llmTranslateHideAfterSequence = null;
+        }
         llmRefineShowDiff = !!data.llm_refine_show_diff;
         llmRefineShowDeletions = !!data.llm_refine_show_deletions;
         if (data && typeof data.llm_refine_default_mode === 'string') {
@@ -663,6 +670,17 @@ async function fetchUiConfig() {
 }
 
 async function fetchLlmRefineStatus() {
+    // LLM 环境变量缺失时，忽略前端记忆的 LLM 模式，直接禁用 LLM。
+    // 不读取也不修改保存的 LLM 翻译模式（localStorage）。
+    if (!llmRefineAvailable) {
+        llmRefineMode = 'off';
+        llmRefineEnabled = false;
+        llmTranslateHideAfterSequence = null;
+        updateTranslationRefineButton();
+        enforceTranslateSegmentMode();
+        return;
+    }
+
     try {
         const response = await fetch('/llm-refine');
         if (!response.ok) {
