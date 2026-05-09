@@ -60,7 +60,7 @@ EAST_ASIAN_TIGHT_SPACING_CLASS = (
     r"\uFFE0-\uFFEE"
 )
 EAST_ASIAN_TIGHT_SPACING_RE = re.compile(
-    rf"([{EAST_ASIAN_TIGHT_SPACING_CLASS}])\s+([{EAST_ASIAN_TIGHT_SPACING_CLASS}])"
+    rf"(?<=[{EAST_ASIAN_TIGHT_SPACING_CLASS}])\s+(?=[{EAST_ASIAN_TIGHT_SPACING_CLASS}])"
 )
 
 
@@ -68,7 +68,7 @@ def normalize_east_asian_translation_spacing(text: str) -> str:
     value = "" if text is None else str(text)
     if not value:
         return ""
-    return EAST_ASIAN_TIGHT_SPACING_RE.sub(r"\1\2", value)
+    return EAST_ASIAN_TIGHT_SPACING_RE.sub(r"", value)
 
 
 class SonioxSession:
