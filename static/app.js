@@ -427,7 +427,7 @@ function updateTranslationRefineButton() {
 
 
 // 主题切换功能（默认深色）
-const THEMES = ['dark', 'light', 'chroma'];
+const ALL_THEMES = ['dark', 'light', 'chroma'];
 const THEME_ICONS = {
     dark: '🌙',
     light: '☀️',
@@ -435,6 +435,11 @@ const THEME_ICONS = {
 };
 let currentTheme = 'dark';
 let lastWindowOnTopState = null;
+let enableChromaTheme = false;
+
+function getAvailableThemes() {
+    return enableChromaTheme ? ALL_THEMES : ['dark', 'light'];
+}
 
 async function syncWindowOnTopByTheme(theme) {
     const shouldOnTop = theme !== 'chroma';
@@ -456,7 +461,8 @@ async function syncWindowOnTopByTheme(theme) {
 }
 
 function applyTheme(theme) {
-    const normalizedTheme = THEMES.includes(theme) ? theme : 'dark';
+    const available = getAvailableThemes();
+    const normalizedTheme = available.includes(theme) ? theme : 'dark';
 
     currentTheme = normalizedTheme;
 
@@ -470,7 +476,9 @@ function applyTheme(theme) {
 
     themeIcon.textContent = THEME_ICONS[normalizedTheme];
     localStorage.setItem('theme', normalizedTheme);
-    void syncWindowOnTopByTheme(normalizedTheme);
+    if (enableChromaTheme) {
+        void syncWindowOnTopByTheme(normalizedTheme);
+    }
 }
 
 // 从localStorage加载主题偏好，覆盖默认值
@@ -478,8 +486,10 @@ const savedTheme = localStorage.getItem('theme');
 applyTheme(savedTheme);
 
 themeToggle.addEventListener('click', () => {
-    const currentIndex = THEMES.indexOf(currentTheme);
-    const nextTheme = THEMES[(currentIndex + 1) % THEMES.length];
+    const available = getAvailableThemes();
+    const currentIndex = available.indexOf(currentTheme);
+    const actualIndex = currentIndex >= 0 ? currentIndex : 0;
+    const nextTheme = available[(actualIndex + 1) % available.length];
     applyTheme(nextTheme);
 });
 // 更新分段模式按钮文本
@@ -659,6 +669,27 @@ async function fetchUiConfig() {
         }
         if (data && typeof data.hide_speaker_labels === 'boolean') {
             hideSpeakerLabels = data.hide_speaker_labels;
+        }
+        if (data && typeof data.enable_chroma_theme === 'boolean') {
+            const wasEnabled = enableChromaTheme;
+            enableChromaTheme = data.enable_chroma_theme;
+
+            if (enableChromaTheme && !wasEnabled) {
+                // Config just turned on — restore saved theme if it was chroma
+                const savedTheme = localStorage.getItem('theme');
+                if (savedTheme === 'chroma' && currentTheme !== 'chroma') {
+                    applyTheme('chroma');
+                }
+                void syncWindowOnTopByTheme(currentTheme);
+            } else if (!enableChromaTheme && wasEnabled) {
+                // Config just turned off — fall back if on chroma
+                if (currentTheme === 'chroma') {
+                    applyTheme('dark');
+                }
+            } else if (enableChromaTheme) {
+                // Config stayed on, but initial applyTheme() ran before we knew the config
+                void syncWindowOnTopByTheme(currentTheme);
+            }
         }
         applySpeakerLabelVisibility();
         applyLockPauseRestartControlsUI();

@@ -188,6 +188,12 @@ ENABLE_SPEAKER_DIARIZATION = _env_bool("ENABLE_SPEAKER_DIARIZATION", True)
 # False: show speaker labels normally
 HIDE_SPEAKER_LABELS = _env_bool("HIDE_SPEAKER_LABELS", False)
 
+# Enable chroma (green) theme (disabled by default)
+# When enabled: chroma theme appears in the theme cycle; switching to it also
+#               removes window always-on-top, switching away restores it.
+# When disabled: chroma theme is hidden from the theme cycle entirely.
+ENABLE_CHROMA_THEME = _env_bool("ENABLE_CHROMA_THEME", False)
+
 # Default sentence segmentation mode: 'translation' | 'endpoint' | 'punctuation'
 # - translation: based on Soniox <end> marker
 # - endpoint: based on Soniox endpoint_detected flag

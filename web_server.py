@@ -10,6 +10,7 @@ from aiohttp import WSMsgType
 from config import (
     get_resource_path,
     LOCK_MANUAL_CONTROLS,
+    ENABLE_CHROMA_THEME,
     ENABLE_SPEAKER_DIARIZATION,
     HIDE_SPEAKER_LABELS,
     LLM_REFINE_DEFAULT_MODE,
@@ -150,6 +151,7 @@ class WebServer:
         """前端 UI 配置下发"""
         return web.json_response({
             "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
+            "enable_chroma_theme": bool(ENABLE_CHROMA_THEME),
             "translation_target_lang": self.soniox_session.get_translation_target_lang(),
             "llm_refine_available": bool(is_llm_refine_available()),
             "llm_refine_mode": self.soniox_session.get_llm_refine_mode(),
