@@ -404,7 +404,11 @@ class WebServer:
         if not isinstance(source, str):
             return web.json_response({"status": "error", "message": "'source' must be a string"}, status=400)
 
-        success, message = self.soniox_session.set_audio_source(source.strip().lower())
+        source = source.strip().lower()
+        if source not in ("system", "microphone", "mix"):
+            return web.json_response({"status": "error", "message": "Invalid audio source"}, status=400)
+
+        success, message = self.soniox_session.set_audio_source(source)
         status_code = 200 if success else 400
         response = {
             "status": "ok" if success else "error",
