@@ -233,14 +233,6 @@ class WebServer:
 
     async def restart_handler(self, request):
         """重启识别端点"""
-        if LOCK_MANUAL_CONTROLS:
-            return web.json_response(
-                {"status": "error", "message": "Manual restart is disabled by server config"},
-                status=403
-            )
-
-        from soniox_client import get_api_key
-
         is_auto = False
         requested_target_lang = None
         try:
@@ -252,8 +244,16 @@ class WebServer:
         except Exception:
             # 兼容旧客户端：无 body 时视为手动
             is_auto = False
+
+        if LOCK_MANUAL_CONTROLS and not is_auto:
+            return web.json_response(
+                {"status": "error", "message": "Manual restart is disabled by server config"},
+                status=403
+            )
+
+        from soniox_client import get_api_key
         
-        print("\n[Server] Received restart request...")
+        print(f"\n[Server] Received {'auto ' if is_auto else ''}restart request...")
 
         if requested_target_lang is not None:
             ok, message = self.soniox_session.set_translation_target_lang(requested_target_lang)
@@ -266,24 +266,31 @@ class WebServer:
         # 关闭当前日志文件
         self.logger.close_log_file()
         
-        # 向所有客户端发送清空指令
-        await self.broadcast_to_clients({
-            "type": "clear",
-            "message": "Recognition restarting..."
-        })
-        
-        # 给客户端一点时间处理clear消息
-        await asyncio.sleep(0.3)
-        
-        # 关闭所有现有的WebSocket连接
-        print(f"[Server] Closing {len(self.websocket_clients)} WebSocket connections...")
-        clients_to_close = list(self.websocket_clients)
-        for client in clients_to_close:
-            try:
-                await client.close()
-            except Exception as e:
-                print(f"[Server] Error closing client connection: {e}")
-        self.websocket_clients.clear()
+        if is_auto:
+            await self.broadcast_to_clients({
+                "type": "clear",
+                "message": "Recognition reconnecting...",
+                "preserve_existing": True,
+            })
+        else:
+            # 向所有客户端发送清空指令
+            await self.broadcast_to_clients({
+                "type": "clear",
+                "message": "Recognition restarting..."
+            })
+
+            # 给客户端一点时间处理clear消息
+            await asyncio.sleep(0.3)
+
+            # 关闭所有现有的WebSocket连接
+            print(f"[Server] Closing {len(self.websocket_clients)} WebSocket connections...")
+            clients_to_close = list(self.websocket_clients)
+            for client in clients_to_close:
+                try:
+                    await client.close()
+                except Exception as e:
+                    print(f"[Server] Error closing client connection: {e}")
+            self.websocket_clients.clear()
         
         # 启动新的Soniox会话
         try:

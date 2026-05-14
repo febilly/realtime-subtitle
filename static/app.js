@@ -1420,7 +1420,9 @@ async function restartRecognition({ auto = false, targetLang = null } = {}) {
     const manualFailureHtml = `<div style="text-align: center; padding: 40px; color: #ef4444;">${escapeHtml(t('restart_failed_try_again'))}</div>`;
 
     try {
-        if (ws) {
+        if (auto) {
+            finalizeCurrentNonFinalTokens();
+        } else if (ws) {
             console.log('Closing old WebSocket connection...');
             try {
                 ws.close();
@@ -1430,9 +1432,8 @@ async function restartRecognition({ auto = false, targetLang = null } = {}) {
             ws = null;
         }
 
-        clearSubtitleState();
-
         if (!auto) {
+            clearSubtitleState();
             subtitleContainer.innerHTML = manualStatusHtml;
         }
 
@@ -1462,7 +1463,9 @@ async function restartRecognition({ auto = false, targetLang = null } = {}) {
         await delay(1500);
 
         shouldReconnect = true;
-        connect();
+        if (!auto || !hasUsableWebSocket()) {
+            connect();
+        }
         return true;
     } catch (error) {
         console.error(`${auto ? 'Auto restart' : 'Restart'} error:`, error);
@@ -1479,6 +1482,32 @@ async function restartRecognition({ auto = false, targetLang = null } = {}) {
         }
         isRestarting = false;
     }
+}
+
+function triggerAutoRestart() {
+    if (!autoRestartEnabled) {
+        return;
+    }
+
+    if (isRestarting) {
+        console.log('Restart already in progress; skipping auto restart trigger.');
+        return;
+    }
+
+    restartRecognition({ auto: true })
+        .then((success) => {
+            if (!success && autoRestartEnabled && shouldReconnect && !isRestarting) {
+                console.log('Auto restart failed; retrying in 2 seconds...');
+                setTimeout(triggerAutoRestart, 2000);
+            }
+        })
+        .catch((error) => {
+            console.error('Auto restart promise rejected:', error);
+            if (autoRestartEnabled && shouldReconnect && !isRestarting) {
+                console.log('Auto restart failed; retrying in 2 seconds...');
+                setTimeout(triggerAutoRestart, 2000);
+            }
+        });
 }
 
 // 重启识别功能
@@ -1618,45 +1647,35 @@ async function fetchOscTranslationStatus() {
 
 
 function connect() {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    ws = new WebSocket(`${wsProtocol}://${window.location.host}/ws${window.location.search}`);
+    if (hasUsableWebSocket()) {
+        return;
+    }
 
-    ws.onopen = () => {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws${window.location.search}`);
+    ws = socket;
+
+    socket.onopen = () => {
         console.log('WebSocket connected');
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
         const data = JSON.parse(event.data);
         handleMessage(data);
     };
 
-    ws.onerror = (error) => {
+    socket.onerror = (error) => {
         console.error('WebSocket error:', error);
     };
 
-    ws.onclose = () => {
+    socket.onclose = () => {
         console.log('WebSocket closed');
+        if (ws === socket) {
+            ws = null;
+        }
 
         if (autoRestartEnabled) {
-            if (isRestarting) {
-                console.log('Restart already in progress; skipping auto restart trigger.');
-                return;
-            }
-
-            restartRecognition({ auto: true })
-                .then((success) => {
-                    if (!success && shouldReconnect && !isRestarting) {
-                        console.log('Attempting to reconnect in 2 seconds...');
-                        setTimeout(connect, 2000);
-                    }
-                })
-                .catch((error) => {
-                    console.error('Auto restart promise rejected:', error);
-                    if (shouldReconnect && !isRestarting) {
-                        console.log('Attempting to reconnect in 2 seconds...');
-                        setTimeout(connect, 2000);
-                    }
-                });
+            triggerAutoRestart();
             return;
         }
 
@@ -1696,10 +1715,22 @@ function handleMessage(data) {
         handleSegmentModeChanged(data);
         return;
     }
+    if (data.type === 'session_disconnected') {
+        console.warn('Recognition session disconnected:', data.reason || 'unknown');
+        if (autoRestartEnabled && !isRestarting) {
+            triggerAutoRestart();
+        }
+        return;
+    }
     if (data.type === 'clear') {
-        // 清空所有数据
-        console.log('Clearing all subtitles...');
-        clearSubtitleState();
+        if (data.preserve_existing) {
+            console.log('Finalizing pending subtitles before restart...');
+            finalizeCurrentNonFinalTokens();
+        } else {
+            // 清空所有数据
+            console.log('Clearing all subtitles...');
+            clearSubtitleState();
+        }
         // 不修改UI,因为重启流程会处理
         return;
     }
@@ -2050,6 +2081,43 @@ function requestFurigana(text) {
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function hasUsableWebSocket() {
+    return ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
+}
+
+function finalizeCurrentNonFinalTokens({ render = true } = {}) {
+    const pendingTokens = (currentNonFinalTokens || [])
+        .filter(token => token && token.text && token.text !== '<end>');
+
+    if (pendingTokens.length === 0) {
+        return false;
+    }
+
+    pendingTokens.forEach(token => {
+        insertFinalToken({
+            ...token,
+            is_final: true
+        });
+    });
+
+    insertFinalToken({
+        is_separator: true,
+        is_final: true,
+        separator_type: 'reconnect'
+    });
+
+    currentNonFinalTokens = [];
+    renderedSentences.clear();
+    renderedBlocks.clear();
+    mergeFinalTokens();
+
+    if (render) {
+        renderSubtitles();
+    }
+
+    return true;
+}
 
 function clearSubtitleState() {
     allFinalTokens = [];

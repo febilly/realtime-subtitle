@@ -1066,6 +1066,8 @@ class SonioxSession:
 
         print("Connecting to Soniox...")
         self.stop_event = threading.Event()
+        disconnect_reason = "connection ended"
+        notify_disconnect = True
         try:
             with sync_connect(SONIOX_WEBSOCKET_URL) as ws:
                 self.ws = ws
@@ -1087,6 +1089,7 @@ class SonioxSession:
 
                         # Error from server.
                         if res.get("error_code") is not None:
+                            disconnect_reason = f"server error {res['error_code']}: {res.get('error_message', '')}"
                             print(f"Error: {res['error_code']} - {res['error_message']}")
                             break
 
@@ -1227,21 +1230,40 @@ class SonioxSession:
 
                         # Session finished.
                         if res.get("finished"):
+                            disconnect_reason = "session finished"
                             print("Session finished.")
                             break
 
-                except ConnectionClosedOK:
-                    pass
+                except ConnectionClosedOK as e:
+                    disconnect_reason = f"connection closed: {e}"
                 except KeyboardInterrupt:
+                    disconnect_reason = "interrupted by user"
+                    notify_disconnect = False
                     print("\n⏹️ Interrupted by user.")
                     if self.stop_event:
                         self.stop_event.set()
                 except Exception as e:
+                    disconnect_reason = f"connection error: {e}"
                     print(f"Error: {e}")
+        except Exception as e:
+            disconnect_reason = f"connection failed: {e}"
+            print(f"Error connecting to Soniox: {e}")
         finally:
+            stop_requested = bool(self.stop_event and self.stop_event.is_set())
             if self.stop_event:
                 self.stop_event.set()
             self.stop_event = None
             self.ws = None
             self._stop_audio_streamer()
             self.thread = None
+            if notify_disconnect and not stop_requested:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        self.broadcast_callback({
+                            "type": "session_disconnected",
+                            "reason": disconnect_reason,
+                        }),
+                        loop,
+                    )
+                except Exception as notify_error:
+                    print(f"⚠️  Failed to notify clients about Soniox disconnect: {notify_error}")
