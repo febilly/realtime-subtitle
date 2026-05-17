@@ -96,6 +96,8 @@ class SonioxSession:
         self.osc_translation_enabled = False
         self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
         self._sentence_buffers: dict[str, dict] = {}
+        self._llm_sentence_session_id = f"llm-{time.time_ns()}"
+        self._llm_sentence_counter = 0
         self._osc_live_last_text_by_speaker: dict[str, str] = {}
         self._refine_context_history: list[dict] = []
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
@@ -154,6 +156,8 @@ class SonioxSession:
         self.translation = translation
         self.loop = loop
         self._sentence_buffers.clear()
+        self._llm_sentence_session_id = f"llm-{time.time_ns()}"
+        self._llm_sentence_counter = 0
         self._refine_context_history.clear()
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         self._reset_osc_live_state()
@@ -415,6 +419,9 @@ class SonioxSession:
             "language": token.get("language"),
             "source_language": token.get("source_language"),
         }
+        llm_sentence_id = token.get("llm_sentence_id")
+        if llm_sentence_id:
+            value["llm_sentence_id"] = str(llm_sentence_id)
         if is_final is None:
             value["is_final"] = bool(token.get("is_final", False))
         else:
@@ -631,16 +638,22 @@ class SonioxSession:
         self._sentence_buffers.pop(speaker, None)
         self._reset_osc_live_state(speaker)
 
+        self._llm_sentence_counter += 1
+        sentence_id = f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
+        for token in original_tokens + translation_tokens:
+            if isinstance(token, dict):
+                token["llm_sentence_id"] = sentence_id
+
         if not self.loop:
             return False
 
         asyncio.run_coroutine_threadsafe(
-            self._finalize_sentence_async(speaker, original_tokens, translation_tokens),
+            self._finalize_sentence_async(speaker, original_tokens, translation_tokens, sentence_id),
             self.loop,
         )
         return True
 
-    async def _finalize_sentence_async(self, speaker: str, original_tokens: list, translation_tokens: list):
+    async def _finalize_sentence_async(self, speaker: str, original_tokens: list, translation_tokens: list, sentence_id: str | None = None):
         """异步执行 LLM 改进与 OSC 发送"""
         source = self._join_token_texts(original_tokens)
         translation = self._join_token_texts(translation_tokens)
@@ -660,7 +673,6 @@ class SonioxSession:
         if not display_translation:
             return
 
-        sentence_id = f"backend-{int(time.time() * 1000)}-{speaker}"
         context_items = self._get_dynamic_context_items()
 
         refined_translation = display_translation
@@ -691,6 +703,7 @@ class SonioxSession:
 
         await self.broadcast_callback({
             "type": "refine_result",
+            "sentence_id": sentence_id,
             "source": source,
             "original_translation": display_translation,
             "refined_translation": refined_translation if not no_change else None,
@@ -1117,8 +1130,6 @@ class SonioxSession:
                                 if token.get("text") is None:
                                     continue
                                 self._process_token_for_sentence(token)
-                                if token.get("text") != "<end>":
-                                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
 
                         self._maybe_send_live_osc_translation(non_final_tokens)
 
@@ -1189,6 +1200,13 @@ class SonioxSession:
                                         speaker_value = next(iter(self._sentence_buffers.keys()))
                                     if speaker_value and self._trigger_sentence_finalization(speaker_value):
                                         separator_tokens.append(self._make_separator_token("punctuation"))
+
+                        if new_final_tokens:
+                            for token in new_final_tokens:
+                                if token.get("text") is None:
+                                    continue
+                                if token.get("text") != "<end>":
+                                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
 
                         # 将新的final tokens写入日志
                         if outgoing_final_tokens and not self.is_paused:

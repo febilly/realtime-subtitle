@@ -113,8 +113,10 @@ let llmTranslateHideAfterSequence = llmRefineMode === 'translate' ? 0 : null;
 
 // 存储后端改进结果
 const backendRefinedResults = new Map();
+const backendRefinedResultsBySentenceId = new Map();
 // LLM 直译模式下覆盖 Soniox 译文
 const llmTranslationOverrides = new Map();
+const llmTranslationOverridesBySentenceId = new Map();
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -997,6 +999,27 @@ function getDisplayTranslation(source, originalTranslation) {
     return refined || originalTranslation;
 }
 
+function getLlmSentenceId(sentence) {
+    const tokens = [
+        ...(sentence && Array.isArray(sentence.originalTokens) ? sentence.originalTokens : []),
+        ...(sentence && Array.isArray(sentence.translationTokens) ? sentence.translationTokens : [])
+    ];
+    for (const token of tokens) {
+        if (token && token.llm_sentence_id) {
+            return String(token.llm_sentence_id);
+        }
+    }
+    return null;
+}
+
+function getDisplayTranslationForSentence(sentence, source, originalTranslation) {
+    const sentenceId = getLlmSentenceId(sentence);
+    if (sentenceId && backendRefinedResultsBySentenceId.has(sentenceId)) {
+        return backendRefinedResultsBySentenceId.get(sentenceId) || originalTranslation;
+    }
+    return getDisplayTranslation(source, originalTranslation);
+}
+
 function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
     if (!isLlmTranslateMode()) {
         return false;
@@ -1026,6 +1049,7 @@ function handleBackendRefineResult(data) {
     const source = (data.source || '').toString().trim();
     const originalTranslation = (data.original_translation || '').toString().trim();
     const refinedTranslation = (data.refined_translation || '').toString().trim();
+    const sentenceId = data.sentence_id ? String(data.sentence_id).trim() : '';
     const noChange = !!data.no_change;
 
     if (!source || !originalTranslation) {
@@ -1035,8 +1059,14 @@ function handleBackendRefineResult(data) {
     if (!noChange && refinedTranslation) {
         const key = `${source}||${originalTranslation}`;
         backendRefinedResults.set(key, refinedTranslation);
+        if (sentenceId) {
+            backendRefinedResultsBySentenceId.set(sentenceId, refinedTranslation);
+        }
         if (isLlmTranslateMode()) {
             llmTranslationOverrides.set(key, refinedTranslation);
+            if (sentenceId) {
+                llmTranslationOverridesBySentenceId.set(sentenceId, refinedTranslation);
+            }
         }
     }
     renderSubtitles();
@@ -1837,6 +1867,18 @@ function mergeFinalTokens() {
         // 更新合并后的token
         mergedToken.text = mergedText;
         mergedToken._merged = true; // 标记为已合并
+        const sentenceIds = new Set();
+        for (let i = readIndex; i < nextIndex; i++) {
+            const id = allFinalTokens[i] && allFinalTokens[i].llm_sentence_id;
+            if (id) {
+                sentenceIds.add(String(id));
+            }
+        }
+        if (sentenceIds.size === 1) {
+            mergedToken.llm_sentence_id = Array.from(sentenceIds)[0];
+        } else if (sentenceIds.size > 1) {
+            delete mergedToken.llm_sentence_id;
+        }
 
         allFinalTokens[writeIndex] = mergedToken;
         writeIndex++;
@@ -2129,7 +2171,9 @@ function clearSubtitleState() {
     pendingFuriganaRequests.clear();
 
     backendRefinedResults.clear();
+    backendRefinedResultsBySentenceId.clear();
     llmTranslationOverrides.clear();
+    llmTranslationOverridesBySentenceId.clear();
 
     if (isLlmTranslateMode()) {
         llmTranslateHideAfterSequence = tokenSequenceCounter;
@@ -2601,18 +2645,22 @@ function renderSubtitles() {
                 const key = (sourceText && baseTranslationNormalized)
                     ? `${sourceText}||${baseTranslationNormalized}`
                     : null;
-                const overrideTranslation = key ? llmTranslationOverrides.get(key) : null;
+                const sentenceLlmId = getLlmSentenceId(sentence);
+                const overrideTranslation = sentenceLlmId && llmTranslationOverridesBySentenceId.has(sentenceLlmId)
+                    ? llmTranslationOverridesBySentenceId.get(sentenceLlmId)
+                    : (key ? llmTranslationOverrides.get(key) : null);
                 if (overrideTranslation) {
                     baseTranslationNormalized = overrideTranslation;
                 }
-                const hasRefined = key ? backendRefinedResults.has(key) : false;
+                const hasRefined = (sentenceLlmId && backendRefinedResultsBySentenceId.has(sentenceLlmId))
+                    || (key ? backendRefinedResults.has(key) : false);
                 const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined);
 
                 if (!shouldHide) {
                     const displayTranslation = overrideTranslation
                         ? overrideTranslation
                         : ((sourceText && baseTranslationNormalized)
-                            ? getDisplayTranslation(sourceText, baseTranslationNormalized)
+                            ? getDisplayTranslationForSentence(sentence, sourceText, baseTranslationNormalized)
                             : baseTranslationNormalized);
 
                     if (displayTranslation && displayTranslation !== baseTranslationNormalized) {
