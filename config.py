@@ -85,6 +85,17 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_optional_float(name: str) -> float | None:
+    value = os.environ.get(name)
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(str(value).strip())
+    except Exception:
+        print(f"⚠️  {name} is not a valid number, ignoring")
+        return None
+
+
 def _env_str(name: str, default: str) -> str:
     value = os.environ.get(name)
     return default if value is None else str(value)
@@ -113,6 +124,14 @@ def _env_json(name: str, default: dict | None = None) -> dict:
 # Soniox API configuration
 SONIOX_WEBSOCKET_URL = _env_str("SONIOX_WEBSOCKET_URL", "wss://stt-rt.soniox.com/transcribe-websocket")
 SONIOX_TEMP_KEY_URL = os.environ.get("SONIOX_TEMP_KEY_URL")
+
+# Optional stream rollover for temporary API keys whose websocket streams have
+# a hard lifetime. Set this in .env to proactively start a fresh stream.
+_SONIOX_STREAM_DURATION_SECONDS_RAW = _env_optional_float("SONIOX_STREAM_DURATION_SECONDS")
+if _SONIOX_STREAM_DURATION_SECONDS_RAW is not None and _SONIOX_STREAM_DURATION_SECONDS_RAW <= 0:
+    print("⚠️  SONIOX_STREAM_DURATION_SECONDS must be greater than 0, ignoring")
+    _SONIOX_STREAM_DURATION_SECONDS_RAW = None
+SONIOX_STREAM_DURATION_SECONDS = _SONIOX_STREAM_DURATION_SECONDS_RAW
 
 # Auto use system language
 # True: detect system locale and use it as translation target language

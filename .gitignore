@@ -23,6 +23,9 @@ logs/
 # Environment file that may contain secrets
 .env
 
+# Local scratch/reference files
+reference.py
+
 # OS metadata
 .DS_Store
 Thumbs.db
