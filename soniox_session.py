@@ -467,7 +467,7 @@ class SonioxSession:
 
         if previous != muted:
             state_text = "muted" if muted else "unmuted"
-            print(f"🔇 VRChat MuteSelf changed: microphone is now {state_text} in capture pipeline")
+            # print(f"🔇 VRChat MuteSelf changed: microphone is now {state_text} in capture pipeline")
 
     def _stop_audio_streamer(self) -> None:
         with self.audio_lock:

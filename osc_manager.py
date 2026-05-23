@@ -146,7 +146,7 @@ class OSCManager:
             self._last_mute_value = mute_value
             if previous == mute_value:
                 return
-            self._emit(f"[OSC] Received MuteSelf: {mute_value}")
+            # self._emit(f"[OSC] Received MuteSelf: {mute_value}")
             if not self._vrchat_linked_logged:
                 self._vrchat_linked_logged = True
                 self._oscquery_connected = True
