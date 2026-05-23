@@ -1,6 +1,7 @@
 websockets
 soundcard
 numpy<2.0.0
+ten-vad
 python-dotenv
 aiohttp
 aiohttp-jinja2

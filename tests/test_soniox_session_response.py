@@ -118,7 +118,7 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     assert session.last_sent_count == 1
 
 
-def test_stream_rollover_prepare_age_uses_fixed_15_second_lead(monkeypatch):
+def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
 
@@ -127,9 +127,12 @@ def test_stream_rollover_prepare_age_uses_fixed_15_second_lead(monkeypatch):
 
     session = module.SonioxSession(MagicMock(), broadcast)
 
-    assert session._stream_rollover_prepare_age(170.0) == 155.0
-    assert session._stream_rollover_prepare_age(20.0) == 5.0
-    assert session._stream_rollover_prepare_age(10.0) == 0.0
+    assert session._stream_rollover_switch_patience(170.0) == 25.0
+    assert session._stream_rollover_prepare_age(170.0) == 148.0
+    assert session._stream_rollover_switch_patience(30.0) == 15.0
+    assert session._stream_rollover_prepare_age(30.0) == 13.0
+    assert session._stream_rollover_switch_patience(10.0) == 5.0
+    assert session._stream_rollover_prepare_age(10.0) == 4.0
 
 
 def test_manual_finalize_fin_token_is_consumed_but_not_displayed(monkeypatch):

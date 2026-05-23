@@ -6,6 +6,7 @@ import threading
 import asyncio
 import time
 import re
+import concurrent.futures
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
@@ -69,7 +70,7 @@ STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS = 0.25
 STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS = 1.5
 STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS = 200
 STREAM_ROLLOVER_NEAR_LIMIT_RATIO = 0.8
-STREAM_ROLLOVER_PREPARE_LEAD_SECONDS = 15.0
+STREAM_ROLLOVER_SWITCH_PATIENCE_SECONDS = 25.0
 STREAM_ROLLOVER_FORCE_GUARD_SECONDS = 2.0
 STREAM_ROLLOVER_SILENCE_HOLD_SECONDS = 0.7
 STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT = 8
@@ -143,6 +144,7 @@ class _SonioxStreamState:
     sent_count: int = 0
     ready_at: float | None = None
     silence_sender: _RealtimeSilenceSender | None = None
+    silence_started_at: float = 0.0  # monotonic timestamp when silence sender started
 
 
 def normalize_east_asian_translation_spacing(text: str) -> str:
@@ -1160,7 +1162,10 @@ class SonioxSession:
         return (time.monotonic() - started_at) >= (rollover_seconds * STREAM_ROLLOVER_NEAR_LIMIT_RATIO)
 
     def _stream_rollover_prepare_age(self, rollover_seconds: float) -> float:
-        return max(0.0, rollover_seconds - STREAM_ROLLOVER_PREPARE_LEAD_SECONDS)
+        return max(0.0, self._stream_rollover_force_age(rollover_seconds) - self._stream_rollover_switch_patience(rollover_seconds))
+
+    def _stream_rollover_switch_patience(self, rollover_seconds: float) -> float:
+        return max(0.0, min(STREAM_ROLLOVER_SWITCH_PATIENCE_SECONDS, rollover_seconds * 0.5))
 
     def _stream_rollover_force_age(self, rollover_seconds: float) -> float:
         guard_seconds = min(
@@ -1334,6 +1339,28 @@ class SonioxSession:
             self.api_key = next_key
             return next_key
         return current_api_key
+
+    def _prepare_warmup_stream(
+        self,
+        current_api_key: str,
+        stream_index: int,
+        audio_format: str,
+        translation: str,
+        translation_target_lang: str,
+    ) -> _SonioxStreamState:
+        """Run in background thread: fetch key + connect WebSocket + send config.
+
+        All blocking operations (HTTP request for temp key, WebSocket connect,
+        send config) happen here so the main session loop stays responsive.
+        Returns a _SonioxStreamState with a pre-created silence_sender (not started).
+        """
+        next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
+        ws_state = self._open_soniox_stream_state(
+            next_api_key, stream_index, audio_format, translation,
+            translation_target_lang, warming=True,
+        )
+        ws_state.silence_sender = self._make_rollover_silence_sender(ws_state.ws)
+        return ws_state
 
     def _broadcast_preserve_existing_subtitles(self, loop: asyncio.AbstractEventLoop) -> None:
         try:
@@ -1562,6 +1589,21 @@ class SonioxSession:
                 break
 
         return sent_count
+
+    def _finalize_and_close_stream(self, old_stream: _SonioxStreamState, loop: asyncio.AbstractEventLoop) -> None:
+        """Finalize and close an old stream after rollover, in a background thread.
+
+        This avoids blocking the main loop on old-stream finalization so that
+        the new stream's responses are processed without delay.
+        """
+        try:
+            old_stream.sent_count = self._finalize_stream_before_rollover(
+                old_stream.ws, old_stream.all_final_tokens, old_stream.sent_count, loop,
+            )
+        except Exception as error:
+            print(f"⚠️  Error finalizing old stream #{old_stream.index}: {error}")
+        self._close_soniox_stream_state(old_stream)
+
     
     def _run_session(
         self,
@@ -1596,6 +1638,8 @@ class SonioxSession:
         active_stream: _SonioxStreamState | None = None
         warmup_stream: _SonioxStreamState | None = None
         next_prepare_attempt_at = 0.0
+        warmup_future: concurrent.futures.Future | None = None
+        key_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="soniox-key")
         audio_router = AudioSendRouter(
             max_buffered_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
             sample_rate=self.sample_rate,
@@ -1632,32 +1676,35 @@ class SonioxSession:
                 if (
                     rollover_seconds is not None
                     and warmup_stream is None
+                    and warmup_future is None
                     and time.monotonic() >= next_prepare_attempt_at
                     and self._should_prepare_rollover_stream(active_stream.started_at, rollover_seconds)
                 ):
-                    try:
-                        stream_index += 1
-                        next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
-                        warmup_stream = self._open_soniox_stream_state(
-                            next_api_key,
-                            stream_index,
-                            audio_format,
-                            translation,
-                            translation_target_lang,
-                            warming=True,
-                        )
-                        warmup_stream.silence_sender = self._make_rollover_silence_sender(warmup_stream.ws)
-                        warmup_stream.silence_sender.start()
-                        print(
-                            f"🔁 Soniox stream #{warmup_stream.index} is warming with realtime silence; "
-                            f"waiting for a quiet audio gap to switch."
-                        )
-                    except Exception as error:
-                        print(f"⚠️  Failed to prepare next Soniox stream for rollover: {error}")
-                        warmup_stream = None
-                        stream_index -= 1
-                        next_prepare_attempt_at = time.monotonic() + 1.0
+                    warmup_future = key_fetch_executor.submit(
+                        self._prepare_warmup_stream,
+                        current_api_key, stream_index, audio_format,
+                        translation, translation_target_lang,
+                    )
+                    stream_index += 1
+                    next_prepare_attempt_at = time.monotonic() + 1.0
 
+                if warmup_future is not None:
+                    if warmup_future.done():
+                        try:
+                            warmup_stream = warmup_future.result(timeout=0)
+                            warmup_future = None
+                            warmup_stream.silence_sender.start()
+                            warmup_stream.silence_started_at = time.monotonic()
+                            print(
+                                f"🔁 Soniox stream #{warmup_stream.index} is warming with realtime silence; "
+                                f"waiting for a quiet audio gap to switch."
+                            )
+                        except Exception as error:
+                            print(f"⚠️  Failed to prepare next Soniox stream for rollover: {error}")
+                            warmup_future = None
+                            warmup_stream = None
+                            stream_index -= 1
+                            next_prepare_attempt_at = time.monotonic() + 1.0
                 if (
                     rollover_seconds is not None
                     and warmup_stream is None
@@ -1702,9 +1749,10 @@ class SonioxSession:
                             active_stream.started_at,
                             rollover_seconds,
                         )
-                        if switch_on_silence or force_switch:
+                        silence_elapsed = time.monotonic() - warmup_stream.silence_started_at if warmup_stream.silence_started_at else 0.0
+                        if silence_elapsed >= 2.0 and (switch_on_silence or force_switch):
                             switch_reason = (
-                                f"quiet gap ({audio_router.consecutive_silence_seconds():.2f}s)"
+                                f"quiet gap ({audio_router.consecutive_silence_seconds():.2f}s, silence sent {silence_elapsed:.1f}s)"
                                 if switch_on_silence
                                 else "rollover guard deadline"
                             )
@@ -1731,15 +1779,14 @@ class SonioxSession:
                             self.ws = active_stream.ws
                             self.last_sent_count = active_stream.sent_count
 
-                            old_stream.sent_count = self._finalize_stream_before_rollover(
-                                old_stream.ws,
-                                old_stream.all_final_tokens,
-                                old_stream.sent_count,
-                                loop,
-                            )
-                            if self.ws is old_stream.ws:
-                                self.ws = active_stream.ws
-                            self._close_soniox_stream_state(old_stream)
+                            # Finalize old stream in background so main loop
+                            # immediately starts processing new stream responses.
+                            threading.Thread(
+                                target=self._finalize_and_close_stream,
+                                args=(old_stream, loop),
+                                daemon=True,
+                                name=f"soniox-finalize-{old_stream.index}",
+                            ).start()
                             disconnect_reason = "stream rollover"
                             continue
 
@@ -1872,6 +1919,18 @@ class SonioxSession:
                     break
 
         finally:
+            # Clean up background warmup future
+            if warmup_future is not None:
+                if warmup_future.done() and not warmup_future.cancelled():
+                    try:
+                        leaked = warmup_future.result(timeout=0)
+                        self._close_soniox_stream_state(leaked)
+                    except Exception:
+                        pass
+                else:
+                    warmup_future.cancel()
+                warmup_future = None
+            key_fetch_executor.shutdown(wait=False)
             stop_requested = bool(self.stop_event and self.stop_event.is_set())
             if self.stop_event:
                 self.stop_event.set()

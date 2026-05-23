@@ -1,4 +1,5 @@
-from audio_router import AudioSendRouter, EnergySilenceDetector
+import audio_router as audio_router_module
+from audio_router import AudioSendRouter, EnergySilenceDetector, TenVadSilenceDetector
 
 
 class RecordingTarget:
@@ -88,3 +89,28 @@ def test_energy_silence_detector_waits_for_hold_duration():
     assert detector.is_ready() is False
     assert detector.update(silence) is True
     assert detector.is_ready() is True
+
+
+def test_ten_vad_silence_detector_waits_for_non_speech_hold(monkeypatch):
+    class FakeTenVad:
+        def __init__(self, hop_size, threshold):
+            self.hop_size = hop_size
+            self.threshold = threshold
+
+        def process(self, audio_frame):
+            flag = 1 if int(audio_frame[0]) else 0
+            return float(flag), flag
+
+    monkeypatch.setattr(audio_router_module, "TenVadBackend", FakeTenVad)
+    monkeypatch.setattr(audio_router_module, "TenVadImportError", None)
+
+    detector = TenVadSilenceDetector(sample_rate=16000, silence_hold_seconds=0.03, hop_size=256)
+    silence_frame = b"\0" * 512
+    speech_frame = (1).to_bytes(2, "little", signed=True) + (b"\0" * 510)
+
+    assert detector.update(silence_frame) is True
+    assert detector.is_ready() is False
+    assert detector.update(silence_frame) is True
+    assert detector.is_ready() is True
+    assert detector.update(speech_frame) is False
+    assert detector.is_ready() is False

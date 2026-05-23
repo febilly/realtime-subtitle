@@ -7,6 +7,84 @@ import time
 from collections import deque
 from typing import Any
 
+import numpy as np
+
+try:
+    from ten_vad import TenVad as TenVadBackend
+except Exception as exc:  # noqa: BLE001 - optional at import time for tests/dev envs
+    TenVadBackend = None
+    TenVadImportError = exc
+else:
+    TenVadImportError = None
+
+
+class TenVadSilenceDetector:
+    """TEN VAD backed PCM_s16le detector used to find safe rollover gaps."""
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int = 16000,
+        sample_width_bytes: int = 2,
+        silence_hold_seconds: float = 0.7,
+        hop_size: int = 256,
+        speech_threshold: float = 0.5,
+    ):
+        if TenVadBackend is None:
+            raise RuntimeError(f"ten-vad is unavailable: {TenVadImportError}")
+
+        self.sample_rate = max(1, int(sample_rate))
+        self.sample_width_bytes = max(1, int(sample_width_bytes))
+        self.silence_hold_seconds = max(0.0, float(silence_hold_seconds))
+        self.hop_size = max(1, int(hop_size))
+        self.speech_threshold = max(0.0, float(speech_threshold))
+        self._vad = TenVadBackend(self.hop_size, self.speech_threshold)
+        self._pending = bytearray()
+        self.consecutive_silence_seconds = 0.0
+        self.last_audio_at: float | None = None
+        self.last_probability = 0.0
+        self.last_flag = 0
+
+    def update(self, pcm_bytes: bytes) -> bool:
+        """Record real-audio chunks and return whether all processed frames were non-speech."""
+        if not pcm_bytes:
+            return False
+
+        frame_bytes = self.hop_size * self.sample_width_bytes
+        if frame_bytes <= 0:
+            return False
+
+        self._pending.extend(pcm_bytes)
+        processed_any = False
+        saw_speech = False
+
+        while len(self._pending) >= frame_bytes:
+            frame = bytes(self._pending[:frame_bytes])
+            del self._pending[:frame_bytes]
+            audio_frame = np.frombuffer(frame, dtype=np.int16)
+            probability, flag = self._vad.process(audio_frame)
+            self.last_probability = float(probability)
+            self.last_flag = int(flag)
+            processed_any = True
+            self.last_audio_at = time.monotonic()
+
+            if int(flag) == 1:
+                saw_speech = True
+                self.consecutive_silence_seconds = 0.0
+            else:
+                self.consecutive_silence_seconds += self.hop_size / self.sample_rate
+
+        if not processed_any:
+            return False
+        return not saw_speech
+
+    def is_ready(self, *, min_observed_at: float | None = None) -> bool:
+        if self.last_audio_at is None:
+            return False
+        if min_observed_at is not None and self.last_audio_at < min_observed_at:
+            return False
+        return self.consecutive_silence_seconds >= self.silence_hold_seconds
+
 
 class EnergySilenceDetector:
     """Small PCM_s16le energy detector used to find safe rollover gaps."""
@@ -84,10 +162,17 @@ class AudioSendRouter:
         self._lock = threading.Lock()
         self._target: Any | None = None
         self._closed = False
-        self._silence_detector = EnergySilenceDetector(
-            sample_rate=sample_rate,
-            silence_hold_seconds=silence_hold_seconds,
-        )
+        try:
+            self._silence_detector = TenVadSilenceDetector(
+                sample_rate=sample_rate,
+                silence_hold_seconds=silence_hold_seconds,
+            )
+        except Exception as error:
+            print(f"⚠️  TEN VAD unavailable for stream rollover, using energy silence detector: {error}")
+            self._silence_detector = EnergySilenceDetector(
+                sample_rate=sample_rate,
+                silence_hold_seconds=silence_hold_seconds,
+            )
 
     def _buffer_locked(self, payload: bytes) -> None:
         if len(self._buffered_chunks) >= self._max_buffered_chunks:
