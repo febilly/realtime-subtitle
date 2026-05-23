@@ -1648,7 +1648,6 @@ class SonioxSession:
                         )
                         warmup_stream.silence_sender = self._make_rollover_silence_sender(warmup_stream.ws)
                         warmup_stream.silence_sender.start()
-                        self._broadcast_preserve_existing_subtitles(loop)
                         print(
                             f"🔁 Soniox stream #{warmup_stream.index} is warming with realtime silence; "
                             f"waiting for a quiet audio gap to switch."
