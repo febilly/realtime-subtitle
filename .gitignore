@@ -20,6 +20,9 @@ dist/
 logs/
 *.log
 
+# Cloudflare Wrangler local state/cache
+.wrangler/
+
 # Environment file that may contain secrets
 .env
 
