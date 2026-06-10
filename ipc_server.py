@@ -258,12 +258,12 @@ class IPCServer:
             try:
                 with open(discovery, "r") as f:
                     data = f.read()
-                    import json
+                import json
 
-                    info = json.loads(data)
-                    if info.get("pid") == os.getpid():
-                        os.remove(discovery)
-                        logger.info("[IPC] Discovery file removed: %s", discovery)
+                info = json.loads(data)
+                if info.get("pid") == os.getpid():
+                    os.remove(discovery)
+                    logger.info("[IPC] Discovery file removed: %s", discovery)
             except Exception as exc:
                 logger.warning("[IPC] Failed to remove discovery file: %s", exc)
 

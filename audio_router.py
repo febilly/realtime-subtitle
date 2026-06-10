@@ -44,6 +44,8 @@ class TenVadSilenceDetector:
         self.last_audio_at: float | None = None
         self.last_probability = 0.0
         self.last_flag = 0
+        self.last_observed_seconds = 0.0
+        self.last_speech_seconds = 0.0
 
     def update(self, pcm_bytes: bytes) -> bool:
         """Record real-audio chunks and return whether all processed frames were non-speech."""
@@ -57,6 +59,8 @@ class TenVadSilenceDetector:
         self._pending.extend(pcm_bytes)
         processed_any = False
         saw_speech = False
+        processed_frames = 0
+        speech_frames = 0
 
         while len(self._pending) >= frame_bytes:
             frame = bytes(self._pending[:frame_bytes])
@@ -66,16 +70,23 @@ class TenVadSilenceDetector:
             self.last_probability = float(probability)
             self.last_flag = int(flag)
             processed_any = True
+            processed_frames += 1
             self.last_audio_at = time.monotonic()
 
             if int(flag) == 1:
                 saw_speech = True
+                speech_frames += 1
                 self.consecutive_silence_seconds = 0.0
             else:
                 self.consecutive_silence_seconds += self.hop_size / self.sample_rate
 
         if not processed_any:
+            self.last_observed_seconds = 0.0
+            self.last_speech_seconds = 0.0
             return False
+        frame_duration = self.hop_size / self.sample_rate
+        self.last_observed_seconds = processed_frames * frame_duration
+        self.last_speech_seconds = speech_frames * frame_duration
         return not saw_speech
 
     def is_ready(self, *, min_observed_at: float | None = None) -> bool:
@@ -106,6 +117,8 @@ class EnergySilenceDetector:
         self.consecutive_silence_seconds = 0.0
         self.last_audio_at: float | None = None
         self.last_rms = 0.0
+        self.last_observed_seconds = 0.0
+        self.last_speech_seconds = 0.0
 
     def update(self, pcm_bytes: bytes) -> bool:
         """Record one real-audio chunk and return whether it looked silent."""
@@ -130,6 +143,8 @@ class EnergySilenceDetector:
 
         self.last_audio_at = now
         self.last_rms = rms
+        self.last_observed_seconds = duration
+        self.last_speech_seconds = 0.0 if is_silent else duration
 
         if is_silent:
             self.noise_floor = (self.noise_floor * 0.98) + (rms * 0.02)
@@ -147,6 +162,68 @@ class EnergySilenceDetector:
         return self.consecutive_silence_seconds >= self.silence_hold_seconds
 
 
+class TolerantSpeechActivityGate:
+    """Track long silence while ignoring short speech-like blips."""
+
+    def __init__(
+        self,
+        *,
+        idle_timeout_seconds: float,
+        speech_grace_seconds: float = 0.25,
+        wake_speech_seconds: float | None = None,
+    ):
+        self.idle_timeout_seconds = max(0.0, float(idle_timeout_seconds))
+        self.speech_grace_seconds = max(0.0, float(speech_grace_seconds))
+        if wake_speech_seconds is None:
+            wake_speech_seconds = self.speech_grace_seconds
+        self.wake_speech_seconds = max(0.0, float(wake_speech_seconds))
+        self.confirmed_silence_seconds = 0.0
+        self.pending_speech_seconds = 0.0
+        self.last_audio_at: float | None = None
+        self._wake_ready = False
+
+    def reset_after_wake(self) -> None:
+        self.confirmed_silence_seconds = 0.0
+        self.pending_speech_seconds = 0.0
+        self._wake_ready = False
+
+    def reset_for_dormant(self) -> None:
+        self.pending_speech_seconds = 0.0
+        self._wake_ready = False
+
+    def update(self, observed_seconds: float, speech_seconds: float) -> bool:
+        observed = max(0.0, float(observed_seconds or 0.0))
+        speech = min(observed, max(0.0, float(speech_seconds or 0.0)))
+        if observed <= 0.0:
+            return self._wake_ready
+
+        self.last_audio_at = time.monotonic()
+        silence = max(0.0, observed - speech)
+
+        if speech > 0.0:
+            self.pending_speech_seconds += speech
+            if self.pending_speech_seconds >= self.wake_speech_seconds:
+                self._wake_ready = True
+            if self.pending_speech_seconds >= self.speech_grace_seconds:
+                self.confirmed_silence_seconds = 0.0
+
+        if silence > 0.0:
+            if 0.0 < self.pending_speech_seconds < self.speech_grace_seconds:
+                self.confirmed_silence_seconds += self.pending_speech_seconds
+            self.pending_speech_seconds = 0.0
+            self.confirmed_silence_seconds += silence
+
+        return self._wake_ready
+
+    def sleep_ready(self) -> bool:
+        if self.last_audio_at is None:
+            return False
+        return self.confirmed_silence_seconds >= self.idle_timeout_seconds
+
+    def wake_ready(self) -> bool:
+        return self._wake_ready
+
+
 class AudioSendRouter:
     """Route captured audio to the active websocket and buffer during handoff."""
 
@@ -155,13 +232,37 @@ class AudioSendRouter:
         max_buffered_chunks: int = 200,
         *,
         sample_rate: int = 16000,
+        chunk_size: int = 3840,
         silence_hold_seconds: float = 0.7,
+        sleep_idle_seconds: float | None = None,
+        sleep_pre_roll_seconds: float = 0.5,
+        sleep_speech_grace_seconds: float = 0.25,
     ):
         self._max_buffered_chunks = max(1, int(max_buffered_chunks))
         self._buffered_chunks: deque[bytes] = deque()
         self._lock = threading.Lock()
         self._target: Any | None = None
         self._closed = False
+        self._sleep_buffering = False
+        self._sleep_wake_started = False
+        chunk_duration = max(0.001, float(chunk_size) / max(1, int(sample_rate)))
+        self._sleep_pre_roll_chunks = max(1, int(math.ceil(max(0.0, float(sleep_pre_roll_seconds)) / chunk_duration)))
+        sleep_detection_chunks = max(
+            1,
+            int(math.ceil(max(0.0, float(sleep_speech_grace_seconds)) / chunk_duration)),
+        )
+        self._sleep_pre_wake_chunks = max(
+            self._sleep_pre_roll_chunks,
+            self._sleep_pre_roll_chunks + sleep_detection_chunks,
+        )
+        self._sleep_gate = (
+            TolerantSpeechActivityGate(
+                idle_timeout_seconds=float(sleep_idle_seconds),
+                speech_grace_seconds=sleep_speech_grace_seconds,
+            )
+            if sleep_idle_seconds is not None and float(sleep_idle_seconds) > 0
+            else None
+        )
         try:
             self._silence_detector = TenVadSilenceDetector(
                 sample_rate=sample_rate,
@@ -176,6 +277,11 @@ class AudioSendRouter:
 
     def _buffer_locked(self, payload: bytes) -> None:
         if len(self._buffered_chunks) >= self._max_buffered_chunks:
+            self._buffered_chunks.popleft()
+        self._buffered_chunks.append(payload)
+
+    def _buffer_sleep_preroll_locked(self, payload: bytes) -> None:
+        while len(self._buffered_chunks) >= self._sleep_pre_wake_chunks:
             self._buffered_chunks.popleft()
         self._buffered_chunks.append(payload)
 
@@ -210,6 +316,10 @@ class AudioSendRouter:
                     return False
                 if not self._buffered_chunks:
                     self._target = target
+                    self._sleep_buffering = False
+                    self._sleep_wake_started = False
+                    if self._sleep_gate is not None:
+                        self._sleep_gate.reset_after_wake()
                     return True
 
             # More audio arrived while buffered data was being flushed. Keep the
@@ -228,6 +338,23 @@ class AudioSendRouter:
         with self._lock:
             if target is None or self._target is target:
                 self._target = None
+
+    def enter_sleep_buffering(self, target: Any | None = None) -> bool:
+        """Detach from Soniox and keep only local pre-roll until speech returns."""
+        with self._lock:
+            if (
+                target is not None
+                and self._target is not target
+                and self._target is not None
+            ):
+                return False
+            self._target = None
+            self._buffered_chunks.clear()
+            self._sleep_buffering = True
+            self._sleep_wake_started = False
+        if self._sleep_gate is not None:
+            self._sleep_gate.reset_for_dormant()
+        return True
 
     def close(self) -> None:
         with self._lock:
@@ -248,15 +375,39 @@ class AudioSendRouter:
     def last_audio_at(self) -> float | None:
         return self._silence_detector.last_audio_at
 
+    def sleep_ready(self) -> bool:
+        if self._sleep_gate is None:
+            return False
+        return self._sleep_gate.sleep_ready()
+
+    def sleep_confirmed_silence_seconds(self) -> float:
+        if self._sleep_gate is None:
+            return 0.0
+        return self._sleep_gate.confirmed_silence_seconds
+
+    def wake_ready(self) -> bool:
+        with self._lock:
+            return self._sleep_wake_started
+
     def send(self, payload: bytes) -> None:
         """Send audio to the active target, or buffer it if there isn't one."""
         self._silence_detector.update(payload)
+        wake_ready = False
+        if self._sleep_gate is not None:
+            observed_seconds = float(getattr(self._silence_detector, "last_observed_seconds", 0.0) or 0.0)
+            speech_seconds = float(getattr(self._silence_detector, "last_speech_seconds", 0.0) or 0.0)
+            wake_ready = self._sleep_gate.update(observed_seconds, speech_seconds)
 
         with self._lock:
             if self._closed:
                 return
             target = self._target
             if target is None:
+                if self._sleep_buffering and not self._sleep_wake_started:
+                    self._buffer_sleep_preroll_locked(payload)
+                    if wake_ready:
+                        self._sleep_wake_started = True
+                    return
                 self._buffer_locked(payload)
                 return
 

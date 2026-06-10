@@ -17,6 +17,10 @@ from websockets.sync.client import connect as sync_connect
 from config import (
     SONIOX_WEBSOCKET_URL,
     SONIOX_STREAM_DURATION_SECONDS,
+    SONIOX_SLEEP_ON_SILENCE,
+    SONIOX_SLEEP_IDLE_SECONDS,
+    SONIOX_SLEEP_PRE_ROLL_SECONDS,
+    SONIOX_SLEEP_SPEECH_GRACE_SECONDS,
     USE_TWITCH_AUDIO_STREAM,
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     TWITCH_CHANNEL,
@@ -1156,6 +1160,17 @@ class SonioxSession:
             return None
         return value
 
+    def _sleep_idle_seconds(self) -> float | None:
+        if not SONIOX_SLEEP_ON_SILENCE:
+            return None
+        try:
+            value = float(SONIOX_SLEEP_IDLE_SECONDS)
+        except Exception:
+            return None
+        if value <= 0:
+            return None
+        return value
+
     def _stream_is_near_rollover_limit(self, started_at: float | None, rollover_seconds: float | None) -> bool:
         if started_at is None or rollover_seconds is None:
             return False
@@ -1628,6 +1643,12 @@ class SonioxSession:
         rollover_seconds = self._stream_rollover_seconds()
         if rollover_seconds is not None:
             print(f"🔁 Soniox stream rollover enabled: {rollover_seconds:.1f}s per stream")
+        sleep_idle_seconds = self._sleep_idle_seconds()
+        if sleep_idle_seconds is not None:
+            print(
+                f"💤 Soniox silence sleep enabled: {sleep_idle_seconds:.1f}s idle, "
+                f"{float(SONIOX_SLEEP_PRE_ROLL_SECONDS):.2f}s pre-roll"
+            )
 
         self.stop_event = threading.Event()
         disconnect_reason = "connection ended"
@@ -1637,13 +1658,18 @@ class SonioxSession:
         audio_stream_started = False
         active_stream: _SonioxStreamState | None = None
         warmup_stream: _SonioxStreamState | None = None
+        dormant_for_silence = False
         next_prepare_attempt_at = 0.0
         warmup_future: concurrent.futures.Future | None = None
         key_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="soniox-key")
         audio_router = AudioSendRouter(
             max_buffered_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
             sample_rate=self.sample_rate,
+            chunk_size=self.chunk_size,
             silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
+            sleep_idle_seconds=sleep_idle_seconds,
+            sleep_pre_roll_seconds=SONIOX_SLEEP_PRE_ROLL_SECONDS,
+            sleep_speech_grace_seconds=SONIOX_SLEEP_SPEECH_GRACE_SECONDS,
         )
 
         try:
@@ -1668,6 +1694,81 @@ class SonioxSession:
                 if self.stop_event and self.stop_event.is_set():
                     notify_disconnect = False
                     break
+
+                if active_stream is None:
+                    if dormant_for_silence:
+                        if audio_router.wake_ready():
+                            buffered_count = audio_router.buffered_count()
+                            try:
+                                next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
+                                resumed_stream = self._open_soniox_stream_state(
+                                    next_api_key,
+                                    stream_index + 1,
+                                    audio_format,
+                                    translation,
+                                    translation_target_lang,
+                                )
+                                if not audio_router.set_target(resumed_stream.ws):
+                                    self._close_soniox_stream_state(resumed_stream)
+                                    disconnect_reason = "failed to attach audio after silence sleep"
+                                    break
+                                active_stream = resumed_stream
+                                stream_index = active_stream.index
+                                current_api_key = active_stream.api_key
+                                self.ws = active_stream.ws
+                                self.last_sent_count = active_stream.sent_count
+                                dormant_for_silence = False
+                                disconnect_reason = "silence sleep resumed"
+                                print(
+                                    f"▶️  Speech detected after silence; reopened Soniox stream "
+                                    f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
+                                )
+                            except Exception as error:
+                                disconnect_reason = f"failed to reopen Soniox stream after silence: {error}"
+                                print(f"⚠️  {disconnect_reason}")
+                                break
+                        else:
+                            time.sleep(0.05)
+                            continue
+                    else:
+                        disconnect_reason = "stream rollover failed"
+                        break
+
+                if (
+                    sleep_idle_seconds is not None
+                    and not dormant_for_silence
+                    and active_stream is not None
+                    and audio_router.sleep_ready()
+                ):
+                    if warmup_stream is not None:
+                        if warmup_stream.silence_sender is not None:
+                            warmup_stream.silence_sender.stop()
+                            warmup_stream.silence_sender = None
+                        self._close_soniox_stream_state(warmup_stream)
+                        warmup_stream = None
+                    if warmup_future is not None:
+                        warmup_future.cancel()
+                        warmup_future = None
+
+                    print(
+                        f"💤 No speech detected for "
+                        f"{audio_router.sleep_confirmed_silence_seconds():.1f}s; closing Soniox stream."
+                    )
+                    sleeping_stream = active_stream
+                    if not audio_router.enter_sleep_buffering(sleeping_stream.ws):
+                        disconnect_reason = "failed to detach audio for silence sleep"
+                        break
+                    active_stream = None
+                    self.ws = None
+                    dormant_for_silence = True
+                    sleeping_stream.sent_count = self._finalize_stream_before_rollover(
+                        sleeping_stream.ws,
+                        sleeping_stream.all_final_tokens,
+                        sleeping_stream.sent_count,
+                        loop,
+                    )
+                    self._close_soniox_stream_state(sleeping_stream)
+                    continue
 
                 if active_stream is None:
                     disconnect_reason = "stream rollover failed"
@@ -1791,7 +1892,11 @@ class SonioxSession:
                             continue
 
                 try:
-                    recv_timeout = STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS if rollover_seconds is not None else None
+                    recv_timeout = (
+                        STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS
+                        if rollover_seconds is not None or sleep_idle_seconds is not None
+                        else None
+                    )
                     message = active_stream.ws.recv(timeout=recv_timeout)
                 except TimeoutError:
                     continue

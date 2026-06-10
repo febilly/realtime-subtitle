@@ -124,6 +124,7 @@ def _env_json(name: str, default: dict | None = None) -> dict:
 # Soniox API configuration
 SONIOX_WEBSOCKET_URL = _env_str("SONIOX_WEBSOCKET_URL", "wss://stt-rt.soniox.com/transcribe-websocket")
 SONIOX_TEMP_KEY_URL = os.environ.get("SONIOX_TEMP_KEY_URL")
+SONIOX_USES_TEMP_API_KEY = not bool(os.environ.get("SONIOX_API_KEY", "").strip())
 
 # Optional stream rollover for temporary API keys whose websocket streams have
 # a hard lifetime. Set this in .env to proactively start a fresh stream.
@@ -132,6 +133,15 @@ if _SONIOX_STREAM_DURATION_SECONDS_RAW is not None and _SONIOX_STREAM_DURATION_S
     print("⚠️  SONIOX_STREAM_DURATION_SECONDS must be greater than 0, ignoring")
     _SONIOX_STREAM_DURATION_SECONDS_RAW = None
 SONIOX_STREAM_DURATION_SECONDS = _SONIOX_STREAM_DURATION_SECONDS_RAW
+
+# Optional cost saver: close the Soniox websocket after long local silence and
+# reopen it when local VAD sees speech again. By default, keep temporary API key
+# streams open and sleep only when a persistent SONIOX_API_KEY is configured.
+SONIOX_SLEEP_ON_SILENCE = _env_bool("SONIOX_SLEEP_ON_SILENCE", not SONIOX_USES_TEMP_API_KEY)
+
+SONIOX_SLEEP_IDLE_SECONDS = max(1.0, _env_float("SONIOX_SLEEP_IDLE_SECONDS", 30.0))
+SONIOX_SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("SONIOX_SLEEP_PRE_ROLL_SECONDS", 0.5))
+SONIOX_SLEEP_SPEECH_GRACE_SECONDS = max(0.0, _env_float("SONIOX_SLEEP_SPEECH_GRACE_SECONDS", 0.25))
 
 # Auto use system language
 # True: detect system locale and use it as translation target language

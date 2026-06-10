@@ -68,6 +68,24 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
 
     parser.add_argument('--soniox-temp-key-url', dest='soniox_temp_key_url', default=None)
     parser.add_argument('--soniox-websocket-url', dest='soniox_websocket_url', default=None)
+    sleep_group = parser.add_mutually_exclusive_group()
+    sleep_group.add_argument(
+        '--soniox-sleep-on-silence',
+        dest='soniox_sleep_on_silence',
+        action='store_true',
+        default=None,
+        help='Close the Soniox stream after long local silence and reopen when speech resumes',
+    )
+    sleep_group.add_argument(
+        '--no-soniox-sleep-on-silence',
+        dest='soniox_sleep_on_silence',
+        action='store_false',
+        default=None,
+        help='Disable long-silence Soniox stream sleeping',
+    )
+    parser.add_argument('--soniox-sleep-idle-seconds', dest='soniox_sleep_idle_seconds', type=float, default=None)
+    parser.add_argument('--soniox-sleep-pre-roll-seconds', dest='soniox_sleep_pre_roll_seconds', type=float, default=None)
+    parser.add_argument('--soniox-sleep-speech-grace-seconds', dest='soniox_sleep_speech_grace_seconds', type=float, default=None)
 
     twitch_group = parser.add_mutually_exclusive_group()
     twitch_group.add_argument('--use-twitch-audio-stream', dest='use_twitch_audio_stream', action='store_true', default=None)
@@ -116,6 +134,10 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
 
     _set_env_if_provided('SONIOX_TEMP_KEY_URL', args.soniox_temp_key_url)
     _set_env_if_provided('SONIOX_WEBSOCKET_URL', args.soniox_websocket_url)
+    _set_env_bool_if_provided('SONIOX_SLEEP_ON_SILENCE', args.soniox_sleep_on_silence)
+    _set_env_if_provided('SONIOX_SLEEP_IDLE_SECONDS', args.soniox_sleep_idle_seconds)
+    _set_env_if_provided('SONIOX_SLEEP_PRE_ROLL_SECONDS', args.soniox_sleep_pre_roll_seconds)
+    _set_env_if_provided('SONIOX_SLEEP_SPEECH_GRACE_SECONDS', args.soniox_sleep_speech_grace_seconds)
 
     _set_env_bool_if_provided('USE_TWITCH_AUDIO_STREAM', args.use_twitch_audio_stream)
     _set_env_if_provided('TWITCH_CHANNEL', args.twitch_channel)

@@ -114,3 +114,70 @@ def test_ten_vad_silence_detector_waits_for_non_speech_hold(monkeypatch):
     assert detector.is_ready() is True
     assert detector.update(speech_frame) is False
     assert detector.is_ready() is False
+
+
+def _pcm_chunk(value: int, samples: int = 100) -> bytes:
+    return int(value).to_bytes(2, "little", signed=True) * samples
+
+
+def test_sleep_gate_ignores_short_speech_blips(monkeypatch):
+    monkeypatch.setattr(audio_router_module, "TenVadBackend", None)
+    monkeypatch.setattr(audio_router_module, "TenVadImportError", RuntimeError("missing"))
+
+    router = AudioSendRouter(
+        max_buffered_chunks=8,
+        sample_rate=1000,
+        chunk_size=100,
+        sleep_idle_seconds=0.5,
+        sleep_speech_grace_seconds=0.25,
+    )
+
+    silence = _pcm_chunk(0)
+    blip = _pcm_chunk(2000)
+
+    for _ in range(4):
+        router.send(silence)
+    router.send(blip)
+    router.send(blip)
+
+    assert router.sleep_ready() is False
+
+    router.send(silence)
+
+    assert router.sleep_ready() is True
+
+
+def test_sleep_buffer_keeps_preroll_and_wake_audio(monkeypatch):
+    monkeypatch.setattr(audio_router_module, "TenVadBackend", None)
+    monkeypatch.setattr(audio_router_module, "TenVadImportError", RuntimeError("missing"))
+
+    router = AudioSendRouter(
+        max_buffered_chunks=10,
+        sample_rate=1000,
+        chunk_size=100,
+        sleep_idle_seconds=0.5,
+        sleep_pre_roll_seconds=0.2,
+        sleep_speech_grace_seconds=0.2,
+    )
+    first = RecordingTarget()
+    resumed = RecordingTarget()
+
+    assert router.set_target(first) is True
+    assert router.enter_sleep_buffering(first) is True
+
+    silence = _pcm_chunk(0)
+    speech_a = _pcm_chunk(2000)
+    speech_b = _pcm_chunk(3000)
+
+    router.send(silence)
+    router.send(silence)
+    router.send(silence)
+    assert router.wake_ready() is False
+
+    router.send(speech_a)
+    assert router.wake_ready() is False
+    router.send(speech_b)
+    assert router.wake_ready() is True
+
+    assert router.set_target(resumed) is True
+    assert resumed.payloads == [silence, silence, speech_a, speech_b]

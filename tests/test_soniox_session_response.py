@@ -10,6 +10,10 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config = ModuleType("config")
     config.SONIOX_WEBSOCKET_URL = "wss://example.invalid"
     config.SONIOX_STREAM_DURATION_SECONDS = None
+    config.SONIOX_SLEEP_ON_SILENCE = False
+    config.SONIOX_SLEEP_IDLE_SECONDS = 30.0
+    config.SONIOX_SLEEP_PRE_ROLL_SECONDS = 0.5
+    config.SONIOX_SLEEP_SPEECH_GRACE_SECONDS = 0.25
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
     config.TWITCH_CHANNEL = ""
@@ -128,7 +132,7 @@ def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     session = module.SonioxSession(MagicMock(), broadcast)
 
     assert session._stream_rollover_switch_patience(170.0) == 25.0
-    assert session._stream_rollover_prepare_age(170.0) == 148.0
+    assert session._stream_rollover_prepare_age(170.0) == 143.0
     assert session._stream_rollover_switch_patience(30.0) == 15.0
     assert session._stream_rollover_prepare_age(30.0) == 13.0
     assert session._stream_rollover_switch_patience(10.0) == 5.0

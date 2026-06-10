@@ -49,6 +49,19 @@ HIDE_SPEAKER_LABELS="True"
 
 This only hides the speaker tags in frontend display. Backend speaker diarization can still stay enabled, so transcripts from different speakers are less likely to be merged into the same sentence.
 
+### Soniox silence sleep
+
+To reduce Soniox usage during long silent periods, enable local silence sleep:
+
+```env
+SONIOX_SLEEP_ON_SILENCE="True"
+SONIOX_SLEEP_IDLE_SECONDS="30"
+SONIOX_SLEEP_PRE_ROLL_SECONDS="0.5"
+SONIOX_SLEEP_SPEECH_GRACE_SECONDS="0.25"
+```
+
+When enabled, the app closes the Soniox stream after the configured idle time, keeps listening locally, then reopens Soniox when speech returns and flushes the local pre-roll buffer.
+
 ### LLM translation refinement
 
 You can optionally enable an "auto-refine completed translations" feature. The UI toggle is only shown when the required LLM settings are present.
