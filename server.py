@@ -166,6 +166,9 @@ def main():
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
+    from soniox_key_setup import ensure_soniox_key_available
+    ensure_soniox_key_available()
+
     from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, TRANSLATION_MODE, MUTE_MIC_WHEN_VRCHAT_SELF_MUTED
     from logger import TranscriptLogger
     from soniox_session import SonioxSession
