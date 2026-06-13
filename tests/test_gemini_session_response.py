@@ -175,6 +175,21 @@ def test_gemini_turn_complete_emits_internal_end_marker_not_displayed(monkeypatc
     assert [t["text"] for t in logged_tokens] == ["hello"]
 
 
+def test_split_into_sentence_lines(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    session = module.GeminiSession(MagicMock(), lambda *_: None)
+    split = session._split_into_sentence_lines
+
+    assert split("看得人是脊背发凉。事发江西") == ["看得人是脊背发凉。", "事发江西"]
+    assert split("甲。乙丙！丁") == ["甲。", "乙丙！", "丁"]
+    assert split("在睡觉。") == ["在睡觉。"]
+    assert split("等等…好") == ["等等…", "好"]
+    assert split("no punct tail") == ["no punct tail"]
+    assert split("") == []
+
+
 def test_gemini_go_away_requests_stream_end(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
     import gemini_session as module

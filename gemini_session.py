@@ -734,13 +734,20 @@ class GeminiSession:
             if not current_text:
                 continue
 
-            if self._osc_live_last_text_by_speaker.get(speaker) == current_text:
+            # Speculatively split the in-progress text into per-sentence preview
+            # lines so a completed sentence shows on its own line as soon as the
+            # period appears. These stay in the unconfirmed preview layer (not
+            # recorded to history) and keep updating as the text is revised; only
+            # finalize commits a sentence to history.
+            preview_lines = self._split_into_sentence_lines(current_text)
+            dedup_key = "\n".join(preview_lines)
+            if self._osc_live_last_text_by_speaker.get(speaker) == dedup_key:
                 continue
 
-            self._osc_live_last_text_by_speaker[speaker] = current_text
+            self._osc_live_last_text_by_speaker[speaker] = dedup_key
 
             try:
-                osc_manager.send_preview_message_with_history(current_text, ongoing=True)
+                osc_manager.send_preview_messages_with_history(preview_lines, ongoing=True)
             except Exception as error:
                 print(f"OSC live send failed: {error}")
 
@@ -755,6 +762,26 @@ class GeminiSession:
             return False
         ending_chars = ("。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…")
         return value.endswith(ending_chars)
+
+    def _split_into_sentence_lines(self, text: str) -> list[str]:
+        """Split in-progress text into per-sentence lines for the OSC preview,
+        e.g. "甲。乙丙！丁" -> ["甲。", "乙丙！", "丁"]. A run of ending punctuation
+        stays attached to its sentence; the trailing partial (if any) is the last
+        line."""
+        value = text or ""
+        if not value:
+            return []
+        ender_set = {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
+        lines: list[str] = []
+        start = 0
+        length = len(value)
+        for i, ch in enumerate(value):
+            if ch in ender_set and (i + 1 >= length or value[i + 1] not in ender_set):
+                lines.append(value[start:i + 1])
+                start = i + 1
+        if start < length:
+            lines.append(value[start:])
+        return [segment for segment in (line.strip() for line in lines) if segment]
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""

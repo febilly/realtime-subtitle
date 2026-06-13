@@ -222,6 +222,22 @@ def test_same_language_source_punctuation_segments_in_translation_mode(monkeypat
     assert _separator_in_updates(updates)
 
 
+def test_split_into_sentence_lines(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), lambda *_: None)
+    split = session._split_into_sentence_lines
+
+    assert split("看得人是脊背发凉。事发江西") == ["看得人是脊背发凉。", "事发江西"]
+    assert split("甲。乙丙！丁") == ["甲。", "乙丙！", "丁"]
+    assert split("在睡觉。") == ["在睡觉。"]          # complete sentence, no trailing partial
+    assert split("等等…好") == ["等等…", "好"]
+    assert split("A。 B。 C") == ["A。", "B。", "C"]   # trailing partial kept, spaces trimmed
+    assert split("no punct tail") == ["no punct tail"]
+    assert split("") == []
+
+
 def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

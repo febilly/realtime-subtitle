@@ -413,6 +413,34 @@ class OSCManager:
     def send_preview_message_with_history(self, text: str, ongoing: bool = True, speaker: Optional[str] = None, own: bool = False):
         """按与最终消息相同格式发送中间结果，但不写入历史记录"""
         self._add_message_with_history(text, ongoing, speaker, own, record_history=False)
+
+    def send_preview_messages_with_history(self, texts, ongoing: bool = True, speaker: Optional[str] = None, own: bool = False):
+        """发送多行中间结果（每行一句），不写入历史记录。
+
+        用于把"句号已出现但尚未 finalize"的完成句各自单独成行展示，同时这些行仍
+        处于未确认的预览层，会随非 final 文本被修订而不断重发；只有 finalize 才通过
+        add_message_and_send 落入已确认历史。
+        """
+        safe_texts = [(t or "").strip() for t in (texts or [])]
+        safe_texts = [t for t in safe_texts if t]
+        if not safe_texts:
+            return
+
+        speaker_label = (speaker or "").strip()
+        speaker_label = speaker_label if speaker_label else "?"
+        if len(speaker_label) > 3:
+            speaker_label = speaker_label[:3]
+
+        now = time.time()
+        with self._state_lock:
+            self._prune_history_locked(now)
+            preview_history = list(self._message_history)
+            for text in safe_texts:
+                preview_history.append(HistoryMessage(text=text, timestamp=now, speaker=speaker_label, own=own))
+            combined = self._build_combined_history_from_messages(preview_history)
+
+        if combined:
+            self.send_text_sync(combined, ongoing)
     
     def _schedule_pending_send_locked(self):
         """在锁内调用，安排发送待处理消息"""

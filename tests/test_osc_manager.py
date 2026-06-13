@@ -81,6 +81,47 @@ def test_add_external_message_with_ongoing():
     assert args[2] is False
 
 
+def _last_chatbox_input_text(mock_client):
+    for call in reversed(mock_client.send_message.call_args_list):
+        if call[0][0] == "/chatbox/input":
+            return call[0][1][0]
+    return None
+
+
+def test_send_preview_messages_renders_multiline_without_recording():
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+
+    osc.add_message_and_send("已确认句。", ongoing=False, speaker="1")
+    assert len(osc._message_history) == 1
+
+    osc._last_send_time = 0.0  # dodge the send cooldown so the preview goes out now
+    osc.send_preview_messages_with_history(["在途甲。", "在途乙"], ongoing=True, speaker="1")
+
+    text = _last_chatbox_input_text(mock_client)
+    assert text is not None
+    # Confirmed history line + the two in-progress preview lines, each on its own line.
+    assert "已确认句。" in text
+    assert "在途甲。" in text
+    assert "在途乙" in text
+    assert "\n" in text
+    # The preview must NOT be recorded into the confirmed history.
+    assert len(osc._message_history) == 1
+    assert all("在途" not in msg.text for msg in osc._message_history)
+
+
+def test_send_preview_messages_ignores_empty():
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+
+    osc.send_preview_messages_with_history(["", "   ", None], ongoing=True, speaker="1")
+
+    assert mock_client.send_message.call_count == 0
+    assert len(osc._message_history) == 0
+
+
 def test_add_external_message_has_no_speaker_prefix():
     osc = _fresh_osc_manager()
     mock_client = MagicMock()

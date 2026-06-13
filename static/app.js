@@ -2431,9 +2431,48 @@ function getSentenceId(sentence, fallbackIndex) {
     return `sent-fallback-${fallbackIndex}`;
 }
 
+const SENTENCE_ENDING_PUNCTUATION_RE = /[。．.！!？?…︒︕︖]$/;
+
+function endsWithSentencePunctuation(text) {
+    const value = (text === null || text === undefined) ? '' : String(text).trim();
+    return value !== '' && SENTENCE_ENDING_PUNCTUATION_RE.test(value);
+}
+
+/**
+ * Build the flat token list for rendering. Finalized tokens already carry real
+ * separators from the backend. For the non-final (in-progress) tail we
+ * speculatively insert separators at sentence-ending punctuation so a completed
+ * sentence shows on its own line as soon as the period appears — without waiting
+ * for Soniox to finalize. This is render-time only: the non-final tail is rebuilt
+ * every update, so the split recomputes and naturally follows revisions; nothing
+ * is committed (LLM/OSC finalization still happens on real finalize).
+ *
+ * Only done when the non-final tail has no translation tokens (the same-language
+ * case), to avoid disturbing original/translation pairing.
+ */
+function buildRenderTokens() {
+    const nonFinal = currentNonFinalTokens || [];
+    const hasNonFinalTranslation = nonFinal.some(
+        token => (token.translation_status || 'original') === 'translation'
+    );
+    if (hasNonFinalTranslation) {
+        return [...allFinalTokens, ...nonFinal];
+    }
+
+    const tokens = [...allFinalTokens];
+    nonFinal.forEach((token, index) => {
+        tokens.push(token);
+        const isLast = index === nonFinal.length - 1;
+        if (!isLast && !token.is_separator && endsWithSentencePunctuation(token.text)) {
+            tokens.push({ is_separator: true, is_final: false, separator_type: 'speculative' });
+        }
+    });
+    return tokens;
+}
+
 function renderSubtitles() {
     const scrollState = captureScrollState();
-    const tokens = [...allFinalTokens, ...currentNonFinalTokens];
+    const tokens = buildRenderTokens();
     tokens.forEach(assignSequenceIndex);
 
     if (tokens.length === 0) {
