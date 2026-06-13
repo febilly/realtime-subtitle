@@ -81,7 +81,7 @@ def test_add_external_message_with_ongoing():
     assert args[2] is False
 
 
-def test_add_external_message_includes_speaker_prefix():
+def test_add_external_message_has_no_speaker_prefix():
     osc = _fresh_osc_manager()
     mock_client = MagicMock()
     osc._client = mock_client
@@ -93,7 +93,8 @@ def test_add_external_message_includes_speaker_prefix():
     input_calls = [call for call in mock_client.send_message.call_args_list if call[0][0] == "/chatbox/input"]
     assert len(input_calls) == 1
     text = input_calls[0][0][1][0]
-    assert "SEXT：Hello" in text or "S?：Hello" in text
+    assert text == "Hello"
+    assert "S" not in text or "：" not in text
 
 
 def test_add_external_message_empty_ignored():
@@ -109,7 +110,8 @@ def test_add_external_message_empty_ignored():
     assert mock_client.send_message.call_count == 0
 
 
-def test_add_message_and_send_own_message():
+def test_add_message_and_send_with_speaker_label():
+    # Soniox path: a diarized speaker index renders an S{speaker}： prefix.
     osc = _fresh_osc_manager()
     mock_client = MagicMock()
     osc._client = mock_client
@@ -121,7 +123,55 @@ def test_add_message_and_send_own_message():
     input_calls = [call for call in mock_client.send_message.call_args_list if call[0][0] == "/chatbox/input"]
     assert len(input_calls) == 1
     text = input_calls[0][0][1][0]
-    assert "S1：My message" in text
+    assert text == "S1：My message"
+
+
+def test_add_message_and_send_without_speaker_is_plain():
+    # Gemini path: no speaker provided renders the raw text (no prefix).
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._udp_send_target = ("127.0.0.1", 9000)
+    osc._compat_mode_enabled = lambda: False
+
+    osc.add_message_and_send("My message", ongoing=False)
+
+    input_calls = [call for call in mock_client.send_message.call_args_list if call[0][0] == "/chatbox/input"]
+    assert len(input_calls) == 1
+    text = input_calls[0][0][1][0]
+    assert text == "My message"
+
+
+def test_speaker_labels_disabled_hides_prefix():
+    # When labels are disabled (Gemini), even an explicit speaker is not prefixed.
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._udp_send_target = ("127.0.0.1", 9000)
+    osc._compat_mode_enabled = lambda: False
+    osc.set_speaker_labels_enabled(False)
+
+    osc.add_message_and_send("My message", ongoing=False, speaker="1")
+
+    input_calls = [call for call in mock_client.send_message.call_args_list if call[0][0] == "/chatbox/input"]
+    assert len(input_calls) == 1
+    text = input_calls[0][0][1][0]
+    assert text == "My message"
+
+
+def test_own_message_wrapped_in_brackets():
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._udp_send_target = ("127.0.0.1", 9000)
+    osc._compat_mode_enabled = lambda: False
+
+    osc.add_message_and_send("My speech", ongoing=False, own=True)
+
+    input_calls = [call for call in mock_client.send_message.call_args_list if call[0][0] == "/chatbox/input"]
+    assert len(input_calls) == 1
+    text = input_calls[0][0][1][0]
+    assert text == ">My speech<"
 
 
 def test_truncate_text():

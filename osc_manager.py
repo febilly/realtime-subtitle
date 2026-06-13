@@ -40,10 +40,15 @@ class QueuedMessage:
 
 @dataclass
 class HistoryMessage:
-    """历史消息实体，用于拼接发送"""
+    """历史消息实体，用于拼接发送
+
+    - speaker: 说话人标签（Soniox 分离说话人时使用，渲染为 S{speaker}：前缀）
+    - own: True 表示自己说的话（从 yakutan 接收），用 >...< 标记，优先级高于 speaker
+    """
     text: str
     timestamp: float
     speaker: str = "?"
+    own: bool = False
 
 
 class OSCManager:
@@ -81,6 +86,9 @@ class OSCManager:
             self._message_history: list[HistoryMessage] = []
             self._history_ttl_seconds = 10.0
             self._header_line = TRANSLATION_HEADER
+            # Whether to render per-speaker labels (S0/S1) in OSC output.
+            # Enabled for diarizing providers (Soniox), disabled for Gemini.
+            self._show_speaker_labels = True
             
             self._emit("[OSC] OSC manager initialized")
         if truncate_messages is not None:
@@ -258,20 +266,46 @@ class OSCManager:
         ttl = getattr(self, "_history_ttl_seconds", 10.0)
         self._message_history = [msg for msg in self._message_history if now - msg.timestamp <= ttl]
 
+    def set_speaker_labels_enabled(self, enabled: bool) -> None:
+        """启用/禁用 OSC 输出中的说话人标签（Soniox 启用，Gemini 禁用）。"""
+        self._show_speaker_labels = bool(enabled)
+
+    def _format_line(self, msg: HistoryMessage) -> str:
+        """根据消息来源格式化单行文本。
+
+        优先级：自己说的话（own）用 >...< 包裹；否则在启用说话人标签且存在有效
+        说话人时加 S{speaker}：前缀；其余直接输出。
+        """
+        text = getattr(msg, "text", "") or ""
+        if getattr(msg, "own", False):
+            return f">{text}<"
+        speaker = (getattr(msg, "speaker", "") or "").strip()
+        if getattr(self, "_show_speaker_labels", True) and speaker and speaker != "?":
+            return f"S{speaker}：{text}"
+        return text
+
+    def _line_decoration_len(self, msg: HistoryMessage) -> int:
+        """计算 _format_line 在原始文本外额外占用的字符数（用于截断预算）。"""
+        if getattr(msg, "own", False):
+            return 2  # >...<
+        speaker = (getattr(msg, "speaker", "") or "").strip()
+        if getattr(self, "_show_speaker_labels", True) and speaker and speaker != "?":
+            return len(f"S{speaker}：")
+        return 0
+
     def _build_combined_history_from_messages(self, history: list[HistoryMessage]) -> str:
         """基于给定消息列表组合文本（会就地调整传入列表）"""
         header = getattr(self, "_header_line", "") or ""
         header_enabled = bool(header)
         max_lines = 9
 
-        # 构造行：前缀含说话人
+        # 构造行：own 用 >...< 标记，Soniox 说话人用 S{speaker}：前缀，其余无前缀
         lines = []
         if header_enabled:
             lines.append(header)
 
         for msg in history:
-            prefix = f"S{msg.speaker}：" if msg.speaker else "S？："
-            lines.append(f"{prefix}{msg.text}")
+            lines.append(self._format_line(msg))
 
         # 限制行数（保留最新），头部算一行
         while len(lines) > max_lines:
@@ -305,34 +339,28 @@ class OSCManager:
                 history.pop(0)
             combined = assemble(lines)
 
-        if len(combined) > MAX_LENGTH and len(lines) >= 1:
+        if len(combined) > MAX_LENGTH and len(lines) >= 1 and history:
             # 仅剩头部 + 最新一条或只有一条消息仍然超长，截断最新消息
-            header_overhead = len(lines[0]) + 1 if header_enabled and len(lines) > 1 else (len(lines[0]) if header_enabled else 0)
+            latest_idx = len(lines) - 1
+            budget = None
             if header_enabled and len(lines) > 1:
-                latest_idx = len(lines) - 1
+                header_overhead = len(lines[0]) + 1
                 budget = max(0, MAX_LENGTH - header_overhead)
-                body = lines[latest_idx]
-                truncated_body = self._truncate_text(body, max_length=budget if budget > 0 else 0)
-                lines[latest_idx] = truncated_body
-                if history:
-                    history[-1] = HistoryMessage(
-                        text=truncated_body.split("：", 1)[-1] if "：" in truncated_body else truncated_body,
-                        timestamp=history[-1].timestamp,
-                        speaker=history[-1].speaker,
-                    )
-                combined = assemble(lines)
-            elif not header_enabled and lines:
-                latest_idx = len(lines) - 1
+            elif not header_enabled:
                 budget = MAX_LENGTH
-                body = lines[latest_idx]
-                truncated_body = self._truncate_text(body, max_length=budget)
-                lines[latest_idx] = truncated_body
-                if history:
-                    history[-1] = HistoryMessage(
-                        text=truncated_body.split("：", 1)[-1] if "：" in truncated_body else truncated_body,
-                        timestamp=history[-1].timestamp,
-                        speaker=history[-1].speaker,
-                    )
+
+            if budget is not None:
+                msg = history[-1]
+                decoration = self._line_decoration_len(msg)  # 前缀/包裹占用的字符数
+                inner_budget = max(0, budget - decoration)
+                truncated_inner = self._truncate_text(msg.text, max_length=inner_budget)
+                history[-1] = HistoryMessage(
+                    text=truncated_inner,
+                    timestamp=msg.timestamp,
+                    speaker=getattr(msg, "speaker", "?"),
+                    own=getattr(msg, "own", False),
+                )
+                lines[latest_idx] = self._format_line(history[-1])
                 combined = assemble(lines)
 
         return combined
@@ -346,14 +374,19 @@ class OSCManager:
         with self._state_lock:
             self._message_history.clear()
 
-    def add_message_and_send(self, text: str, ongoing: bool = False, speaker: Optional[str] = None):
-        """记录消息并按历史拼接发送，自动清理过期消息"""
-        self._add_message_with_history(text, ongoing, speaker, record_history=True)
+    def add_message_and_send(self, text: str, ongoing: bool = False, speaker: Optional[str] = None, own: bool = False):
+        """记录消息并按历史拼接发送，自动清理过期消息。
+
+        - speaker: Soniox 分离出的说话人索引（渲染为 S{speaker}：前缀）
+        - own=True: 自己说的话（从 yakutan 接收），渲染为 >...<
+        """
+        self._add_message_with_history(text, ongoing, speaker, own, record_history=True)
 
     def add_external_message(self, text: str, ongoing: bool = False):
-        self._add_message_with_history(text, ongoing, speaker="EXT", record_history=not ongoing)
+        # 外部（yakutan 同伴）消息：不加说话人前缀，也非自己说的话。
+        self._add_message_with_history(text, ongoing, speaker=None, own=False, record_history=not ongoing)
 
-    def _add_message_with_history(self, text: str, ongoing: bool, speaker: Optional[str], record_history: bool):
+    def _add_message_with_history(self, text: str, ongoing: bool, speaker: Optional[str], own: bool, record_history: bool):
         safe_text = (text or "").strip()
         if not safe_text:
             return
@@ -367,19 +400,19 @@ class OSCManager:
         with self._state_lock:
             self._prune_history_locked(now)
             if record_history:
-                self._message_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label))
+                self._message_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label, own=own))
                 combined = self._build_combined_history_locked()
             else:
                 preview_history = list(self._message_history)
-                preview_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label))
+                preview_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label, own=own))
                 combined = self._build_combined_history_from_messages(preview_history)
 
         if combined:
             self.send_text_sync(combined, ongoing)
 
-    def send_preview_message_with_history(self, text: str, ongoing: bool = True, speaker: Optional[str] = None):
+    def send_preview_message_with_history(self, text: str, ongoing: bool = True, speaker: Optional[str] = None, own: bool = False):
         """按与最终消息相同格式发送中间结果，但不写入历史记录"""
-        self._add_message_with_history(text, ongoing, speaker, record_history=False)
+        self._add_message_with_history(text, ongoing, speaker, own, record_history=False)
     
     def _schedule_pending_send_locked(self):
         """在锁内调用，安排发送待处理消息"""

@@ -1,10 +1,13 @@
 # Realtime Subtitle
 
-A real-time speech-to-subtitle tool based on Soniox API. Captures system audio and displays live transcription and translation.
+A real-time speech-to-subtitle tool. Captures system audio and displays live transcription and translation.
 
-**Requires your own Soniox API Key** which costs money based on usage. See [Soniox Pricing](https://soniox.com/pricing) for details.
+Supports two translation providers; you pick one at startup:
 
-~~Soniox used to offer free credits.~~ Sadly they no longer do so anymore.
+- **Soniox** — real-time STT + translation (supports speaker diarization and segmentation modes).
+- **Gemini** — Gemini Live Translation (more target languages, no diarization/segmentation).
+
+**Requires your own API key** for the provider you choose; both cost money based on usage. See [Soniox Pricing](https://soniox.com/pricing) or [Gemini API pricing](https://ai.google.dev/pricing) for details.
 
 <div align="center">
     <img src="doc-images/screenshot.png" alt="A screenshot of the software" style="max-width: 100%; width: 256px; height: auto;">
@@ -28,12 +31,26 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Set the `SONIOX_API_KEY` environment variable to your API key.
+### Choosing a provider
 
-This program will also try to read the environment variables from a `.env` file if it exists, like this:
+On first run, if `TRANSLATION_PROVIDER` is not set the app asks you to pick `soniox` or `gemini` in the terminal and saves your choice to `.env`. If the chosen provider has no API key configured, it then prompts for one and validates it.
+
+You can also set it ahead of time (in `.env` or via `--provider soniox|gemini`):
 
 ```env
+TRANSLATION_PROVIDER="soniox"   # or "gemini"
+```
+
+### API keys
+
+This program reads environment variables from a `.env` file if it exists. Set the key for the provider you use:
+
+```env
+# Soniox
 SONIOX_API_KEY="<your-key-goes-in-here>"
+
+# Gemini (https://aistudio.google.com/apikey)
+GEMINI_API_KEY="<your-key-goes-in-here>"
 ```
 
 <details>

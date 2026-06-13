@@ -23,8 +23,9 @@ logs/
 # Cloudflare Wrangler local state/cache
 .wrangler/
 
-# Environment file that may contain secrets
+# Environment file that may contain secrets (incl. backups like .env.bak)
 .env
+.env.*
 
 # Local scratch/reference files
 reference.py

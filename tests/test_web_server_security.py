@@ -19,7 +19,7 @@ def async_test(coro):
     return wrapper
 
 class TestWebServerSecurity:
-    def mock_soniox_session(self):
+    def mock_session(self):
         session = MagicMock()
         session.get_audio_source.return_value = "system"
         session.set_audio_source.return_value = (True, "ok")
@@ -41,7 +41,7 @@ class TestWebServerSecurity:
             from web_server import WebServer
             import aiohttp.web as web
 
-            m_session = self.mock_soniox_session()
+            m_session = self.mock_session()
             m_logger = self.mock_logger()
             ws = WebServer(m_session, m_logger)
 
@@ -74,7 +74,7 @@ class TestWebServerSecurity:
             from web_server import WebServer
             import aiohttp.web as web
 
-            m_session = self.mock_soniox_session()
+            m_session = self.mock_session()
             m_logger = self.mock_logger()
             ws = WebServer(m_session, m_logger)
 

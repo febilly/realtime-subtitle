@@ -66,17 +66,23 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--server-host', dest='server_host', default=None)
     parser.add_argument('--server-port', dest='server_port', type=int, default=None)
 
+    parser.add_argument(
+        '--provider', dest='translation_provider', choices=('soniox', 'gemini'), default=None,
+        help='Translation provider to use (otherwise read from TRANSLATION_PROVIDER / prompted at startup)',
+    )
+
+    # --- Soniox-specific options ---
     parser.add_argument('--soniox-temp-key-url', dest='soniox_temp_key_url', default=None)
     parser.add_argument('--soniox-websocket-url', dest='soniox_websocket_url', default=None)
-    sleep_group = parser.add_mutually_exclusive_group()
-    sleep_group.add_argument(
+    soniox_sleep_group = parser.add_mutually_exclusive_group()
+    soniox_sleep_group.add_argument(
         '--soniox-sleep-on-silence',
         dest='soniox_sleep_on_silence',
         action='store_true',
         default=None,
         help='Close the Soniox stream after long local silence and reopen when speech resumes',
     )
-    sleep_group.add_argument(
+    soniox_sleep_group.add_argument(
         '--no-soniox-sleep-on-silence',
         dest='soniox_sleep_on_silence',
         action='store_false',
@@ -86,6 +92,29 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--soniox-sleep-idle-seconds', dest='soniox_sleep_idle_seconds', type=float, default=None)
     parser.add_argument('--soniox-sleep-pre-roll-seconds', dest='soniox_sleep_pre_roll_seconds', type=float, default=None)
     parser.add_argument('--soniox-sleep-speech-grace-seconds', dest='soniox_sleep_speech_grace_seconds', type=float, default=None)
+
+    # --- Gemini-specific options ---
+    parser.add_argument('--gemini-temp-key-url', dest='gemini_temp_key_url', default=None)
+    parser.add_argument('--gemini-websocket-url', dest='gemini_websocket_url', default=None)
+    parser.add_argument('--gemini-model', dest='gemini_model', default=None)
+    gemini_sleep_group = parser.add_mutually_exclusive_group()
+    gemini_sleep_group.add_argument(
+        '--gemini-sleep-on-silence',
+        dest='gemini_sleep_on_silence',
+        action='store_true',
+        default=None,
+        help='Close the Gemini stream after long local silence and reopen when speech resumes',
+    )
+    gemini_sleep_group.add_argument(
+        '--no-gemini-sleep-on-silence',
+        dest='gemini_sleep_on_silence',
+        action='store_false',
+        default=None,
+        help='Disable long-silence Gemini stream sleeping',
+    )
+    parser.add_argument('--gemini-sleep-idle-seconds', dest='gemini_sleep_idle_seconds', type=float, default=None)
+    parser.add_argument('--gemini-sleep-pre-roll-seconds', dest='gemini_sleep_pre_roll_seconds', type=float, default=None)
+    parser.add_argument('--gemini-sleep-speech-grace-seconds', dest='gemini_sleep_speech_grace_seconds', type=float, default=None)
 
     twitch_group = parser.add_mutually_exclusive_group()
     twitch_group.add_argument('--use-twitch-audio-stream', dest='use_twitch_audio_stream', action='store_true', default=None)
@@ -132,12 +161,22 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     if args.server_port is not None:
         _set_env_if_provided('SERVER_PORT', int(args.server_port))
 
+    _set_env_if_provided('TRANSLATION_PROVIDER', args.translation_provider)
+
     _set_env_if_provided('SONIOX_TEMP_KEY_URL', args.soniox_temp_key_url)
     _set_env_if_provided('SONIOX_WEBSOCKET_URL', args.soniox_websocket_url)
     _set_env_bool_if_provided('SONIOX_SLEEP_ON_SILENCE', args.soniox_sleep_on_silence)
     _set_env_if_provided('SONIOX_SLEEP_IDLE_SECONDS', args.soniox_sleep_idle_seconds)
     _set_env_if_provided('SONIOX_SLEEP_PRE_ROLL_SECONDS', args.soniox_sleep_pre_roll_seconds)
     _set_env_if_provided('SONIOX_SLEEP_SPEECH_GRACE_SECONDS', args.soniox_sleep_speech_grace_seconds)
+
+    _set_env_if_provided('GEMINI_TEMP_KEY_URL', args.gemini_temp_key_url)
+    _set_env_if_provided('GEMINI_WEBSOCKET_URL', args.gemini_websocket_url)
+    _set_env_if_provided('GEMINI_MODEL', args.gemini_model)
+    _set_env_bool_if_provided('GEMINI_SLEEP_ON_SILENCE', args.gemini_sleep_on_silence)
+    _set_env_if_provided('GEMINI_SLEEP_IDLE_SECONDS', args.gemini_sleep_idle_seconds)
+    _set_env_if_provided('GEMINI_SLEEP_PRE_ROLL_SECONDS', args.gemini_sleep_pre_roll_seconds)
+    _set_env_if_provided('GEMINI_SLEEP_SPEECH_GRACE_SECONDS', args.gemini_sleep_speech_grace_seconds)
 
     _set_env_bool_if_provided('USE_TWITCH_AUDIO_STREAM', args.use_twitch_audio_stream)
     _set_env_if_provided('TWITCH_CHANNEL', args.twitch_channel)
@@ -166,40 +205,59 @@ def main():
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
-    from soniox_key_setup import ensure_soniox_key_available
-    ensure_soniox_key_available()
+    # 解析使用的翻译 provider（soniox|gemini），必要时交互式询问并保存到 .env，
+    # 并确保所选 provider 的 API key 可用。必须在导入 config 之前完成。
+    from provider_setup import resolve_provider
+    provider = resolve_provider()
 
-    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, TRANSLATION_MODE, MUTE_MIC_WHEN_VRCHAT_SELF_MUTED
+    from config import (
+        SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, TRANSLATION_MODE,
+        MUTE_MIC_WHEN_VRCHAT_SELF_MUTED, ENABLE_SPEAKER_DIARIZATION,
+    )
     from logger import TranscriptLogger
-    from soniox_session import SonioxSession
     from web_server import WebServer
-    from soniox_client import get_api_key
     from ipc_server import IPCServer
+    from osc_manager import osc_manager
+
+    # 根据 provider 选择 session 类、API key 获取函数和 session 模块（用于注入 ipc_server）
+    if provider == "gemini":
+        import gemini_session as session_mod
+        from gemini_session import GeminiSession as SessionClass
+        from gemini_client import get_api_key
+        key_env_name = "GEMINI_API_KEY"
+    else:
+        import soniox_session as session_mod
+        from soniox_session import SonioxSession as SessionClass
+        from soniox_client import get_api_key
+        key_env_name = "SONIOX_API_KEY"
 
     # 创建日志记录器
     logger = TranscriptLogger()
-    
+
     # 创建Web服务器（会在创建session时传入）
     web_server = None
     window = None
     window_title = "Real-time Subtitle"
     window_on_top_requests: queue.SimpleQueue[bool | None] = queue.SimpleQueue()
-    
-    # 创建Soniox会话（传入logger和broadcast回调）
+
+    # 创建识别会话（传入logger和broadcast回调）
     def broadcast_callback(data):
         if web_server:
             return web_server.broadcast_to_clients(data)
         return asyncio.sleep(0)  # 返回一个空的协程
-    
-    soniox_session = SonioxSession(logger, broadcast_callback)
-    
+
+    session = SessionClass(logger, broadcast_callback)
+
+    # OSC 输出是否带说话人标签：Soniox 分离说话人时启用，Gemini 关闭
+    osc_manager.set_speaker_labels_enabled(bool(ENABLE_SPEAKER_DIARIZATION))
+
     # 创建Web服务器
-    web_server = WebServer(soniox_session, logger)
+    web_server = WebServer(session, logger)
+    web_server.get_api_key = get_api_key
 
     ipc_server = IPCServer()
-    ipc_server.set_soniox_session(soniox_session)
-    import soniox_session as soniox_session_mod
-    soniox_session_mod.ipc_server = ipc_server
+    ipc_server.set_session(session)
+    session_mod.ipc_server = ipc_server
     web_server.ipc_server = ipc_server
 
     def apply_window_on_top_fallback(on_top: bool) -> bool:
@@ -269,14 +327,14 @@ def main():
             api_key = get_api_key()
         except RuntimeError as e:
             print(f"❌ Error: {e}")
-            print("Please set the SONIOX_API_KEY environment variable or ensure network connection is available")
+            print(f"Please set the {key_env_name} environment variable or ensure network connection is available")
             if window:
                 window.destroy()
             raise
 
         loop = asyncio.get_event_loop()
         translation_mode = TRANSLATION_MODE
-        soniox_session.start(api_key, "pcm_s16le", translation_mode, loop)
+        session.start(api_key, "pcm_s16le", translation_mode, loop)
 
         from config import IPC_ENABLED
         if IPC_ENABLED and TRANSLATION_MODE != "none":

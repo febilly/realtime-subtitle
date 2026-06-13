@@ -86,6 +86,9 @@ let llmRefineShowDeletions = false;
 let speakerDiarizationEnabled = true;
 // 由后端下发：是否隐藏说话人标签
 let hideSpeakerLabels = false;
+// 由后端下发：当前 provider 及能力（segment_mode 等）。
+let translationProvider = 'soniox';
+let segmentModeSupported = true;
 
 const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
 const LLM_REFINE_ICON = '🪄';
@@ -122,68 +125,122 @@ const llmTranslationOverridesBySentenceId = new Map();
 let defaultTranslationTargetLang = 'en';
 let currentTranslationTargetLang = 'en';
 
-const SUPPORTED_TRANSLATION_LANGUAGES = [
-    { code: 'af', en: 'Afrikaans', native: 'Afrikaans' },
-    { code: 'sq', en: 'Albanian', native: 'Shqip' },
-    { code: 'ar', en: 'Arabic', native: 'العربية' },
-    { code: 'az', en: 'Azerbaijani', native: 'Azərbaycan dili' },
-    { code: 'eu', en: 'Basque', native: 'Euskara' },
-    { code: 'be', en: 'Belarusian', native: 'Беларуская' },
-    { code: 'bn', en: 'Bengali', native: 'বাংলা' },
-    { code: 'bs', en: 'Bosnian', native: 'Bosanski' },
-    { code: 'bg', en: 'Bulgarian', native: 'Български' },
-    { code: 'ca', en: 'Catalan', native: 'Català' },
-    { code: 'zh', en: 'Chinese', native: '中文' },
-    { code: 'hr', en: 'Croatian', native: 'Hrvatski' },
-    { code: 'cs', en: 'Czech', native: 'Čeština' },
-    { code: 'da', en: 'Danish', native: 'Dansk' },
-    { code: 'nl', en: 'Dutch', native: 'Nederlands' },
-    { code: 'en', en: 'English', native: 'English' },
-    { code: 'et', en: 'Estonian', native: 'Eesti' },
-    { code: 'fi', en: 'Finnish', native: 'Suomi' },
-    { code: 'fr', en: 'French', native: 'Français' },
-    { code: 'gl', en: 'Galician', native: 'Galego' },
-    { code: 'de', en: 'German', native: 'Deutsch' },
-    { code: 'el', en: 'Greek', native: 'Ελληνικά' },
-    { code: 'gu', en: 'Gujarati', native: 'ગુજરાતી' },
-    { code: 'he', en: 'Hebrew', native: 'עברית' },
-    { code: 'hi', en: 'Hindi', native: 'हिन्दी' },
-    { code: 'hu', en: 'Hungarian', native: 'Magyar' },
-    { code: 'id', en: 'Indonesian', native: 'Bahasa Indonesia' },
-    { code: 'it', en: 'Italian', native: 'Italiano' },
-    { code: 'ja', en: 'Japanese', native: '日本語' },
-    { code: 'kn', en: 'Kannada', native: 'ಕನ್ನಡ' },
-    { code: 'kk', en: 'Kazakh', native: 'Қазақша' },
-    { code: 'ko', en: 'Korean', native: '한국어' },
-    { code: 'lv', en: 'Latvian', native: 'Latviešu' },
-    { code: 'lt', en: 'Lithuanian', native: 'Lietuvių' },
-    { code: 'mk', en: 'Macedonian', native: 'Македонски' },
-    { code: 'ms', en: 'Malay', native: 'Bahasa Melayu' },
-    { code: 'ml', en: 'Malayalam', native: 'മലയാളം' },
-    { code: 'mr', en: 'Marathi', native: 'मराठी' },
-    { code: 'no', en: 'Norwegian', native: 'Norsk' },
-    { code: 'fa', en: 'Persian', native: 'فارسی' },
-    { code: 'pl', en: 'Polish', native: 'Polski' },
-    { code: 'pt', en: 'Portuguese', native: 'Português' },
-    { code: 'pa', en: 'Punjabi', native: 'ਪੰਜਾਬੀ' },
-    { code: 'ro', en: 'Romanian', native: 'Română' },
-    { code: 'ru', en: 'Russian', native: 'Русский' },
-    { code: 'sr', en: 'Serbian', native: 'Српски' },
-    { code: 'sk', en: 'Slovak', native: 'Slovenčina' },
-    { code: 'sl', en: 'Slovenian', native: 'Slovenščina' },
-    { code: 'es', en: 'Spanish', native: 'Español' },
-    { code: 'sw', en: 'Swahili', native: 'Kiswahili' },
-    { code: 'sv', en: 'Swedish', native: 'Svenska' },
-    { code: 'tl', en: 'Tagalog', native: 'Tagalog' },
-    { code: 'ta', en: 'Tamil', native: 'தமிழ்' },
-    { code: 'te', en: 'Telugu', native: 'తెలుగు' },
-    { code: 'th', en: 'Thai', native: 'ไทย' },
-    { code: 'tr', en: 'Turkish', native: 'Türkçe' },
-    { code: 'uk', en: 'Ukrainian', native: 'Українська' },
-    { code: 'ur', en: 'Urdu', native: 'اردو' },
-    { code: 'vi', en: 'Vietnamese', native: 'Tiếng Việt' },
-    { code: 'cy', en: 'Welsh', native: 'Cymraeg' },
-];
+// Single source of truth for language display names (English + native). Covers
+// the union of all providers' codes. The actual ordered list of *available*
+// languages is driven by the backend (/ui-config -> languages), since each
+// provider supports a different subset (e.g. Gemini splits zh into
+// zh-hans / zh-hant). See setLanguageListFromCodes().
+const LANGUAGE_NAME_MAP = {
+    af: { en: 'Afrikaans', native: 'Afrikaans' },
+    ak: { en: 'Akan', native: 'Akan' },
+    sq: { en: 'Albanian', native: 'Shqip' },
+    am: { en: 'Amharic', native: 'አማርኛ' },
+    ar: { en: 'Arabic', native: 'العربية' },
+    hy: { en: 'Armenian', native: 'Հայերեն' },
+    az: { en: 'Azerbaijani', native: 'Azərbaycan dili' },
+    eu: { en: 'Basque', native: 'Euskara' },
+    be: { en: 'Belarusian', native: 'Беларуская' },
+    bn: { en: 'Bengali', native: 'বাংলা' },
+    bs: { en: 'Bosnian', native: 'Bosanski' },
+    bg: { en: 'Bulgarian', native: 'Български' },
+    my: { en: 'Burmese', native: 'မြန်မာ' },
+    ca: { en: 'Catalan', native: 'Català' },
+    zh: { en: 'Chinese', native: '中文' },
+    'zh-hans': { en: 'Chinese (Simplified)', native: '简体中文' },
+    'zh-hant': { en: 'Chinese (Traditional)', native: '繁體中文' },
+    hr: { en: 'Croatian', native: 'Hrvatski' },
+    cs: { en: 'Czech', native: 'Čeština' },
+    da: { en: 'Danish', native: 'Dansk' },
+    nl: { en: 'Dutch', native: 'Nederlands' },
+    en: { en: 'English', native: 'English' },
+    et: { en: 'Estonian', native: 'Eesti' },
+    fil: { en: 'Filipino', native: 'Filipino' },
+    fi: { en: 'Finnish', native: 'Suomi' },
+    fr: { en: 'French', native: 'Français' },
+    gl: { en: 'Galician', native: 'Galego' },
+    ka: { en: 'Georgian', native: 'ქართული' },
+    de: { en: 'German', native: 'Deutsch' },
+    el: { en: 'Greek', native: 'Ελληνικά' },
+    gu: { en: 'Gujarati', native: 'ગુજરાતી' },
+    ha: { en: 'Hausa', native: 'Hausa' },
+    he: { en: 'Hebrew', native: 'עברית' },
+    hi: { en: 'Hindi', native: 'हिन्दी' },
+    hu: { en: 'Hungarian', native: 'Magyar' },
+    is: { en: 'Icelandic', native: 'Íslenska' },
+    id: { en: 'Indonesian', native: 'Bahasa Indonesia' },
+    it: { en: 'Italian', native: 'Italiano' },
+    ja: { en: 'Japanese', native: '日本語' },
+    jv: { en: 'Javanese', native: 'Basa Jawa' },
+    kn: { en: 'Kannada', native: 'ಕನ್ನಡ' },
+    kk: { en: 'Kazakh', native: 'Қазақша' },
+    km: { en: 'Khmer', native: 'ខ្មែរ' },
+    rw: { en: 'Kinyarwanda', native: 'Ikinyarwanda' },
+    ko: { en: 'Korean', native: '한국어' },
+    lo: { en: 'Lao', native: 'ລາວ' },
+    lv: { en: 'Latvian', native: 'Latviešu' },
+    lt: { en: 'Lithuanian', native: 'Lietuvių' },
+    mk: { en: 'Macedonian', native: 'Македонски' },
+    ms: { en: 'Malay', native: 'Bahasa Melayu' },
+    ml: { en: 'Malayalam', native: 'മലയാളം' },
+    mr: { en: 'Marathi', native: 'मराठी' },
+    mn: { en: 'Mongolian', native: 'Монгол' },
+    ne: { en: 'Nepali', native: 'नेपाली' },
+    no: { en: 'Norwegian', native: 'Norsk' },
+    fa: { en: 'Persian', native: 'فارسی' },
+    pl: { en: 'Polish', native: 'Polski' },
+    pt: { en: 'Portuguese', native: 'Português' },
+    pa: { en: 'Punjabi', native: 'ਪੰਜਾਬੀ' },
+    ro: { en: 'Romanian', native: 'Română' },
+    ru: { en: 'Russian', native: 'Русский' },
+    sr: { en: 'Serbian', native: 'Српски' },
+    sd: { en: 'Sindhi', native: 'سنڌي' },
+    si: { en: 'Sinhala', native: 'සිංහල' },
+    sk: { en: 'Slovak', native: 'Slovenčina' },
+    sl: { en: 'Slovenian', native: 'Slovenščina' },
+    es: { en: 'Spanish', native: 'Español' },
+    su: { en: 'Sundanese', native: 'Basa Sunda' },
+    sw: { en: 'Swahili', native: 'Kiswahili' },
+    sv: { en: 'Swedish', native: 'Svenska' },
+    tl: { en: 'Tagalog', native: 'Tagalog' },
+    ta: { en: 'Tamil', native: 'தமிழ்' },
+    te: { en: 'Telugu', native: 'తెలుగు' },
+    th: { en: 'Thai', native: 'ไทย' },
+    tr: { en: 'Turkish', native: 'Türkçe' },
+    uk: { en: 'Ukrainian', native: 'Українська' },
+    ur: { en: 'Urdu', native: 'اردو' },
+    uz: { en: 'Uzbek', native: 'Oʻzbekcha' },
+    vi: { en: 'Vietnamese', native: 'Tiếng Việt' },
+    cy: { en: 'Welsh', native: 'Cymraeg' },
+    zu: { en: 'Zulu', native: 'isiZulu' },
+};
+
+function buildLanguageList(codes) {
+    return (codes || []).map((rawCode) => {
+        const code = (rawCode || '').toString();
+        const info = LANGUAGE_NAME_MAP[code.toLowerCase()] || LANGUAGE_NAME_MAP[code];
+        return {
+            code,
+            en: info ? info.en : code,
+            native: info ? info.native : code,
+        };
+    });
+}
+
+// Available translation languages (populated from the backend on load; falls
+// back to the full known set until /ui-config responds).
+let SUPPORTED_TRANSLATION_LANGUAGES = buildLanguageList(Object.keys(LANGUAGE_NAME_MAP));
+
+function setLanguageListFromCodes(codes) {
+    if (!Array.isArray(codes) || codes.length === 0) {
+        return;
+    }
+    SUPPORTED_TRANSLATION_LANGUAGES = buildLanguageList(codes);
+    // Invalidate the cached popover so it rebuilds with the new language set.
+    if (langPopoverEl && langPopoverEl.parentNode) {
+        langPopoverEl.parentNode.removeChild(langPopoverEl);
+    }
+    langPopoverEl = null;
+}
 
 let langPopoverEl = null;
 let langPopoverOpen = false;
@@ -606,7 +663,8 @@ function applyLockPauseRestartControlsUI() {
         translationLangButton.style.display = lockManualControls ? 'none' : '';
     }
     if (segmentModeButton) {
-        segmentModeButton.style.display = lockManualControls ? 'none' : '';
+        // Hidden when locked or when the active provider has no segmentation control.
+        segmentModeButton.style.display = (lockManualControls || !segmentModeSupported) ? 'none' : '';
     }
     if (translationRefineButton) {
         translationRefineButton.style.display = lockManualControls ? 'none' : '';
@@ -642,6 +700,17 @@ async function fetchUiConfig() {
         if (data && typeof data.translation_target_lang === 'string' && data.translation_target_lang.trim()) {
             defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
             currentTranslationTargetLang = defaultTranslationTargetLang;
+        }
+        if (data && typeof data.provider === 'string' && data.provider.trim()) {
+            translationProvider = data.provider.trim().toLowerCase();
+        }
+        // Backend-driven language dropdown (provider-specific subset).
+        if (data && Array.isArray(data.languages)) {
+            setLanguageListFromCodes(data.languages);
+        }
+        // Provider capability flags gate provider-specific controls.
+        if (data && data.capabilities && typeof data.capabilities === 'object') {
+            segmentModeSupported = data.capabilities.segment_mode !== false;
         }
         const backendSegmentMode = normalizeSegmentMode(data && data.segment_mode);
         const storedSegmentMode = normalizeSegmentMode(localStorage.getItem('segmentMode'));
@@ -1298,6 +1367,9 @@ async function fetchInitialAudioSource() {
 
 async function setSegmentMode(mode) {
     if (lockManualControls) {
+        return;
+    }
+    if (!segmentModeSupported) {
         return;
     }
     if (isLlmTranslateMode() && mode === 'translation') {
