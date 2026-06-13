@@ -36,6 +36,7 @@ from config import (
     LLM_REQUEST_JSON,
     get_llm_api_key,
     normalize_language_code,
+    GEMINI_FULLWIDTH_PUNCT_FIX,
     OSC_SEND_TEXT_MODE,
     LLM_REFINE_DEFAULT_ENABLED,
     LLM_REFINE_DEFAULT_MODE,
@@ -66,6 +67,21 @@ EAST_ASIAN_TIGHT_SPACING_CLASS = (
 )
 EAST_ASIAN_TIGHT_SPACING_RE = re.compile(
     rf"([{EAST_ASIAN_TIGHT_SPACING_CLASS}])\s+([{EAST_ASIAN_TIGHT_SPACING_CLASS}])"
+)
+# Half-width ASCII punctuation -> full-width, applied only when wedged between
+# two CJK (Han) characters (see fix_fullwidth_punctuation_between_cjk).
+HALFWIDTH_TO_FULLWIDTH_PUNCT = {",": "，", ".": "。", "?": "？", "!": "！"}
+_CJK_IDEOGRAPH_CLASS = r"㐀-䶿一-鿿豈-﫿"
+FULLWIDTH_PUNCT_BETWEEN_CJK_RE = re.compile(
+    rf"(?<=[{_CJK_IDEOGRAPH_CLASS}])([,.?!])(?=[{_CJK_IDEOGRAPH_CLASS}])"
+)
+# Gemini streams sentence-ending punctuation as its own chunk with a leading
+# space (e.g. "…ごめん" then " 。"), which renders as "…ごめん 。". A space directly
+# before East Asian punctuation is always spurious, so strip it. Only ASCII /
+# ideographic spaces are removed (not newlines).
+EAST_ASIAN_PUNCT_NO_LEADING_SPACE = "。、，！？：；．…‥｡､」』）】〕》〉〗〙｣"
+SPACE_BEFORE_EAST_ASIAN_PUNCT_RE = re.compile(
+    rf"[ \t　]+(?=[{EAST_ASIAN_PUNCT_NO_LEADING_SPACE}])"
 )
 STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS = 0.25
 STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS = 1.5
@@ -153,6 +169,33 @@ def normalize_east_asian_translation_spacing(text: str) -> str:
     if not value:
         return ""
     return EAST_ASIAN_TIGHT_SPACING_RE.sub(r"\1\2", value)
+
+
+def fix_fullwidth_punctuation_between_cjk(text: str) -> str:
+    """Convert a half-width , . ? ! to its full-width form when it is sandwiched
+    directly between two CJK (Han) characters. No-op when the text has no such
+    pattern or when GEMINI_FULLWIDTH_PUNCT_FIX is disabled."""
+    value = "" if text is None else str(text)
+    if not GEMINI_FULLWIDTH_PUNCT_FIX or not value:
+        return value
+    return FULLWIDTH_PUNCT_BETWEEN_CJK_RE.sub(
+        lambda m: HALFWIDTH_TO_FULLWIDTH_PUNCT[m.group(1)], value
+    )
+
+
+def strip_space_before_east_asian_punctuation(text: str) -> str:
+    """Remove spaces/tabs that sit immediately before East Asian punctuation,
+    e.g. "…ごめん 。" -> "…ごめん。"."""
+    value = "" if text is None else str(text)
+    if not value:
+        return value
+    return SPACE_BEFORE_EAST_ASIAN_PUNCT_RE.sub("", value)
+
+
+def normalize_gemini_text(text: str) -> str:
+    """Apply all per-token cleanups to Gemini's returned source/translation text."""
+    value = strip_space_before_east_asian_punctuation(text)
+    return fix_fullwidth_punctuation_between_cjk(value)
 
 
 class GeminiSession:
@@ -1429,7 +1472,12 @@ class GeminiSession:
             else:
                 language = self._last_input_language or None
             out["tokens"].append(
-                _make_token(str(input_transcription["text"]), "original", language or None, None)
+                _make_token(
+                    normalize_gemini_text(str(input_transcription["text"])),
+                    "original",
+                    language or None,
+                    None,
+                )
             )
 
         output_transcription = (
@@ -1449,7 +1497,7 @@ class GeminiSession:
             ) or normalize_language_code(self.get_translation_target_lang()) or None
             out["tokens"].append(
                 _make_token(
-                    str(output_transcription["text"]),
+                    normalize_gemini_text(str(output_transcription["text"])),
                     "translation",
                     language,
                     self._last_input_language or None,
@@ -1513,15 +1561,21 @@ class GeminiSession:
         self._maybe_send_live_osc_translation(non_final_tokens)
 
         if new_final_tokens or endpoint_detected:
-            # Sentence segmentation: always by sentence-ending punctuation
-            # (or the internal <end> marker emitted on Gemini turnComplete).
+            # Sentence segmentation: by sentence-ending punctuation (or the
+            # internal <end> marker emitted on Gemini turnComplete). Normally we
+            # look at translation tokens, but when the speech is already in the
+            # target language there are no translation tokens, so the source text
+            # is used as the output — in that case segment on punctuation in the
+            # original tokens too (gated by _can_use_source_as_translation so we
+            # never cut before a real translation arrives).
+            source_as_output = self._can_use_source_as_translation(new_final_tokens)
             punctuation_hit = any(
                 t.get("text") == "<end>"
                 for t in new_final_tokens
             ) or any(
                 t.get("text")
                 and not self._is_internal_token(t)
-                and t.get("translation_status") == "translation"
+                and (t.get("translation_status") == "translation" or source_as_output)
                 and self._is_sentence_ending_punctuation(t.get("text", ""))
                 for t in new_final_tokens
             )
@@ -1533,6 +1587,13 @@ class GeminiSession:
                         if spk is not None and spk != "":
                             speaker_value = str(spk)
                             break
+                if speaker_value is None:
+                    for token in reversed(new_final_tokens):
+                        if token.get("text") and not self._is_internal_token(token):
+                            spk = token.get("speaker")
+                            if spk is not None and spk != "":
+                                speaker_value = str(spk)
+                                break
                 if speaker_value is None and self._sentence_buffers:
                     speaker_value = next(iter(self._sentence_buffers.keys()))
                 if speaker_value and self._trigger_sentence_finalization(speaker_value):

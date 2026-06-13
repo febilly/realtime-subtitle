@@ -286,6 +286,12 @@ GEMINI_SLEEP_IDLE_SECONDS = max(1.0, _env_float("GEMINI_SLEEP_IDLE_SECONDS", 30.
 GEMINI_SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_PRE_ROLL_SECONDS", 0.5))
 GEMINI_SLEEP_SPEECH_GRACE_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_SPEECH_GRACE_SECONDS", 0.25))
 
+# When enabled, a half-width , . ? or ! in Gemini's returned text (source or
+# translation) is converted to its full-width form (，。？！) whenever it sits
+# directly between two CJK (Han) characters, e.g. "你好,世界" -> "你好，世界".
+# Requiring CJK on both sides avoids touching decimals, URLs, abbreviations, etc.
+GEMINI_FULLWIDTH_PUNCT_FIX = _env_bool("GEMINI_FULLWIDTH_PUNCT_FIX", True)
+
 # Auto use system language
 # True: detect system locale and use it as translation target language
 # False: use manually specified TARGET_LANG below

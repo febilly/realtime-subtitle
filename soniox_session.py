@@ -1440,6 +1440,17 @@ class SonioxSession:
                     and t.get("translation_status") == "translation"
                     for t in new_final_tokens
                 )
+                # Same-language speech produces no translation tokens; fall back
+                # to sentence-ending punctuation in the source (used as output)
+                # so it still segments instead of growing without bound.
+                if not translation_hit and self._can_use_source_as_translation(new_final_tokens):
+                    translation_hit = any(
+                        t.get("text")
+                        and not self._is_internal_soniox_token(t)
+                        and t.get("translation_status") != "translation"
+                        and self._is_sentence_ending_punctuation(t.get("text", ""))
+                        for t in new_final_tokens
+                    )
                 if translation_hit:
                     speaker_value = None
                     for token in reversed(new_final_tokens):
@@ -1479,13 +1490,19 @@ class SonioxSession:
                     separator_tokens.append(self._make_separator_token("endpoint"))
 
             elif self._segment_mode == "punctuation":
+                # When the speech is already in the target language there are no
+                # translation tokens, so the source text is used as the output;
+                # segment on punctuation in the original tokens too (gated by
+                # _can_use_source_as_translation so we never cut before a real
+                # translation arrives).
+                source_as_output = self._can_use_source_as_translation(new_final_tokens)
                 punctuation_hit = any(
                     t.get("text") == "<end>"
                     for t in new_final_tokens
                 ) or any(
                     t.get("text")
                     and not self._is_internal_soniox_token(t)
-                    and t.get("translation_status") == "translation"
+                    and (t.get("translation_status") == "translation" or source_as_output)
                     and self._is_sentence_ending_punctuation(t.get("text", ""))
                     for t in new_final_tokens
                 )
@@ -1497,6 +1514,13 @@ class SonioxSession:
                             if spk is not None and spk != "":
                                 speaker_value = str(spk)
                                 break
+                    if speaker_value is None:
+                        for token in reversed(new_final_tokens):
+                            if token.get("text") and not self._is_internal_soniox_token(token):
+                                spk = token.get("speaker")
+                                if spk is not None and spk != "":
+                                    speaker_value = str(spk)
+                                    break
                     if speaker_value is None and self._sentence_buffers:
                         speaker_value = next(iter(self._sentence_buffers.keys()))
                     if speaker_value and self._trigger_sentence_finalization(speaker_value):
