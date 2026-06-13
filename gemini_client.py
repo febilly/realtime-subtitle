@@ -97,13 +97,13 @@ def get_setup_message(translation: str, translation_target_lang: str | None = No
     translation:
     - "none": 仅使用输入语音转写（输出转写在会话层被忽略）
     - "one_way": 翻译到 translation_target_lang
-    - "two_way": Gemini Live Translation 仅支持单一目标语言；
-      降级为 one_way，目标语言取 TARGET_LANG_1，并关闭 echo（目标语言语音保持原文显示）
+    - "two_way": Gemini Live Translation 仅支持单一目标语言；打印一次性警告后
+      降级为 one_way，目标语言取 TARGET_LANG_1，其余行为与 one_way 一致
+      （echo 跟随 GEMINI_ECHO_TARGET_LANGUAGE）
     """
     from config import (
         TRANSLATION_TARGET_LANG,
         canonicalize_language_code,
-        normalize_language_code,
         is_supported_language_code,
         to_gemini_language_code,
     )
@@ -116,23 +116,27 @@ def get_setup_message(translation: str, translation_target_lang: str | None = No
         # The live-translate model always runs as a translator; we still need a
         # valid translationConfig, but the session layer drops output transcripts.
         pass
-    elif translation == "one_way":
-        if translation_target_lang is not None:
-            canonical = canonicalize_language_code(translation_target_lang)
+    elif translation in ("one_way", "two_way"):
+        # Gemini Live Translation supports only a single target language. For
+        # two_way we print a one-time warning and then fall back to one-way into
+        # TARGET_LANG_1; apart from the warning and the fixed target, behavior is
+        # identical to one_way (echo follows GEMINI_ECHO_TARGET_LANGUAGE).
+        if translation == "two_way":
+            if not _warned_two_way:
+                print(
+                    "⚠️  Gemini Live Translation does not support two-way translation; "
+                    f"falling back to one-way into TARGET_LANG_1='{TARGET_LANG_1}'."
+                )
+                _warned_two_way = True
+            effective_target = TARGET_LANG_1
+        else:
+            effective_target = translation_target_lang
+
+        if effective_target is not None:
+            canonical = canonicalize_language_code(effective_target)
             if not is_supported_language_code(canonical):
-                raise ValueError(f"Unsupported translation target language: {translation_target_lang}")
+                raise ValueError(f"Unsupported translation target language: {effective_target}")
             target_lang = canonical
-    elif translation == "two_way":
-        if not _warned_two_way:
-            print(
-                "⚠️  Gemini Live Translation does not support two-way translation; "
-                f"falling back to one-way into TARGET_LANG_1='{TARGET_LANG_1}'."
-            )
-            _warned_two_way = True
-        normalized = normalize_language_code(TARGET_LANG_1)
-        if is_supported_language_code(normalized):
-            target_lang = normalized
-        echo_target_language = False
     else:
         raise ValueError(f"Unsupported translation: {translation}")
 

@@ -267,10 +267,8 @@ GEMINI_MODEL = _env_str("GEMINI_MODEL", "gemini-3.5-live-translate-preview")
 GEMINI_TEMP_KEY_URL = os.environ.get("GEMINI_TEMP_KEY_URL")
 GEMINI_USES_TEMP_API_KEY = not bool(os.environ.get("GEMINI_API_KEY", "").strip())
 
-# Whether the model should echo (parrot) audio that is already in the target
-# language. False keeps the Soniox-like behavior: same-language speech yields
-# no translation and the source text is reused where needed.
-GEMINI_ECHO_TARGET_LANGUAGE = _env_bool("GEMINI_ECHO_TARGET_LANGUAGE", False)
+# GEMINI_ECHO_TARGET_LANGUAGE is derived from OSC_SEND_TEXT_MODE further below
+# (it depends on that value), see the definition after the OSC mode block.
 
 # Optional stream rollover: proactively start a fresh Live API stream before the
 # configured lifetime is reached (Gemini Live sessions also have hard limits).
@@ -317,6 +315,17 @@ OSC_SEND_TEXT_MODE = str(_OSC_SEND_TEXT_MODE_RAW).strip().lower()
 if OSC_SEND_TEXT_MODE not in ("smart", "translation_only", "source_only"):
     print(f"⚠️  Invalid OSC_SEND_TEXT_MODE: {_OSC_SEND_TEXT_MODE_RAW}, fallback to: smart")
     OSC_SEND_TEXT_MODE = "smart"
+
+# Whether Gemini should echo (parrot) audio that is already in the target
+# language. Derived strictly from OSC_SEND_TEXT_MODE: true iff "smart" or
+# "source_only".
+# - smart / source_only need a transcript even for same-language speech so the
+#   sentence-finalization gates (which require a translation token or a
+#   source-as-translation fallback) always fire and the chosen text can be sent
+#   as the final OSC message; without echo, same-language sentences would be
+#   dropped before reaching OSC output.
+# - translation_only wants genuine translations only, so echoes are suppressed.
+GEMINI_ECHO_TARGET_LANGUAGE = OSC_SEND_TEXT_MODE in ("smart", "source_only")
 
 # Auto-open built-in WebView (enabled by default)
 # True: create embedded webview window on startup
