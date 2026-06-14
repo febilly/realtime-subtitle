@@ -275,8 +275,8 @@ class SonioxSession:
             self.set_translation_target_lang(translation_target_lang)
         osc_manager.clear_history()
         
-        # 初始化日志文件（如果还没有创建）
-        if self.logger.log_file is None:
+        # 初始化日志文件（如果启用且还没有创建）
+        if self.logger.enabled and self.logger.log_file is None:
             self.logger.init_log_file()
         
         self.thread = threading.Thread(

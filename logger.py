@@ -1,20 +1,37 @@
 """
 日志管理模块 - 处理日志文件的创建、写入和关闭
+
+日志写入默认关闭，可通过环境变量 ENABLE_TRANSCRIPT_LOG 启用
+（取值 1/true/yes/y/on 之一时启用）。
 """
 import os
 import threading
 from datetime import datetime
 
 
+def _env_log_enabled() -> bool:
+    """读取环境变量，判断是否启用日志写入（默认关闭）"""
+    value = os.environ.get("ENABLE_TRANSCRIPT_LOG")
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
 class TranscriptLogger:
     """字幕日志记录器"""
-    
-    def __init__(self):
+
+    def __init__(self, enabled: bool | None = None):
+        # 默认根据环境变量决定是否启用，可通过参数显式覆盖
+        self.enabled = _env_log_enabled() if enabled is None else enabled
         self.log_file = None
         self.log_lock = threading.Lock()
-    
+
     def init_log_file(self):
         """初始化日志文件"""
+        # 日志功能关闭时不创建任何文件
+        if not self.enabled:
+            return None
+
         # 创建logs文件夹
         logs_dir = os.path.join(os.getcwd(), 'logs')
         os.makedirs(logs_dir, exist_ok=True)
