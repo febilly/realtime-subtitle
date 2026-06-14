@@ -7,6 +7,7 @@ import os
 from aiohttp import web
 from aiohttp import WSMsgType
 
+import config
 from config import (
     get_resource_path,
     LOCK_MANUAL_CONTROLS,
@@ -15,6 +16,9 @@ from config import (
     HIDE_SPEAKER_LABELS,
     LLM_REFINE_DEFAULT_MODE,
     TRANSLATION_MODE,
+    TRANSLATION_PROVIDER,
+    get_capabilities,
+    get_language_codes_ordered,
 )
 from config import (
     is_llm_refine_available,
@@ -46,18 +50,26 @@ async def cache_bypass_middleware(request, handler):
 class WebServer:
     """Web服务器管理器"""
     
-    def __init__(self, soniox_session, logger):
-        self.soniox_session = soniox_session
+    def __init__(self, session, logger):
+        self.session = session
         self.logger = logger
         self.websocket_clients = set()
         self.app_runner = None
         self.api_key_error_message = None # 新增属性
         self.window_on_top_callback = None
+        self.shutdown_callback = None
         self.ipc_server = None
+        # Provider-specific API key getter; injected by server.py.
+        self.get_api_key = None
+        # Runtime provider/key manager (hot-switch); injected by server.py.
+        self.provider_manager = None
         self._ipc_polling_task = None
 
     def set_window_on_top_callback(self, callback):
         self.window_on_top_callback = callback
+
+    def set_shutdown_callback(self, callback):
+        self.shutdown_callback = callback
         
     async def _start_ipc_status_polling(self, app):
         self._ipc_polling_task = asyncio.create_task(self._poll_ipc_status())
@@ -147,30 +159,210 @@ class WebServer:
         """健康检查端点 - 用于浏览器定期检测服务器是否存活"""
         return web.json_response({"status": "ok"})
 
+    def _supports_segment_mode(self) -> bool:
+        return hasattr(self.session, "get_segment_mode")
+
     async def ui_config_handler(self, request):
         """前端 UI 配置下发"""
-        return web.json_response({
+        # Read provider-dependent values dynamically so runtime hot-switches are
+        # reflected immediately.
+        provider = config.TRANSLATION_PROVIDER
+        manager = self.provider_manager
+        capabilities = get_capabilities(provider)
+        payload = {
+            "provider": provider,
+            "providers": ["soniox", "gemini"],
+            "capabilities": capabilities,
+            "languages": get_language_codes_ordered(provider),
             "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
             "enable_chroma_theme": bool(ENABLE_CHROMA_THEME),
-            "translation_target_lang": self.soniox_session.get_translation_target_lang(),
+            "translation_target_lang": self.session.get_translation_target_lang(),
             "llm_refine_available": bool(is_llm_refine_available()),
-            "llm_refine_mode": self.soniox_session.get_llm_refine_mode(),
+            "llm_refine_mode": self.session.get_llm_refine_mode(),
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
             "llm_refine_context_min_count": int(LLM_REFINE_CONTEXT_MIN_COUNT),
             "llm_refine_context_max_count": int(LLM_REFINE_CONTEXT_MAX_COUNT),
             "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
-            "segment_mode": self.soniox_session.get_segment_mode(),
-            "speaker_diarization_enabled": bool(ENABLE_SPEAKER_DIARIZATION),
+            "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
             "hide_speaker_labels": bool(HIDE_SPEAKER_LABELS),
+            "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
+        }
+
+        if manager is not None:
+            payload.update({
+                "boot_id": manager.boot_id,
+                "setup_required": bool(manager.setup_required),
+                "key_source": manager.key_source(),
+                "env_key_present": {
+                    "soniox": manager.env_key_present("soniox"),
+                    "gemini": manager.env_key_present("gemini"),
+                },
+                "translation_mode": manager.translation_mode,
+                "target_lang_1": manager.target_lang_1,
+                "target_lang_2": manager.target_lang_2,
+            })
+        else:
+            payload.update({
+                "boot_id": "",
+                "setup_required": False,
+                "key_source": "env",
+                "env_key_present": {"soniox": False, "gemini": False},
+                "translation_mode": str(getattr(self.session, "translation", None) or TRANSLATION_MODE),
+                "target_lang_1": "en",
+                "target_lang_2": "zh",
+            })
+
+        # Segment mode is a Soniox-only capability.
+        if self._supports_segment_mode():
+            payload["segment_mode"] = self.session.get_segment_mode()
+        return web.json_response(payload)
+
+    @staticmethod
+    def _is_loopback_request(request) -> bool:
+        """Whether the request originates from localhost (loopback)."""
+        remote = str(getattr(request, "remote", "") or "")
+        if remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
+            return True
+        # aiohttp may report None for in-process/test transports.
+        return remote == "" or remote == "None"
+
+    async def setup_handler(self, request):
+        """配置/切换 provider + API key（前端设置面板），在进程内热切换。"""
+        manager = self.provider_manager
+        if manager is None:
+            return web.json_response({"status": "error", "message": "Setup unavailable"}, status=503)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Configuration is locked by server config"},
+                status=403,
+            )
+        if not self._is_loopback_request(request):
+            return web.json_response(
+                {"status": "error", "message": "Setup is only allowed from localhost"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
+
+        provider = str(payload.get("provider") or "").strip().lower()
+        if provider not in ("soniox", "gemini"):
+            return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
+
+        api_key = payload.get("api_key")
+        if api_key is not None:
+            api_key = str(api_key).strip()
+            if not api_key:
+                api_key = None
+
+        # Soniox regional endpoint (us | eu | jp); ignored for other providers.
+        soniox_region = str(payload.get("soniox_region") or "").strip().lower() or None
+        if soniox_region is not None and soniox_region not in config.SONIOX_REGION_URLS:
+            soniox_region = None
+
+        # Validate the key (if provided) before activating it.
+        if api_key is not None:
+            ok, error = self._validate_provider_key(provider, api_key, soniox_region=soniox_region)
+            if not ok:
+                return web.json_response(
+                    {"status": "error", "message": error or "API key validation failed"},
+                    status=400,
+                )
+
+        result = await manager.apply_provider(
+            provider, api_key=api_key, use_env=(api_key is None), soniox_region=soniox_region
+        )
+        if not result.get("started") and result.get("error") and api_key is None:
+            # No key provided and env had none either.
+            return web.json_response(
+                {"status": "error", "message": result.get("error"), "boot_id": manager.boot_id},
+                status=400,
+            )
+
+        return web.json_response({
+            "status": "ok",
+            "boot_id": manager.boot_id,
+            "provider": manager.provider,
+            "translation_mode": manager.translation_mode,
+            "setup_required": bool(manager.setup_required),
+            "downgraded_two_way": bool(result.get("downgraded_two_way")),
+            "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
         })
 
+    async def use_env_handler(self, request):
+        """从环境变量读取 key（清除内存 override 并热切换）。"""
+        manager = self.provider_manager
+        if manager is None:
+            return web.json_response({"status": "error", "message": "Setup unavailable"}, status=503)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Configuration is locked by server config"},
+                status=403,
+            )
+        if not self._is_loopback_request(request):
+            return web.json_response(
+                {"status": "error", "message": "Setup is only allowed from localhost"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        provider = str((payload or {}).get("provider") or config.TRANSLATION_PROVIDER).strip().lower()
+        if provider not in ("soniox", "gemini"):
+            return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
+
+        soniox_region = str((payload or {}).get("soniox_region") or "").strip().lower() or None
+        if soniox_region is not None and soniox_region not in config.SONIOX_REGION_URLS:
+            soniox_region = None
+
+        result = await manager.apply_provider(provider, use_env=True, soniox_region=soniox_region)
+        return web.json_response({
+            "status": "ok",
+            "boot_id": manager.boot_id,
+            "provider": manager.provider,
+            "translation_mode": manager.translation_mode,
+            "setup_required": bool(manager.setup_required),
+            "downgraded_two_way": bool(result.get("downgraded_two_way")),
+            "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
+        })
+
+    @staticmethod
+    def _validate_provider_key(
+        provider: str, api_key: str, *, soniox_region: str | None = None
+    ) -> tuple[bool, str | None]:
+        try:
+            if provider == "gemini":
+                from gemini_key_setup import validate_gemini_api_key
+                return validate_gemini_api_key(api_key)
+            from soniox_key_setup import validate_soniox_api_key
+            # Validate against the selected regional endpoint when provided.
+            websocket_url = config.SONIOX_REGION_URLS.get(soniox_region) if soniox_region else None
+            return validate_soniox_api_key(api_key, websocket_url)
+        except Exception as error:
+            return False, str(error)
+
     async def segment_mode_get_handler(self, request):
-        """获取当前断句模式"""
-        return web.json_response({"mode": self.soniox_session.get_segment_mode()})
+        """获取当前断句模式（仅支持断句的 provider）"""
+        if not self._supports_segment_mode():
+            return web.json_response({"status": "error", "message": "Segment mode not supported"}, status=404)
+        return web.json_response({"mode": self.session.get_segment_mode()})
 
     async def segment_mode_set_handler(self, request):
         """设置断句模式（会广播给所有前端）"""
+        if not self._supports_segment_mode():
+            return web.json_response({"status": "error", "message": "Segment mode not supported"}, status=404)
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Segment mode switching is disabled"},
@@ -183,16 +375,16 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
 
         mode = payload.get("mode") if isinstance(payload, dict) else None
-        ok, message = self.soniox_session.set_segment_mode(mode)
+        ok, message = self.session.set_segment_mode(mode)
         if not ok:
             return web.json_response({"status": "error", "message": message}, status=400)
         return web.json_response({"status": "ok", "mode": mode})
 
     async def llm_refine_get_handler(self, request):
         """获取 LLM 改进开关状态"""
-        mode = self.soniox_session.get_llm_refine_mode()
+        mode = self.session.get_llm_refine_mode()
         return web.json_response({
-            "enabled": self.soniox_session.get_llm_refine_enabled(),
+            "enabled": self.session.get_llm_refine_enabled(),
             "mode": mode,
             "available": bool(is_llm_refine_available()),
         })
@@ -221,26 +413,35 @@ class WebServer:
         if not mode:
             return web.json_response({"status": "error", "message": "Missing 'mode' field"}, status=400)
 
-        ok, message = self.soniox_session.set_llm_refine_mode(str(mode))
+        ok, message = self.session.set_llm_refine_mode(str(mode))
         if not ok:
             return web.json_response({"status": "error", "message": message}, status=400)
 
         return web.json_response({
             "status": "ok",
-            "mode": self.soniox_session.get_llm_refine_mode(),
-            "enabled": self.soniox_session.get_llm_refine_enabled(),
+            "mode": self.session.get_llm_refine_mode(),
+            "enabled": self.session.get_llm_refine_enabled(),
         })
 
     async def restart_handler(self, request):
-        """重启识别端点"""
+        """重启识别端点（也用于运行时切换翻译模式 / 双向语言对）"""
         is_auto = False
         requested_target_lang = None
+        requested_mode = None
+        requested_lang_1 = None
+        requested_lang_2 = None
         try:
             payload = await request.json()
             if isinstance(payload, dict):
                 is_auto = bool(payload.get("auto"))
                 if payload.get("target_lang") is not None:
                     requested_target_lang = payload.get("target_lang")
+                if payload.get("translation_mode") is not None:
+                    requested_mode = str(payload.get("translation_mode")).strip().lower()
+                if payload.get("target_lang_1") is not None:
+                    requested_lang_1 = payload.get("target_lang_1")
+                if payload.get("target_lang_2") is not None:
+                    requested_lang_2 = payload.get("target_lang_2")
         except Exception:
             # 兼容旧客户端：无 body 时视为手动
             is_auto = False
@@ -251,17 +452,55 @@ class WebServer:
                 status=403
             )
 
-        from soniox_client import get_api_key
-        
+        if requested_mode is not None and requested_mode not in ("none", "one_way", "two_way"):
+            return web.json_response(
+                {"status": "error", "message": f"Invalid translation_mode: {requested_mode}"},
+                status=400,
+            )
+
+        # Two-way is Soniox-only.
+        if requested_mode == "two_way" and config.TRANSLATION_PROVIDER == "gemini":
+            return web.json_response(
+                {"status": "error", "message": "Gemini does not support two-way translation"},
+                status=400,
+            )
+
+        get_api_key = self.get_api_key
+
         print(f"\n[Server] Received {'auto ' if is_auto else ''}restart request...")
 
         if requested_target_lang is not None:
-            ok, message = self.soniox_session.set_translation_target_lang(requested_target_lang)
+            ok, message = self.session.set_translation_target_lang(requested_target_lang)
             if not ok:
                 return web.json_response({"status": "error", "message": message}, status=400)
-        
+
+        if requested_mode == "two_way":
+            lang_a = requested_lang_1 if requested_lang_1 is not None else self.session.get_target_langs()[0]
+            lang_b = requested_lang_2 if requested_lang_2 is not None else self.session.get_target_langs()[1]
+            if hasattr(self.session, "set_target_langs"):
+                ok, message = self.session.set_target_langs(lang_a, lang_b)
+                if not ok:
+                    return web.json_response({"status": "error", "message": message}, status=400)
+
+        # Determine the translation mode to (re)start with.
+        if requested_mode is not None:
+            translation_mode = requested_mode
+        elif self.provider_manager is not None:
+            translation_mode = self.provider_manager.translation_mode
+        else:
+            translation_mode = str(getattr(self.session, "translation", None) or TRANSLATION_MODE)
+
+        # Keep the manager state in sync so subsequent hot-switches preserve it.
+        if self.provider_manager is not None:
+            self.provider_manager.translation_mode = translation_mode
+            self.provider_manager.target_lang = self.session.get_translation_target_lang()
+            if hasattr(self.session, "get_target_langs"):
+                l1, l2 = self.session.get_target_langs()
+                self.provider_manager.target_lang_1 = l1
+                self.provider_manager.target_lang_2 = l2
+
         # 先停止当前的Soniox会话
-        self.soniox_session.stop()
+        self.session.stop()
         
         # 关闭当前日志文件
         self.logger.close_log_file()
@@ -297,17 +536,23 @@ class WebServer:
             print("[Server] Starting new recognition session...")
             api_key = get_api_key()
             audio_format = "pcm_s16le"
-            translation = TRANSLATION_MODE
-            
+
             loop = asyncio.get_event_loop()
-            self.soniox_session.start(
+            self.session.start(
                 api_key,
                 audio_format,
-                translation,
+                translation_mode,
                 loop,
-                translation_target_lang=self.soniox_session.get_translation_target_lang(),
+                translation_target_lang=self.session.get_translation_target_lang(),
             )
-            
+
+            # Translation may have been toggled on/off; keep IPC in sync.
+            if self.provider_manager is not None:
+                try:
+                    await self.provider_manager._sync_ipc(True)
+                except Exception:
+                    pass
+
             print("[Server] New session started successfully")
             return web.json_response({"status": "ok", "message": "Recognition restarted"})
         except Exception as e:
@@ -316,7 +561,7 @@ class WebServer:
 
     async def osc_translation_get_handler(self, request):
         """查询翻译结果 OSC 发送开关状态"""
-        enabled = self.soniox_session.get_osc_translation_enabled()
+        enabled = self.session.get_osc_translation_enabled()
         return web.json_response({"enabled": enabled})
 
     async def osc_translation_set_handler(self, request):
@@ -333,8 +578,8 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
 
         enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
-        self.soniox_session.set_osc_translation_enabled(enabled)
-        return web.json_response({"enabled": self.soniox_session.get_osc_translation_enabled()})
+        self.session.set_osc_translation_enabled(enabled)
+        return web.json_response({"enabled": self.session.get_osc_translation_enabled()})
 
     async def pause_handler(self, request):
         """暂停识别端点"""
@@ -345,7 +590,7 @@ class WebServer:
             )
 
         print("\n[Server] Received pause request...")
-        paused = self.soniox_session.pause()
+        paused = self.session.pause()
 
         if paused:
             message = "Recognition paused"
@@ -363,9 +608,9 @@ class WebServer:
             )
 
         print("\n[Server] Received resume request...")
-        from soniox_client import get_api_key
+        get_api_key = self.get_api_key
 
-        if not self.soniox_session.is_paused:
+        if not self.session.is_paused:
             return web.json_response({"status": "ok", "message": "Recognition already running"})
 
         try:
@@ -375,7 +620,7 @@ class WebServer:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
         loop = asyncio.get_event_loop()
-        resumed = self.soniox_session.resume(
+        resumed = self.session.resume(
             api_key=api_key,
             audio_format="pcm_s16le",
             translation=TRANSLATION_MODE,
@@ -390,7 +635,7 @@ class WebServer:
 
     async def get_audio_source_handler(self, request):
         """获取当前音频源"""
-        source = self.soniox_session.get_audio_source()
+        source = self.session.get_audio_source()
         return web.json_response({"status": "ok", "source": source})
 
     async def set_audio_source_handler(self, request):
@@ -417,12 +662,12 @@ class WebServer:
         if source not in ("system", "microphone", "mix"):
             return web.json_response({"status": "error", "message": "Invalid audio source"}, status=400)
 
-        success, message = self.soniox_session.set_audio_source(source)
+        success, message = self.session.set_audio_source(source)
         status_code = 200 if success else 400
         response = {
             "status": "ok" if success else "error",
             "message": message,
-            "source": self.soniox_session.get_audio_source()
+            "source": self.session.get_audio_source()
         }
         return web.json_response(response, status=status_code)
 
@@ -446,6 +691,14 @@ class WebServer:
             return web.json_response({"status": "ok", "on_top": on_top, "applied": applied})
         except Exception as error:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    async def shutdown_handler(self, request):
+        """请求退出应用（前端“重置所有设置并退出”调用）。"""
+        if not callable(self.shutdown_callback):
+            return web.json_response({"status": "ignored", "message": "Shutdown unavailable"})
+        # 先返回响应，再延迟退出，避免连接被强制中断导致前端报错。
+        asyncio.get_event_loop().call_later(0.3, self.shutdown_callback)
+        return web.json_response({"status": "ok"})
 
     async def index_handler(self, request):
         """静态文件处理"""
@@ -488,6 +741,8 @@ class WebServer:
         app.router.add_get('/llm-refine', self.llm_refine_get_handler)
         app.router.add_post('/llm-refine', self.llm_refine_set_handler)
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
+        app.router.add_post('/setup', self.setup_handler)
+        app.router.add_post('/use-env', self.use_env_handler)
         app.router.add_post('/restart', self.restart_handler)
         app.router.add_post('/pause', self.pause_handler)
         app.router.add_post('/resume', self.resume_handler)
@@ -496,6 +751,7 @@ class WebServer:
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
+        app.router.add_post('/shutdown', self.shutdown_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径

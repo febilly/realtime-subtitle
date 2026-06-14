@@ -1,10 +1,13 @@
 # Realtime Subtitle
 
-A real-time speech-to-subtitle tool based on Soniox API. Captures system audio and displays live transcription and translation.
+A real-time speech-to-subtitle tool. Captures system audio and displays live transcription and translation.
 
-**Requires your own Soniox API Key** which costs money based on usage. See [Soniox Pricing](https://soniox.com/pricing) for details.
+Supports two translation providers; you pick one at startup:
 
-~~Soniox used to offer free credits.~~ Sadly they no longer do so anymore.
+- **Soniox** — real-time STT + translation (supports speaker diarization and segmentation modes).
+- **Gemini** — Gemini Live Translation (more target languages, no diarization/segmentation).
+
+**Requires your own API key** for the provider you choose; both cost money based on usage. See [Soniox Pricing](https://soniox.com/pricing) or [Gemini API pricing](https://ai.google.dev/pricing) for details.
 
 <div align="center">
     <img src="doc-images/screenshot.png" alt="A screenshot of the software" style="max-width: 100%; width: 256px; height: auto;">
@@ -12,7 +15,7 @@ A real-time speech-to-subtitle tool based on Soniox API. Captures system audio a
 
 ## Features
 
-- Speech recognition powered by Soniox
+- Speech recognition and translation powered by Soniox or Gemini (switchable at runtime)
 - Real-time translation (uses system language as target by default)
 - Use LLM to refine completed translations (optional)
 - And more (I'm too lazy to list them all; just hover over the buttons and check the tooltips)
@@ -28,13 +31,37 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Set the `SONIOX_API_KEY` environment variable to your API key.
+The easiest way to configure the provider and API key is the in-app **Settings panel** (the ⚙️ gear button). Anything you set there is saved in your browser (`localStorage`) and applied instantly at runtime — no restart and no editing of `.env` required. Environment variables / `.env` act only as a read-only fallback when the Settings panel has nothing stored.
 
-This program will also try to read the environment variables from a `.env` file if it exists, like this:
+### Choosing a provider
+
+In Settings you can switch between **Soniox** and **Gemini** at any time; the change is hot-applied to the next stream. You can also pre-select a provider before launch (env/`.env` or `--provider soniox|gemini`):
 
 ```env
-SONIOX_API_KEY="<your-key-goes-in-here>"
+TRANSLATION_PROVIDER="soniox"   # or "gemini"
 ```
+
+If `TRANSLATION_PROVIDER` is not set, the app uses whichever provider already has a key in the environment, falling back to `soniox`.
+
+### API keys
+
+Enter your key in the Settings panel for the provider you use. Get a key from [Soniox](https://console.soniox.com/) or [Google AI Studio](https://aistudio.google.com/apikey).
+
+Alternatively, set it as an environment variable (read from a `.env` file if present):
+
+```env
+# Soniox
+SONIOX_API_KEY="<your-key-goes-in-here>"
+
+# Gemini
+GEMINI_API_KEY="<your-key-goes-in-here>"
+```
+
+### Soniox region
+
+For Soniox you can pick the websocket **API region** — United States (default), European Union, or Japan — from the Settings panel. The choice is validated against the regional endpoint, saved in your browser, and hot-applied to the next stream.
+
+> See [`.env.example`](.env.example) for the full list of environment variables with their defaults.
 
 <details>
 <summary>Optional configuration</summary>
@@ -87,9 +114,17 @@ LLM_REFINE_CONTEXT_MAX_COUNT="10"
 
 The dynamic context window above is mainly recommended when your LLM provider offers a prefix-caching discount (which is NOT the case for Cerebras). Otherwise, increasing context size may only increase token cost/latency.
 
+### Transcript logging
+
+Transcript logging is **off by default**. To write transcripts to the `logs/` folder, enable:
+
+```env
+ENABLE_TRANSCRIPT_LOG="True"
+```
+
 ### Extras
 
-Please check `config.py` for more configuration options.
+Please check `config.py` (or [`.env.example`](.env.example)) for more configuration options.
 
 </details>
 

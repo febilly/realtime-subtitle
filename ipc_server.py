@@ -46,10 +46,10 @@ class IPCServer:
         self._discovery_file: Optional[str] = None
         self._running = False
         self._lock = asyncio.Lock()
-        self._soniox_session = None
+        self._session = None
 
-    def set_soniox_session(self, session):
-        self._soniox_session = session
+    def set_session(self, session):
+        self._session = session
 
     async def start(
         self,
@@ -89,8 +89,8 @@ class IPCServer:
         async with self._lock:
             self._clients.append(writer)
 
-        if self._soniox_session is not None:
-            enabled = self._soniox_session.get_osc_translation_enabled()
+        if self._session is not None:
+            enabled = self._session.get_osc_translation_enabled()
             await self.send_osc_state_to_client(writer, enabled)
 
         try:
@@ -141,13 +141,13 @@ class IPCServer:
                 text,
                 ongoing,
             )
-            if self._soniox_session is not None:
-                self._soniox_session.update_ipc_message(text, ongoing)
+            if self._session is not None:
+                self._session.update_ipc_message(text, ongoing)
             
             if ongoing:
-                osc_manager.send_preview_message_with_history(text, ongoing=True, speaker="0")
+                osc_manager.send_preview_message_with_history(text, ongoing=True, own=True)
             else:
-                osc_manager.add_message_and_send(text, ongoing=False, speaker="0")
+                osc_manager.add_message_and_send(text, ongoing=False, own=True)
 
         elif msg_type == MessageType.HEARTBEAT.value:
             logger.debug("[IPC] Received HEARTBEAT from %s", addr)

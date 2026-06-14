@@ -64,9 +64,75 @@
                 <span id="bottomSafeAreaIcon">⬇️</span>
             </button>
 
+            <button class="control-button" id="settingsButton" title="Settings">
+                <span>⚙️</span>
+            </button>
+
             <button class="control-button" id="ipcStatusButton" title="Yakutan 已连接" style="display: none; cursor: default;">🔗</button>
         </div>
     </div>
+
+    <div class="settings-overlay" id="settingsOverlay" hidden></div>
+    <aside class="settings-panel" id="settingsPanel" aria-label="Settings" hidden>
+        <form class="settings-form" id="settingsForm">
+            <div class="settings-header">
+                <h1 id="settingsTitle">Settings</h1>
+                <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
+            </div>
+
+            <div class="settings-section-label" id="providerLabel">API selection</div>
+            <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
+                <label class="segmented-option">
+                    <input type="radio" name="provider" value="soniox" id="providerSoniox">
+                    <span id="providerSonioxLabel">Soniox</span>
+                </label>
+                <label class="segmented-option">
+                    <input type="radio" name="provider" value="gemini" id="providerGemini">
+                    <span id="providerGeminiLabel">Gemini</span>
+                </label>
+            </fieldset>
+            <p class="field-hint" id="providerDescription"></p>
+
+            <section class="auth-section" id="sonioxRegionSection" hidden>
+                <div class="form-field">
+                    <span id="sonioxRegionLabel">API region</span>
+                    <div id="sonioxRegionPicker"></div>
+                </div>
+            </section>
+
+            <section class="auth-section">
+                <label class="form-field" for="apiKeyInput">
+                    <span id="apiKeyLabel">API Key</span>
+                    <input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" spellcheck="false">
+                </label>
+                <p class="field-hint" id="apiKeyGetHint">
+                    <a id="apiKeyGetLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+                </p>
+                <p class="field-hint" id="apiKeySourceHint"></p>
+            </section>
+
+            <p class="settings-error" id="settingsError" role="alert"></p>
+
+            <div class="settings-actions">
+                <button class="danger-button" id="resetAllButton" type="button"></button>
+                <div class="settings-actions-right">
+                    <button class="secondary-button" id="settingsCancelButton" type="button">Cancel</button>
+                    <button class="primary-button" id="settingsSaveButton" type="submit">Save</button>
+                </div>
+            </div>
+        </form>
+    </aside>
+
+    <div class="confirm-overlay" id="confirmOverlay" hidden></div>
+    <div class="confirm-dialog" id="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="confirmMessage" hidden>
+        <p class="confirm-message" id="confirmMessage"></p>
+        <div class="confirm-actions">
+            <button class="secondary-button" id="confirmCancelButton" type="button"></button>
+            <button class="danger-button" id="confirmOkButton" type="button"></button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
     <script src="/kuromoji/kuromoji.js"></script>
     <script src="i18n.js"></script>

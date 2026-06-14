@@ -122,6 +122,122 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     assert session.last_sent_count == 1
 
 
+def _run_immediately(coro, _loop):
+    asyncio.run(coro)
+    future = concurrent.futures.Future()
+    future.set_result(None)
+    return future
+
+
+def _separator_in_updates(updates):
+    return any(
+        token.get("is_separator")
+        for update in updates
+        for token in update.get("final_tokens", [])
+    )
+
+
+def _feed_original(session, text, language):
+    return session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": text,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": language,
+                }
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def test_same_language_source_punctuation_segments_in_punctuation_mode(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    # Speech already in the target language (en): no translation token, but the
+    # source ends with sentence punctuation -> it must still segment.
+    _feed_original(session, "hello world.", "en")
+    assert _separator_in_updates(updates)
+
+
+def test_cross_language_source_punctuation_does_not_segment_in_punctuation_mode(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    # Source is Japanese (!= target en); translation pending, so source
+    # punctuation must not segment yet.
+    _feed_original(session, "こんにちは。", "ja")
+    assert not _separator_in_updates(updates)
+
+
+def test_same_language_source_punctuation_segments_in_translation_mode(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._segment_mode = "translation"
+
+    # Translation mode has no translation token for same-language speech; it
+    # should fall back to source punctuation instead of growing unbounded.
+    _feed_original(session, "hello world.", "en")
+    assert _separator_in_updates(updates)
+
+
+def test_split_into_sentence_lines(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), lambda *_: None)
+    split = session._split_into_sentence_lines
+
+    assert split("看得人是脊背发凉。事发江西") == ["看得人是脊背发凉。", "事发江西"]
+    assert split("甲。乙丙！丁") == ["甲。", "乙丙！", "丁"]
+    assert split("在睡觉。") == ["在睡觉。"]          # complete sentence, no trailing partial
+    assert split("等等…好") == ["等等…", "好"]
+    assert split("A。 B。 C") == ["A。", "B。", "C"]   # trailing partial kept, spaces trimmed
+    assert split("no punct tail") == ["no punct tail"]
+    assert split("") == []
+
+
 def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

@@ -4,7 +4,8 @@ Soniox客户端模块 - 处理与Soniox STT服务的连接和音频流
 import os
 import json
 import requests
-from config import SONIOX_TEMP_KEY_URL, TARGET_LANG_1, TARGET_LANG_2, ENABLE_SPEAKER_DIARIZATION
+import config
+from config import SONIOX_TEMP_KEY_URL
 
 
 def _get_temp_key_request_headers() -> dict | None:
@@ -74,30 +75,38 @@ def get_api_key() -> str:
         raise RuntimeError(f"Failed to parse temporary API Key: {e}")
 
 
-def get_config(api_key: str, audio_format: str, translation: str, translation_target_lang: str | None = None) -> dict:
+def get_config(
+    api_key: str,
+    audio_format: str,
+    translation: str,
+    translation_target_lang: str | None = None,
+    target_lang_1: str | None = None,
+    target_lang_2: str | None = None,
+) -> dict:
     """获取Soniox STT配置"""
     from config import (
-        TRANSLATION_TARGET_LANG,
         normalize_language_code,
         is_supported_language_code,
     )
 
-    config = {
+    # Read provider-dependent values dynamically so runtime provider switches
+    # (hot-switch) are reflected without re-importing this module.
+    stt_config = {
         "api_key": api_key,
         "model": "stt-rt-v4",
         "language_hints": ["en", "zh", "ja", "ko", "ru"],
         "enable_language_identification": True,
-        "enable_speaker_diarization": bool(ENABLE_SPEAKER_DIARIZATION),
+        "enable_speaker_diarization": bool(config.ENABLE_SPEAKER_DIARIZATION),
         "enable_endpoint_detection": True,
     }
 
     # Audio format for microphone input
     if audio_format == "auto":
-        config["audio_format"] = "auto"
+        stt_config["audio_format"] = "auto"
     elif audio_format == "pcm_s16le":
-        config["audio_format"] = "pcm_s16le"
-        config["sample_rate"] = 16000
-        config["num_channels"] = 1
+        stt_config["audio_format"] = "pcm_s16le"
+        stt_config["sample_rate"] = 16000
+        stt_config["num_channels"] = 1
     else:
         raise ValueError(f"Unsupported audio_format: {audio_format}")
 
@@ -105,24 +114,26 @@ def get_config(api_key: str, audio_format: str, translation: str, translation_ta
     if translation == "none":
         pass
     elif translation == "one_way":
-        target_lang = TRANSLATION_TARGET_LANG
+        target_lang = config.TRANSLATION_TARGET_LANG
         if translation_target_lang is not None:
             normalized = normalize_language_code(translation_target_lang)
             if not is_supported_language_code(normalized):
                 raise ValueError(f"Unsupported translation target language: {translation_target_lang}")
             target_lang = normalized
 
-        config["translation"] = {
+        stt_config["translation"] = {
             "type": "one_way",
             "target_language": target_lang,
         }
     elif translation == "two_way":
-        config["translation"] = {
+        lang_a = target_lang_1 if target_lang_1 is not None else config.TARGET_LANG_1
+        lang_b = target_lang_2 if target_lang_2 is not None else config.TARGET_LANG_2
+        stt_config["translation"] = {
             "type": "two_way",
-            "language_a": TARGET_LANG_1,
-            "language_b": TARGET_LANG_2,
+            "language_a": normalize_language_code(lang_a) or lang_a,
+            "language_b": normalize_language_code(lang_b) or lang_b,
         }
     else:
         raise ValueError(f"Unsupported translation: {translation}")
 
-    return config
+    return stt_config

@@ -89,7 +89,7 @@ class TestIPCServerDispatch:
     async def test_yakutan_message_dispatch(self):
         received = []
         original_add = rt_osc.add_message_and_send
-        rt_osc.add_message_and_send = lambda text, ongoing, speaker: received.append((text, ongoing, speaker))
+        rt_osc.add_message_and_send = lambda text, ongoing, own: received.append((text, ongoing, own))
 
         server = IPCServer()
         try:
@@ -105,7 +105,7 @@ class TestIPCServerDispatch:
             await writer.wait_closed()
 
             assert len(received) == 1
-            assert received[0] == ("hello", False, "0")
+            assert received[0] == ("hello", False, True)
         finally:
             rt_osc.add_message_and_send = original_add
             await server.stop()
@@ -137,7 +137,7 @@ class TestIPCServerOscState:
         server = IPCServer()
         mock_session = MagicMock()
         mock_session.get_osc_translation_enabled.return_value = True
-        server.set_soniox_session(mock_session)
+        server.set_session(mock_session)
         try:
             await server.start()
             host = mock_config.IPC_HOST
@@ -159,7 +159,7 @@ class TestIPCServerOscState:
         server = IPCServer()
         mock_session = MagicMock()
         mock_session.get_osc_translation_enabled.return_value = True
-        server.set_soniox_session(mock_session)
+        server.set_session(mock_session)
         try:
             await server.start()
             host = mock_config.IPC_HOST

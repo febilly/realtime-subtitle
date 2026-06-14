@@ -10,6 +10,7 @@ import socket
 import os
 import time
 import queue
+import secrets
 from dotenv import load_dotenv
 from aiohttp import web
 
@@ -66,17 +67,23 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--server-host', dest='server_host', default=None)
     parser.add_argument('--server-port', dest='server_port', type=int, default=None)
 
+    parser.add_argument(
+        '--provider', dest='translation_provider', choices=('soniox', 'gemini'), default=None,
+        help='Translation provider to use (otherwise read from TRANSLATION_PROVIDER / prompted at startup)',
+    )
+
+    # --- Soniox-specific options ---
     parser.add_argument('--soniox-temp-key-url', dest='soniox_temp_key_url', default=None)
     parser.add_argument('--soniox-websocket-url', dest='soniox_websocket_url', default=None)
-    sleep_group = parser.add_mutually_exclusive_group()
-    sleep_group.add_argument(
+    soniox_sleep_group = parser.add_mutually_exclusive_group()
+    soniox_sleep_group.add_argument(
         '--soniox-sleep-on-silence',
         dest='soniox_sleep_on_silence',
         action='store_true',
         default=None,
         help='Close the Soniox stream after long local silence and reopen when speech resumes',
     )
-    sleep_group.add_argument(
+    soniox_sleep_group.add_argument(
         '--no-soniox-sleep-on-silence',
         dest='soniox_sleep_on_silence',
         action='store_false',
@@ -86,6 +93,29 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--soniox-sleep-idle-seconds', dest='soniox_sleep_idle_seconds', type=float, default=None)
     parser.add_argument('--soniox-sleep-pre-roll-seconds', dest='soniox_sleep_pre_roll_seconds', type=float, default=None)
     parser.add_argument('--soniox-sleep-speech-grace-seconds', dest='soniox_sleep_speech_grace_seconds', type=float, default=None)
+
+    # --- Gemini-specific options ---
+    parser.add_argument('--gemini-temp-key-url', dest='gemini_temp_key_url', default=None)
+    parser.add_argument('--gemini-websocket-url', dest='gemini_websocket_url', default=None)
+    parser.add_argument('--gemini-model', dest='gemini_model', default=None)
+    gemini_sleep_group = parser.add_mutually_exclusive_group()
+    gemini_sleep_group.add_argument(
+        '--gemini-sleep-on-silence',
+        dest='gemini_sleep_on_silence',
+        action='store_true',
+        default=None,
+        help='Close the Gemini stream after long local silence and reopen when speech resumes',
+    )
+    gemini_sleep_group.add_argument(
+        '--no-gemini-sleep-on-silence',
+        dest='gemini_sleep_on_silence',
+        action='store_false',
+        default=None,
+        help='Disable long-silence Gemini stream sleeping',
+    )
+    parser.add_argument('--gemini-sleep-idle-seconds', dest='gemini_sleep_idle_seconds', type=float, default=None)
+    parser.add_argument('--gemini-sleep-pre-roll-seconds', dest='gemini_sleep_pre_roll_seconds', type=float, default=None)
+    parser.add_argument('--gemini-sleep-speech-grace-seconds', dest='gemini_sleep_speech_grace_seconds', type=float, default=None)
 
     twitch_group = parser.add_mutually_exclusive_group()
     twitch_group.add_argument('--use-twitch-audio-stream', dest='use_twitch_audio_stream', action='store_true', default=None)
@@ -132,12 +162,22 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     if args.server_port is not None:
         _set_env_if_provided('SERVER_PORT', int(args.server_port))
 
+    _set_env_if_provided('TRANSLATION_PROVIDER', args.translation_provider)
+
     _set_env_if_provided('SONIOX_TEMP_KEY_URL', args.soniox_temp_key_url)
     _set_env_if_provided('SONIOX_WEBSOCKET_URL', args.soniox_websocket_url)
     _set_env_bool_if_provided('SONIOX_SLEEP_ON_SILENCE', args.soniox_sleep_on_silence)
     _set_env_if_provided('SONIOX_SLEEP_IDLE_SECONDS', args.soniox_sleep_idle_seconds)
     _set_env_if_provided('SONIOX_SLEEP_PRE_ROLL_SECONDS', args.soniox_sleep_pre_roll_seconds)
     _set_env_if_provided('SONIOX_SLEEP_SPEECH_GRACE_SECONDS', args.soniox_sleep_speech_grace_seconds)
+
+    _set_env_if_provided('GEMINI_TEMP_KEY_URL', args.gemini_temp_key_url)
+    _set_env_if_provided('GEMINI_WEBSOCKET_URL', args.gemini_websocket_url)
+    _set_env_if_provided('GEMINI_MODEL', args.gemini_model)
+    _set_env_bool_if_provided('GEMINI_SLEEP_ON_SILENCE', args.gemini_sleep_on_silence)
+    _set_env_if_provided('GEMINI_SLEEP_IDLE_SECONDS', args.gemini_sleep_idle_seconds)
+    _set_env_if_provided('GEMINI_SLEEP_PRE_ROLL_SECONDS', args.gemini_sleep_pre_roll_seconds)
+    _set_env_if_provided('GEMINI_SLEEP_SPEECH_GRACE_SECONDS', args.gemini_sleep_speech_grace_seconds)
 
     _set_env_bool_if_provided('USE_TWITCH_AUDIO_STREAM', args.use_twitch_audio_stream)
     _set_env_if_provided('TWITCH_CHANNEL', args.twitch_channel)
@@ -147,6 +187,224 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     _set_env_bool_if_provided('LLM_REFINE_SHOW_DIFF', args.llm_refine_show_diff)
     _set_env_bool_if_provided('LLM_REFINE_SHOW_DELETIONS', args.llm_refine_show_deletions)
     _set_env_bool_if_provided('LLM_REFINE_DEFAULT_ENABLED', args.llm_refine_default_enabled)
+
+
+class ProviderManager:
+    """Holds the active translation provider + API key as runtime state and
+    performs in-process hot-switching (rebuild the session without restarting the
+    process). The frontend localStorage is the source of truth for provider/key;
+    env keys act as a read-only fallback. The program never writes .env.
+    """
+
+    def __init__(self, logger, ipc_server, osc_manager_obj, broadcast_callback):
+        import config
+
+        self.config = config
+        self.logger = logger
+        self.ipc_server = ipc_server
+        self.osc_manager = osc_manager_obj
+        self.broadcast_callback = broadcast_callback
+        self.web_server = None
+        self.loop = None
+
+        # New random id per process; lets the frontend tell whether its
+        # localStorage override has already been pushed to this backend instance.
+        self.boot_id = secrets.token_hex(8)
+
+        # Runtime key overrides pushed from the UI; None => fall back to env.
+        self.runtime_keys = {"soniox": None, "gemini": None}
+
+        self.provider = config.TRANSLATION_PROVIDER
+        self.translation_mode = config.TRANSLATION_MODE
+        self.target_lang = config.TRANSLATION_TARGET_LANG
+        self.target_lang_1 = config.normalize_language_code(config.TARGET_LANG_1) or "en"
+        self.target_lang_2 = config.normalize_language_code(config.TARGET_LANG_2) or "zh"
+
+        self.lock_manual_controls = bool(config.LOCK_MANUAL_CONTROLS)
+        self.setup_required = False
+
+        self._env_get_api_key = None
+        self._session_mod = None
+        self._ipc_started = False
+
+    # ----- provider module wiring -----
+    def _provider_modules(self, provider):
+        if provider == "gemini":
+            import gemini_session as session_mod
+            from gemini_session import GeminiSession as SessionClass
+            from gemini_client import get_api_key
+        else:
+            import soniox_session as session_mod
+            from soniox_session import SonioxSession as SessionClass
+            from soniox_client import get_api_key
+        return session_mod, SessionClass, get_api_key
+
+    # ----- key helpers -----
+    def env_key_present(self, provider) -> bool:
+        from provider_setup import provider_has_env_key
+        return provider_has_env_key(provider)
+
+    def key_source(self) -> str:
+        if self.runtime_keys.get(self.provider):
+            return "localstorage"
+        if self.env_key_present(self.provider):
+            return "env"
+        return "none"
+
+    def get_api_key(self) -> str:
+        """Return the active key for the current provider (may raise if none).
+
+        Used by web_server restart/resume handlers.
+        """
+        override = self.runtime_keys.get(self.provider)
+        if override:
+            return override
+        if self._env_get_api_key is None:
+            raise RuntimeError("No API key getter configured")
+        return self._env_get_api_key()
+
+    def _resolve_current_key(self):
+        """Non-raising key resolution. Returns (key_or_none, error_or_none)."""
+        override = self.runtime_keys.get(self.provider)
+        if override:
+            return override, None
+        if self._env_get_api_key is None:
+            return None, "No API key getter configured"
+        try:
+            return self._env_get_api_key(), None
+        except Exception as error:
+            return None, str(error)
+
+    # ----- IPC lifecycle -----
+    async def _sync_ipc(self, session_running: bool):
+        from config import IPC_ENABLED
+        want = bool(IPC_ENABLED) and self.translation_mode != "none" and session_running
+        if want and not self._ipc_started:
+            try:
+                await self.ipc_server.start()
+                self._ipc_started = True
+            except Exception as e:
+                print(f"⚠️  Failed to start IPC server: {e}")
+        elif not want and self._ipc_started:
+            try:
+                await self.ipc_server.stop()
+            except Exception:
+                pass
+            self._ipc_started = False
+
+    # ----- hot switch -----
+    async def apply_provider(
+        self,
+        provider,
+        *,
+        api_key=None,
+        use_env=False,
+        soniox_region=None,
+        translation_mode=None,
+        target_lang=None,
+        target_lang_1=None,
+        target_lang_2=None,
+    ) -> dict:
+        """Switch provider/key (and optionally translation settings) in-process."""
+        provider = self.config.set_active_provider(provider)
+        self.provider = provider
+
+        # Soniox regional endpoint (us | eu | jp); only meaningful for Soniox.
+        if provider == "soniox" and soniox_region is not None:
+            self.config.set_soniox_region(soniox_region)
+
+        if use_env:
+            self.runtime_keys[provider] = None
+        elif api_key is not None:
+            self.runtime_keys[provider] = api_key
+
+        if translation_mode is not None:
+            self.translation_mode = translation_mode
+        if target_lang is not None:
+            self.target_lang = target_lang
+        if target_lang_1 is not None:
+            self.target_lang_1 = target_lang_1
+        if target_lang_2 is not None:
+            self.target_lang_2 = target_lang_2
+
+        # Gemini Live Translation has no two-way mode: downgrade to one-way and
+        # use the first language as the target.
+        downgraded_two_way = False
+        if provider == "gemini" and self.translation_mode == "two_way":
+            self.translation_mode = "one_way"
+            if self.target_lang_1:
+                self.target_lang = self.target_lang_1
+            downgraded_two_way = True
+
+        # Stop old session.
+        old_session = self.web_server.session if self.web_server else None
+        if old_session is not None:
+            try:
+                old_session.stop()
+            except Exception as e:
+                print(f"⚠️  Error stopping previous session: {e}")
+        try:
+            self.logger.close_log_file()
+        except Exception:
+            pass
+
+        # Build + wire new session.
+        session_mod, SessionClass, env_get_api_key = self._provider_modules(provider)
+        self._session_mod = session_mod
+        self._env_get_api_key = env_get_api_key
+        new_session = SessionClass(self.logger, self.broadcast_callback)
+
+        try:
+            new_session.set_translation_target_lang(self.target_lang)
+        except Exception:
+            pass
+        if self.translation_mode == "two_way" and hasattr(new_session, "set_target_langs"):
+            new_session.set_target_langs(self.target_lang_1, self.target_lang_2)
+
+        if self.web_server is not None:
+            self.web_server.session = new_session
+            self.web_server.get_api_key = self.get_api_key
+        self.ipc_server.set_session(new_session)
+        session_mod.ipc_server = self.ipc_server
+        self.osc_manager.set_speaker_labels_enabled(bool(self.config.ENABLE_SPEAKER_DIARIZATION))
+
+        # Resolve key and start (or mark setup_required).
+        key, error = self._resolve_current_key()
+        started = False
+        if key:
+            try:
+                new_session.start(
+                    key,
+                    "pcm_s16le",
+                    self.translation_mode,
+                    self.loop,
+                    translation_target_lang=self.target_lang,
+                )
+                started = True
+                self.setup_required = False
+            except Exception as e:
+                error = str(e)
+                print(f"❌ Failed to start session: {e}")
+        if not started:
+            self.setup_required = True
+
+        await self._sync_ipc(started)
+
+        return {
+            "started": started,
+            "setup_required": self.setup_required,
+            "downgraded_two_way": downgraded_two_way,
+            "error": error,
+        }
+
+    async def seed_start(self):
+        """Initial startup: try to start the resolved provider using its env key."""
+        result = await self.apply_provider(self.provider, use_env=True)
+        if result["started"]:
+            print(f"✅ Session started with provider '{self.provider}'")
+        else:
+            print("ℹ️  No usable API key found; waiting for configuration via Settings panel.")
+        return result
 
 
 def run_server(app, sock):
@@ -166,41 +424,70 @@ def main():
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
-    from soniox_key_setup import ensure_soniox_key_available
-    ensure_soniox_key_available()
+    # 非交互式解析翻译 provider（soniox|gemini）。必须在导入 config 之前完成，
+    # 以便 config 在求值时能读到 TRANSLATION_PROVIDER。
+    from provider_setup import resolve_provider
+    provider = resolve_provider()
 
-    from config import SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW, TRANSLATION_MODE, MUTE_MIC_WHEN_VRCHAT_SELF_MUTED
+    import config
+    from config import (
+        SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW,
+    )
     from logger import TranscriptLogger
-    from soniox_session import SonioxSession
     from web_server import WebServer
-    from soniox_client import get_api_key
     from ipc_server import IPCServer
+    from osc_manager import osc_manager
 
     # 创建日志记录器
     logger = TranscriptLogger()
-    
+
     # 创建Web服务器（会在创建session时传入）
     web_server = None
     window = None
     window_title = "Real-time Subtitle"
     window_on_top_requests: queue.SimpleQueue[bool | None] = queue.SimpleQueue()
-    
-    # 创建Soniox会话（传入logger和broadcast回调）
+
+    # broadcast 回调引用 web_server（在 ProviderManager 重建 session 后仍然有效，
+    # 因为广播是 WebServer 的方法而非 session 的）。
     def broadcast_callback(data):
         if web_server:
             return web_server.broadcast_to_clients(data)
         return asyncio.sleep(0)  # 返回一个空的协程
-    
-    soniox_session = SonioxSession(logger, broadcast_callback)
-    
-    # 创建Web服务器
-    web_server = WebServer(soniox_session, logger)
 
     ipc_server = IPCServer()
-    ipc_server.set_soniox_session(soniox_session)
-    import soniox_session as soniox_session_mod
-    soniox_session_mod.ipc_server = ipc_server
+
+    # 运行时 provider/key 状态管理器（支持热切换）。
+    provider_manager = ProviderManager(logger, ipc_server, osc_manager, broadcast_callback)
+
+    # 锁定手动控制且当前 provider 没有可用的 env key ⇒ 直接报错退出
+    # （锁定模式下 UI 不能配置，配置只能来自环境变量）。
+    if provider_manager.lock_manual_controls and not provider_manager.env_key_present(provider):
+        print("❌ LOCK_MANUAL_CONTROLS is enabled but no API key is configured for "
+              f"provider '{provider}'.")
+        print("   In locked mode the key can only come from the environment "
+              f"(set {'GEMINI_API_KEY' if provider == 'gemini' else 'SONIOX_API_KEY'} "
+              "or the corresponding TEMP_KEY_URL).")
+        sys.exit(1)
+
+    # 先创建一个占位 session 对象，供 WebServer 在尚未配置 key 时也能响应 /ui-config。
+    _seed_mod, _SeedSession, _seed_getter = provider_manager._provider_modules(provider)
+    session = _SeedSession(logger, broadcast_callback)
+    provider_manager._session_mod = _seed_mod
+    provider_manager._env_get_api_key = _seed_getter
+
+    # OSC 输出是否带说话人标签：Soniox 分离说话人时启用，Gemini 关闭
+    osc_manager.set_speaker_labels_enabled(bool(config.ENABLE_SPEAKER_DIARIZATION))
+
+    # 创建Web服务器
+    web_server = WebServer(session, logger)
+    web_server.get_api_key = provider_manager.get_api_key
+    web_server.provider_manager = provider_manager
+
+    ipc_server.set_session(session)
+    _seed_mod.ipc_server = ipc_server
     web_server.ipc_server = ipc_server
+
+    provider_manager.web_server = web_server
 
     def apply_window_on_top_fallback(on_top: bool) -> bool:
         """在 pywebview 动态置顶失败时，使用 Win32 兜底。"""
@@ -251,7 +538,18 @@ def main():
             return False
 
     web_server.set_window_on_top_callback(set_window_on_top)
-    
+
+    def request_shutdown() -> None:
+        """退出整个应用（重置设置后由前端触发）。"""
+        print("\n👋 Reset requested, shutting down application...")
+        try:
+            logger.close_log_file()
+        except Exception:
+            pass
+        os._exit(0)
+
+    web_server.set_shutdown_callback(request_shutdown)
+
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
         print("\n👋 Received termination signal, shutting down server...")
@@ -265,30 +563,10 @@ def main():
     app = web_server.create_app()
 
     async def start_background_tasks(app_instance):
-        try:
-            api_key = get_api_key()
-        except RuntimeError as e:
-            print(f"❌ Error: {e}")
-            print("Please set the SONIOX_API_KEY environment variable or ensure network connection is available")
-            if window:
-                window.destroy()
-            raise
-
         loop = asyncio.get_event_loop()
-        translation_mode = TRANSLATION_MODE
-        soniox_session.start(api_key, "pcm_s16le", translation_mode, loop)
-
-        from config import IPC_ENABLED
-        if IPC_ENABLED and TRANSLATION_MODE != "none":
-            try:
-                await ipc_server.start()
-            except Exception as e:
-                print(f"⚠️  Failed to start IPC server: {e}")
-        else:
-            if not IPC_ENABLED:
-                print("[IPC] IPC is disabled in config")
-            elif TRANSLATION_MODE == "none":
-                print("[IPC] IPC server not started because translation is disabled")
+        provider_manager.loop = loop
+        # 启动 seeding：用环境变量里的 key 起 session；没有就保持等待（前端弹设置面板）。
+        await provider_manager.seed_start()
 
     async def cleanup_background_tasks(app_instance):
         try:

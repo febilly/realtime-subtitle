@@ -86,6 +86,107 @@ let llmRefineShowDeletions = false;
 let speakerDiarizationEnabled = true;
 // 由后端下发：是否隐藏说话人标签
 let hideSpeakerLabels = false;
+// 由后端下发：当前 provider 及能力（segment_mode 等）。
+let translationProvider = 'soniox';
+let segmentModeSupported = true;
+let twoWaySupported = true;
+
+// ===== 运行时 provider/key（热切换）+ 设置面板状态 =====
+const settingsButton = document.getElementById('settingsButton');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsPanel = document.getElementById('settingsPanel');
+const settingsForm = document.getElementById('settingsForm');
+const settingsCloseButton = document.getElementById('settingsCloseButton');
+const settingsCancelButton = document.getElementById('settingsCancelButton');
+const settingsSaveButton = document.getElementById('settingsSaveButton');
+const resetAllButton = document.getElementById('resetAllButton');
+const settingsErrorEl = document.getElementById('settingsError');
+const confirmOverlay = document.getElementById('confirmOverlay');
+const confirmDialog = document.getElementById('confirmDialog');
+const confirmMessageEl = document.getElementById('confirmMessage');
+const confirmOkButton = document.getElementById('confirmOkButton');
+const confirmCancelButton = document.getElementById('confirmCancelButton');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const apiKeySourceHint = document.getElementById('apiKeySourceHint');
+const providerDescription = document.getElementById('providerDescription');
+const apiKeyGetLink = document.getElementById('apiKeyGetLink');
+const sonioxRegionSection = document.getElementById('sonioxRegionSection');
+const sonioxRegionPickerHost = document.getElementById('sonioxRegionPicker');
+const toastEl = document.getElementById('toast');
+
+const SONIOX_REGIONS = ['us', 'eu', 'jp'];
+// Custom-select element (built lazily); mirrors the language picker styling.
+let sonioxRegionPickerEl = null;
+
+// Where users obtain an API key for each provider (shown as a link in Settings).
+const PROVIDER_KEY_URLS = {
+    soniox: 'https://console.soniox.com/api-keys',
+    gemini: 'https://aistudio.google.com/apikey',
+};
+
+const PROVIDER_SETTINGS_STORAGE_KEY = 'providerSettings.v1';
+const UI_TRANSLATION_MODE_STORAGE_KEY = 'uiTranslationMode';
+
+let backendBootId = '';
+let setupRequired = false;
+let envKeyPresent = { soniox: false, gemini: false };
+let backendKeySource = 'env';
+let backendSonioxRegion = 'us';
+// True when the backend pins a custom Soniox endpoint; region is not selectable.
+let backendSonioxCustomUrl = false;
+let backendTranslationMode = 'one_way';
+let backendTargetLang1 = 'en';
+let backendTargetLang2 = 'zh';
+let suppressTranslationDisplay = false;
+let pushedOverrideBootId = null;
+let settingsForcedOpen = false;
+let toastTimer = null;
+
+let uiTranslationMode = localStorage.getItem(UI_TRANSLATION_MODE_STORAGE_KEY);
+if (!['none', 'one_way', 'two_way'].includes(uiTranslationMode)) {
+    uiTranslationMode = null;
+}
+
+function loadProviderSettings() {
+    try {
+        const raw = localStorage.getItem(PROVIDER_SETTINGS_STORAGE_KEY);
+        if (raw) {
+            const obj = JSON.parse(raw);
+            if (obj && typeof obj === 'object') {
+                if (!obj.keys || typeof obj.keys !== 'object') {
+                    obj.keys = {};
+                }
+                return obj;
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+    return { providerOverride: null, keys: {} };
+}
+
+function saveProviderSettings(settings) {
+    try {
+        localStorage.setItem(PROVIDER_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch (e) {
+        // ignore
+    }
+}
+
+function showToast(message, isError = false) {
+    if (!toastEl) {
+        return;
+    }
+    toastEl.textContent = message;
+    toastEl.classList.toggle('error', !!isError);
+    toastEl.hidden = false;
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+    }
+    toastTimer = setTimeout(() => {
+        toastEl.hidden = true;
+    }, 4000);
+}
 
 const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
 const LLM_REFINE_ICON = '🪄';
@@ -122,72 +223,130 @@ const llmTranslationOverridesBySentenceId = new Map();
 let defaultTranslationTargetLang = 'en';
 let currentTranslationTargetLang = 'en';
 
-const SUPPORTED_TRANSLATION_LANGUAGES = [
-    { code: 'af', en: 'Afrikaans', native: 'Afrikaans' },
-    { code: 'sq', en: 'Albanian', native: 'Shqip' },
-    { code: 'ar', en: 'Arabic', native: 'العربية' },
-    { code: 'az', en: 'Azerbaijani', native: 'Azərbaycan dili' },
-    { code: 'eu', en: 'Basque', native: 'Euskara' },
-    { code: 'be', en: 'Belarusian', native: 'Беларуская' },
-    { code: 'bn', en: 'Bengali', native: 'বাংলা' },
-    { code: 'bs', en: 'Bosnian', native: 'Bosanski' },
-    { code: 'bg', en: 'Bulgarian', native: 'Български' },
-    { code: 'ca', en: 'Catalan', native: 'Català' },
-    { code: 'zh', en: 'Chinese', native: '中文' },
-    { code: 'hr', en: 'Croatian', native: 'Hrvatski' },
-    { code: 'cs', en: 'Czech', native: 'Čeština' },
-    { code: 'da', en: 'Danish', native: 'Dansk' },
-    { code: 'nl', en: 'Dutch', native: 'Nederlands' },
-    { code: 'en', en: 'English', native: 'English' },
-    { code: 'et', en: 'Estonian', native: 'Eesti' },
-    { code: 'fi', en: 'Finnish', native: 'Suomi' },
-    { code: 'fr', en: 'French', native: 'Français' },
-    { code: 'gl', en: 'Galician', native: 'Galego' },
-    { code: 'de', en: 'German', native: 'Deutsch' },
-    { code: 'el', en: 'Greek', native: 'Ελληνικά' },
-    { code: 'gu', en: 'Gujarati', native: 'ગુજરાતી' },
-    { code: 'he', en: 'Hebrew', native: 'עברית' },
-    { code: 'hi', en: 'Hindi', native: 'हिन्दी' },
-    { code: 'hu', en: 'Hungarian', native: 'Magyar' },
-    { code: 'id', en: 'Indonesian', native: 'Bahasa Indonesia' },
-    { code: 'it', en: 'Italian', native: 'Italiano' },
-    { code: 'ja', en: 'Japanese', native: '日本語' },
-    { code: 'kn', en: 'Kannada', native: 'ಕನ್ನಡ' },
-    { code: 'kk', en: 'Kazakh', native: 'Қазақша' },
-    { code: 'ko', en: 'Korean', native: '한국어' },
-    { code: 'lv', en: 'Latvian', native: 'Latviešu' },
-    { code: 'lt', en: 'Lithuanian', native: 'Lietuvių' },
-    { code: 'mk', en: 'Macedonian', native: 'Македонски' },
-    { code: 'ms', en: 'Malay', native: 'Bahasa Melayu' },
-    { code: 'ml', en: 'Malayalam', native: 'മലയാളം' },
-    { code: 'mr', en: 'Marathi', native: 'मराठी' },
-    { code: 'no', en: 'Norwegian', native: 'Norsk' },
-    { code: 'fa', en: 'Persian', native: 'فارسی' },
-    { code: 'pl', en: 'Polish', native: 'Polski' },
-    { code: 'pt', en: 'Portuguese', native: 'Português' },
-    { code: 'pa', en: 'Punjabi', native: 'ਪੰਜਾਬੀ' },
-    { code: 'ro', en: 'Romanian', native: 'Română' },
-    { code: 'ru', en: 'Russian', native: 'Русский' },
-    { code: 'sr', en: 'Serbian', native: 'Српски' },
-    { code: 'sk', en: 'Slovak', native: 'Slovenčina' },
-    { code: 'sl', en: 'Slovenian', native: 'Slovenščina' },
-    { code: 'es', en: 'Spanish', native: 'Español' },
-    { code: 'sw', en: 'Swahili', native: 'Kiswahili' },
-    { code: 'sv', en: 'Swedish', native: 'Svenska' },
-    { code: 'tl', en: 'Tagalog', native: 'Tagalog' },
-    { code: 'ta', en: 'Tamil', native: 'தமிழ்' },
-    { code: 'te', en: 'Telugu', native: 'తెలుగు' },
-    { code: 'th', en: 'Thai', native: 'ไทย' },
-    { code: 'tr', en: 'Turkish', native: 'Türkçe' },
-    { code: 'uk', en: 'Ukrainian', native: 'Українська' },
-    { code: 'ur', en: 'Urdu', native: 'اردو' },
-    { code: 'vi', en: 'Vietnamese', native: 'Tiếng Việt' },
-    { code: 'cy', en: 'Welsh', native: 'Cymraeg' },
-];
+// Single source of truth for language display names (English + native). Covers
+// the union of all providers' codes. The actual ordered list of *available*
+// languages is driven by the backend (/ui-config -> languages), since each
+// provider supports a different subset (e.g. Gemini splits zh into
+// zh-hans / zh-hant). See setLanguageListFromCodes().
+const LANGUAGE_NAME_MAP = {
+    af: { en: 'Afrikaans', native: 'Afrikaans' },
+    ak: { en: 'Akan', native: 'Akan' },
+    sq: { en: 'Albanian', native: 'Shqip' },
+    am: { en: 'Amharic', native: 'አማርኛ' },
+    ar: { en: 'Arabic', native: 'العربية' },
+    hy: { en: 'Armenian', native: 'Հայերեն' },
+    az: { en: 'Azerbaijani', native: 'Azərbaycan dili' },
+    eu: { en: 'Basque', native: 'Euskara' },
+    be: { en: 'Belarusian', native: 'Беларуская' },
+    bn: { en: 'Bengali', native: 'বাংলা' },
+    bs: { en: 'Bosnian', native: 'Bosanski' },
+    bg: { en: 'Bulgarian', native: 'Български' },
+    my: { en: 'Burmese', native: 'မြန်မာ' },
+    ca: { en: 'Catalan', native: 'Català' },
+    zh: { en: 'Chinese', native: '中文' },
+    'zh-hans': { en: 'Chinese (Simplified)', native: '简体中文' },
+    'zh-hant': { en: 'Chinese (Traditional)', native: '繁體中文' },
+    hr: { en: 'Croatian', native: 'Hrvatski' },
+    cs: { en: 'Czech', native: 'Čeština' },
+    da: { en: 'Danish', native: 'Dansk' },
+    nl: { en: 'Dutch', native: 'Nederlands' },
+    en: { en: 'English', native: 'English' },
+    et: { en: 'Estonian', native: 'Eesti' },
+    fil: { en: 'Filipino', native: 'Filipino' },
+    fi: { en: 'Finnish', native: 'Suomi' },
+    fr: { en: 'French', native: 'Français' },
+    gl: { en: 'Galician', native: 'Galego' },
+    ka: { en: 'Georgian', native: 'ქართული' },
+    de: { en: 'German', native: 'Deutsch' },
+    el: { en: 'Greek', native: 'Ελληνικά' },
+    gu: { en: 'Gujarati', native: 'ગુજરાતી' },
+    ha: { en: 'Hausa', native: 'Hausa' },
+    he: { en: 'Hebrew', native: 'עברית' },
+    hi: { en: 'Hindi', native: 'हिन्दी' },
+    hu: { en: 'Hungarian', native: 'Magyar' },
+    is: { en: 'Icelandic', native: 'Íslenska' },
+    id: { en: 'Indonesian', native: 'Bahasa Indonesia' },
+    it: { en: 'Italian', native: 'Italiano' },
+    ja: { en: 'Japanese', native: '日本語' },
+    jv: { en: 'Javanese', native: 'Basa Jawa' },
+    kn: { en: 'Kannada', native: 'ಕನ್ನಡ' },
+    kk: { en: 'Kazakh', native: 'Қазақша' },
+    km: { en: 'Khmer', native: 'ខ្មែរ' },
+    rw: { en: 'Kinyarwanda', native: 'Ikinyarwanda' },
+    ko: { en: 'Korean', native: '한국어' },
+    lo: { en: 'Lao', native: 'ລາວ' },
+    lv: { en: 'Latvian', native: 'Latviešu' },
+    lt: { en: 'Lithuanian', native: 'Lietuvių' },
+    mk: { en: 'Macedonian', native: 'Македонски' },
+    ms: { en: 'Malay', native: 'Bahasa Melayu' },
+    ml: { en: 'Malayalam', native: 'മലയാളം' },
+    mr: { en: 'Marathi', native: 'मराठी' },
+    mn: { en: 'Mongolian', native: 'Монгол' },
+    ne: { en: 'Nepali', native: 'नेपाली' },
+    no: { en: 'Norwegian', native: 'Norsk' },
+    fa: { en: 'Persian', native: 'فارسی' },
+    pl: { en: 'Polish', native: 'Polski' },
+    pt: { en: 'Portuguese', native: 'Português' },
+    pa: { en: 'Punjabi', native: 'ਪੰਜਾਬੀ' },
+    ro: { en: 'Romanian', native: 'Română' },
+    ru: { en: 'Russian', native: 'Русский' },
+    sr: { en: 'Serbian', native: 'Српски' },
+    sd: { en: 'Sindhi', native: 'سنڌي' },
+    si: { en: 'Sinhala', native: 'සිංහල' },
+    sk: { en: 'Slovak', native: 'Slovenčina' },
+    sl: { en: 'Slovenian', native: 'Slovenščina' },
+    es: { en: 'Spanish', native: 'Español' },
+    su: { en: 'Sundanese', native: 'Basa Sunda' },
+    sw: { en: 'Swahili', native: 'Kiswahili' },
+    sv: { en: 'Swedish', native: 'Svenska' },
+    tl: { en: 'Tagalog', native: 'Tagalog' },
+    ta: { en: 'Tamil', native: 'தமிழ்' },
+    te: { en: 'Telugu', native: 'తెలుగు' },
+    th: { en: 'Thai', native: 'ไทย' },
+    tr: { en: 'Turkish', native: 'Türkçe' },
+    uk: { en: 'Ukrainian', native: 'Українська' },
+    ur: { en: 'Urdu', native: 'اردو' },
+    uz: { en: 'Uzbek', native: 'Oʻzbekcha' },
+    vi: { en: 'Vietnamese', native: 'Tiếng Việt' },
+    cy: { en: 'Welsh', native: 'Cymraeg' },
+    zu: { en: 'Zulu', native: 'isiZulu' },
+};
+
+function buildLanguageList(codes) {
+    return (codes || []).map((rawCode) => {
+        const code = (rawCode || '').toString();
+        const info = LANGUAGE_NAME_MAP[code.toLowerCase()] || LANGUAGE_NAME_MAP[code];
+        return {
+            code,
+            en: info ? info.en : code,
+            native: info ? info.native : code,
+        };
+    });
+}
+
+// Available translation languages (populated from the backend on load; falls
+// back to the full known set until /ui-config responds).
+let SUPPORTED_TRANSLATION_LANGUAGES = buildLanguageList(Object.keys(LANGUAGE_NAME_MAP));
+
+function setLanguageListFromCodes(codes) {
+    if (!Array.isArray(codes) || codes.length === 0) {
+        return;
+    }
+    SUPPORTED_TRANSLATION_LANGUAGES = buildLanguageList(codes);
+    // Invalidate the cached popover so it rebuilds with the new language set.
+    closeLangSelectMenu();
+    if (langPopoverEl && langPopoverEl.parentNode) {
+        langPopoverEl.parentNode.removeChild(langPopoverEl);
+    }
+    langPopoverEl = null;
+}
 
 let langPopoverEl = null;
 let langPopoverOpen = false;
 let langPopoverCleanup = null;
+let langPopoverDraft = null;
+let langSelectMenuEl = null;
+let activeLangPickerEl = null;
 
 // 存储所有已确认的tokens
 let allFinalTokens = [];
@@ -606,7 +765,8 @@ function applyLockPauseRestartControlsUI() {
         translationLangButton.style.display = lockManualControls ? 'none' : '';
     }
     if (segmentModeButton) {
-        segmentModeButton.style.display = lockManualControls ? 'none' : '';
+        // Hidden when locked or when the active provider has no segmentation control.
+        segmentModeButton.style.display = (lockManualControls || !segmentModeSupported) ? 'none' : '';
     }
     if (translationRefineButton) {
         translationRefineButton.style.display = lockManualControls ? 'none' : '';
@@ -643,6 +803,54 @@ async function fetchUiConfig() {
             defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
             currentTranslationTargetLang = defaultTranslationTargetLang;
         }
+        if (data && typeof data.provider === 'string' && data.provider.trim()) {
+            translationProvider = data.provider.trim().toLowerCase();
+        }
+        // Backend-driven language dropdown (provider-specific subset).
+        if (data && Array.isArray(data.languages)) {
+            setLanguageListFromCodes(data.languages);
+        }
+        // Provider capability flags gate provider-specific controls.
+        if (data && data.capabilities && typeof data.capabilities === 'object') {
+            segmentModeSupported = data.capabilities.segment_mode !== false;
+            twoWaySupported = data.capabilities.two_way_translation === true;
+        }
+
+        // Runtime provider/key state (hot-switch).
+        if (typeof data.boot_id === 'string') {
+            backendBootId = data.boot_id;
+        }
+        setupRequired = !!data.setup_required;
+        if (data.env_key_present && typeof data.env_key_present === 'object') {
+            envKeyPresent = {
+                soniox: !!data.env_key_present.soniox,
+                gemini: !!data.env_key_present.gemini,
+            };
+        }
+        if (typeof data.key_source === 'string') {
+            backendKeySource = data.key_source;
+        }
+        if (typeof data.soniox_region === 'string' && data.soniox_region.trim()) {
+            backendSonioxRegion = normalizeSonioxRegion(data.soniox_region);
+        }
+        if (typeof data.soniox_custom_url === 'boolean') {
+            backendSonioxCustomUrl = data.soniox_custom_url;
+        }
+        if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
+            backendTranslationMode = data.translation_mode.trim().toLowerCase();
+        }
+        if (typeof data.target_lang_1 === 'string' && data.target_lang_1.trim()) {
+            backendTargetLang1 = data.target_lang_1.trim().toLowerCase();
+        }
+        if (typeof data.target_lang_2 === 'string' && data.target_lang_2.trim()) {
+            backendTargetLang2 = data.target_lang_2.trim().toLowerCase();
+        }
+        if (!uiTranslationMode) {
+            uiTranslationMode = backendTranslationMode || 'one_way';
+        }
+        // Gemini "no translation" is a pure frontend suppression of the translation text.
+        suppressTranslationDisplay = (translationProvider === 'gemini' && uiTranslationMode === 'none');
+        updateSettingsButtonVisibility();
         const backendSegmentMode = normalizeSegmentMode(data && data.segment_mode);
         const storedSegmentMode = normalizeSegmentMode(localStorage.getItem('segmentMode'));
 
@@ -1082,6 +1290,411 @@ function handleSegmentModeChanged(data) {
     enforceTranslateSegmentMode();
 }
 
+function setUiTranslationMode(mode, { persistOnly = false } = {}) {
+    if (!['none', 'one_way', 'two_way'].includes(mode)) {
+        return;
+    }
+    uiTranslationMode = mode;
+    try {
+        localStorage.setItem(UI_TRANSLATION_MODE_STORAGE_KEY, mode);
+    } catch (e) {
+        // ignore
+    }
+    if (persistOnly) {
+        return;
+    }
+    suppressTranslationDisplay = (translationProvider === 'gemini' && mode === 'none');
+}
+
+function getLanguageDisplayName(code) {
+    const normalized = (code || '').toString().trim().toLowerCase();
+    const info = SUPPORTED_TRANSLATION_LANGUAGES.find((lang) => lang.code.toLowerCase() === normalized);
+    return info ? `${info.en} - ${info.native}` : (code || '').toString();
+}
+
+function ensureLangSelectMenu() {
+    if (langSelectMenuEl) {
+        return langSelectMenuEl;
+    }
+    const menu = document.createElement('div');
+    menu.className = 'lang-select-menu';
+    menu.hidden = true;
+    menu.setAttribute('role', 'listbox');
+    document.body.appendChild(menu);
+    langSelectMenuEl = menu;
+    return menu;
+}
+
+function setLangPickerValue(picker, code) {
+    if (!picker) {
+        return;
+    }
+    const selected = coerceSupportedLanguageCode(code, picker.dataset.fallback || 'en');
+    picker.dataset.value = selected;
+    const label = picker.querySelector('.lang-picker-label');
+    if (label) {
+        label.textContent = getLanguageDisplayName(selected);
+    }
+}
+
+function positionLangSelectMenu(picker, menu) {
+    const trigger = picker.querySelector('.lang-picker-button') || picker;
+    const rect = trigger.getBoundingClientRect();
+    const gap = 6;
+    const viewportPadding = 8;
+    const menuWidth = Math.max(220, Math.round(rect.width));
+    const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
+    const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
+    );
+    const top = openUp
+        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
+        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.width = `${Math.round(menuWidth)}px`;
+    menu.style.maxHeight = `${Math.round(menuHeight)}px`;
+}
+
+function openLangSelectMenu(picker) {
+    const menu = ensureLangSelectMenu();
+    activeLangPickerEl = picker;
+    menu.innerHTML = '';
+
+    for (const lang of SUPPORTED_TRANSLATION_LANGUAGES) {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'lang-select-option';
+        option.dataset.code = lang.code;
+        option.setAttribute('role', 'option');
+        option.textContent = `${lang.en} - ${lang.native}`;
+        const isSelected = lang.code === picker.value;
+        option.classList.toggle('selected', isSelected);
+        option.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        option.addEventListener('click', () => {
+            setLangPickerValue(picker, lang.code);
+            closeLangSelectMenu();
+            picker.dispatchEvent(new Event('change'));
+        });
+        menu.appendChild(option);
+    }
+
+    picker.classList.add('open');
+    const trigger = picker.querySelector('.lang-picker-button');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'true');
+    }
+    positionLangSelectMenu(picker, menu);
+    menu.hidden = false;
+
+    const selectedOption = menu.querySelector('.lang-select-option.selected');
+    if (selectedOption) {
+        selectedOption.scrollIntoView({ block: 'nearest' });
+    }
+}
+
+function closeLangSelectMenu() {
+    if (activeLangPickerEl) {
+        activeLangPickerEl.classList.remove('open');
+        const trigger = activeLangPickerEl.querySelector('.lang-picker-button');
+        if (trigger) {
+            trigger.setAttribute('aria-expanded', 'false');
+        }
+    }
+    activeLangPickerEl = null;
+    if (langSelectMenuEl) {
+        langSelectMenuEl.hidden = true;
+        langSelectMenuEl.innerHTML = '';
+    }
+}
+
+function buildLangPicker(selectedCode, fallbackCode = 'en') {
+    const picker = document.createElement('div');
+    picker.className = 'lang-picker';
+    picker.dataset.fallback = fallbackCode;
+    Object.defineProperty(picker, 'value', {
+        get() {
+            return picker.dataset.value || '';
+        },
+        set(value) {
+            setLangPickerValue(picker, value);
+        },
+    });
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'lang-picker-button';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const label = document.createElement('span');
+    label.className = 'lang-picker-label';
+    const chevron = document.createElement('span');
+    chevron.className = 'lang-picker-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+
+    trigger.appendChild(label);
+    trigger.appendChild(chevron);
+    trigger.addEventListener('click', () => {
+        if (activeLangPickerEl === picker && langSelectMenuEl && !langSelectMenuEl.hidden) {
+            closeLangSelectMenu();
+            return;
+        }
+        closeLangSelectMenu();
+        openLangSelectMenu(picker);
+    });
+
+    picker.appendChild(trigger);
+    setLangPickerValue(picker, selectedCode);
+    return picker;
+}
+
+// Position a fixed-position dropdown menu relative to its trigger, flipping up
+// when there isn't enough room below. Shared by the generic custom select.
+function positionDropdownMenu(trigger, menu) {
+    const rect = trigger.getBoundingClientRect();
+    const gap = 6;
+    const viewportPadding = 8;
+    const menuWidth = Math.max(rect.width, 180);
+    const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
+    const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
+    );
+    const top = openUp
+        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
+        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.width = `${Math.round(menuWidth)}px`;
+    menu.style.maxHeight = `${Math.round(menuHeight)}px`;
+}
+
+// Generic dark-themed custom <select> replacement. Reuses the language picker's
+// CSS classes for visual consistency. `options` is [{ value, label }].
+function buildCustomSelect(options, { value = null, onChange = null, disabled = false } = {}) {
+    const picker = document.createElement('div');
+    picker.className = 'lang-picker';
+    let currentValue = value;
+    let menuEl = null;
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'lang-picker-button';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    if (disabled) {
+        trigger.disabled = true;
+        picker.classList.add('disabled');
+    }
+
+    const label = document.createElement('span');
+    label.className = 'lang-picker-label';
+    const chevron = document.createElement('span');
+    chevron.className = 'lang-picker-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    trigger.appendChild(label);
+    trigger.appendChild(chevron);
+    picker.appendChild(trigger);
+
+    const labelFor = (val) => {
+        const opt = options.find((o) => o.value === val);
+        return opt ? opt.label : '';
+    };
+    const renderLabel = () => {
+        label.textContent = labelFor(currentValue);
+    };
+
+    const close = () => {
+        if (!menuEl) {
+            return;
+        }
+        menuEl.remove();
+        menuEl = null;
+        picker.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('mousedown', onDocMouseDown, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        window.removeEventListener('resize', reposition, true);
+        window.removeEventListener('scroll', close, true);
+    };
+    const onDocMouseDown = (event) => {
+        if (picker.contains(event.target) || (menuEl && menuEl.contains(event.target))) {
+            return;
+        }
+        close();
+    };
+    const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+            close();
+        }
+    };
+    const reposition = () => {
+        if (menuEl) {
+            positionDropdownMenu(trigger, menuEl);
+        }
+    };
+    const open = () => {
+        menuEl = document.createElement('div');
+        menuEl.className = 'lang-select-menu';
+        menuEl.setAttribute('role', 'listbox');
+        for (const opt of options) {
+            const optionEl = document.createElement('button');
+            optionEl.type = 'button';
+            optionEl.className = 'lang-select-option';
+            optionEl.setAttribute('role', 'option');
+            optionEl.textContent = opt.label;
+            const isSelected = opt.value === currentValue;
+            optionEl.classList.toggle('selected', isSelected);
+            optionEl.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+            optionEl.addEventListener('click', () => {
+                const changed = currentValue !== opt.value;
+                currentValue = opt.value;
+                renderLabel();
+                close();
+                if (changed && typeof onChange === 'function') {
+                    onChange(currentValue);
+                }
+            });
+            menuEl.appendChild(optionEl);
+        }
+        document.body.appendChild(menuEl);
+        picker.classList.add('open');
+        trigger.setAttribute('aria-expanded', 'true');
+        positionDropdownMenu(trigger, menuEl);
+        const selectedOption = menuEl.querySelector('.lang-select-option.selected');
+        if (selectedOption) {
+            selectedOption.scrollIntoView({ block: 'nearest' });
+        }
+        document.addEventListener('mousedown', onDocMouseDown, true);
+        document.addEventListener('keydown', onKeyDown, true);
+        window.addEventListener('resize', reposition, true);
+        window.addEventListener('scroll', close, true);
+    };
+
+    trigger.addEventListener('click', () => {
+        if (menuEl) {
+            close();
+        } else {
+            open();
+        }
+    });
+
+    Object.defineProperty(picker, 'value', {
+        get() {
+            return currentValue;
+        },
+        set(val) {
+            currentValue = val;
+            renderLabel();
+        },
+    });
+
+    renderLabel();
+    return picker;
+}
+
+function normalizeTranslationMode(mode) {
+    const value = (mode || '').toString().trim().toLowerCase();
+    return ['none', 'one_way', 'two_way'].includes(value) ? value : 'one_way';
+}
+
+function getFirstSupportedLanguageCode() {
+    const first = SUPPORTED_TRANSLATION_LANGUAGES[0];
+    return first && first.code ? first.code : 'en';
+}
+
+function coerceSupportedLanguageCode(code, fallback = 'en') {
+    const desired = (code || '').toString().trim().toLowerCase();
+    const fallbackCode = (fallback || '').toString().trim().toLowerCase();
+    const languages = SUPPORTED_TRANSLATION_LANGUAGES || [];
+    const desiredMatch = languages.find((lang) => lang.code.toLowerCase() === desired);
+    if (desiredMatch) {
+        return desiredMatch.code;
+    }
+    const fallbackMatch = languages.find((lang) => lang.code.toLowerCase() === fallbackCode);
+    if (fallbackMatch) {
+        return fallbackMatch.code;
+    }
+    return getFirstSupportedLanguageCode();
+}
+
+function createLangPopoverDraft() {
+    let mode = normalizeTranslationMode(uiTranslationMode || backendTranslationMode || 'one_way');
+    if (mode === 'two_way' && !twoWaySupported) {
+        mode = 'one_way';
+    }
+    return {
+        mode,
+        targetLang: coerceSupportedLanguageCode(currentTranslationTargetLang, defaultTranslationTargetLang),
+        targetLang1: coerceSupportedLanguageCode(backendTargetLang1, 'en'),
+        targetLang2: coerceSupportedLanguageCode(backendTargetLang2, 'zh'),
+    };
+}
+
+function getLangPopoverDraft() {
+    if (!langPopoverDraft) {
+        langPopoverDraft = createLangPopoverDraft();
+    }
+    return langPopoverDraft;
+}
+
+function onSelectTranslationMode(mode) {
+    if (mode === 'two_way' && !twoWaySupported) {
+        return;
+    }
+    const draft = getLangPopoverDraft();
+    draft.mode = normalizeTranslationMode(mode);
+    updateLangPopoverSelection();
+    refreshLangPopoverSections();
+}
+
+function refreshLangPopoverSections() {
+    if (!langPopoverEl) {
+        return;
+    }
+    const modeControl = langPopoverEl.querySelector('.translation-mode-control');
+    const onewayBox = langPopoverEl.querySelector('.lang-popover-oneway');
+    const twowayBox = langPopoverEl.querySelector('.lang-popover-twoway');
+    const draft = getLangPopoverDraft();
+    if (modeControl) {
+        const twoWayOption = modeControl.querySelector('[data-mode="two_way"]');
+        if (twoWayOption) {
+            twoWayOption.hidden = !twoWaySupported;
+        }
+    }
+    const effectiveMode = (draft.mode === 'two_way' && !twoWaySupported) ? 'one_way' : draft.mode;
+    if (onewayBox) {
+        onewayBox.hidden = (effectiveMode !== 'one_way');
+    }
+    if (twowayBox) {
+        twowayBox.hidden = (effectiveMode !== 'two_way');
+    }
+    const targetSelect = langPopoverEl.querySelector('.lang-picker[data-role="target"]');
+    if (targetSelect) {
+        targetSelect.value = coerceSupportedLanguageCode(draft.targetLang, defaultTranslationTargetLang);
+    }
+    const selA = langPopoverEl.querySelector('.lang-picker[data-role="langA"]');
+    if (selA) {
+        selA.value = coerceSupportedLanguageCode(draft.targetLang1, 'en');
+    }
+    const selB = langPopoverEl.querySelector('.lang-picker[data-role="langB"]');
+    if (selB) {
+        selB.value = coerceSupportedLanguageCode(draft.targetLang2, 'zh');
+    }
+}
+
 function ensureLangPopover() {
     if (langPopoverEl) {
         return langPopoverEl;
@@ -1091,26 +1704,99 @@ function ensureLangPopover() {
     el.className = 'lang-popover';
     el.style.display = 'none';
 
-    for (const lang of SUPPORTED_TRANSLATION_LANGUAGES) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'lang-option';
-        btn.dataset.code = lang.code;
-        btn.textContent = `${lang.en} - ${lang.native}`;
-        btn.addEventListener('click', () => {
-            const selected = btn.dataset.code;
-            hideLangPopover();
-            if (!selected) {
-                return;
-            }
-            if (selected === currentTranslationTargetLang) {
-                return;
-            }
-            currentTranslationTargetLang = selected;
-            void restartRecognition({ auto: false, targetLang: selected });
-        });
-        el.appendChild(btn);
+    const title = document.createElement('h2');
+    title.className = 'lang-popover-title';
+    title.textContent = t('translation_panel_title');
+    el.appendChild(title);
+
+    // Translation-mode selector (none / one-way / two-way).
+    const modeControl = document.createElement('div');
+    modeControl.className = 'segmented-control translation-mode-control';
+    const modeDefs = [
+        ['none', 'translate_mode_none'],
+        ['one_way', 'translate_mode_one_way'],
+        ['two_way', 'translate_mode_two_way'],
+    ];
+    for (const [mode, labelKey] of modeDefs) {
+        const opt = document.createElement('button');
+        opt.type = 'button';
+        opt.className = 'segmented-option';
+        opt.dataset.mode = mode;
+        const span = document.createElement('span');
+        span.textContent = t(labelKey);
+        opt.appendChild(span);
+        opt.addEventListener('click', () => onSelectTranslationMode(mode));
+        modeControl.appendChild(opt);
     }
+    el.appendChild(modeControl);
+
+    // One-way: single target-language select.
+    const onewayBox = document.createElement('div');
+    onewayBox.className = 'lang-popover-oneway';
+    const targetField = document.createElement('label');
+    targetField.className = 'lang-twoway-field';
+    const targetLabel = document.createElement('span');
+    targetLabel.textContent = t('target_language');
+    const targetSelect = buildLangPicker(getLangPopoverDraft().targetLang, defaultTranslationTargetLang);
+    targetSelect.dataset.role = 'target';
+    targetSelect.addEventListener('change', () => {
+        const draft = getLangPopoverDraft();
+        draft.targetLang = targetSelect.value;
+    });
+    targetField.appendChild(targetLabel);
+    targetField.appendChild(targetSelect);
+    onewayBox.appendChild(targetField);
+    el.appendChild(onewayBox);
+
+    // Two-way (Soniox only): pick language A and B.
+    const twowayBox = document.createElement('div');
+    twowayBox.className = 'lang-popover-twoway';
+
+    const fieldA = document.createElement('label');
+    fieldA.className = 'lang-twoway-field';
+    const labelA = document.createElement('span');
+    labelA.textContent = t('language_a');
+    const selA = buildLangPicker(getLangPopoverDraft().targetLang1, 'en');
+    selA.dataset.role = 'langA';
+    selA.addEventListener('change', () => {
+        const draft = getLangPopoverDraft();
+        draft.targetLang1 = selA.value;
+    });
+    fieldA.appendChild(labelA);
+    fieldA.appendChild(selA);
+
+    const fieldB = document.createElement('label');
+    fieldB.className = 'lang-twoway-field';
+    const labelB = document.createElement('span');
+    labelB.textContent = t('language_b');
+    const selB = buildLangPicker(getLangPopoverDraft().targetLang2, 'zh');
+    selB.dataset.role = 'langB';
+    selB.addEventListener('change', () => {
+        const draft = getLangPopoverDraft();
+        draft.targetLang2 = selB.value;
+    });
+    fieldB.appendChild(labelB);
+    fieldB.appendChild(selB);
+
+    const actions = document.createElement('div');
+    actions.className = 'lang-popover-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'secondary-button';
+    cancelBtn.textContent = t('cancel');
+    cancelBtn.addEventListener('click', hideLangPopover);
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'primary-button';
+    applyBtn.textContent = t('apply');
+    applyBtn.addEventListener('click', applyLangPopoverDraft);
+    actions.appendChild(cancelBtn);
+    actions.appendChild(applyBtn);
+
+    twowayBox.appendChild(fieldA);
+    twowayBox.appendChild(fieldB);
+    el.appendChild(twowayBox);
+    el.appendChild(actions);
 
     document.body.appendChild(el);
     langPopoverEl = el;
@@ -1121,11 +1807,57 @@ function updateLangPopoverSelection() {
     if (!langPopoverEl) {
         return;
     }
-    const buttons = langPopoverEl.querySelectorAll('.lang-option');
-    buttons.forEach((btn) => {
-        const code = btn.dataset.code;
-        btn.classList.toggle('selected', code === currentTranslationTargetLang);
+    const draft = getLangPopoverDraft();
+    const modeButtons = langPopoverEl.querySelectorAll('.translation-mode-control .segmented-option');
+    modeButtons.forEach((btn) => {
+        const checked = btn.dataset.mode === draft.mode;
+        btn.classList.toggle('selected', checked);
+        btn.setAttribute('aria-pressed', checked ? 'true' : 'false');
     });
+    refreshLangPopoverSections();
+}
+
+function applyLangPopoverDraft() {
+    const draft = getLangPopoverDraft();
+    const nextMode = (draft.mode === 'two_way' && !twoWaySupported) ? 'one_way' : draft.mode;
+
+    if (nextMode === 'none') {
+        const modeChanged = uiTranslationMode !== 'none' || suppressTranslationDisplay;
+        setUiTranslationMode('none');
+        hideLangPopover();
+        if (translationProvider === 'gemini') {
+            renderSubtitles();
+        } else if (modeChanged) {
+            void restartRecognition({ translationMode: 'none' });
+        }
+        return;
+    }
+
+    if (nextMode === 'two_way') {
+        const a = coerceSupportedLanguageCode(draft.targetLang1, 'en');
+        const b = coerceSupportedLanguageCode(draft.targetLang2, 'zh');
+        if (!a || !b || a === b) {
+            return;
+        }
+        const changed = uiTranslationMode !== 'two_way' || suppressTranslationDisplay || a !== backendTargetLang1 || b !== backendTargetLang2;
+        backendTargetLang1 = a;
+        backendTargetLang2 = b;
+        setUiTranslationMode('two_way');
+        hideLangPopover();
+        if (changed) {
+            void restartRecognition({ translationMode: 'two_way', targetLang1: a, targetLang2: b });
+        }
+        return;
+    }
+
+    const selected = coerceSupportedLanguageCode(draft.targetLang, defaultTranslationTargetLang);
+    const changed = uiTranslationMode !== 'one_way' || suppressTranslationDisplay || selected !== currentTranslationTargetLang;
+    currentTranslationTargetLang = selected;
+    setUiTranslationMode('one_way');
+    hideLangPopover();
+    if (changed) {
+        void restartRecognition({ translationMode: 'one_way', targetLang: selected });
+    }
 }
 
 function showLangPopover() {
@@ -1133,30 +1865,10 @@ function showLangPopover() {
         return;
     }
     const el = ensureLangPopover();
+    langPopoverDraft = createLangPopoverDraft();
     updateLangPopoverSelection();
 
-    const rect = translationLangButton.getBoundingClientRect();
-    const padding = 8;
-
     el.style.display = 'block';
-
-    const popoverRect = el.getBoundingClientRect();
-
-    // Place to the left of the button bar, vertically aligned with button.
-    let top = rect.top - 10;
-    if (top < padding) top = padding;
-    if (top + popoverRect.height > window.innerHeight - padding) {
-        top = Math.max(padding, window.innerHeight - padding - popoverRect.height);
-    }
-
-    let left = rect.left - popoverRect.width - 12;
-    if (left < padding) {
-        left = padding;
-    }
-
-    el.style.top = `${top}px`;
-    el.style.left = `${left}px`;
-
     langPopoverOpen = true;
 
     const onDocMouseDown = (event) => {
@@ -1167,6 +1879,9 @@ function showLangPopover() {
         if (langPopoverEl && langPopoverEl.contains(target)) {
             return;
         }
+        if (langSelectMenuEl && langSelectMenuEl.contains(target)) {
+            return;
+        }
         if (translationLangButton && translationLangButton.contains(target)) {
             return;
         }
@@ -1175,6 +1890,10 @@ function showLangPopover() {
 
     const onKeyDown = (event) => {
         if (event.key === 'Escape') {
+            if (langSelectMenuEl && !langSelectMenuEl.hidden) {
+                closeLangSelectMenu();
+                return;
+            }
             hideLangPopover();
         }
     };
@@ -1195,6 +1914,8 @@ function hideLangPopover() {
     if (langPopoverEl) {
         langPopoverEl.style.display = 'none';
     }
+    closeLangSelectMenu();
+    langPopoverDraft = null;
     if (typeof langPopoverCleanup === 'function') {
         langPopoverCleanup();
     }
@@ -1298,6 +2019,9 @@ async function fetchInitialAudioSource() {
 
 async function setSegmentMode(mode) {
     if (lockManualControls) {
+        return;
+    }
+    if (!segmentModeSupported) {
         return;
     }
     if (isLlmTranslateMode() && mode === 'translation') {
@@ -1433,7 +2157,7 @@ if (furiganaButton) {
     });
 }
 
-async function restartRecognition({ auto = false, targetLang = null } = {}) {
+async function restartRecognition({ auto = false, targetLang = null, translationMode = null, targetLang1 = null, targetLang2 = null } = {}) {
     if (isRestarting) {
         return false;
     }
@@ -1473,6 +2197,15 @@ async function restartRecognition({ auto = false, targetLang = null } = {}) {
         const lang = (targetLang || currentTranslationTargetLang || '').toString().trim().toLowerCase();
         if (lang) {
             payload.target_lang = lang;
+        }
+        if (translationMode) {
+            payload.translation_mode = translationMode;
+        }
+        if (targetLang1) {
+            payload.target_lang_1 = String(targetLang1).trim().toLowerCase();
+        }
+        if (targetLang2) {
+            payload.target_lang_2 = String(targetLang2).trim().toLowerCase();
         }
 
         const response = await fetch('/restart', {
@@ -1735,6 +2468,9 @@ function handleMessage(data) {
     }
     if (data.type === 'error') {
         displayErrorMessage(data.message);
+        if (data.code === 'api_key' && !lockManualControls) {
+            openSettings({ forced: true });
+        }
         return;
     }
     if (data.type === 'refine_result') {
@@ -1747,6 +2483,10 @@ function handleMessage(data) {
     }
     if (data.type === 'session_disconnected') {
         console.warn('Recognition session disconnected:', data.reason || 'unknown');
+        if (data.code === 'api_key' && !lockManualControls) {
+            openSettings({ forced: true });
+            return;
+        }
         if (autoRestartEnabled && !isRestarting) {
             triggerAutoRestart();
         }
@@ -2359,9 +3099,48 @@ function getSentenceId(sentence, fallbackIndex) {
     return `sent-fallback-${fallbackIndex}`;
 }
 
+const SENTENCE_ENDING_PUNCTUATION_RE = /[。．.！!？?…︒︕︖]$/;
+
+function endsWithSentencePunctuation(text) {
+    const value = (text === null || text === undefined) ? '' : String(text).trim();
+    return value !== '' && SENTENCE_ENDING_PUNCTUATION_RE.test(value);
+}
+
+/**
+ * Build the flat token list for rendering. Finalized tokens already carry real
+ * separators from the backend. For the non-final (in-progress) tail we
+ * speculatively insert separators at sentence-ending punctuation so a completed
+ * sentence shows on its own line as soon as the period appears — without waiting
+ * for Soniox to finalize. This is render-time only: the non-final tail is rebuilt
+ * every update, so the split recomputes and naturally follows revisions; nothing
+ * is committed (LLM/OSC finalization still happens on real finalize).
+ *
+ * Only done when the non-final tail has no translation tokens (the same-language
+ * case), to avoid disturbing original/translation pairing.
+ */
+function buildRenderTokens() {
+    const nonFinal = currentNonFinalTokens || [];
+    const hasNonFinalTranslation = nonFinal.some(
+        token => (token.translation_status || 'original') === 'translation'
+    );
+    if (hasNonFinalTranslation) {
+        return [...allFinalTokens, ...nonFinal];
+    }
+
+    const tokens = [...allFinalTokens];
+    nonFinal.forEach((token, index) => {
+        tokens.push(token);
+        const isLast = index === nonFinal.length - 1;
+        if (!isLast && !token.is_separator && endsWithSentencePunctuation(token.text)) {
+            tokens.push({ is_separator: true, is_final: false, separator_type: 'speculative' });
+        }
+    });
+    return tokens;
+}
+
 function renderSubtitles() {
     const scrollState = captureScrollState();
-    const tokens = [...allFinalTokens, ...currentNonFinalTokens];
+    const tokens = buildRenderTokens();
     tokens.forEach(assignSequenceIndex);
 
     if (tokens.length === 0) {
@@ -2529,8 +3308,10 @@ function renderSubtitles() {
         }
     });
 
-    const showOriginal = (displayMode === 'both' || displayMode === 'original');
-    const showTranslation = (displayMode === 'both' || displayMode === 'translation');
+    const showTranslation = !suppressTranslationDisplay && (displayMode === 'both' || displayMode === 'translation');
+    // When translation is suppressed (e.g. Gemini "no translation"), always keep the
+    // original visible so the subtitle area is never empty.
+    const showOriginal = suppressTranslationDisplay ? true : (displayMode === 'both' || displayMode === 'original');
 
     const speakerBlocks = [];
     let currentBlock = null;
@@ -2992,12 +3773,433 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// ===================== Settings panel (provider + API key) =====================
+
+function updateSettingsButtonVisibility() {
+    if (settingsButton) {
+        settingsButton.style.display = lockManualControls ? 'none' : '';
+    }
+}
+
+function applySettingsI18n() {
+    const setText = (id, key) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = t(key);
+        }
+    };
+    setText('settingsTitle', 'settings');
+    setText('providerLabel', 'api_selection');
+    setText('providerSonioxLabel', 'provider_soniox');
+    setText('providerGeminiLabel', 'provider_gemini');
+    setText('sonioxRegionLabel', 'soniox_region');
+    // Rebuild the region picker so its option labels follow the active language.
+    renderSonioxRegionPicker(getSelectedSonioxRegion());
+    if (settingsSaveButton) settingsSaveButton.textContent = t('save');
+    if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
+    if (resetAllButton) resetAllButton.textContent = t('reset_all');
+    if (settingsButton) settingsButton.title = t('settings');
+    if (settingsCloseButton) settingsCloseButton.title = t('close');
+}
+
+function getDesiredProvider() {
+    const settings = loadProviderSettings();
+    return settings.providerOverride || translationProvider || 'soniox';
+}
+
+function setProviderRadio(provider) {
+    if (!settingsForm) {
+        return;
+    }
+    settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
+        radio.checked = (radio.value === provider);
+    });
+}
+
+function getSelectedProvider() {
+    if (settingsForm) {
+        const checked = settingsForm.querySelector('input[name="provider"]:checked');
+        if (checked) {
+            return checked.value;
+        }
+    }
+    return getDesiredProvider();
+}
+
+function getProviderDisplayName(provider) {
+    return provider === 'gemini' ? t('provider_gemini') : t('provider_soniox');
+}
+
+function normalizeSonioxRegion(region) {
+    const r = String(region || '').trim().toLowerCase();
+    return SONIOX_REGIONS.includes(r) ? r : 'us';
+}
+
+function getDesiredSonioxRegion() {
+    const settings = loadProviderSettings();
+    return normalizeSonioxRegion(settings.sonioxRegion || backendSonioxRegion || 'us');
+}
+
+function getSelectedSonioxRegion() {
+    // No selectable region when the backend pins a custom endpoint; leave it untouched.
+    if (backendSonioxCustomUrl) {
+        return null;
+    }
+    if (sonioxRegionPickerEl && sonioxRegionPickerEl.value) {
+        return normalizeSonioxRegion(sonioxRegionPickerEl.value);
+    }
+    return getDesiredSonioxRegion();
+}
+
+// (Re)build the custom region select with current-language option labels.
+function renderSonioxRegionPicker(selectedRegion) {
+    if (!sonioxRegionPickerHost) {
+        return;
+    }
+    sonioxRegionPickerHost.innerHTML = '';
+    if (backendSonioxCustomUrl) {
+        // Backend set a custom Soniox address: show a disabled "Custom" picker.
+        const options = [{ value: 'custom', label: t('soniox_region_custom') }];
+        sonioxRegionPickerEl = buildCustomSelect(options, { value: 'custom', disabled: true });
+        sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
+        return;
+    }
+    const value = normalizeSonioxRegion(selectedRegion);
+    const options = SONIOX_REGIONS.map((region) => ({
+        value: region,
+        label: t(`soniox_region_${region}`),
+    }));
+    sonioxRegionPickerEl = buildCustomSelect(options, { value });
+    sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
+}
+
+// Region applies to Soniox only; the row is hidden for other providers.
+function updateSonioxRegionForProvider(provider) {
+    if (sonioxRegionSection) {
+        sonioxRegionSection.hidden = (provider !== 'soniox');
+    }
+    if (provider === 'soniox') {
+        renderSonioxRegionPicker(getDesiredSonioxRegion());
+    }
+}
+
+function updateApiKeyFieldForProvider(provider) {
+    const settings = loadProviderSettings();
+    const override = settings.keys && settings.keys[provider];
+    const providerName = getProviderDisplayName(provider);
+    const label = document.getElementById('apiKeyLabel');
+    if (label) {
+        label.textContent = `${providerName} ${t('api_key')}`;
+    }
+    if (apiKeyInput) {
+        apiKeyInput.value = override || '';
+        if (override) {
+            apiKeyInput.placeholder = '';
+        } else if (envKeyPresent[provider]) {
+            apiKeyInput.placeholder = t('api_key_placeholder_env_configured', { provider: providerName });
+        } else {
+            apiKeyInput.placeholder = t('api_key_placeholder_env_missing', { provider: providerName });
+        }
+    }
+    if (apiKeySourceHint) {
+        apiKeySourceHint.textContent = '';
+    }
+    if (providerDescription) {
+        providerDescription.textContent = t(`provider_${provider}_desc`);
+    }
+    if (apiKeyGetLink) {
+        const url = PROVIDER_KEY_URLS[provider];
+        if (url) {
+            apiKeyGetLink.textContent = t('api_key_get_link', { provider: providerName });
+            apiKeyGetLink.href = url;
+            apiKeyGetLink.parentElement.hidden = false;
+        } else {
+            apiKeyGetLink.textContent = '';
+            apiKeyGetLink.removeAttribute('href');
+            apiKeyGetLink.parentElement.hidden = true;
+        }
+    }
+}
+
+function populateSettingsForm() {
+    const provider = getDesiredProvider();
+    setProviderRadio(provider);
+    updateApiKeyFieldForProvider(provider);
+    updateSonioxRegionForProvider(provider);
+    if (settingsErrorEl) {
+        settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
+    }
+}
+
+function openSettings({ forced = false } = {}) {
+    if (lockManualControls) {
+        return;
+    }
+    settingsForcedOpen = !!forced;
+    applySettingsI18n();
+    populateSettingsForm();
+    if (settingsOverlay) settingsOverlay.hidden = false;
+    if (settingsPanel) settingsPanel.hidden = false;
+    const hideClose = settingsForcedOpen ? 'none' : '';
+    if (settingsCancelButton) settingsCancelButton.style.display = hideClose;
+    if (settingsCloseButton) settingsCloseButton.style.display = hideClose;
+}
+
+function hideSettingsPanel() {
+    if (settingsOverlay) settingsOverlay.hidden = true;
+    if (settingsPanel) settingsPanel.hidden = true;
+    settingsForcedOpen = false;
+}
+
+function closeSettings() {
+    if (settingsForcedOpen) {
+        return;
+    }
+    hideSettingsPanel();
+}
+
+async function pushSetup(provider, apiKey, { silent = false, region = null } = {}) {
+    try {
+        const body = { provider };
+        if (apiKey) {
+            body.api_key = apiKey;
+        }
+        if (provider === 'soniox' && region) {
+            body.soniox_region = region;
+        }
+        const resp = await fetch('/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            return { ok: false, data };
+        }
+        translationProvider = data.provider || provider;
+        backendBootId = data.boot_id || backendBootId;
+        setupRequired = !!data.setup_required;
+        pushedOverrideBootId = backendBootId;
+        if (data.downgraded_two_way) {
+            showToast(t('gemini_no_two_way_warning'), true);
+            uiTranslationMode = 'one_way';
+            setUiTranslationMode('one_way', { persistOnly: true });
+        }
+        await fetchUiConfig();
+        if (!silent && !data.setup_required) {
+            showToast(t('settings_saved'));
+        }
+        return { ok: true, data };
+    } catch (err) {
+        return { ok: false, data: { message: String(err) } };
+    }
+}
+
+let confirmResolve = null;
+
+function closeConfirmDialog(result) {
+    if (confirmOverlay) confirmOverlay.hidden = true;
+    if (confirmDialog) confirmDialog.hidden = true;
+    document.removeEventListener('keydown', handleConfirmKeydown);
+    if (confirmResolve) {
+        const resolve = confirmResolve;
+        confirmResolve = null;
+        resolve(result);
+    }
+}
+
+function handleConfirmKeydown(event) {
+    if (event.key === 'Escape') {
+        closeConfirmDialog(false);
+    } else if (event.key === 'Enter') {
+        closeConfirmDialog(true);
+    }
+}
+
+// 自定义确认对话框，替代浏览器自带的 confirm()。
+function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
+    if (!confirmDialog || !confirmOverlay) {
+        return Promise.resolve(window.confirm(message));
+    }
+    if (confirmResolve) {
+        // 已有对话框在显示，先取消旧的。
+        closeConfirmDialog(false);
+    }
+    if (confirmMessageEl) confirmMessageEl.textContent = message;
+    if (confirmOkButton) {
+        confirmOkButton.textContent = okLabel || t('confirm');
+        confirmOkButton.className = danger ? 'danger-button' : 'primary-button';
+    }
+    if (confirmCancelButton) confirmCancelButton.textContent = cancelLabel || t('cancel');
+    confirmOverlay.hidden = false;
+    confirmDialog.hidden = false;
+    document.addEventListener('keydown', handleConfirmKeydown);
+    if (confirmCancelButton) confirmCancelButton.focus();
+    return new Promise((resolve) => {
+        confirmResolve = resolve;
+    });
+}
+
+if (confirmOkButton) {
+    confirmOkButton.addEventListener('click', () => closeConfirmDialog(true));
+}
+if (confirmCancelButton) {
+    confirmCancelButton.addEventListener('click', () => closeConfirmDialog(false));
+}
+if (confirmOverlay) {
+    confirmOverlay.addEventListener('click', () => closeConfirmDialog(false));
+}
+
+async function handleResetAll() {
+    const confirmed = await showConfirm(t('reset_all_confirm'), {
+        okLabel: t('reset_all'),
+        cancelLabel: t('cancel'),
+        danger: true,
+    });
+    if (!confirmed) {
+        return;
+    }
+    // 清除前端保存的所有数据（包括 API 配置、主题、各类开关偏好）。
+    try {
+        localStorage.clear();
+    } catch (_) {}
+    try {
+        sessionStorage.clear();
+    } catch (_) {}
+    // 请求应用退出（在 WebView 桌面模式下生效）。服务器会先返回响应再延迟退出。
+    try {
+        await fetch('/shutdown', { method: 'POST' });
+    } catch (_) {
+        // 服务器正在关闭，请求可能无法完成，忽略即可。
+    }
+    try {
+        window.close();
+    } catch (_) {}
+    // 浏览器模式下脚本通常无法关闭窗口，显示已退出提示作为兜底。
+    const doneColor = document.body.classList.contains('dark-theme') ? '#e5e7eb' : '#1f2937';
+    document.body.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:center;'
+        + 'height:100vh;font-size:15px;opacity:0.7;text-align:center;padding:24px;'
+        + 'color:' + doneColor + ';">'
+        + t('reset_all_done') + '</div>';
+}
+
+async function handleSettingsSave(event) {
+    if (event) {
+        event.preventDefault();
+    }
+    const provider = getSelectedProvider();
+    const key = (apiKeyInput && apiKeyInput.value || '').trim();
+    const region = getSelectedSonioxRegion();
+    const settings = loadProviderSettings();
+    settings.providerOverride = provider;
+    if (region) {
+        settings.sonioxRegion = region;
+    }
+    settings.keys = settings.keys || {};
+    if (key) {
+        settings.keys[provider] = key;
+    } else {
+        delete settings.keys[provider];
+    }
+    const hasOverride = !!(settings.keys && settings.keys[provider]);
+    if (!hasOverride && !envKeyPresent[provider]) {
+        if (settingsErrorEl) settingsErrorEl.textContent = t('api_key_required');
+        return;
+    }
+    saveProviderSettings(settings);
+
+    if (settingsSaveButton) settingsSaveButton.disabled = true;
+    if (settingsSaveButton) settingsSaveButton.textContent = t('saving');
+    if (settingsErrorEl) settingsErrorEl.textContent = '';
+
+    const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
+    const result = await pushSetup(provider, apiKeyToPush, { silent: false, region });
+
+    if (settingsSaveButton) settingsSaveButton.disabled = false;
+    if (settingsSaveButton) settingsSaveButton.textContent = t('save');
+
+    if (!result.ok) {
+        const msg = (result.data && result.data.message) || t('validation_api_key');
+        if (settingsErrorEl) settingsErrorEl.textContent = localizeBackendMessage(msg);
+        return;
+    }
+    if (result.data && result.data.setup_required) {
+        if (settingsErrorEl) settingsErrorEl.textContent = t('setup_required_hint');
+        populateSettingsForm();
+        return;
+    }
+    hideSettingsPanel();
+    clearSubtitleState();
+}
+
+async function syncProviderFromStorage() {
+    if (lockManualControls) {
+        return;
+    }
+    const settings = loadProviderSettings();
+    const desiredProvider = settings.providerOverride || translationProvider || 'soniox';
+    const overrideKey = settings.keys && settings.keys[desiredProvider];
+    // When the backend pins a custom endpoint, never push a region (it would override the URL).
+    const desiredRegion = backendSonioxCustomUrl ? null : getDesiredSonioxRegion();
+    const providerMismatch = settings.providerOverride && desiredProvider !== translationProvider;
+    const needKeyPush = overrideKey && backendKeySource !== 'localstorage';
+    const regionMismatch = !backendSonioxCustomUrl
+        && desiredProvider === 'soniox'
+        && settings.sonioxRegion
+        && desiredRegion !== backendSonioxRegion;
+    if (!providerMismatch && !needKeyPush && !regionMismatch) {
+        return;
+    }
+    if (pushedOverrideBootId === backendBootId) {
+        return;
+    }
+    await pushSetup(desiredProvider, overrideKey || null, { silent: true, region: desiredRegion });
+}
+
+function maybeForceOpenSettings() {
+    if (lockManualControls) {
+        return;
+    }
+    if (setupRequired) {
+        openSettings({ forced: true });
+    }
+}
+
+if (settingsButton) {
+    settingsButton.addEventListener('click', () => openSettings());
+}
+if (settingsCloseButton) {
+    settingsCloseButton.addEventListener('click', () => closeSettings());
+}
+if (settingsCancelButton) {
+    settingsCancelButton.addEventListener('click', () => closeSettings());
+}
+if (resetAllButton) {
+    resetAllButton.addEventListener('click', () => handleResetAll());
+}
+if (settingsOverlay) {
+    settingsOverlay.addEventListener('click', () => closeSettings());
+}
+if (settingsForm) {
+    settingsForm.addEventListener('submit', handleSettingsSave);
+    settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+            const provider = getSelectedProvider();
+            updateApiKeyFieldForProvider(provider);
+            updateSonioxRegionForProvider(provider);
+        });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     (async () => {
         await fetchUiConfig();
+        await syncProviderFromStorage();
         await fetchLlmRefineStatus();
         fetchApiKeyStatus();
         fetchOscTranslationStatus();
+        maybeForceOpenSettings();
         connect();
     })();
 });

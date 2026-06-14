@@ -23,8 +23,12 @@ logs/
 # Cloudflare Wrangler local state/cache
 .wrangler/
 
-# Environment file that may contain secrets
+# Environment file that may contain secrets (incl. backups like .env.bak)
 .env
+.env.*
+# ...but keep the committed templates (no secrets)
+!.env.example
+!.env.example.zh
 
 # Local scratch/reference files
 reference.py

@@ -1,5 +1,5 @@
 """
-Soniox会话模块 - 管理与Soniox服务的WebSocket会话
+Gemini会话模块 - 管理与Gemini Live Translation服务的WebSocket会话
 """
 import json
 import threading
@@ -12,21 +12,18 @@ from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
 from websockets import ConnectionClosed, ConnectionClosedOK
-from websockets.sync.client import connect as sync_connect
 
-import config
 from config import (
-    SONIOX_STREAM_DURATION_SECONDS,
-    SONIOX_SLEEP_ON_SILENCE,
-    SONIOX_SLEEP_IDLE_SECONDS,
-    SONIOX_SLEEP_PRE_ROLL_SECONDS,
-    SONIOX_SLEEP_SPEECH_GRACE_SECONDS,
+    GEMINI_STREAM_DURATION_SECONDS,
+    GEMINI_SLEEP_ON_SILENCE,
+    GEMINI_SLEEP_IDLE_SECONDS,
+    GEMINI_SLEEP_PRE_ROLL_SECONDS,
+    GEMINI_SLEEP_SPEECH_GRACE_SECONDS,
     USE_TWITCH_AUDIO_STREAM,
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
     FFMPEG_PATH,
-    DEFAULT_SEGMENT_MODE,
     is_llm_refine_available,
     LLM_REFINE_CONTEXT_MIN_COUNT,
     LLM_REFINE_CONTEXT_MAX_COUNT,
@@ -39,21 +36,21 @@ from config import (
     LLM_REQUEST_JSON,
     get_llm_api_key,
     normalize_language_code,
+    GEMINI_FULLWIDTH_PUNCT_FIX,
     OSC_SEND_TEXT_MODE,
     LLM_REFINE_DEFAULT_ENABLED,
     LLM_REFINE_DEFAULT_MODE,
+    TARGET_LANG_1,
+    TARGET_LANG_2,
 )
 ipc_server = None
 from audio_router import AudioSendRouter
-from soniox_client import get_config
+import gemini_client
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 
 logger = logging.getLogger(__name__)
-
-
-LLM_REFINE_MODES = ("off", "refine", "translate")
 
 
 def _is_api_key_error_reason(reason: str) -> bool:
@@ -67,6 +64,9 @@ def _is_api_key_error_reason(reason: str) -> bool:
         "401", "403",
     )
     return any(needle in text for needle in needles)
+
+
+LLM_REFINE_MODES = ("off", "refine", "translate")
 EAST_ASIAN_TIGHT_SPACING_CLASS = (
     r"\u3000-\u303F"
     r"\u3040-\u30FF"
@@ -81,6 +81,21 @@ EAST_ASIAN_TIGHT_SPACING_CLASS = (
 EAST_ASIAN_TIGHT_SPACING_RE = re.compile(
     rf"([{EAST_ASIAN_TIGHT_SPACING_CLASS}])\s+([{EAST_ASIAN_TIGHT_SPACING_CLASS}])"
 )
+# Half-width ASCII punctuation -> full-width, applied only when wedged between
+# two CJK (Han) characters (see fix_fullwidth_punctuation_between_cjk).
+HALFWIDTH_TO_FULLWIDTH_PUNCT = {",": "，", ".": "。", "?": "？", "!": "！"}
+_CJK_IDEOGRAPH_CLASS = r"㐀-䶿一-鿿豈-﫿"
+FULLWIDTH_PUNCT_BETWEEN_CJK_RE = re.compile(
+    rf"(?<=[{_CJK_IDEOGRAPH_CLASS}])([,.?!])(?=[{_CJK_IDEOGRAPH_CLASS}])"
+)
+# Gemini streams sentence-ending punctuation as its own chunk with a leading
+# space (e.g. "…ごめん" then " 。"), which renders as "…ごめん 。". A space directly
+# before East Asian punctuation is always spurious, so strip it. Only ASCII /
+# ideographic spaces are removed (not newlines).
+EAST_ASIAN_PUNCT_NO_LEADING_SPACE = "。、，！？：；．…‥｡､」』）】〕》〉〗〙｣"
+SPACE_BEFORE_EAST_ASIAN_PUNCT_RE = re.compile(
+    rf"[ \t　]+(?=[{EAST_ASIAN_PUNCT_NO_LEADING_SPACE}])"
+)
 STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS = 0.25
 STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS = 1.5
 STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS = 200
@@ -89,11 +104,11 @@ STREAM_ROLLOVER_SWITCH_PATIENCE_SECONDS = 25.0
 STREAM_ROLLOVER_FORCE_GUARD_SECONDS = 2.0
 STREAM_ROLLOVER_SILENCE_HOLD_SECONDS = 0.7
 STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT = 8
-SONIOX_INTERNAL_TOKEN_TEXTS = {"<end>", "<fin>"}
+INTERNAL_TOKEN_TEXTS = {"<end>", "<fin>"}
 
 
 class _RealtimeSilenceSender:
-    """Send realtime-paced PCM silence to a warming Soniox stream."""
+    """Send realtime-paced PCM silence to a warming Gemini stream."""
 
     def __init__(
         self,
@@ -117,7 +132,7 @@ class _RealtimeSilenceSender:
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._run,
-            name="SonioxRolloverSilence",
+            name="GeminiRolloverSilence",
             daemon=True,
         )
         self._thread.start()
@@ -150,7 +165,7 @@ class _RealtimeSilenceSender:
 
 
 @dataclass
-class _SonioxStreamState:
+class _StreamState:
     ws: Any
     index: int
     api_key: str
@@ -169,8 +184,35 @@ def normalize_east_asian_translation_spacing(text: str) -> str:
     return EAST_ASIAN_TIGHT_SPACING_RE.sub(r"\1\2", value)
 
 
-class SonioxSession:
-    """Soniox会话管理器"""
+def fix_fullwidth_punctuation_between_cjk(text: str) -> str:
+    """Convert a half-width , . ? ! to its full-width form when it is sandwiched
+    directly between two CJK (Han) characters. No-op when the text has no such
+    pattern or when GEMINI_FULLWIDTH_PUNCT_FIX is disabled."""
+    value = "" if text is None else str(text)
+    if not GEMINI_FULLWIDTH_PUNCT_FIX or not value:
+        return value
+    return FULLWIDTH_PUNCT_BETWEEN_CJK_RE.sub(
+        lambda m: HALFWIDTH_TO_FULLWIDTH_PUNCT[m.group(1)], value
+    )
+
+
+def strip_space_before_east_asian_punctuation(text: str) -> str:
+    """Remove spaces/tabs that sit immediately before East Asian punctuation,
+    e.g. "…ごめん 。" -> "…ごめん。"."""
+    value = "" if text is None else str(text)
+    if not value:
+        return value
+    return SPACE_BEFORE_EAST_ASIAN_PUNCT_RE.sub("", value)
+
+
+def normalize_gemini_text(text: str) -> str:
+    """Apply all per-token cleanups to Gemini's returned source/translation text."""
+    value = strip_space_before_east_asian_punctuation(text)
+    return fix_fullwidth_punctuation_between_cjk(value)
+
+
+class GeminiSession:
+    """Gemini会话管理器"""
     
     def __init__(self, logger, broadcast_callback):
         self.stop_event = None
@@ -186,14 +228,15 @@ class SonioxSession:
         self.translation: Optional[str] = None
         self.translation_target_lang: str = "en"
         self.sample_rate = 16000
-        self.chunk_size = 3840
+        # Gemini Live API recommends ~100ms audio chunks (1600 samples @16kHz).
+        self.chunk_size = 1600
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
         self._vrchat_self_muted = False
         self.osc_translation_enabled = False
-        self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
         self._sentence_buffers: dict[str, dict] = {}
+        self._last_input_language = ""
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
         self._osc_live_last_text_by_speaker: dict[str, str] = {}
@@ -210,11 +253,6 @@ class SonioxSession:
             self.translation_target_lang = str(TRANSLATION_TARGET_LANG)
         except Exception:
             self.translation_target_lang = "en"
-
-        # Two-way translation language pair (instance-level so it can be changed
-        # at runtime from the UI without restarting the process).
-        self.target_lang_1: str = normalize_language_code(config.TARGET_LANG_1) or "en"
-        self.target_lang_2: str = normalize_language_code(config.TARGET_LANG_2) or "zh"
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED:
             osc_manager.set_mute_callback(self._handle_vrchat_mute_self)
@@ -242,13 +280,13 @@ class SonioxSession:
         loop: asyncio.AbstractEventLoop,
         translation_target_lang: Optional[str] = None,
     ):
-        """启动新的Soniox会话"""
+        """启动新的Gemini会话"""
         if self.thread and self.thread.is_alive():
-            print("⚠️  Soniox session already running, start request ignored")
+            print("⚠️  Gemini session already running, start request ignored")
             return False
 
         if not api_key:
-            print("❌ Cannot start Soniox session: API key is missing.")
+            print("❌ Cannot start Gemini session: API key is missing.")
             self.api_key = None # Clear any previous invalid key
             return False
 
@@ -259,6 +297,7 @@ class SonioxSession:
         self.translation = translation
         self.loop = loop
         self._sentence_buffers.clear()
+        self._last_input_language = ""
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
         self._refine_context_history.clear()
@@ -291,37 +330,18 @@ class SonioxSession:
         return str(self.translation_target_lang or "en")
 
     def set_translation_target_lang(self, lang: str) -> tuple[bool, str]:
-        from config import normalize_language_code, is_supported_language_code
+        from config import canonicalize_language_code, is_supported_language_code
 
-        normalized = normalize_language_code(lang)
-        if not is_supported_language_code(normalized):
+        canonical = canonicalize_language_code(lang)
+        if not is_supported_language_code(canonical):
             return False, f"Unsupported translation target language: {lang}"
 
         previous = self.translation_target_lang
-        self.translation_target_lang = normalized
-        if previous != normalized:
-            print(f"🌐 Translation target language updated: {previous} -> {normalized}")
+        self.translation_target_lang = canonical
+        if previous != canonical:
+            print(f"🌐 Translation target language updated: {previous} -> {canonical}")
         return True, "ok"
-
-    def get_target_langs(self) -> tuple[str, str]:
-        return (str(self.target_lang_1 or "en"), str(self.target_lang_2 or "zh"))
-
-    def set_target_langs(self, lang_a: str, lang_b: str) -> tuple[bool, str]:
-        """Set the two-way translation language pair (validated)."""
-        from config import normalize_language_code, is_supported_language_code
-
-        a = normalize_language_code(lang_a)
-        b = normalize_language_code(lang_b)
-        if not is_supported_language_code(a):
-            return False, f"Unsupported language: {lang_a}"
-        if not is_supported_language_code(b):
-            return False, f"Unsupported language: {lang_b}"
-        if a == b:
-            return False, "Two-way translation requires two different languages"
-        self.target_lang_1 = a
-        self.target_lang_2 = b
-        return True, "ok"
-
+    
     def pause(self):
         """暂停识别"""
         if self.is_paused:
@@ -398,7 +418,7 @@ class SonioxSession:
             try:
                 self.ws.close()
             except Exception as close_error:
-                print(f"⚠️  Error while closing Soniox connection: {close_error}")
+                print(f"⚠️  Error while closing Gemini connection: {close_error}")
             finally:
                 self.ws = None
 
@@ -407,7 +427,7 @@ class SonioxSession:
         if thread and thread.is_alive():
             thread.join(timeout=3.0)
             if thread.is_alive():
-                print("⚠️  Soniox session thread did not terminate within timeout")
+                print("⚠️  Gemini session thread did not terminate within timeout")
 
         if thread and not thread.is_alive():
             self.thread = None
@@ -525,12 +545,12 @@ class SonioxSession:
             "separator_type": separator_type,
         }
 
-    def _is_internal_soniox_token(self, token_or_text) -> bool:
+    def _is_internal_token(self, token_or_text) -> bool:
         if isinstance(token_or_text, dict):
             text = token_or_text.get("text")
         else:
             text = token_or_text
-        return text in SONIOX_INTERNAL_TOKEN_TEXTS
+        return text in INTERNAL_TOKEN_TEXTS
 
     def _minify_token(self, token: dict, *, is_final: Optional[bool] = None) -> dict:
         """将 token 精简为前端需要的字段以减少带宽。"""
@@ -560,7 +580,7 @@ class SonioxSession:
     def _process_token_for_sentence(self, token: dict) -> None:
         """缓存 token 供后续断句/改进使用。"""
         text = token.get("text", "")
-        if self._is_internal_soniox_token(text):
+        if self._is_internal_token(text):
             return
 
         speaker = str(token.get("speaker", "?"))
@@ -583,7 +603,7 @@ class SonioxSession:
         return "".join(
             str(t.get("text", ""))
             for t in (tokens or [])
-            if t.get("text") is not None and not self._is_internal_soniox_token(t)
+            if t.get("text") is not None and not self._is_internal_token(t)
         ).strip()
 
     def _infer_source_language(self, tokens: list[dict]) -> str:
@@ -597,10 +617,10 @@ class SonioxSession:
         return ""
 
     def _two_way_partner_lang(self, lang: str) -> str:
-        """Return the other language in the two-way pair, or '' if unknown."""
+        """Return the other language in TARGET_LANG_1/TARGET_LANG_2, or '' if unknown."""
         code = normalize_language_code(lang or "")
-        l1 = normalize_language_code(self.target_lang_1)
-        l2 = normalize_language_code(self.target_lang_2)
+        l1 = normalize_language_code(TARGET_LANG_1)
+        l2 = normalize_language_code(TARGET_LANG_2)
         if not (l1 and l2):
             return ""
         if code == l1:
@@ -625,8 +645,8 @@ class SonioxSession:
             return t_sess
 
         source_lang = self._infer_source_language(source_tokens)
-        l1 = normalize_language_code(self.target_lang_1)
-        l2 = normalize_language_code(self.target_lang_2)
+        l1 = normalize_language_code(TARGET_LANG_1)
+        l2 = normalize_language_code(TARGET_LANG_2)
         if not (l1 and l2) or not source_lang:
             return t_sess
         if source_lang not in (l1, l2):
@@ -643,8 +663,8 @@ class SonioxSession:
         if mode != "two_way":
             return bool(t_sess and source_lang == t_sess)
 
-        l1 = normalize_language_code(self.target_lang_1)
-        l2 = normalize_language_code(self.target_lang_2)
+        l1 = normalize_language_code(TARGET_LANG_1)
+        l2 = normalize_language_code(TARGET_LANG_2)
         if not (l1 and l2):
             return bool(t_sess and source_lang == t_sess)
 
@@ -698,7 +718,7 @@ class SonioxSession:
         non_final_original_by_speaker: dict[str, list[dict]] = {}
         for token in non_final_tokens or []:
             text = token.get("text")
-            if text is None or self._is_internal_soniox_token(text):
+            if text is None or self._is_internal_token(text):
                 continue
             speaker = str(token.get("speaker", "?"))
             if token.get("translation_status") == "translation":
@@ -730,8 +750,8 @@ class SonioxSession:
             # Speculatively split the in-progress text into per-sentence preview
             # lines so a completed sentence shows on its own line as soon as the
             # period appears. These stay in the unconfirmed preview layer (not
-            # recorded to history) and keep updating as the non-final text is
-            # revised; only finalize commits a sentence to history.
+            # recorded to history) and keep updating as the text is revised; only
+            # finalize commits a sentence to history.
             preview_lines = self._split_into_sentence_lines(current_text)
             dedup_key = "\n".join(preview_lines)
             if self._osc_live_last_text_by_speaker.get(speaker) == dedup_key:
@@ -740,7 +760,7 @@ class SonioxSession:
             self._osc_live_last_text_by_speaker[speaker] = dedup_key
 
             try:
-                osc_manager.send_preview_messages_with_history(preview_lines, ongoing=True, speaker=speaker)
+                osc_manager.send_preview_messages_with_history(preview_lines, ongoing=True)
             except Exception as error:
                 print(f"OSC live send failed: {error}")
 
@@ -870,7 +890,7 @@ class SonioxSession:
             try:
                 osc_text = self._select_osc_text(refined_translation, source, original_tokens)
                 if osc_text:
-                    osc_manager.add_message_and_send(osc_text, ongoing=False, speaker=speaker)
+                    osc_manager.add_message_and_send(osc_text, ongoing=False)
             except Exception as error:
                 print(f"OSC send failed: {error}")
 
@@ -1163,30 +1183,6 @@ class SonioxSession:
 
         return {"status": "error", "message": "translation failed"}
 
-    def set_segment_mode(self, mode: str) -> tuple[bool, str]:
-        """设置断句模式并广播给所有前端"""
-        if mode not in ("translation", "endpoint", "punctuation"):
-            return False, f"Invalid segment mode: {mode}"
-
-        if mode == "translation" and self.get_llm_refine_mode() == "translate":
-            return False, "Segment mode 'translation' is disabled when LLM translate mode is enabled"
-
-        self._segment_mode = mode
-        self._sentence_buffers.clear()
-        self._reset_osc_live_state()
-        if self.loop:
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast_callback({
-                    "type": "segment_mode_changed",
-                    "mode": mode,
-                }),
-                self.loop,
-            )
-        return True, "ok"
-
-    def get_segment_mode(self) -> str:
-        return self._segment_mode
-
     def set_llm_refine_mode(self, mode: str) -> tuple[bool, str]:
         value = (mode or "").strip().lower()
         if value not in LLM_REFINE_MODES:
@@ -1194,10 +1190,6 @@ class SonioxSession:
 
         self._llm_refine_mode = value
         self._reset_osc_live_state()
-
-        if value == "translate" and self._segment_mode == "translation":
-            # Force punctuation segmentation when LLM translate mode is enabled.
-            self.set_segment_mode("punctuation")
 
         return True, "ok"
 
@@ -1212,10 +1204,10 @@ class SonioxSession:
         return self._llm_refine_mode != "off"
 
     def _stream_rollover_seconds(self) -> float | None:
-        if SONIOX_STREAM_DURATION_SECONDS is None:
+        if GEMINI_STREAM_DURATION_SECONDS is None:
             return None
         try:
-            value = float(SONIOX_STREAM_DURATION_SECONDS)
+            value = float(GEMINI_STREAM_DURATION_SECONDS)
         except Exception:
             return None
         if value <= 0:
@@ -1223,10 +1215,10 @@ class SonioxSession:
         return value
 
     def _sleep_idle_seconds(self) -> float | None:
-        if not SONIOX_SLEEP_ON_SILENCE:
+        if not GEMINI_SLEEP_ON_SILENCE:
             return None
         try:
-            value = float(SONIOX_SLEEP_IDLE_SECONDS)
+            value = float(GEMINI_SLEEP_IDLE_SECONDS)
         except Exception:
             return None
         if value <= 0:
@@ -1279,7 +1271,7 @@ class SonioxSession:
             session_stop_event=self.stop_event,
         )
 
-    def _open_soniox_stream_state(
+    def _open_stream_state(
         self,
         api_key: str,
         stream_index: int,
@@ -1288,22 +1280,19 @@ class SonioxSession:
         translation_target_lang: str,
         *,
         warming: bool = False,
-    ) -> _SonioxStreamState:
-        stream_config = get_config(
-            api_key,
-            audio_format,
-            translation,
-            translation_target_lang=translation_target_lang,
-            target_lang_1=self.target_lang_1,
-            target_lang_2=self.target_lang_2,
-        )
+    ) -> _StreamState:
+        if audio_format not in ("pcm_s16le", "auto"):
+            raise ValueError(f"Unsupported audio_format: {audio_format}")
         label = f"stream #{stream_index}"
         purpose = " warmup" if warming else ""
-        print(f"Connecting to Soniox ({label}{purpose})...")
-        # Read dynamically so a runtime region switch takes effect on the next stream.
-        ws = sync_connect(config.SONIOX_WEBSOCKET_URL)
-        ws.send(json.dumps(stream_config))
-        state = _SonioxStreamState(
+        print(f"Connecting to Gemini ({label}{purpose})...")
+        ws = gemini_client.connect_live(
+            api_key,
+            translation=translation,
+            translation_target_lang=translation_target_lang,
+            sample_rate=self.sample_rate,
+        )
+        state = _StreamState(
             ws=ws,
             index=stream_index,
             api_key=api_key,
@@ -1314,7 +1303,7 @@ class SonioxSession:
         print(f"Session started ({label}{purpose}).")
         return state
 
-    def _close_soniox_stream_state(self, stream: _SonioxStreamState | None) -> None:
+    def _close_stream_state(self, stream: _StreamState | None) -> None:
         if stream is None:
             return
         if stream.silence_sender is not None:
@@ -1323,9 +1312,9 @@ class SonioxSession:
         try:
             stream.ws.close()
         except Exception as close_error:
-            print(f"⚠️  Error closing Soniox stream #{stream.index}: {close_error}")
+            print(f"⚠️  Error closing Gemini stream #{stream.index}: {close_error}")
 
-    def _drain_warmup_stream(self, stream: _SonioxStreamState) -> bool:
+    def _drain_warmup_stream(self, stream: _StreamState) -> bool:
         """Read and discard silence warmup responses. Returns False if stream ended."""
         for _ in range(STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT):
             try:
@@ -1335,22 +1324,24 @@ class SonioxSession:
             except ConnectionClosedOK:
                 return False
             except ConnectionClosed as error:
-                print(f"⚠️  Soniox warmup stream #{stream.index} closed: {error}")
+                print(f"⚠️  Gemini warmup stream #{stream.index} closed: {error}")
                 return False
             except Exception as error:
-                print(f"⚠️  Error reading Soniox warmup stream #{stream.index}: {error}")
+                print(f"⚠️  Error reading Gemini warmup stream #{stream.index}: {error}")
                 return False
 
             try:
                 res = json.loads(message)
             except Exception as error:
-                print(f"⚠️  Failed to parse Soniox warmup response: {error}")
+                print(f"⚠️  Failed to parse Gemini warmup response: {error}")
                 continue
 
-            if res.get("error_code") is not None:
-                print(f"⚠️  Soniox warmup error {res.get('error_code')}: {res.get('error_message', '')}")
+            if isinstance(res, dict) and res.get("error"):
+                error = res.get("error") or {}
+                print(f"⚠️  Gemini warmup error {error.get('code')}: {error.get('message', '')}")
                 return False
-            if res.get("finished"):
+            if isinstance(res, dict) and ("goAway" in res or "go_away" in res):
+                print(f"⚠️  Gemini warmup stream #{stream.index} received goAway")
                 return False
 
         return True
@@ -1358,7 +1349,7 @@ class SonioxSession:
     def _open_and_switch_to_replacement_stream(
         self,
         audio_router: AudioSendRouter,
-        old_stream: _SonioxStreamState,
+        old_stream: _StreamState,
         current_api_key: str,
         stream_index: int,
         audio_format: str,
@@ -1366,12 +1357,12 @@ class SonioxSession:
         translation_target_lang: str,
         loop: asyncio.AbstractEventLoop,
         reason: str,
-    ) -> tuple[_SonioxStreamState, str, int] | None:
+    ) -> tuple[_StreamState, str, int] | None:
         next_stream_index = stream_index + 1
-        replacement_stream: _SonioxStreamState | None = None
+        replacement_stream: _StreamState | None = None
         try:
             next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
-            replacement_stream = self._open_soniox_stream_state(
+            replacement_stream = self._open_stream_state(
                 next_api_key,
                 next_stream_index,
                 audio_format,
@@ -1380,14 +1371,14 @@ class SonioxSession:
             )
             self._broadcast_preserve_existing_subtitles(loop)
             print(
-                f"🔁 Switching Soniox audio from stream #{old_stream.index} "
+                f"🔁 Switching Gemini audio from stream #{old_stream.index} "
                 f"to stream #{replacement_stream.index} at {reason}."
             )
             if not audio_router.switch_target(
                 replacement_stream.ws,
                 expected_current=old_stream.ws,
             ):
-                self._close_soniox_stream_state(replacement_stream)
+                self._close_stream_state(replacement_stream)
                 return None
 
             old_stream.sent_count = self._finalize_stream_before_rollover(
@@ -1396,22 +1387,22 @@ class SonioxSession:
                 old_stream.sent_count,
                 loop,
             )
-            self._close_soniox_stream_state(old_stream)
+            self._close_stream_state(old_stream)
             return replacement_stream, next_api_key, next_stream_index
         except Exception as error:
             if replacement_stream is not None:
-                self._close_soniox_stream_state(replacement_stream)
-            print(f"⚠️  Failed to switch Soniox stream at {reason}: {error}")
+                self._close_stream_state(replacement_stream)
+            print(f"⚠️  Failed to switch Gemini stream at {reason}: {error}")
             return None
 
     def _fetch_api_key_for_next_stream(self, current_api_key: str) -> str:
         """Refresh temp keys between stream rollovers while preserving permanent keys."""
         try:
-            from soniox_client import get_api_key
+            from gemini_client import get_api_key
 
             next_key = get_api_key()
         except Exception as error:
-            print(f"⚠️  Failed to refresh Soniox API key for stream rollover: {error}")
+            print(f"⚠️  Failed to refresh Gemini API key for stream rollover: {error}")
             return current_api_key
 
         next_key = (next_key or "").strip()
@@ -1427,15 +1418,15 @@ class SonioxSession:
         audio_format: str,
         translation: str,
         translation_target_lang: str,
-    ) -> _SonioxStreamState:
+    ) -> _StreamState:
         """Run in background thread: fetch key + connect WebSocket + send config.
 
         All blocking operations (HTTP request for temp key, WebSocket connect,
         send config) happen here so the main session loop stays responsive.
-        Returns a _SonioxStreamState with a pre-created silence_sender (not started).
+        Returns a _StreamState with a pre-created silence_sender (not started).
         """
         next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
-        ws_state = self._open_soniox_stream_state(
+        ws_state = self._open_stream_state(
             next_api_key, stream_index, audio_format, translation,
             translation_target_lang, warming=True,
         )
@@ -1455,36 +1446,148 @@ class SonioxSession:
         except Exception as error:
             print(f"⚠️  Failed to notify clients about stream rollover: {error}")
 
-    def _process_soniox_response(
+    def _convert_gemini_message(self, res: dict) -> dict:
+        """将Gemini Live API消息转换为内部token流格式。
+
+        返回字段：
+        - tokens: Soniox风格token列表（全部is_final=True，单一说话人"1"）
+        - endpoint_detected: turnComplete（说话回合结束）
+        - translation_complete: generationComplete（本回合译文输出完毕）
+        - finished / go_away: 服务端即将关闭流
+        - error_code / error_message
+        """
+        out = {
+            "tokens": [],
+            "endpoint_detected": False,
+            "translation_complete": False,
+            "finished": False,
+            "go_away": False,
+            "error_code": None,
+            "error_message": "",
+        }
+        if not isinstance(res, dict):
+            return out
+
+        error = res.get("error")
+        if error:
+            if isinstance(error, dict):
+                out["error_code"] = error.get("code", "unknown")
+                out["error_message"] = str(error.get("message", ""))
+            else:
+                out["error_code"] = "unknown"
+                out["error_message"] = str(error)
+            return out
+
+        if "goAway" in res or "go_away" in res:
+            out["finished"] = True
+            out["go_away"] = True
+
+        server_content = res.get("serverContent") or res.get("server_content") or {}
+        if not isinstance(server_content, dict):
+            return out
+
+        def _make_token(text: str, translation_status: str, language: str | None, source_language: str | None) -> dict:
+            return {
+                "text": text,
+                "is_final": True,
+                "speaker": "1",
+                "translation_status": translation_status,
+                "language": language,
+                "source_language": source_language,
+            }
+
+        input_transcription = (
+            server_content.get("inputTranscription")
+            or server_content.get("input_transcription")
+            or {}
+        )
+        if isinstance(input_transcription, dict) and input_transcription.get("text"):
+            language = normalize_language_code(
+                input_transcription.get("languageCode")
+                or input_transcription.get("language_code")
+                or ""
+            )
+            if language:
+                self._last_input_language = language
+            else:
+                language = self._last_input_language or None
+            out["tokens"].append(
+                _make_token(
+                    normalize_gemini_text(str(input_transcription["text"])),
+                    "original",
+                    language or None,
+                    None,
+                )
+            )
+
+        output_transcription = (
+            server_content.get("outputTranscription")
+            or server_content.get("output_transcription")
+            or {}
+        )
+        if (
+            isinstance(output_transcription, dict)
+            and output_transcription.get("text")
+            and (self.translation or "none") != "none"
+        ):
+            language = normalize_language_code(
+                output_transcription.get("languageCode")
+                or output_transcription.get("language_code")
+                or ""
+            ) or normalize_language_code(self.get_translation_target_lang()) or None
+            out["tokens"].append(
+                _make_token(
+                    normalize_gemini_text(str(output_transcription["text"])),
+                    "translation",
+                    language,
+                    self._last_input_language or None,
+                )
+            )
+
+        if server_content.get("generationComplete") or server_content.get("generation_complete"):
+            out["translation_complete"] = True
+
+        if server_content.get("turnComplete") or server_content.get("turn_complete"):
+            out["endpoint_detected"] = True
+            # Internal marker token consumed by segmentation, never displayed.
+            out["tokens"].append(_make_token("<end>", "original", None, None))
+
+        # Translated audio chunks (modelTurn parts) are intentionally ignored:
+        # this app renders subtitles only.
+        return out
+
+    def _process_stream_response(
         self,
         res: dict,
         all_final_tokens: list[dict],
         sent_count: int,
         loop: asyncio.AbstractEventLoop,
     ) -> tuple[int, bool, str | None]:
-        """Process one Soniox response. Returns sent count, should end stream, reason."""
-        if res.get("error_code") is not None:
-            message = res.get("error_message", "")
-            reason = f"server error {res['error_code']}: {message}"
-            print(f"Error: {res['error_code']} - {message}")
+        """Process one Gemini response. Returns sent count, should end stream, reason."""
+        converted = self._convert_gemini_message(res)
+
+        if converted.get("error_code") is not None:
+            message = converted.get("error_message", "")
+            reason = f"server error {converted['error_code']}: {message}"
+            print(f"Error: {converted['error_code']} - {message}")
             return sent_count, True, reason
 
         # Parse tokens from current response.
         non_final_tokens: list[dict] = []
 
-        for token in res.get("tokens", []):
+        for token in converted.get("tokens", []):
             text = token.get("text")
             if text:
                 if token.get("is_final"):
                     # Final tokens累积添加
                     all_final_tokens.append(token)
-                elif not self._is_internal_soniox_token(text):
+                elif not self._is_internal_token(text):
                     # Non-final tokens每次重置
                     non_final_tokens.append(token)
 
         # 计算新增的final tokens（增量部分）
         new_final_tokens = all_final_tokens[sent_count:]
-        endpoint_detected = bool(res.get("endpoint_detected", False))
+        endpoint_detected = bool(converted.get("endpoint_detected", False))
 
         separator_tokens: list[dict] = []
         outgoing_final_tokens: list[dict] = []
@@ -1498,109 +1601,54 @@ class SonioxSession:
         self._maybe_send_live_osc_translation(non_final_tokens)
 
         if new_final_tokens or endpoint_detected:
-            if self._segment_mode == "translation":
-                translation_hit = any(
-                    t.get("text") is not None
-                    and not self._is_internal_soniox_token(t)
-                    and t.get("translation_status") == "translation"
-                    for t in new_final_tokens
-                )
-                # Same-language speech produces no translation tokens; fall back
-                # to sentence-ending punctuation in the source (used as output)
-                # so it still segments instead of growing without bound.
-                if not translation_hit and self._can_use_source_as_translation(new_final_tokens):
-                    translation_hit = any(
-                        t.get("text")
-                        and not self._is_internal_soniox_token(t)
-                        and t.get("translation_status") != "translation"
-                        and self._is_sentence_ending_punctuation(t.get("text", ""))
-                        for t in new_final_tokens
-                    )
-                if translation_hit:
-                    speaker_value = None
-                    for token in reversed(new_final_tokens):
-                        if token.get("translation_status") == "translation":
-                            spk = token.get("speaker")
-                            if spk is not None and spk != "":
-                                speaker_value = str(spk)
-                                break
-                    if speaker_value is None:
-                        for token in reversed(new_final_tokens):
-                            spk = token.get("speaker")
-                            if spk is not None and spk != "":
-                                speaker_value = str(spk)
-                                break
-                    if speaker_value is None and self._sentence_buffers:
-                        speaker_value = next(iter(self._sentence_buffers.keys()))
-                    if speaker_value:
-                        self._trigger_sentence_finalization(speaker_value)
-                    separator_tokens.append(self._make_separator_token("translation"))
-
-            elif self._segment_mode == "endpoint":
-                endpoint_hit = endpoint_detected or any(
-                    t.get("text") == "<end>"
-                    for t in new_final_tokens
-                )
-                if endpoint_hit:
-                    speaker_value = None
-                    for token in reversed(new_final_tokens):
+            # Sentence segmentation: by sentence-ending punctuation (or the
+            # internal <end> marker emitted on Gemini turnComplete). Normally we
+            # look at translation tokens, but when the speech is already in the
+            # target language there are no translation tokens, so the source text
+            # is used as the output — in that case segment on punctuation in the
+            # original tokens too (gated by _can_use_source_as_translation so we
+            # never cut before a real translation arrives).
+            source_as_output = self._can_use_source_as_translation(new_final_tokens)
+            punctuation_hit = any(
+                t.get("text") == "<end>"
+                for t in new_final_tokens
+            ) or any(
+                t.get("text")
+                and not self._is_internal_token(t)
+                and (t.get("translation_status") == "translation" or source_as_output)
+                and self._is_sentence_ending_punctuation(t.get("text", ""))
+                for t in new_final_tokens
+            )
+            if punctuation_hit:
+                speaker_value = None
+                for token in reversed(new_final_tokens):
+                    if token.get("translation_status") == "translation" and token.get("text"):
                         spk = token.get("speaker")
                         if spk is not None and spk != "":
                             speaker_value = str(spk)
                             break
-                    if speaker_value is None and self._sentence_buffers:
-                        speaker_value = next(iter(self._sentence_buffers.keys()))
-                    if speaker_value:
-                        self._trigger_sentence_finalization(speaker_value)
-                    separator_tokens.append(self._make_separator_token("endpoint"))
-
-            elif self._segment_mode == "punctuation":
-                # When the speech is already in the target language there are no
-                # translation tokens, so the source text is used as the output;
-                # segment on punctuation in the original tokens too (gated by
-                # _can_use_source_as_translation so we never cut before a real
-                # translation arrives).
-                source_as_output = self._can_use_source_as_translation(new_final_tokens)
-                punctuation_hit = any(
-                    t.get("text") == "<end>"
-                    for t in new_final_tokens
-                ) or any(
-                    t.get("text")
-                    and not self._is_internal_soniox_token(t)
-                    and (t.get("translation_status") == "translation" or source_as_output)
-                    and self._is_sentence_ending_punctuation(t.get("text", ""))
-                    for t in new_final_tokens
-                )
-                if punctuation_hit:
-                    speaker_value = None
+                if speaker_value is None:
                     for token in reversed(new_final_tokens):
-                        if token.get("translation_status") == "translation" and token.get("text"):
+                        if token.get("text") and not self._is_internal_token(token):
                             spk = token.get("speaker")
                             if spk is not None and spk != "":
                                 speaker_value = str(spk)
                                 break
-                    if speaker_value is None:
-                        for token in reversed(new_final_tokens):
-                            if token.get("text") and not self._is_internal_soniox_token(token):
-                                spk = token.get("speaker")
-                                if spk is not None and spk != "":
-                                    speaker_value = str(spk)
-                                    break
-                    if speaker_value is None and self._sentence_buffers:
-                        speaker_value = next(iter(self._sentence_buffers.keys()))
-                    if speaker_value and self._trigger_sentence_finalization(speaker_value):
-                        separator_tokens.append(self._make_separator_token("punctuation"))
+                if speaker_value is None and self._sentence_buffers:
+                    speaker_value = next(iter(self._sentence_buffers.keys()))
+                if speaker_value and self._trigger_sentence_finalization(speaker_value):
+                    separator_tokens.append(self._make_separator_token("punctuation"))
 
         if new_final_tokens:
             for token in new_final_tokens:
                 if token.get("text") is None:
                     continue
-                if not self._is_internal_soniox_token(token):
+                if not self._is_internal_token(token):
                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
 
         # 将新的final tokens写入日志
         if outgoing_final_tokens and not self.is_paused:
-            self.logger.write_to_log([t for t in new_final_tokens if not self._is_internal_soniox_token(t)])
+            self.logger.write_to_log([t for t in new_final_tokens if not self._is_internal_token(t)])
 
         # 混入 IPC 消息（作为 S0）
         ipc_final_tokens = []
@@ -1628,7 +1676,7 @@ class SonioxSession:
                 self.broadcast_callback({
                     "type": "update",
                     "final_tokens": outgoing_final_tokens + [self._minify_token(t) for t in separator_tokens] + ipc_final_tokens,
-                    "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_soniox_token(t)] + ipc_non_final_tokens
+                    "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_token(t)] + ipc_non_final_tokens
                 }),
                 loop
             )
@@ -1641,8 +1689,11 @@ class SonioxSession:
             sent_count = len(all_final_tokens)
             self.last_sent_count = sent_count
 
-        # Session finished.
-        if res.get("finished"):
+        # Session finished / server requested shutdown (goAway).
+        if converted.get("finished"):
+            if converted.get("go_away"):
+                print("Session received goAway from server.")
+                return sent_count, True, "server goAway"
             print("Session finished.")
             return sent_count, True, "session finished"
 
@@ -1655,11 +1706,11 @@ class SonioxSession:
         sent_count: int,
         loop: asyncio.AbstractEventLoop,
     ) -> int:
-        """Ask Soniox to finalize pending tokens before switching streams."""
+        """Ask Gemini to finalize pending tokens before switching streams."""
         try:
-            ws.send(json.dumps({"type": "finalize"}))
+            ws.finalize()
         except Exception as error:
-            print(f"⚠️  Failed to request Soniox finalization before stream rollover: {error}")
+            print(f"⚠️  Failed to request Gemini finalization before stream rollover: {error}")
             return sent_count
 
         deadline = time.monotonic() + STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS
@@ -1674,16 +1725,16 @@ class SonioxSession:
             except ConnectionClosedOK:
                 break
             except Exception as error:
-                print(f"⚠️  Error while waiting for Soniox rollover finalization: {error}")
+                print(f"⚠️  Error while waiting for Gemini rollover finalization: {error}")
                 break
 
             try:
                 res = json.loads(message)
             except Exception as error:
-                print(f"⚠️  Failed to parse Soniox finalization response: {error}")
+                print(f"⚠️  Failed to parse Gemini finalization response: {error}")
                 continue
 
-            sent_count, should_end, _reason = self._process_soniox_response(
+            sent_count, should_end, _reason = self._process_stream_response(
                 res,
                 all_final_tokens,
                 sent_count,
@@ -1694,7 +1745,7 @@ class SonioxSession:
 
         return sent_count
 
-    def _finalize_and_close_stream(self, old_stream: _SonioxStreamState, loop: asyncio.AbstractEventLoop) -> None:
+    def _finalize_and_close_stream(self, old_stream: _StreamState, loop: asyncio.AbstractEventLoop) -> None:
         """Finalize and close an old stream after rollover, in a background thread.
 
         This avoids blocking the main loop on old-stream finalization so that
@@ -1706,7 +1757,7 @@ class SonioxSession:
             )
         except Exception as error:
             print(f"⚠️  Error finalizing old stream #{old_stream.index}: {error}")
-        self._close_soniox_stream_state(old_stream)
+        self._close_stream_state(old_stream)
 
     
     def _run_session(
@@ -1717,14 +1768,14 @@ class SonioxSession:
         translation_target_lang: str,
         loop: asyncio.AbstractEventLoop,
     ):
-        """运行Soniox会话（内部方法）"""
+        """运行Gemini会话（内部方法）"""
         if not api_key:
             print("❌ _run_session called without API key. Exiting session thread.")
             asyncio.run_coroutine_threadsafe(
                 self.broadcast_callback({
                     "type": "error",
                     "code": "api_key",
-                    "message": "Soniox API key is missing. Please configure it in Settings."
+                    "message": "Gemini API key is missing. Please configure it in Settings."
                 }),
                 loop
             )
@@ -1732,12 +1783,12 @@ class SonioxSession:
 
         rollover_seconds = self._stream_rollover_seconds()
         if rollover_seconds is not None:
-            print(f"🔁 Soniox stream rollover enabled: {rollover_seconds:.1f}s per stream")
+            print(f"🔁 Gemini stream rollover enabled: {rollover_seconds:.1f}s per stream")
         sleep_idle_seconds = self._sleep_idle_seconds()
         if sleep_idle_seconds is not None:
             print(
-                f"💤 Soniox silence sleep enabled: {sleep_idle_seconds:.1f}s idle, "
-                f"{float(SONIOX_SLEEP_PRE_ROLL_SECONDS):.2f}s pre-roll"
+                f"💤 Gemini silence sleep enabled: {sleep_idle_seconds:.1f}s idle, "
+                f"{float(GEMINI_SLEEP_PRE_ROLL_SECONDS):.2f}s pre-roll"
             )
 
         self.stop_event = threading.Event()
@@ -1746,24 +1797,24 @@ class SonioxSession:
         current_api_key = api_key
         stream_index = 1
         audio_stream_started = False
-        active_stream: _SonioxStreamState | None = None
-        warmup_stream: _SonioxStreamState | None = None
+        active_stream: _StreamState | None = None
+        warmup_stream: _StreamState | None = None
         dormant_for_silence = False
         next_prepare_attempt_at = 0.0
         warmup_future: concurrent.futures.Future | None = None
-        key_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="soniox-key")
+        key_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="gemini-key")
         audio_router = AudioSendRouter(
             max_buffered_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
             sample_rate=self.sample_rate,
             chunk_size=self.chunk_size,
             silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
             sleep_idle_seconds=sleep_idle_seconds,
-            sleep_pre_roll_seconds=SONIOX_SLEEP_PRE_ROLL_SECONDS,
-            sleep_speech_grace_seconds=SONIOX_SLEEP_SPEECH_GRACE_SECONDS,
+            sleep_pre_roll_seconds=GEMINI_SLEEP_PRE_ROLL_SECONDS,
+            sleep_speech_grace_seconds=GEMINI_SLEEP_SPEECH_GRACE_SECONDS,
         )
 
         try:
-            active_stream = self._open_soniox_stream_state(
+            active_stream = self._open_stream_state(
                 current_api_key,
                 stream_index,
                 audio_format,
@@ -1774,7 +1825,7 @@ class SonioxSession:
             self.last_sent_count = 0
 
             if not audio_router.set_target(active_stream.ws):
-                disconnect_reason = "failed to attach audio to Soniox stream"
+                disconnect_reason = "failed to attach audio to Gemini stream"
                 return
 
             self._start_audio_streamer(audio_router)
@@ -1791,7 +1842,7 @@ class SonioxSession:
                             buffered_count = audio_router.buffered_count()
                             try:
                                 next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
-                                resumed_stream = self._open_soniox_stream_state(
+                                resumed_stream = self._open_stream_state(
                                     next_api_key,
                                     stream_index + 1,
                                     audio_format,
@@ -1799,7 +1850,7 @@ class SonioxSession:
                                     translation_target_lang,
                                 )
                                 if not audio_router.set_target(resumed_stream.ws):
-                                    self._close_soniox_stream_state(resumed_stream)
+                                    self._close_stream_state(resumed_stream)
                                     disconnect_reason = "failed to attach audio after silence sleep"
                                     break
                                 active_stream = resumed_stream
@@ -1810,11 +1861,11 @@ class SonioxSession:
                                 dormant_for_silence = False
                                 disconnect_reason = "silence sleep resumed"
                                 print(
-                                    f"▶️  Speech detected after silence; reopened Soniox stream "
+                                    f"▶️  Speech detected after silence; reopened Gemini stream "
                                     f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
                                 )
                             except Exception as error:
-                                disconnect_reason = f"failed to reopen Soniox stream after silence: {error}"
+                                disconnect_reason = f"failed to reopen Gemini stream after silence: {error}"
                                 print(f"⚠️  {disconnect_reason}")
                                 break
                         else:
@@ -1834,7 +1885,7 @@ class SonioxSession:
                         if warmup_stream.silence_sender is not None:
                             warmup_stream.silence_sender.stop()
                             warmup_stream.silence_sender = None
-                        self._close_soniox_stream_state(warmup_stream)
+                        self._close_stream_state(warmup_stream)
                         warmup_stream = None
                     if warmup_future is not None:
                         warmup_future.cancel()
@@ -1842,7 +1893,7 @@ class SonioxSession:
 
                     print(
                         f"💤 No speech detected for "
-                        f"{audio_router.sleep_confirmed_silence_seconds():.1f}s; closing Soniox stream."
+                        f"{audio_router.sleep_confirmed_silence_seconds():.1f}s; closing Gemini stream."
                     )
                     sleeping_stream = active_stream
                     if not audio_router.enter_sleep_buffering(sleeping_stream.ws):
@@ -1857,7 +1908,7 @@ class SonioxSession:
                         sleeping_stream.sent_count,
                         loop,
                     )
-                    self._close_soniox_stream_state(sleeping_stream)
+                    self._close_stream_state(sleeping_stream)
                     continue
 
                 if active_stream is None:
@@ -1887,11 +1938,11 @@ class SonioxSession:
                             warmup_stream.silence_sender.start()
                             warmup_stream.silence_started_at = time.monotonic()
                             print(
-                                f"🔁 Soniox stream #{warmup_stream.index} is warming with realtime silence; "
+                                f"🔁 Gemini stream #{warmup_stream.index} is warming with realtime silence; "
                                 f"waiting for a quiet audio gap to switch."
                             )
                         except Exception as error:
-                            print(f"⚠️  Failed to prepare next Soniox stream for rollover: {error}")
+                            print(f"⚠️  Failed to prepare next Gemini stream for rollover: {error}")
                             warmup_future = None
                             warmup_stream = None
                             stream_index -= 1
@@ -1913,7 +1964,7 @@ class SonioxSession:
                         "rollover guard deadline without warmup",
                     )
                     if switched is None:
-                        disconnect_reason = "failed to switch Soniox stream before configured duration"
+                        disconnect_reason = "failed to switch Gemini stream before configured duration"
                         break
                     active_stream, current_api_key, stream_index = switched
                     self.ws = active_stream.ws
@@ -1925,13 +1976,13 @@ class SonioxSession:
                     warmup_alive = True
                     silence_sender = warmup_stream.silence_sender
                     if silence_sender is not None and silence_sender.error is not None:
-                        print(f"⚠️  Soniox warmup silence failed: {silence_sender.error}")
+                        print(f"⚠️  Gemini warmup silence failed: {silence_sender.error}")
                         warmup_alive = False
                     elif not self._drain_warmup_stream(warmup_stream):
                         warmup_alive = False
 
                     if not warmup_alive:
-                        self._close_soniox_stream_state(warmup_stream)
+                        self._close_stream_state(warmup_stream)
                         warmup_stream = None
                         next_prepare_attempt_at = time.monotonic() + 1.0
                     else:
@@ -1948,7 +1999,7 @@ class SonioxSession:
                                 else "rollover guard deadline"
                             )
                             print(
-                                f"🔁 Switching Soniox audio from stream #{active_stream.index} "
+                                f"🔁 Switching Gemini audio from stream #{active_stream.index} "
                                 f"to stream #{warmup_stream.index} at {switch_reason}."
                             )
 
@@ -1961,7 +2012,7 @@ class SonioxSession:
                                 warmup_stream.ws,
                                 expected_current=old_stream.ws,
                             ):
-                                disconnect_reason = "failed to switch audio to warmed Soniox stream"
+                                disconnect_reason = "failed to switch audio to warmed Gemini stream"
                                 break
 
                             active_stream = warmup_stream
@@ -1976,7 +2027,7 @@ class SonioxSession:
                                 target=self._finalize_and_close_stream,
                                 args=(old_stream, loop),
                                 daemon=True,
-                                name=f"soniox-finalize-{old_stream.index}",
+                                name=f"gemini-finalize-{old_stream.index}",
                             ).start()
                             disconnect_reason = "stream rollover"
                             continue
@@ -1996,11 +2047,11 @@ class SonioxSession:
                         rollover_seconds,
                     ):
                         print(
-                            f"🔁 Soniox stream #{active_stream.index} closed near configured duration; "
+                            f"🔁 Gemini stream #{active_stream.index} closed near configured duration; "
                             "rolling over..."
                         )
                         audio_router.clear_target(active_stream.ws)
-                        self._close_soniox_stream_state(active_stream)
+                        self._close_stream_state(active_stream)
 
                         if warmup_stream is not None:
                             if warmup_stream.silence_sender is not None:
@@ -2012,7 +2063,7 @@ class SonioxSession:
                             self.ws = active_stream.ws
                             self.last_sent_count = active_stream.sent_count
                             if not audio_router.set_target(active_stream.ws):
-                                disconnect_reason = "failed to attach warmed Soniox stream after closure"
+                                disconnect_reason = "failed to attach warmed Gemini stream after closure"
                                 break
                             continue
 
@@ -2029,7 +2080,7 @@ class SonioxSession:
                                 "stream closed near configured duration",
                             )
                             if replacement is None:
-                                disconnect_reason = "failed to attach replacement Soniox stream"
+                                disconnect_reason = "failed to attach replacement Gemini stream"
                                 break
                             active_stream, current_api_key, stream_index = replacement
                             self.ws = active_stream.ws
@@ -2037,7 +2088,7 @@ class SonioxSession:
                             continue
                         except Exception as reconnect_error:
                             disconnect_reason = f"connection closed during rollover and reconnect failed: {reconnect_error}"
-                            print(f"Error reconnecting to Soniox after rollover closure: {reconnect_error}")
+                            print(f"Error reconnecting to Gemini after rollover closure: {reconnect_error}")
                             break
 
                     disconnect_reason = f"connection closed: {error}"
@@ -2051,16 +2102,16 @@ class SonioxSession:
                     break
                 except Exception as error:
                     disconnect_reason = f"connection error: {error}"
-                    print(f"Error connecting to Soniox: {error}")
+                    print(f"Error connecting to Gemini: {error}")
                     break
 
                 try:
                     res = json.loads(message)
                 except Exception as error:
-                    print(f"⚠️  Failed to parse Soniox response: {error}")
+                    print(f"⚠️  Failed to parse Gemini response: {error}")
                     continue
 
-                active_stream.sent_count, should_end, reason = self._process_soniox_response(
+                active_stream.sent_count, should_end, reason = self._process_stream_response(
                     res,
                     active_stream.all_final_tokens,
                     active_stream.sent_count,
@@ -2068,16 +2119,19 @@ class SonioxSession:
                 )
                 if should_end:
                     disconnect_reason = reason or "stream ended"
-                    if rollover_seconds is not None and self._stream_is_near_rollover_limit(
-                        active_stream.started_at,
-                        rollover_seconds,
+                    if reason == "server goAway" or (
+                        rollover_seconds is not None
+                        and self._stream_is_near_rollover_limit(
+                            active_stream.started_at,
+                            rollover_seconds,
+                        )
                     ):
                         print(
-                            f"🔁 Soniox stream #{active_stream.index} ended near configured duration; "
+                            f"🔁 Gemini stream #{active_stream.index} ended ({reason}); "
                             "rolling over..."
                         )
                         audio_router.clear_target(active_stream.ws)
-                        self._close_soniox_stream_state(active_stream)
+                        self._close_stream_state(active_stream)
 
                         if warmup_stream is not None:
                             if warmup_stream.silence_sender is not None:
@@ -2089,7 +2143,7 @@ class SonioxSession:
                             self.ws = active_stream.ws
                             self.last_sent_count = active_stream.sent_count
                             if not audio_router.set_target(active_stream.ws):
-                                disconnect_reason = "failed to attach warmed Soniox stream after finish"
+                                disconnect_reason = "failed to attach warmed Gemini stream after finish"
                                 break
                             continue
                         replacement = self._open_and_switch_to_replacement_stream(
@@ -2104,7 +2158,7 @@ class SonioxSession:
                             "stream finished near configured duration",
                         )
                         if replacement is None:
-                            disconnect_reason = "failed to attach replacement Soniox stream after finish"
+                            disconnect_reason = "failed to attach replacement Gemini stream after finish"
                             break
                         active_stream, current_api_key, stream_index = replacement
                         self.ws = active_stream.ws
@@ -2119,7 +2173,7 @@ class SonioxSession:
                 if warmup_future.done() and not warmup_future.cancelled():
                     try:
                         leaked = warmup_future.result(timeout=0)
-                        self._close_soniox_stream_state(leaked)
+                        self._close_stream_state(leaked)
                     except Exception:
                         pass
                 else:
@@ -2134,9 +2188,9 @@ class SonioxSession:
             audio_router.close()
             self._stop_audio_streamer()
             if warmup_stream is not None:
-                self._close_soniox_stream_state(warmup_stream)
+                self._close_stream_state(warmup_stream)
             if active_stream is not None:
-                self._close_soniox_stream_state(active_stream)
+                self._close_stream_state(active_stream)
             self.thread = None
             if notify_disconnect and not stop_requested:
                 try:
@@ -2151,4 +2205,4 @@ class SonioxSession:
                         loop,
                     )
                 except Exception as notify_error:
-                    print(f"⚠️  Failed to notify clients about Soniox disconnect: {notify_error}")
+                    print(f"⚠️  Failed to notify clients about Gemini disconnect: {notify_error}")
