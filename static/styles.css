@@ -682,6 +682,23 @@ body.dark-theme .field-hint {
     color: #9ca3af;
 }
 
+.field-hint a {
+    color: #2563eb;
+    text-decoration: none;
+}
+
+.field-hint a:hover {
+    text-decoration: underline;
+}
+
+body.dark-theme .field-hint a {
+    color: #60a5fa;
+}
+
+#providerDescription {
+    margin-top: -10px;
+}
+
 .settings-actions {
     position: sticky;
     bottom: 0;

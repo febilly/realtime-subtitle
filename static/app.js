@@ -102,6 +102,8 @@ const settingsSaveButton = document.getElementById('settingsSaveButton');
 const settingsErrorEl = document.getElementById('settingsError');
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeySourceHint = document.getElementById('apiKeySourceHint');
+const providerDescription = document.getElementById('providerDescription');
+const apiKeyGetLink = document.getElementById('apiKeyGetLink');
 const sonioxRegionSection = document.getElementById('sonioxRegionSection');
 const sonioxRegionPickerHost = document.getElementById('sonioxRegionPicker');
 const toastEl = document.getElementById('toast');
@@ -109,6 +111,12 @@ const toastEl = document.getElementById('toast');
 const SONIOX_REGIONS = ['us', 'eu', 'jp'];
 // Custom-select element (built lazily); mirrors the language picker styling.
 let sonioxRegionPickerEl = null;
+
+// Where users obtain an API key for each provider (shown as a link in Settings).
+const PROVIDER_KEY_URLS = {
+    soniox: 'https://console.soniox.com/api-keys',
+    gemini: 'https://aistudio.google.com/apikey',
+};
 
 const PROVIDER_SETTINGS_STORAGE_KEY = 'providerSettings.v1';
 const UI_TRANSLATION_MODE_STORAGE_KEY = 'uiTranslationMode';
@@ -3868,6 +3876,21 @@ function updateApiKeyFieldForProvider(provider) {
     }
     if (apiKeySourceHint) {
         apiKeySourceHint.textContent = '';
+    }
+    if (providerDescription) {
+        providerDescription.textContent = t(`provider_${provider}_desc`);
+    }
+    if (apiKeyGetLink) {
+        const url = PROVIDER_KEY_URLS[provider];
+        if (url) {
+            apiKeyGetLink.textContent = t('api_key_get_link', { provider: providerName });
+            apiKeyGetLink.href = url;
+            apiKeyGetLink.parentElement.hidden = false;
+        } else {
+            apiKeyGetLink.textContent = '';
+            apiKeyGetLink.removeAttribute('href');
+            apiKeyGetLink.parentElement.hidden = true;
+        }
     }
 }
 
