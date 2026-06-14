@@ -126,6 +126,8 @@ let setupRequired = false;
 let envKeyPresent = { soniox: false, gemini: false };
 let backendKeySource = 'env';
 let backendSonioxRegion = 'us';
+// True when the backend pins a custom Soniox endpoint; region is not selectable.
+let backendSonioxCustomUrl = false;
 let backendTranslationMode = 'one_way';
 let backendTargetLang1 = 'en';
 let backendTargetLang2 = 'zh';
@@ -825,6 +827,9 @@ async function fetchUiConfig() {
         if (typeof data.soniox_region === 'string' && data.soniox_region.trim()) {
             backendSonioxRegion = normalizeSonioxRegion(data.soniox_region);
         }
+        if (typeof data.soniox_custom_url === 'boolean') {
+            backendSonioxCustomUrl = data.soniox_custom_url;
+        }
         if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
             backendTranslationMode = data.translation_mode.trim().toLowerCase();
         }
@@ -1472,7 +1477,7 @@ function positionDropdownMenu(trigger, menu) {
 
 // Generic dark-themed custom <select> replacement. Reuses the language picker's
 // CSS classes for visual consistency. `options` is [{ value, label }].
-function buildCustomSelect(options, { value = null, onChange = null } = {}) {
+function buildCustomSelect(options, { value = null, onChange = null, disabled = false } = {}) {
     const picker = document.createElement('div');
     picker.className = 'lang-picker';
     let currentValue = value;
@@ -1483,6 +1488,10 @@ function buildCustomSelect(options, { value = null, onChange = null } = {}) {
     trigger.className = 'lang-picker-button';
     trigger.setAttribute('aria-haspopup', 'listbox');
     trigger.setAttribute('aria-expanded', 'false');
+    if (disabled) {
+        trigger.disabled = true;
+        picker.classList.add('disabled');
+    }
 
     const label = document.createElement('span');
     label.className = 'lang-picker-label';
@@ -3825,6 +3834,10 @@ function getDesiredSonioxRegion() {
 }
 
 function getSelectedSonioxRegion() {
+    // No selectable region when the backend pins a custom endpoint; leave it untouched.
+    if (backendSonioxCustomUrl) {
+        return null;
+    }
     if (sonioxRegionPickerEl && sonioxRegionPickerEl.value) {
         return normalizeSonioxRegion(sonioxRegionPickerEl.value);
     }
@@ -3836,12 +3849,19 @@ function renderSonioxRegionPicker(selectedRegion) {
     if (!sonioxRegionPickerHost) {
         return;
     }
+    sonioxRegionPickerHost.innerHTML = '';
+    if (backendSonioxCustomUrl) {
+        // Backend set a custom Soniox address: show a disabled "Custom" picker.
+        const options = [{ value: 'custom', label: t('soniox_region_custom') }];
+        sonioxRegionPickerEl = buildCustomSelect(options, { value: 'custom', disabled: true });
+        sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
+        return;
+    }
     const value = normalizeSonioxRegion(selectedRegion);
     const options = SONIOX_REGIONS.map((region) => ({
         value: region,
         label: t(`soniox_region_${region}`),
     }));
-    sonioxRegionPickerHost.innerHTML = '';
     sonioxRegionPickerEl = buildCustomSelect(options, { value });
     sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
 }
@@ -3977,7 +3997,9 @@ async function handleSettingsSave(event) {
     const region = getSelectedSonioxRegion();
     const settings = loadProviderSettings();
     settings.providerOverride = provider;
-    settings.sonioxRegion = region;
+    if (region) {
+        settings.sonioxRegion = region;
+    }
     settings.keys = settings.keys || {};
     if (key) {
         settings.keys[provider] = key;
@@ -4022,10 +4044,12 @@ async function syncProviderFromStorage() {
     const settings = loadProviderSettings();
     const desiredProvider = settings.providerOverride || translationProvider || 'soniox';
     const overrideKey = settings.keys && settings.keys[desiredProvider];
-    const desiredRegion = getDesiredSonioxRegion();
+    // When the backend pins a custom endpoint, never push a region (it would override the URL).
+    const desiredRegion = backendSonioxCustomUrl ? null : getDesiredSonioxRegion();
     const providerMismatch = settings.providerOverride && desiredProvider !== translationProvider;
     const needKeyPush = overrideKey && backendKeySource !== 'localstorage';
-    const regionMismatch = desiredProvider === 'soniox'
+    const regionMismatch = !backendSonioxCustomUrl
+        && desiredProvider === 'soniox'
         && settings.sonioxRegion
         && desiredRegion !== backendSonioxRegion;
     if (!providerMismatch && !needKeyPush && !regionMismatch) {

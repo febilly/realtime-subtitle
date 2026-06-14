@@ -257,6 +257,11 @@ def _infer_soniox_region(url: str) -> str:
 # Active region; inferred from any explicit URL override so a custom endpoint is preserved.
 SONIOX_REGION = _infer_soniox_region(SONIOX_WEBSOCKET_URL)
 
+# True when SONIOX_WEBSOCKET_URL is explicitly set in the environment (.env),
+# i.e. the backend pins a Soniox address. The UI uses this to disable region
+# selection and show a "custom" label, regardless of which URL was provided.
+SONIOX_CUSTOM_URL = bool(os.environ.get("SONIOX_WEBSOCKET_URL", "").strip())
+
 SONIOX_TEMP_KEY_URL = os.environ.get("SONIOX_TEMP_KEY_URL")
 SONIOX_USES_TEMP_API_KEY = not bool(os.environ.get("SONIOX_API_KEY", "").strip())
 

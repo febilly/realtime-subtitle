@@ -183,6 +183,7 @@ class WebServer:
             "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
             "hide_speaker_labels": bool(HIDE_SPEAKER_LABELS),
             "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
         }
 
         if manager is not None:
@@ -289,6 +290,7 @@ class WebServer:
             "setup_required": bool(manager.setup_required),
             "downgraded_two_way": bool(result.get("downgraded_two_way")),
             "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
         })
 
     async def use_env_handler(self, request):
@@ -329,6 +331,7 @@ class WebServer:
             "setup_required": bool(manager.setup_required),
             "downgraded_two_way": bool(result.get("downgraded_two_way")),
             "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
         })
 
     @staticmethod

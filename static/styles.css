@@ -857,6 +857,15 @@ body.dark-theme .lang-picker-button {
     color: #e5e7eb;
 }
 
+.lang-picker.disabled .lang-picker-button {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.lang-picker.disabled .lang-picker-chevron {
+    display: none;
+}
+
 .lang-picker-label {
     min-width: 0;
     overflow: hidden;
