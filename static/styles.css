@@ -703,7 +703,8 @@ body.dark-theme .field-hint a {
     position: sticky;
     bottom: 0;
     display: flex;
-    justify-content: flex-end;
+    align-items: center;
+    justify-content: space-between;
     gap: 10px;
     margin-top: auto;
     margin-right: calc(-1 * var(--settings-pad-x));
@@ -748,6 +749,75 @@ body.dark-theme .settings-actions {
 body.dark-theme .secondary-button {
     background: rgba(255, 255, 255, 0.10);
     color: #e5e7eb;
+}
+
+.settings-actions-right {
+    display: flex;
+    gap: 10px;
+}
+
+.danger-button {
+    min-width: 76px;
+    min-height: 36px;
+    border-radius: 8px;
+    border: 1px solid rgba(220, 38, 38, 0.4);
+    background: transparent;
+    color: #dc2626;
+    cursor: pointer;
+    padding: 8px 14px;
+    font-size: 14px;
+}
+
+.danger-button:hover {
+    background: rgba(220, 38, 38, 0.08);
+}
+
+body.dark-theme .danger-button {
+    color: #f87171;
+    border-color: rgba(248, 113, 113, 0.4);
+}
+
+body.dark-theme .danger-button:hover {
+    background: rgba(248, 113, 113, 0.12);
+}
+
+.confirm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.confirm-dialog {
+    position: fixed;
+    z-index: 10001;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(360px, calc(100vw - 48px));
+    box-sizing: border-box;
+    padding: 20px;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #1f2937;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+body.dark-theme .confirm-dialog {
+    background: #1e1e2e;
+    color: #e5e7eb;
+}
+
+.confirm-message {
+    margin: 0 0 18px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.confirm-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
 }
 
 .toast {

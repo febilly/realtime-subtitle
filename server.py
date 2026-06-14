@@ -538,7 +538,18 @@ def main():
             return False
 
     web_server.set_window_on_top_callback(set_window_on_top)
-    
+
+    def request_shutdown() -> None:
+        """退出整个应用（重置设置后由前端触发）。"""
+        print("\n👋 Reset requested, shutting down application...")
+        try:
+            logger.close_log_file()
+        except Exception:
+            pass
+        os._exit(0)
+
+    web_server.set_shutdown_callback(request_shutdown)
+
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
         print("\n👋 Received termination signal, shutting down server...")

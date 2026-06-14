@@ -57,6 +57,7 @@ class WebServer:
         self.app_runner = None
         self.api_key_error_message = None # 新增属性
         self.window_on_top_callback = None
+        self.shutdown_callback = None
         self.ipc_server = None
         # Provider-specific API key getter; injected by server.py.
         self.get_api_key = None
@@ -66,6 +67,9 @@ class WebServer:
 
     def set_window_on_top_callback(self, callback):
         self.window_on_top_callback = callback
+
+    def set_shutdown_callback(self, callback):
+        self.shutdown_callback = callback
         
     async def _start_ipc_status_polling(self, app):
         self._ipc_polling_task = asyncio.create_task(self._poll_ipc_status())
@@ -688,6 +692,14 @@ class WebServer:
         except Exception as error:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
+    async def shutdown_handler(self, request):
+        """请求退出应用（前端“重置所有设置并退出”调用）。"""
+        if not callable(self.shutdown_callback):
+            return web.json_response({"status": "ignored", "message": "Shutdown unavailable"})
+        # 先返回响应，再延迟退出，避免连接被强制中断导致前端报错。
+        asyncio.get_event_loop().call_later(0.3, self.shutdown_callback)
+        return web.json_response({"status": "ok"})
+
     async def index_handler(self, request):
         """静态文件处理"""
         index_path = get_resource_path(os.path.join('static', 'index.html'))
@@ -739,6 +751,7 @@ class WebServer:
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
+        app.router.add_post('/shutdown', self.shutdown_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径

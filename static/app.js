@@ -99,7 +99,13 @@ const settingsForm = document.getElementById('settingsForm');
 const settingsCloseButton = document.getElementById('settingsCloseButton');
 const settingsCancelButton = document.getElementById('settingsCancelButton');
 const settingsSaveButton = document.getElementById('settingsSaveButton');
+const resetAllButton = document.getElementById('resetAllButton');
 const settingsErrorEl = document.getElementById('settingsError');
+const confirmOverlay = document.getElementById('confirmOverlay');
+const confirmDialog = document.getElementById('confirmDialog');
+const confirmMessageEl = document.getElementById('confirmMessage');
+const confirmOkButton = document.getElementById('confirmOkButton');
+const confirmCancelButton = document.getElementById('confirmCancelButton');
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeySourceHint = document.getElementById('apiKeySourceHint');
 const providerDescription = document.getElementById('providerDescription');
@@ -3791,6 +3797,7 @@ function applySettingsI18n() {
     renderSonioxRegionPicker(getSelectedSonioxRegion());
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
     if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
+    if (resetAllButton) resetAllButton.textContent = t('reset_all');
     if (settingsButton) settingsButton.title = t('settings');
     if (settingsCloseButton) settingsCloseButton.title = t('close');
 }
@@ -3988,6 +3995,95 @@ async function pushSetup(provider, apiKey, { silent = false, region = null } = {
     }
 }
 
+let confirmResolve = null;
+
+function closeConfirmDialog(result) {
+    if (confirmOverlay) confirmOverlay.hidden = true;
+    if (confirmDialog) confirmDialog.hidden = true;
+    document.removeEventListener('keydown', handleConfirmKeydown);
+    if (confirmResolve) {
+        const resolve = confirmResolve;
+        confirmResolve = null;
+        resolve(result);
+    }
+}
+
+function handleConfirmKeydown(event) {
+    if (event.key === 'Escape') {
+        closeConfirmDialog(false);
+    } else if (event.key === 'Enter') {
+        closeConfirmDialog(true);
+    }
+}
+
+// 自定义确认对话框，替代浏览器自带的 confirm()。
+function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
+    if (!confirmDialog || !confirmOverlay) {
+        return Promise.resolve(window.confirm(message));
+    }
+    if (confirmResolve) {
+        // 已有对话框在显示，先取消旧的。
+        closeConfirmDialog(false);
+    }
+    if (confirmMessageEl) confirmMessageEl.textContent = message;
+    if (confirmOkButton) {
+        confirmOkButton.textContent = okLabel || t('confirm');
+        confirmOkButton.className = danger ? 'danger-button' : 'primary-button';
+    }
+    if (confirmCancelButton) confirmCancelButton.textContent = cancelLabel || t('cancel');
+    confirmOverlay.hidden = false;
+    confirmDialog.hidden = false;
+    document.addEventListener('keydown', handleConfirmKeydown);
+    if (confirmCancelButton) confirmCancelButton.focus();
+    return new Promise((resolve) => {
+        confirmResolve = resolve;
+    });
+}
+
+if (confirmOkButton) {
+    confirmOkButton.addEventListener('click', () => closeConfirmDialog(true));
+}
+if (confirmCancelButton) {
+    confirmCancelButton.addEventListener('click', () => closeConfirmDialog(false));
+}
+if (confirmOverlay) {
+    confirmOverlay.addEventListener('click', () => closeConfirmDialog(false));
+}
+
+async function handleResetAll() {
+    const confirmed = await showConfirm(t('reset_all_confirm'), {
+        okLabel: t('reset_all'),
+        cancelLabel: t('cancel'),
+        danger: true,
+    });
+    if (!confirmed) {
+        return;
+    }
+    // 清除前端保存的所有数据（包括 API 配置、主题、各类开关偏好）。
+    try {
+        localStorage.clear();
+    } catch (_) {}
+    try {
+        sessionStorage.clear();
+    } catch (_) {}
+    // 请求应用退出（在 WebView 桌面模式下生效）。服务器会先返回响应再延迟退出。
+    try {
+        await fetch('/shutdown', { method: 'POST' });
+    } catch (_) {
+        // 服务器正在关闭，请求可能无法完成，忽略即可。
+    }
+    try {
+        window.close();
+    } catch (_) {}
+    // 浏览器模式下脚本通常无法关闭窗口，显示已退出提示作为兜底。
+    const doneColor = document.body.classList.contains('dark-theme') ? '#e5e7eb' : '#1f2937';
+    document.body.innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:center;'
+        + 'height:100vh;font-size:15px;opacity:0.7;text-align:center;padding:24px;'
+        + 'color:' + doneColor + ';">'
+        + t('reset_all_done') + '</div>';
+}
+
 async function handleSettingsSave(event) {
     if (event) {
         event.preventDefault();
@@ -4078,6 +4174,9 @@ if (settingsCloseButton) {
 }
 if (settingsCancelButton) {
     settingsCancelButton.addEventListener('click', () => closeSettings());
+}
+if (resetAllButton) {
+    resetAllButton.addEventListener('click', () => handleResetAll());
 }
 if (settingsOverlay) {
     settingsOverlay.addEventListener('click', () => closeSettings());
