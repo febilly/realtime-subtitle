@@ -603,6 +603,48 @@ def get_capabilities(provider: str | None = None) -> dict:
     p = provider or TRANSLATION_PROVIDER
     return dict(PROVIDER_CAPABILITIES.get(p, PROVIDER_CAPABILITIES["soniox"]))
 
+
+# ======================== Runtime provider switching ========================
+# The active provider can be switched at runtime (hot-switch) from the Web UI.
+# Recompute the module-level values that depend on it so /ui-config and freshly
+# created sessions reflect the new provider immediately.
+
+def _compute_enable_speaker_diarization(provider: str) -> bool:
+    """Diarization is Soniox-only; Gemini Live Translation forces it off."""
+    if provider == "gemini":
+        return False
+    return _env_bool("ENABLE_SPEAKER_DIARIZATION", True)
+
+
+def _compute_translation_target_lang(provider: str) -> str:
+    """Resolve the default one-way target language for the given provider."""
+    if USE_SYSTEM_LANGUAGE:
+        return get_system_language(provider)
+    normalized = canonicalize_target_lang(TARGET_LANG, provider)
+    if is_supported_language_code(normalized, provider):
+        return normalized
+    return "en"
+
+
+def set_active_provider(provider: str) -> str:
+    """Switch the active translation provider and recompute dependent values.
+
+    Returns the normalized provider name. Safe to call repeatedly (hot-switch).
+    """
+    global TRANSLATION_PROVIDER, SUPPORTED_LANGUAGE_CODES
+    global ENABLE_SPEAKER_DIARIZATION, TRANSLATION_TARGET_LANG
+
+    p = str(provider or "").strip().lower()
+    if p not in ("soniox", "gemini"):
+        p = "soniox"
+
+    TRANSLATION_PROVIDER = p
+    os.environ["TRANSLATION_PROVIDER"] = p
+    SUPPORTED_LANGUAGE_CODES = get_supported_language_codes(p)
+    ENABLE_SPEAKER_DIARIZATION = _compute_enable_speaker_diarization(p)
+    TRANSLATION_TARGET_LANG = _compute_translation_target_lang(p)
+    return p
+
 # ============ IPC Configuration (realtime-subtitle <-> Yakutan) ============
 
 # Whether to enable IPC functionality

@@ -89,6 +89,81 @@ let hideSpeakerLabels = false;
 // 由后端下发：当前 provider 及能力（segment_mode 等）。
 let translationProvider = 'soniox';
 let segmentModeSupported = true;
+let twoWaySupported = true;
+
+// ===== 运行时 provider/key（热切换）+ 设置面板状态 =====
+const settingsButton = document.getElementById('settingsButton');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsPanel = document.getElementById('settingsPanel');
+const settingsForm = document.getElementById('settingsForm');
+const settingsCloseButton = document.getElementById('settingsCloseButton');
+const settingsCancelButton = document.getElementById('settingsCancelButton');
+const settingsSaveButton = document.getElementById('settingsSaveButton');
+const settingsErrorEl = document.getElementById('settingsError');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const apiKeySourceHint = document.getElementById('apiKeySourceHint');
+const toastEl = document.getElementById('toast');
+
+const PROVIDER_SETTINGS_STORAGE_KEY = 'providerSettings.v1';
+const UI_TRANSLATION_MODE_STORAGE_KEY = 'uiTranslationMode';
+
+let backendBootId = '';
+let setupRequired = false;
+let envKeyPresent = { soniox: false, gemini: false };
+let backendKeySource = 'env';
+let backendTranslationMode = 'one_way';
+let backendTargetLang1 = 'en';
+let backendTargetLang2 = 'zh';
+let suppressTranslationDisplay = false;
+let pushedOverrideBootId = null;
+let settingsForcedOpen = false;
+let toastTimer = null;
+
+let uiTranslationMode = localStorage.getItem(UI_TRANSLATION_MODE_STORAGE_KEY);
+if (!['none', 'one_way', 'two_way'].includes(uiTranslationMode)) {
+    uiTranslationMode = null;
+}
+
+function loadProviderSettings() {
+    try {
+        const raw = localStorage.getItem(PROVIDER_SETTINGS_STORAGE_KEY);
+        if (raw) {
+            const obj = JSON.parse(raw);
+            if (obj && typeof obj === 'object') {
+                if (!obj.keys || typeof obj.keys !== 'object') {
+                    obj.keys = {};
+                }
+                return obj;
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+    return { providerOverride: null, keys: {} };
+}
+
+function saveProviderSettings(settings) {
+    try {
+        localStorage.setItem(PROVIDER_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    } catch (e) {
+        // ignore
+    }
+}
+
+function showToast(message, isError = false) {
+    if (!toastEl) {
+        return;
+    }
+    toastEl.textContent = message;
+    toastEl.classList.toggle('error', !!isError);
+    toastEl.hidden = false;
+    if (toastTimer) {
+        clearTimeout(toastTimer);
+    }
+    toastTimer = setTimeout(() => {
+        toastEl.hidden = true;
+    }, 4000);
+}
 
 const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
 const LLM_REFINE_ICON = '🪄';
@@ -236,6 +311,7 @@ function setLanguageListFromCodes(codes) {
     }
     SUPPORTED_TRANSLATION_LANGUAGES = buildLanguageList(codes);
     // Invalidate the cached popover so it rebuilds with the new language set.
+    closeLangSelectMenu();
     if (langPopoverEl && langPopoverEl.parentNode) {
         langPopoverEl.parentNode.removeChild(langPopoverEl);
     }
@@ -245,6 +321,9 @@ function setLanguageListFromCodes(codes) {
 let langPopoverEl = null;
 let langPopoverOpen = false;
 let langPopoverCleanup = null;
+let langPopoverDraft = null;
+let langSelectMenuEl = null;
+let activeLangPickerEl = null;
 
 // 存储所有已确认的tokens
 let allFinalTokens = [];
@@ -711,7 +790,38 @@ async function fetchUiConfig() {
         // Provider capability flags gate provider-specific controls.
         if (data && data.capabilities && typeof data.capabilities === 'object') {
             segmentModeSupported = data.capabilities.segment_mode !== false;
+            twoWaySupported = data.capabilities.two_way_translation === true;
         }
+
+        // Runtime provider/key state (hot-switch).
+        if (typeof data.boot_id === 'string') {
+            backendBootId = data.boot_id;
+        }
+        setupRequired = !!data.setup_required;
+        if (data.env_key_present && typeof data.env_key_present === 'object') {
+            envKeyPresent = {
+                soniox: !!data.env_key_present.soniox,
+                gemini: !!data.env_key_present.gemini,
+            };
+        }
+        if (typeof data.key_source === 'string') {
+            backendKeySource = data.key_source;
+        }
+        if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
+            backendTranslationMode = data.translation_mode.trim().toLowerCase();
+        }
+        if (typeof data.target_lang_1 === 'string' && data.target_lang_1.trim()) {
+            backendTargetLang1 = data.target_lang_1.trim().toLowerCase();
+        }
+        if (typeof data.target_lang_2 === 'string' && data.target_lang_2.trim()) {
+            backendTargetLang2 = data.target_lang_2.trim().toLowerCase();
+        }
+        if (!uiTranslationMode) {
+            uiTranslationMode = backendTranslationMode || 'one_way';
+        }
+        // Gemini "no translation" is a pure frontend suppression of the translation text.
+        suppressTranslationDisplay = (translationProvider === 'gemini' && uiTranslationMode === 'none');
+        updateSettingsButtonVisibility();
         const backendSegmentMode = normalizeSegmentMode(data && data.segment_mode);
         const storedSegmentMode = normalizeSegmentMode(localStorage.getItem('segmentMode'));
 
@@ -1151,6 +1261,261 @@ function handleSegmentModeChanged(data) {
     enforceTranslateSegmentMode();
 }
 
+function setUiTranslationMode(mode, { persistOnly = false } = {}) {
+    if (!['none', 'one_way', 'two_way'].includes(mode)) {
+        return;
+    }
+    uiTranslationMode = mode;
+    try {
+        localStorage.setItem(UI_TRANSLATION_MODE_STORAGE_KEY, mode);
+    } catch (e) {
+        // ignore
+    }
+    if (persistOnly) {
+        return;
+    }
+    suppressTranslationDisplay = (translationProvider === 'gemini' && mode === 'none');
+}
+
+function getLanguageDisplayName(code) {
+    const normalized = (code || '').toString().trim().toLowerCase();
+    const info = SUPPORTED_TRANSLATION_LANGUAGES.find((lang) => lang.code.toLowerCase() === normalized);
+    return info ? `${info.en} - ${info.native}` : (code || '').toString();
+}
+
+function ensureLangSelectMenu() {
+    if (langSelectMenuEl) {
+        return langSelectMenuEl;
+    }
+    const menu = document.createElement('div');
+    menu.className = 'lang-select-menu';
+    menu.hidden = true;
+    menu.setAttribute('role', 'listbox');
+    document.body.appendChild(menu);
+    langSelectMenuEl = menu;
+    return menu;
+}
+
+function setLangPickerValue(picker, code) {
+    if (!picker) {
+        return;
+    }
+    const selected = coerceSupportedLanguageCode(code, picker.dataset.fallback || 'en');
+    picker.dataset.value = selected;
+    const label = picker.querySelector('.lang-picker-label');
+    if (label) {
+        label.textContent = getLanguageDisplayName(selected);
+    }
+}
+
+function positionLangSelectMenu(picker, menu) {
+    const trigger = picker.querySelector('.lang-picker-button') || picker;
+    const rect = trigger.getBoundingClientRect();
+    const gap = 6;
+    const viewportPadding = 8;
+    const menuWidth = Math.max(220, Math.round(rect.width));
+    const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
+    const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
+    );
+    const top = openUp
+        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
+        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.width = `${Math.round(menuWidth)}px`;
+    menu.style.maxHeight = `${Math.round(menuHeight)}px`;
+}
+
+function openLangSelectMenu(picker) {
+    const menu = ensureLangSelectMenu();
+    activeLangPickerEl = picker;
+    menu.innerHTML = '';
+
+    for (const lang of SUPPORTED_TRANSLATION_LANGUAGES) {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.className = 'lang-select-option';
+        option.dataset.code = lang.code;
+        option.setAttribute('role', 'option');
+        option.textContent = `${lang.en} - ${lang.native}`;
+        const isSelected = lang.code === picker.value;
+        option.classList.toggle('selected', isSelected);
+        option.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        option.addEventListener('click', () => {
+            setLangPickerValue(picker, lang.code);
+            closeLangSelectMenu();
+            picker.dispatchEvent(new Event('change'));
+        });
+        menu.appendChild(option);
+    }
+
+    picker.classList.add('open');
+    const trigger = picker.querySelector('.lang-picker-button');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'true');
+    }
+    positionLangSelectMenu(picker, menu);
+    menu.hidden = false;
+
+    const selectedOption = menu.querySelector('.lang-select-option.selected');
+    if (selectedOption) {
+        selectedOption.scrollIntoView({ block: 'nearest' });
+    }
+}
+
+function closeLangSelectMenu() {
+    if (activeLangPickerEl) {
+        activeLangPickerEl.classList.remove('open');
+        const trigger = activeLangPickerEl.querySelector('.lang-picker-button');
+        if (trigger) {
+            trigger.setAttribute('aria-expanded', 'false');
+        }
+    }
+    activeLangPickerEl = null;
+    if (langSelectMenuEl) {
+        langSelectMenuEl.hidden = true;
+        langSelectMenuEl.innerHTML = '';
+    }
+}
+
+function buildLangPicker(selectedCode, fallbackCode = 'en') {
+    const picker = document.createElement('div');
+    picker.className = 'lang-picker';
+    picker.dataset.fallback = fallbackCode;
+    Object.defineProperty(picker, 'value', {
+        get() {
+            return picker.dataset.value || '';
+        },
+        set(value) {
+            setLangPickerValue(picker, value);
+        },
+    });
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'lang-picker-button';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const label = document.createElement('span');
+    label.className = 'lang-picker-label';
+    const chevron = document.createElement('span');
+    chevron.className = 'lang-picker-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+
+    trigger.appendChild(label);
+    trigger.appendChild(chevron);
+    trigger.addEventListener('click', () => {
+        if (activeLangPickerEl === picker && langSelectMenuEl && !langSelectMenuEl.hidden) {
+            closeLangSelectMenu();
+            return;
+        }
+        closeLangSelectMenu();
+        openLangSelectMenu(picker);
+    });
+
+    picker.appendChild(trigger);
+    setLangPickerValue(picker, selectedCode);
+    return picker;
+}
+
+function normalizeTranslationMode(mode) {
+    const value = (mode || '').toString().trim().toLowerCase();
+    return ['none', 'one_way', 'two_way'].includes(value) ? value : 'one_way';
+}
+
+function getFirstSupportedLanguageCode() {
+    const first = SUPPORTED_TRANSLATION_LANGUAGES[0];
+    return first && first.code ? first.code : 'en';
+}
+
+function coerceSupportedLanguageCode(code, fallback = 'en') {
+    const desired = (code || '').toString().trim().toLowerCase();
+    const fallbackCode = (fallback || '').toString().trim().toLowerCase();
+    const languages = SUPPORTED_TRANSLATION_LANGUAGES || [];
+    const desiredMatch = languages.find((lang) => lang.code.toLowerCase() === desired);
+    if (desiredMatch) {
+        return desiredMatch.code;
+    }
+    const fallbackMatch = languages.find((lang) => lang.code.toLowerCase() === fallbackCode);
+    if (fallbackMatch) {
+        return fallbackMatch.code;
+    }
+    return getFirstSupportedLanguageCode();
+}
+
+function createLangPopoverDraft() {
+    let mode = normalizeTranslationMode(uiTranslationMode || backendTranslationMode || 'one_way');
+    if (mode === 'two_way' && !twoWaySupported) {
+        mode = 'one_way';
+    }
+    return {
+        mode,
+        targetLang: coerceSupportedLanguageCode(currentTranslationTargetLang, defaultTranslationTargetLang),
+        targetLang1: coerceSupportedLanguageCode(backendTargetLang1, 'en'),
+        targetLang2: coerceSupportedLanguageCode(backendTargetLang2, 'zh'),
+    };
+}
+
+function getLangPopoverDraft() {
+    if (!langPopoverDraft) {
+        langPopoverDraft = createLangPopoverDraft();
+    }
+    return langPopoverDraft;
+}
+
+function onSelectTranslationMode(mode) {
+    if (mode === 'two_way' && !twoWaySupported) {
+        return;
+    }
+    const draft = getLangPopoverDraft();
+    draft.mode = normalizeTranslationMode(mode);
+    updateLangPopoverSelection();
+    refreshLangPopoverSections();
+}
+
+function refreshLangPopoverSections() {
+    if (!langPopoverEl) {
+        return;
+    }
+    const modeControl = langPopoverEl.querySelector('.translation-mode-control');
+    const onewayBox = langPopoverEl.querySelector('.lang-popover-oneway');
+    const twowayBox = langPopoverEl.querySelector('.lang-popover-twoway');
+    const draft = getLangPopoverDraft();
+    if (modeControl) {
+        const twoWayOption = modeControl.querySelector('[data-mode="two_way"]');
+        if (twoWayOption) {
+            twoWayOption.hidden = !twoWaySupported;
+        }
+    }
+    const effectiveMode = (draft.mode === 'two_way' && !twoWaySupported) ? 'one_way' : draft.mode;
+    if (onewayBox) {
+        onewayBox.hidden = (effectiveMode !== 'one_way');
+    }
+    if (twowayBox) {
+        twowayBox.hidden = (effectiveMode !== 'two_way');
+    }
+    const targetSelect = langPopoverEl.querySelector('.lang-picker[data-role="target"]');
+    if (targetSelect) {
+        targetSelect.value = coerceSupportedLanguageCode(draft.targetLang, defaultTranslationTargetLang);
+    }
+    const selA = langPopoverEl.querySelector('.lang-picker[data-role="langA"]');
+    if (selA) {
+        selA.value = coerceSupportedLanguageCode(draft.targetLang1, 'en');
+    }
+    const selB = langPopoverEl.querySelector('.lang-picker[data-role="langB"]');
+    if (selB) {
+        selB.value = coerceSupportedLanguageCode(draft.targetLang2, 'zh');
+    }
+}
+
 function ensureLangPopover() {
     if (langPopoverEl) {
         return langPopoverEl;
@@ -1160,26 +1525,99 @@ function ensureLangPopover() {
     el.className = 'lang-popover';
     el.style.display = 'none';
 
-    for (const lang of SUPPORTED_TRANSLATION_LANGUAGES) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'lang-option';
-        btn.dataset.code = lang.code;
-        btn.textContent = `${lang.en} - ${lang.native}`;
-        btn.addEventListener('click', () => {
-            const selected = btn.dataset.code;
-            hideLangPopover();
-            if (!selected) {
-                return;
-            }
-            if (selected === currentTranslationTargetLang) {
-                return;
-            }
-            currentTranslationTargetLang = selected;
-            void restartRecognition({ auto: false, targetLang: selected });
-        });
-        el.appendChild(btn);
+    const title = document.createElement('h2');
+    title.className = 'lang-popover-title';
+    title.textContent = t('translation_panel_title');
+    el.appendChild(title);
+
+    // Translation-mode selector (none / one-way / two-way).
+    const modeControl = document.createElement('div');
+    modeControl.className = 'segmented-control translation-mode-control';
+    const modeDefs = [
+        ['none', 'translate_mode_none'],
+        ['one_way', 'translate_mode_one_way'],
+        ['two_way', 'translate_mode_two_way'],
+    ];
+    for (const [mode, labelKey] of modeDefs) {
+        const opt = document.createElement('button');
+        opt.type = 'button';
+        opt.className = 'segmented-option';
+        opt.dataset.mode = mode;
+        const span = document.createElement('span');
+        span.textContent = t(labelKey);
+        opt.appendChild(span);
+        opt.addEventListener('click', () => onSelectTranslationMode(mode));
+        modeControl.appendChild(opt);
     }
+    el.appendChild(modeControl);
+
+    // One-way: single target-language select.
+    const onewayBox = document.createElement('div');
+    onewayBox.className = 'lang-popover-oneway';
+    const targetField = document.createElement('label');
+    targetField.className = 'lang-twoway-field';
+    const targetLabel = document.createElement('span');
+    targetLabel.textContent = t('target_language');
+    const targetSelect = buildLangPicker(getLangPopoverDraft().targetLang, defaultTranslationTargetLang);
+    targetSelect.dataset.role = 'target';
+    targetSelect.addEventListener('change', () => {
+        const draft = getLangPopoverDraft();
+        draft.targetLang = targetSelect.value;
+    });
+    targetField.appendChild(targetLabel);
+    targetField.appendChild(targetSelect);
+    onewayBox.appendChild(targetField);
+    el.appendChild(onewayBox);
+
+    // Two-way (Soniox only): pick language A and B.
+    const twowayBox = document.createElement('div');
+    twowayBox.className = 'lang-popover-twoway';
+
+    const fieldA = document.createElement('label');
+    fieldA.className = 'lang-twoway-field';
+    const labelA = document.createElement('span');
+    labelA.textContent = t('language_a');
+    const selA = buildLangPicker(getLangPopoverDraft().targetLang1, 'en');
+    selA.dataset.role = 'langA';
+    selA.addEventListener('change', () => {
+        const draft = getLangPopoverDraft();
+        draft.targetLang1 = selA.value;
+    });
+    fieldA.appendChild(labelA);
+    fieldA.appendChild(selA);
+
+    const fieldB = document.createElement('label');
+    fieldB.className = 'lang-twoway-field';
+    const labelB = document.createElement('span');
+    labelB.textContent = t('language_b');
+    const selB = buildLangPicker(getLangPopoverDraft().targetLang2, 'zh');
+    selB.dataset.role = 'langB';
+    selB.addEventListener('change', () => {
+        const draft = getLangPopoverDraft();
+        draft.targetLang2 = selB.value;
+    });
+    fieldB.appendChild(labelB);
+    fieldB.appendChild(selB);
+
+    const actions = document.createElement('div');
+    actions.className = 'lang-popover-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'secondary-button';
+    cancelBtn.textContent = t('cancel');
+    cancelBtn.addEventListener('click', hideLangPopover);
+    const applyBtn = document.createElement('button');
+    applyBtn.type = 'button';
+    applyBtn.className = 'primary-button';
+    applyBtn.textContent = t('apply');
+    applyBtn.addEventListener('click', applyLangPopoverDraft);
+    actions.appendChild(cancelBtn);
+    actions.appendChild(applyBtn);
+
+    twowayBox.appendChild(fieldA);
+    twowayBox.appendChild(fieldB);
+    el.appendChild(twowayBox);
+    el.appendChild(actions);
 
     document.body.appendChild(el);
     langPopoverEl = el;
@@ -1190,11 +1628,57 @@ function updateLangPopoverSelection() {
     if (!langPopoverEl) {
         return;
     }
-    const buttons = langPopoverEl.querySelectorAll('.lang-option');
-    buttons.forEach((btn) => {
-        const code = btn.dataset.code;
-        btn.classList.toggle('selected', code === currentTranslationTargetLang);
+    const draft = getLangPopoverDraft();
+    const modeButtons = langPopoverEl.querySelectorAll('.translation-mode-control .segmented-option');
+    modeButtons.forEach((btn) => {
+        const checked = btn.dataset.mode === draft.mode;
+        btn.classList.toggle('selected', checked);
+        btn.setAttribute('aria-pressed', checked ? 'true' : 'false');
     });
+    refreshLangPopoverSections();
+}
+
+function applyLangPopoverDraft() {
+    const draft = getLangPopoverDraft();
+    const nextMode = (draft.mode === 'two_way' && !twoWaySupported) ? 'one_way' : draft.mode;
+
+    if (nextMode === 'none') {
+        const modeChanged = uiTranslationMode !== 'none' || suppressTranslationDisplay;
+        setUiTranslationMode('none');
+        hideLangPopover();
+        if (translationProvider === 'gemini') {
+            renderSubtitles();
+        } else if (modeChanged) {
+            void restartRecognition({ translationMode: 'none' });
+        }
+        return;
+    }
+
+    if (nextMode === 'two_way') {
+        const a = coerceSupportedLanguageCode(draft.targetLang1, 'en');
+        const b = coerceSupportedLanguageCode(draft.targetLang2, 'zh');
+        if (!a || !b || a === b) {
+            return;
+        }
+        const changed = uiTranslationMode !== 'two_way' || suppressTranslationDisplay || a !== backendTargetLang1 || b !== backendTargetLang2;
+        backendTargetLang1 = a;
+        backendTargetLang2 = b;
+        setUiTranslationMode('two_way');
+        hideLangPopover();
+        if (changed) {
+            void restartRecognition({ translationMode: 'two_way', targetLang1: a, targetLang2: b });
+        }
+        return;
+    }
+
+    const selected = coerceSupportedLanguageCode(draft.targetLang, defaultTranslationTargetLang);
+    const changed = uiTranslationMode !== 'one_way' || suppressTranslationDisplay || selected !== currentTranslationTargetLang;
+    currentTranslationTargetLang = selected;
+    setUiTranslationMode('one_way');
+    hideLangPopover();
+    if (changed) {
+        void restartRecognition({ translationMode: 'one_way', targetLang: selected });
+    }
 }
 
 function showLangPopover() {
@@ -1202,30 +1686,10 @@ function showLangPopover() {
         return;
     }
     const el = ensureLangPopover();
+    langPopoverDraft = createLangPopoverDraft();
     updateLangPopoverSelection();
 
-    const rect = translationLangButton.getBoundingClientRect();
-    const padding = 8;
-
     el.style.display = 'block';
-
-    const popoverRect = el.getBoundingClientRect();
-
-    // Place to the left of the button bar, vertically aligned with button.
-    let top = rect.top - 10;
-    if (top < padding) top = padding;
-    if (top + popoverRect.height > window.innerHeight - padding) {
-        top = Math.max(padding, window.innerHeight - padding - popoverRect.height);
-    }
-
-    let left = rect.left - popoverRect.width - 12;
-    if (left < padding) {
-        left = padding;
-    }
-
-    el.style.top = `${top}px`;
-    el.style.left = `${left}px`;
-
     langPopoverOpen = true;
 
     const onDocMouseDown = (event) => {
@@ -1236,6 +1700,9 @@ function showLangPopover() {
         if (langPopoverEl && langPopoverEl.contains(target)) {
             return;
         }
+        if (langSelectMenuEl && langSelectMenuEl.contains(target)) {
+            return;
+        }
         if (translationLangButton && translationLangButton.contains(target)) {
             return;
         }
@@ -1244,6 +1711,10 @@ function showLangPopover() {
 
     const onKeyDown = (event) => {
         if (event.key === 'Escape') {
+            if (langSelectMenuEl && !langSelectMenuEl.hidden) {
+                closeLangSelectMenu();
+                return;
+            }
             hideLangPopover();
         }
     };
@@ -1264,6 +1735,8 @@ function hideLangPopover() {
     if (langPopoverEl) {
         langPopoverEl.style.display = 'none';
     }
+    closeLangSelectMenu();
+    langPopoverDraft = null;
     if (typeof langPopoverCleanup === 'function') {
         langPopoverCleanup();
     }
@@ -1505,7 +1978,7 @@ if (furiganaButton) {
     });
 }
 
-async function restartRecognition({ auto = false, targetLang = null } = {}) {
+async function restartRecognition({ auto = false, targetLang = null, translationMode = null, targetLang1 = null, targetLang2 = null } = {}) {
     if (isRestarting) {
         return false;
     }
@@ -1545,6 +2018,15 @@ async function restartRecognition({ auto = false, targetLang = null } = {}) {
         const lang = (targetLang || currentTranslationTargetLang || '').toString().trim().toLowerCase();
         if (lang) {
             payload.target_lang = lang;
+        }
+        if (translationMode) {
+            payload.translation_mode = translationMode;
+        }
+        if (targetLang1) {
+            payload.target_lang_1 = String(targetLang1).trim().toLowerCase();
+        }
+        if (targetLang2) {
+            payload.target_lang_2 = String(targetLang2).trim().toLowerCase();
         }
 
         const response = await fetch('/restart', {
@@ -1807,6 +2289,9 @@ function handleMessage(data) {
     }
     if (data.type === 'error') {
         displayErrorMessage(data.message);
+        if (data.code === 'api_key' && !lockManualControls) {
+            openSettings({ forced: true });
+        }
         return;
     }
     if (data.type === 'refine_result') {
@@ -1819,6 +2304,10 @@ function handleMessage(data) {
     }
     if (data.type === 'session_disconnected') {
         console.warn('Recognition session disconnected:', data.reason || 'unknown');
+        if (data.code === 'api_key' && !lockManualControls) {
+            openSettings({ forced: true });
+            return;
+        }
         if (autoRestartEnabled && !isRestarting) {
             triggerAutoRestart();
         }
@@ -2640,8 +3129,10 @@ function renderSubtitles() {
         }
     });
 
-    const showOriginal = (displayMode === 'both' || displayMode === 'original');
-    const showTranslation = (displayMode === 'both' || displayMode === 'translation');
+    const showTranslation = !suppressTranslationDisplay && (displayMode === 'both' || displayMode === 'translation');
+    // When translation is suppressed (e.g. Gemini "no translation"), always keep the
+    // original visible so the subtitle area is never empty.
+    const showOriginal = suppressTranslationDisplay ? true : (displayMode === 'both' || displayMode === 'original');
 
     const speakerBlocks = [];
     let currentBlock = null;
@@ -3103,12 +3594,251 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// ===================== Settings panel (provider + API key) =====================
+
+function updateSettingsButtonVisibility() {
+    if (settingsButton) {
+        settingsButton.style.display = lockManualControls ? 'none' : '';
+    }
+}
+
+function applySettingsI18n() {
+    const setText = (id, key) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = t(key);
+        }
+    };
+    setText('settingsTitle', 'settings');
+    setText('providerLabel', 'api_selection');
+    setText('providerSonioxLabel', 'provider_soniox');
+    setText('providerGeminiLabel', 'provider_gemini');
+    if (settingsSaveButton) settingsSaveButton.textContent = t('save');
+    if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
+    if (settingsButton) settingsButton.title = t('settings');
+    if (settingsCloseButton) settingsCloseButton.title = t('close');
+}
+
+function getDesiredProvider() {
+    const settings = loadProviderSettings();
+    return settings.providerOverride || translationProvider || 'soniox';
+}
+
+function setProviderRadio(provider) {
+    if (!settingsForm) {
+        return;
+    }
+    settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
+        radio.checked = (radio.value === provider);
+    });
+}
+
+function getSelectedProvider() {
+    if (settingsForm) {
+        const checked = settingsForm.querySelector('input[name="provider"]:checked');
+        if (checked) {
+            return checked.value;
+        }
+    }
+    return getDesiredProvider();
+}
+
+function getProviderDisplayName(provider) {
+    return provider === 'gemini' ? t('provider_gemini') : t('provider_soniox');
+}
+
+function updateApiKeyFieldForProvider(provider) {
+    const settings = loadProviderSettings();
+    const override = settings.keys && settings.keys[provider];
+    const providerName = getProviderDisplayName(provider);
+    const label = document.getElementById('apiKeyLabel');
+    if (label) {
+        label.textContent = `${providerName} ${t('api_key')}`;
+    }
+    if (apiKeyInput) {
+        apiKeyInput.value = override || '';
+        if (override) {
+            apiKeyInput.placeholder = '';
+        } else if (envKeyPresent[provider]) {
+            apiKeyInput.placeholder = t('api_key_placeholder_env_configured', { provider: providerName });
+        } else {
+            apiKeyInput.placeholder = t('api_key_placeholder_env_missing', { provider: providerName });
+        }
+    }
+    if (apiKeySourceHint) {
+        apiKeySourceHint.textContent = '';
+    }
+}
+
+function populateSettingsForm() {
+    const provider = getDesiredProvider();
+    setProviderRadio(provider);
+    updateApiKeyFieldForProvider(provider);
+    if (settingsErrorEl) {
+        settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
+    }
+}
+
+function openSettings({ forced = false } = {}) {
+    if (lockManualControls) {
+        return;
+    }
+    settingsForcedOpen = !!forced;
+    applySettingsI18n();
+    populateSettingsForm();
+    if (settingsOverlay) settingsOverlay.hidden = false;
+    if (settingsPanel) settingsPanel.hidden = false;
+    const hideClose = settingsForcedOpen ? 'none' : '';
+    if (settingsCancelButton) settingsCancelButton.style.display = hideClose;
+    if (settingsCloseButton) settingsCloseButton.style.display = hideClose;
+}
+
+function hideSettingsPanel() {
+    if (settingsOverlay) settingsOverlay.hidden = true;
+    if (settingsPanel) settingsPanel.hidden = true;
+    settingsForcedOpen = false;
+}
+
+function closeSettings() {
+    if (settingsForcedOpen) {
+        return;
+    }
+    hideSettingsPanel();
+}
+
+async function pushSetup(provider, apiKey, { silent = false } = {}) {
+    try {
+        const body = { provider };
+        if (apiKey) {
+            body.api_key = apiKey;
+        }
+        const resp = await fetch('/setup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            return { ok: false, data };
+        }
+        translationProvider = data.provider || provider;
+        backendBootId = data.boot_id || backendBootId;
+        setupRequired = !!data.setup_required;
+        pushedOverrideBootId = backendBootId;
+        if (data.downgraded_two_way) {
+            showToast(t('gemini_no_two_way_warning'), true);
+            uiTranslationMode = 'one_way';
+            setUiTranslationMode('one_way', { persistOnly: true });
+        }
+        await fetchUiConfig();
+        if (!silent && !data.setup_required) {
+            showToast(t('settings_saved'));
+        }
+        return { ok: true, data };
+    } catch (err) {
+        return { ok: false, data: { message: String(err) } };
+    }
+}
+
+async function handleSettingsSave(event) {
+    if (event) {
+        event.preventDefault();
+    }
+    const provider = getSelectedProvider();
+    const key = (apiKeyInput && apiKeyInput.value || '').trim();
+    const settings = loadProviderSettings();
+    settings.providerOverride = provider;
+    settings.keys = settings.keys || {};
+    if (key) {
+        settings.keys[provider] = key;
+    } else {
+        delete settings.keys[provider];
+    }
+    const hasOverride = !!(settings.keys && settings.keys[provider]);
+    if (!hasOverride && !envKeyPresent[provider]) {
+        if (settingsErrorEl) settingsErrorEl.textContent = t('api_key_required');
+        return;
+    }
+    saveProviderSettings(settings);
+
+    if (settingsSaveButton) settingsSaveButton.disabled = true;
+    if (settingsSaveButton) settingsSaveButton.textContent = t('saving');
+    if (settingsErrorEl) settingsErrorEl.textContent = '';
+
+    const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
+    const result = await pushSetup(provider, apiKeyToPush, { silent: false });
+
+    if (settingsSaveButton) settingsSaveButton.disabled = false;
+    if (settingsSaveButton) settingsSaveButton.textContent = t('save');
+
+    if (!result.ok) {
+        const msg = (result.data && result.data.message) || t('validation_api_key');
+        if (settingsErrorEl) settingsErrorEl.textContent = localizeBackendMessage(msg);
+        return;
+    }
+    if (result.data && result.data.setup_required) {
+        if (settingsErrorEl) settingsErrorEl.textContent = t('setup_required_hint');
+        populateSettingsForm();
+        return;
+    }
+    hideSettingsPanel();
+    clearSubtitleState();
+}
+
+async function syncProviderFromStorage() {
+    if (lockManualControls) {
+        return;
+    }
+    const settings = loadProviderSettings();
+    const desiredProvider = settings.providerOverride || translationProvider || 'soniox';
+    const overrideKey = settings.keys && settings.keys[desiredProvider];
+    const providerMismatch = settings.providerOverride && desiredProvider !== translationProvider;
+    const needKeyPush = overrideKey && backendKeySource !== 'localstorage';
+    if (!providerMismatch && !needKeyPush) {
+        return;
+    }
+    if (pushedOverrideBootId === backendBootId) {
+        return;
+    }
+    await pushSetup(desiredProvider, overrideKey || null, { silent: true });
+}
+
+function maybeForceOpenSettings() {
+    if (lockManualControls) {
+        return;
+    }
+    if (setupRequired) {
+        openSettings({ forced: true });
+    }
+}
+
+if (settingsButton) {
+    settingsButton.addEventListener('click', () => openSettings());
+}
+if (settingsCloseButton) {
+    settingsCloseButton.addEventListener('click', () => closeSettings());
+}
+if (settingsCancelButton) {
+    settingsCancelButton.addEventListener('click', () => closeSettings());
+}
+if (settingsOverlay) {
+    settingsOverlay.addEventListener('click', () => closeSettings());
+}
+if (settingsForm) {
+    settingsForm.addEventListener('submit', handleSettingsSave);
+    settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
+        radio.addEventListener('change', () => updateApiKeyFieldForProvider(getSelectedProvider()));
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     (async () => {
         await fetchUiConfig();
+        await syncProviderFromStorage();
         await fetchLlmRefineStatus();
         fetchApiKeyStatus();
         fetchOscTranslationStatus();
+        maybeForceOpenSettings();
         connect();
     })();
 });

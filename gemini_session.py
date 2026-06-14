@@ -53,6 +53,19 @@ from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 logger = logging.getLogger(__name__)
 
 
+def _is_api_key_error_reason(reason: str) -> bool:
+    """Heuristically detect API-key/auth failures from a disconnect reason string."""
+    text = str(reason or "").lower()
+    if not text:
+        return False
+    needles = (
+        "api key", "api_key", "apikey", "unauthorized", "authentication",
+        "invalid key", "invalid api", "permission", "forbidden",
+        "401", "403",
+    )
+    return any(needle in text for needle in needles)
+
+
 LLM_REFINE_MODES = ("off", "refine", "translate")
 EAST_ASIAN_TIGHT_SPACING_CLASS = (
     r"\u3000-\u303F"
@@ -1761,7 +1774,8 @@ class GeminiSession:
             asyncio.run_coroutine_threadsafe(
                 self.broadcast_callback({
                     "type": "error",
-                    "message": "Gemini API key is missing. Please set it in .env file."
+                    "code": "api_key",
+                    "message": "Gemini API key is missing. Please configure it in Settings."
                 }),
                 loop
             )
@@ -2180,11 +2194,14 @@ class GeminiSession:
             self.thread = None
             if notify_disconnect and not stop_requested:
                 try:
+                    disconnect_payload = {
+                        "type": "session_disconnected",
+                        "reason": disconnect_reason,
+                    }
+                    if _is_api_key_error_reason(disconnect_reason):
+                        disconnect_payload["code"] = "api_key"
                     asyncio.run_coroutine_threadsafe(
-                        self.broadcast_callback({
-                            "type": "session_disconnected",
-                            "reason": disconnect_reason,
-                        }),
+                        self.broadcast_callback(disconnect_payload),
                         loop,
                     )
                 except Exception as notify_error:

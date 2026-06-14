@@ -61,6 +61,130 @@ class TestWebServerSecurity:
             assert response_data["status"] == "ok"
             m_session.set_audio_source.assert_called_once_with("microphone")
 
+    def mock_manager(self):
+        manager = MagicMock()
+        manager.boot_id = "deadbeef"
+        manager.provider = "gemini"
+        manager.translation_mode = "one_way"
+        manager.setup_required = True
+        manager.apply_provider = AsyncMock(return_value={
+            "started": False,
+            "setup_required": True,
+            "downgraded_two_way": False,
+            "error": None,
+        })
+        return manager
+
+    @async_test
+    async def test_setup_rejected_from_non_loopback(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            ws.provider_manager = self.mock_manager()
+
+            request = AsyncMock()
+            request.remote = "10.0.0.5"
+            request.json.return_value = {"provider": "gemini"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.setup_handler(request)
+
+            assert status == 403
+            assert response_data["status"] == "error"
+            ws.provider_manager.apply_provider.assert_not_called()
+
+    @async_test
+    async def test_setup_rejected_when_locked(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = True
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            ws.provider_manager = self.mock_manager()
+
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            request.json.return_value = {"provider": "gemini"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.setup_handler(request)
+
+            assert status == 403
+            ws.provider_manager.apply_provider.assert_not_called()
+            ws_module.LOCK_MANUAL_CONTROLS = False
+
+    @async_test
+    async def test_setup_applies_provider_from_loopback(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            manager = self.mock_manager()
+            ws.provider_manager = manager
+
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            # No api_key -> skip validation, provider switch only.
+            request.json.return_value = {"provider": "gemini"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.setup_handler(request)
+
+            assert status == 200
+            assert response_data["status"] == "ok"
+            assert response_data["boot_id"] == "deadbeef"
+            manager.apply_provider.assert_awaited_once()
+
+    @async_test
+    async def test_setup_invalid_provider(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            ws.provider_manager = self.mock_manager()
+
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            request.json.return_value = {"provider": "bogus"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.setup_handler(request)
+
+            assert status == 400
+            ws.provider_manager.apply_provider.assert_not_called()
+
     @async_test
     async def test_set_audio_source_invalid(self):
         with patch.dict(sys.modules, {

@@ -14,6 +14,7 @@ from typing import Any, Optional, Tuple
 from websockets import ConnectionClosed, ConnectionClosedOK
 from websockets.sync.client import connect as sync_connect
 
+import config
 from config import (
     SONIOX_WEBSOCKET_URL,
     SONIOX_STREAM_DURATION_SECONDS,
@@ -42,8 +43,6 @@ from config import (
     OSC_SEND_TEXT_MODE,
     LLM_REFINE_DEFAULT_ENABLED,
     LLM_REFINE_DEFAULT_MODE,
-    TARGET_LANG_1,
-    TARGET_LANG_2,
 )
 ipc_server = None
 from audio_router import AudioSendRouter
@@ -56,6 +55,19 @@ logger = logging.getLogger(__name__)
 
 
 LLM_REFINE_MODES = ("off", "refine", "translate")
+
+
+def _is_api_key_error_reason(reason: str) -> bool:
+    """Heuristically detect API-key/auth failures from a disconnect reason string."""
+    text = str(reason or "").lower()
+    if not text:
+        return False
+    needles = (
+        "api key", "api_key", "apikey", "unauthorized", "authentication",
+        "invalid key", "invalid api", "permission", "forbidden",
+        "401", "403",
+    )
+    return any(needle in text for needle in needles)
 EAST_ASIAN_TIGHT_SPACING_CLASS = (
     r"\u3000-\u303F"
     r"\u3040-\u30FF"
@@ -200,6 +212,11 @@ class SonioxSession:
         except Exception:
             self.translation_target_lang = "en"
 
+        # Two-way translation language pair (instance-level so it can be changed
+        # at runtime from the UI without restarting the process).
+        self.target_lang_1: str = normalize_language_code(config.TARGET_LANG_1) or "en"
+        self.target_lang_2: str = normalize_language_code(config.TARGET_LANG_2) or "zh"
+
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED:
             osc_manager.set_mute_callback(self._handle_vrchat_mute_self)
 
@@ -286,7 +303,26 @@ class SonioxSession:
         if previous != normalized:
             print(f"🌐 Translation target language updated: {previous} -> {normalized}")
         return True, "ok"
-    
+
+    def get_target_langs(self) -> tuple[str, str]:
+        return (str(self.target_lang_1 or "en"), str(self.target_lang_2 or "zh"))
+
+    def set_target_langs(self, lang_a: str, lang_b: str) -> tuple[bool, str]:
+        """Set the two-way translation language pair (validated)."""
+        from config import normalize_language_code, is_supported_language_code
+
+        a = normalize_language_code(lang_a)
+        b = normalize_language_code(lang_b)
+        if not is_supported_language_code(a):
+            return False, f"Unsupported language: {lang_a}"
+        if not is_supported_language_code(b):
+            return False, f"Unsupported language: {lang_b}"
+        if a == b:
+            return False, "Two-way translation requires two different languages"
+        self.target_lang_1 = a
+        self.target_lang_2 = b
+        return True, "ok"
+
     def pause(self):
         """暂停识别"""
         if self.is_paused:
@@ -562,10 +598,10 @@ class SonioxSession:
         return ""
 
     def _two_way_partner_lang(self, lang: str) -> str:
-        """Return the other language in TARGET_LANG_1/TARGET_LANG_2, or '' if unknown."""
+        """Return the other language in the two-way pair, or '' if unknown."""
         code = normalize_language_code(lang or "")
-        l1 = normalize_language_code(TARGET_LANG_1)
-        l2 = normalize_language_code(TARGET_LANG_2)
+        l1 = normalize_language_code(self.target_lang_1)
+        l2 = normalize_language_code(self.target_lang_2)
         if not (l1 and l2):
             return ""
         if code == l1:
@@ -590,8 +626,8 @@ class SonioxSession:
             return t_sess
 
         source_lang = self._infer_source_language(source_tokens)
-        l1 = normalize_language_code(TARGET_LANG_1)
-        l2 = normalize_language_code(TARGET_LANG_2)
+        l1 = normalize_language_code(self.target_lang_1)
+        l2 = normalize_language_code(self.target_lang_2)
         if not (l1 and l2) or not source_lang:
             return t_sess
         if source_lang not in (l1, l2):
@@ -608,8 +644,8 @@ class SonioxSession:
         if mode != "two_way":
             return bool(t_sess and source_lang == t_sess)
 
-        l1 = normalize_language_code(TARGET_LANG_1)
-        l2 = normalize_language_code(TARGET_LANG_2)
+        l1 = normalize_language_code(self.target_lang_1)
+        l2 = normalize_language_code(self.target_lang_2)
         if not (l1 and l2):
             return bool(t_sess and source_lang == t_sess)
 
@@ -1254,17 +1290,19 @@ class SonioxSession:
         *,
         warming: bool = False,
     ) -> _SonioxStreamState:
-        config = get_config(
+        stream_config = get_config(
             api_key,
             audio_format,
             translation,
             translation_target_lang=translation_target_lang,
+            target_lang_1=self.target_lang_1,
+            target_lang_2=self.target_lang_2,
         )
         label = f"stream #{stream_index}"
         purpose = " warmup" if warming else ""
         print(f"Connecting to Soniox ({label}{purpose})...")
         ws = sync_connect(SONIOX_WEBSOCKET_URL)
-        ws.send(json.dumps(config))
+        ws.send(json.dumps(stream_config))
         state = _SonioxStreamState(
             ws=ws,
             index=stream_index,
@@ -1685,7 +1723,8 @@ class SonioxSession:
             asyncio.run_coroutine_threadsafe(
                 self.broadcast_callback({
                     "type": "error",
-                    "message": "Soniox API key is missing. Please set it in .env file."
+                    "code": "api_key",
+                    "message": "Soniox API key is missing. Please configure it in Settings."
                 }),
                 loop
             )
@@ -2101,11 +2140,14 @@ class SonioxSession:
             self.thread = None
             if notify_disconnect and not stop_requested:
                 try:
+                    disconnect_payload = {
+                        "type": "session_disconnected",
+                        "reason": disconnect_reason,
+                    }
+                    if _is_api_key_error_reason(disconnect_reason):
+                        disconnect_payload["code"] = "api_key"
                     asyncio.run_coroutine_threadsafe(
-                        self.broadcast_callback({
-                            "type": "session_disconnected",
-                            "reason": disconnect_reason,
-                        }),
+                        self.broadcast_callback(disconnect_payload),
                         loop,
                     )
                 except Exception as notify_error:
