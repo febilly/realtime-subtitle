@@ -16,7 +16,6 @@ from websockets.sync.client import connect as sync_connect
 
 import config
 from config import (
-    SONIOX_WEBSOCKET_URL,
     SONIOX_STREAM_DURATION_SECONDS,
     SONIOX_SLEEP_ON_SILENCE,
     SONIOX_SLEEP_IDLE_SECONDS,
@@ -1301,7 +1300,8 @@ class SonioxSession:
         label = f"stream #{stream_index}"
         purpose = " warmup" if warming else ""
         print(f"Connecting to Soniox ({label}{purpose})...")
-        ws = sync_connect(SONIOX_WEBSOCKET_URL)
+        # Read dynamically so a runtime region switch takes effect on the next stream.
+        ws = sync_connect(config.SONIOX_WEBSOCKET_URL)
         ws.send(json.dumps(stream_config))
         state = _SonioxStreamState(
             ws=ws,

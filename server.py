@@ -299,6 +299,7 @@ class ProviderManager:
         *,
         api_key=None,
         use_env=False,
+        soniox_region=None,
         translation_mode=None,
         target_lang=None,
         target_lang_1=None,
@@ -307,6 +308,10 @@ class ProviderManager:
         """Switch provider/key (and optionally translation settings) in-process."""
         provider = self.config.set_active_provider(provider)
         self.provider = provider
+
+        # Soniox regional endpoint (us | eu | jp); only meaningful for Soniox.
+        if provider == "soniox" and soniox_region is not None:
+            self.config.set_soniox_region(soniox_region)
 
         if use_env:
             self.runtime_keys[provider] = None

@@ -102,7 +102,13 @@ const settingsSaveButton = document.getElementById('settingsSaveButton');
 const settingsErrorEl = document.getElementById('settingsError');
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeySourceHint = document.getElementById('apiKeySourceHint');
+const sonioxRegionSection = document.getElementById('sonioxRegionSection');
+const sonioxRegionPickerHost = document.getElementById('sonioxRegionPicker');
 const toastEl = document.getElementById('toast');
+
+const SONIOX_REGIONS = ['us', 'eu', 'jp'];
+// Custom-select element (built lazily); mirrors the language picker styling.
+let sonioxRegionPickerEl = null;
 
 const PROVIDER_SETTINGS_STORAGE_KEY = 'providerSettings.v1';
 const UI_TRANSLATION_MODE_STORAGE_KEY = 'uiTranslationMode';
@@ -111,6 +117,7 @@ let backendBootId = '';
 let setupRequired = false;
 let envKeyPresent = { soniox: false, gemini: false };
 let backendKeySource = 'env';
+let backendSonioxRegion = 'us';
 let backendTranslationMode = 'one_way';
 let backendTargetLang1 = 'en';
 let backendTargetLang2 = 'zh';
@@ -807,6 +814,9 @@ async function fetchUiConfig() {
         if (typeof data.key_source === 'string') {
             backendKeySource = data.key_source;
         }
+        if (typeof data.soniox_region === 'string' && data.soniox_region.trim()) {
+            backendSonioxRegion = normalizeSonioxRegion(data.soniox_region);
+        }
         if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
             backendTranslationMode = data.translation_mode.trim().toLowerCase();
         }
@@ -1423,6 +1433,152 @@ function buildLangPicker(selectedCode, fallbackCode = 'en') {
 
     picker.appendChild(trigger);
     setLangPickerValue(picker, selectedCode);
+    return picker;
+}
+
+// Position a fixed-position dropdown menu relative to its trigger, flipping up
+// when there isn't enough room below. Shared by the generic custom select.
+function positionDropdownMenu(trigger, menu) {
+    const rect = trigger.getBoundingClientRect();
+    const gap = 6;
+    const viewportPadding = 8;
+    const menuWidth = Math.max(rect.width, 180);
+    const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
+    const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const left = Math.min(
+        Math.max(viewportPadding, rect.left),
+        Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
+    );
+    const top = openUp
+        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
+        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+    menu.style.width = `${Math.round(menuWidth)}px`;
+    menu.style.maxHeight = `${Math.round(menuHeight)}px`;
+}
+
+// Generic dark-themed custom <select> replacement. Reuses the language picker's
+// CSS classes for visual consistency. `options` is [{ value, label }].
+function buildCustomSelect(options, { value = null, onChange = null } = {}) {
+    const picker = document.createElement('div');
+    picker.className = 'lang-picker';
+    let currentValue = value;
+    let menuEl = null;
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'lang-picker-button';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+
+    const label = document.createElement('span');
+    label.className = 'lang-picker-label';
+    const chevron = document.createElement('span');
+    chevron.className = 'lang-picker-chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    trigger.appendChild(label);
+    trigger.appendChild(chevron);
+    picker.appendChild(trigger);
+
+    const labelFor = (val) => {
+        const opt = options.find((o) => o.value === val);
+        return opt ? opt.label : '';
+    };
+    const renderLabel = () => {
+        label.textContent = labelFor(currentValue);
+    };
+
+    const close = () => {
+        if (!menuEl) {
+            return;
+        }
+        menuEl.remove();
+        menuEl = null;
+        picker.classList.remove('open');
+        trigger.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('mousedown', onDocMouseDown, true);
+        document.removeEventListener('keydown', onKeyDown, true);
+        window.removeEventListener('resize', reposition, true);
+        window.removeEventListener('scroll', close, true);
+    };
+    const onDocMouseDown = (event) => {
+        if (picker.contains(event.target) || (menuEl && menuEl.contains(event.target))) {
+            return;
+        }
+        close();
+    };
+    const onKeyDown = (event) => {
+        if (event.key === 'Escape') {
+            close();
+        }
+    };
+    const reposition = () => {
+        if (menuEl) {
+            positionDropdownMenu(trigger, menuEl);
+        }
+    };
+    const open = () => {
+        menuEl = document.createElement('div');
+        menuEl.className = 'lang-select-menu';
+        menuEl.setAttribute('role', 'listbox');
+        for (const opt of options) {
+            const optionEl = document.createElement('button');
+            optionEl.type = 'button';
+            optionEl.className = 'lang-select-option';
+            optionEl.setAttribute('role', 'option');
+            optionEl.textContent = opt.label;
+            const isSelected = opt.value === currentValue;
+            optionEl.classList.toggle('selected', isSelected);
+            optionEl.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+            optionEl.addEventListener('click', () => {
+                const changed = currentValue !== opt.value;
+                currentValue = opt.value;
+                renderLabel();
+                close();
+                if (changed && typeof onChange === 'function') {
+                    onChange(currentValue);
+                }
+            });
+            menuEl.appendChild(optionEl);
+        }
+        document.body.appendChild(menuEl);
+        picker.classList.add('open');
+        trigger.setAttribute('aria-expanded', 'true');
+        positionDropdownMenu(trigger, menuEl);
+        const selectedOption = menuEl.querySelector('.lang-select-option.selected');
+        if (selectedOption) {
+            selectedOption.scrollIntoView({ block: 'nearest' });
+        }
+        document.addEventListener('mousedown', onDocMouseDown, true);
+        document.addEventListener('keydown', onKeyDown, true);
+        window.addEventListener('resize', reposition, true);
+        window.addEventListener('scroll', close, true);
+    };
+
+    trigger.addEventListener('click', () => {
+        if (menuEl) {
+            close();
+        } else {
+            open();
+        }
+    });
+
+    Object.defineProperty(picker, 'value', {
+        get() {
+            return currentValue;
+        },
+        set(val) {
+            currentValue = val;
+            renderLabel();
+        },
+    });
+
+    renderLabel();
     return picker;
 }
 
@@ -3613,6 +3769,9 @@ function applySettingsI18n() {
     setText('providerLabel', 'api_selection');
     setText('providerSonioxLabel', 'provider_soniox');
     setText('providerGeminiLabel', 'provider_gemini');
+    setText('sonioxRegionLabel', 'soniox_region');
+    // Rebuild the region picker so its option labels follow the active language.
+    renderSonioxRegionPicker(getSelectedSonioxRegion());
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
     if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
     if (settingsButton) settingsButton.title = t('settings');
@@ -3647,6 +3806,48 @@ function getProviderDisplayName(provider) {
     return provider === 'gemini' ? t('provider_gemini') : t('provider_soniox');
 }
 
+function normalizeSonioxRegion(region) {
+    const r = String(region || '').trim().toLowerCase();
+    return SONIOX_REGIONS.includes(r) ? r : 'us';
+}
+
+function getDesiredSonioxRegion() {
+    const settings = loadProviderSettings();
+    return normalizeSonioxRegion(settings.sonioxRegion || backendSonioxRegion || 'us');
+}
+
+function getSelectedSonioxRegion() {
+    if (sonioxRegionPickerEl && sonioxRegionPickerEl.value) {
+        return normalizeSonioxRegion(sonioxRegionPickerEl.value);
+    }
+    return getDesiredSonioxRegion();
+}
+
+// (Re)build the custom region select with current-language option labels.
+function renderSonioxRegionPicker(selectedRegion) {
+    if (!sonioxRegionPickerHost) {
+        return;
+    }
+    const value = normalizeSonioxRegion(selectedRegion);
+    const options = SONIOX_REGIONS.map((region) => ({
+        value: region,
+        label: t(`soniox_region_${region}`),
+    }));
+    sonioxRegionPickerHost.innerHTML = '';
+    sonioxRegionPickerEl = buildCustomSelect(options, { value });
+    sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
+}
+
+// Region applies to Soniox only; the row is hidden for other providers.
+function updateSonioxRegionForProvider(provider) {
+    if (sonioxRegionSection) {
+        sonioxRegionSection.hidden = (provider !== 'soniox');
+    }
+    if (provider === 'soniox') {
+        renderSonioxRegionPicker(getDesiredSonioxRegion());
+    }
+}
+
 function updateApiKeyFieldForProvider(provider) {
     const settings = loadProviderSettings();
     const override = settings.keys && settings.keys[provider];
@@ -3674,6 +3875,7 @@ function populateSettingsForm() {
     const provider = getDesiredProvider();
     setProviderRadio(provider);
     updateApiKeyFieldForProvider(provider);
+    updateSonioxRegionForProvider(provider);
     if (settingsErrorEl) {
         settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
     }
@@ -3706,11 +3908,14 @@ function closeSettings() {
     hideSettingsPanel();
 }
 
-async function pushSetup(provider, apiKey, { silent = false } = {}) {
+async function pushSetup(provider, apiKey, { silent = false, region = null } = {}) {
     try {
         const body = { provider };
         if (apiKey) {
             body.api_key = apiKey;
+        }
+        if (provider === 'soniox' && region) {
+            body.soniox_region = region;
         }
         const resp = await fetch('/setup', {
             method: 'POST',
@@ -3746,8 +3951,10 @@ async function handleSettingsSave(event) {
     }
     const provider = getSelectedProvider();
     const key = (apiKeyInput && apiKeyInput.value || '').trim();
+    const region = getSelectedSonioxRegion();
     const settings = loadProviderSettings();
     settings.providerOverride = provider;
+    settings.sonioxRegion = region;
     settings.keys = settings.keys || {};
     if (key) {
         settings.keys[provider] = key;
@@ -3766,7 +3973,7 @@ async function handleSettingsSave(event) {
     if (settingsErrorEl) settingsErrorEl.textContent = '';
 
     const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
-    const result = await pushSetup(provider, apiKeyToPush, { silent: false });
+    const result = await pushSetup(provider, apiKeyToPush, { silent: false, region });
 
     if (settingsSaveButton) settingsSaveButton.disabled = false;
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
@@ -3792,15 +3999,19 @@ async function syncProviderFromStorage() {
     const settings = loadProviderSettings();
     const desiredProvider = settings.providerOverride || translationProvider || 'soniox';
     const overrideKey = settings.keys && settings.keys[desiredProvider];
+    const desiredRegion = getDesiredSonioxRegion();
     const providerMismatch = settings.providerOverride && desiredProvider !== translationProvider;
     const needKeyPush = overrideKey && backendKeySource !== 'localstorage';
-    if (!providerMismatch && !needKeyPush) {
+    const regionMismatch = desiredProvider === 'soniox'
+        && settings.sonioxRegion
+        && desiredRegion !== backendSonioxRegion;
+    if (!providerMismatch && !needKeyPush && !regionMismatch) {
         return;
     }
     if (pushedOverrideBootId === backendBootId) {
         return;
     }
-    await pushSetup(desiredProvider, overrideKey || null, { silent: true });
+    await pushSetup(desiredProvider, overrideKey || null, { silent: true, region: desiredRegion });
 }
 
 function maybeForceOpenSettings() {
@@ -3827,7 +4038,11 @@ if (settingsOverlay) {
 if (settingsForm) {
     settingsForm.addEventListener('submit', handleSettingsSave);
     settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
-        radio.addEventListener('change', () => updateApiKeyFieldForProvider(getSelectedProvider()));
+        radio.addEventListener('change', () => {
+            const provider = getSelectedProvider();
+            updateApiKeyFieldForProvider(provider);
+            updateSonioxRegionForProvider(provider);
+        });
     });
 }
 

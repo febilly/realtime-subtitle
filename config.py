@@ -238,6 +238,25 @@ SUPPORTED_LANGUAGE_CODES = get_supported_language_codes(TRANSLATION_PROVIDER)
 
 # Soniox API configuration
 SONIOX_WEBSOCKET_URL = _env_str("SONIOX_WEBSOCKET_URL", "wss://stt-rt.soniox.com/transcribe-websocket")
+
+# Soniox regional endpoints (UI-selectable). Default region is United States.
+SONIOX_REGION_URLS = {
+    "us": "wss://stt-rt.soniox.com/transcribe-websocket",
+    "eu": "wss://stt-rt.eu.soniox.com/transcribe-websocket",
+    "jp": "wss://stt-rt.jp.soniox.com/transcribe-websocket",
+}
+
+
+def _infer_soniox_region(url: str) -> str:
+    for region, region_url in SONIOX_REGION_URLS.items():
+        if region_url == url:
+            return region
+    return "us"
+
+
+# Active region; inferred from any explicit URL override so a custom endpoint is preserved.
+SONIOX_REGION = _infer_soniox_region(SONIOX_WEBSOCKET_URL)
+
 SONIOX_TEMP_KEY_URL = os.environ.get("SONIOX_TEMP_KEY_URL")
 SONIOX_USES_TEMP_API_KEY = not bool(os.environ.get("SONIOX_API_KEY", "").strip())
 
@@ -644,6 +663,21 @@ def set_active_provider(provider: str) -> str:
     ENABLE_SPEAKER_DIARIZATION = _compute_enable_speaker_diarization(p)
     TRANSLATION_TARGET_LANG = _compute_translation_target_lang(p)
     return p
+
+
+def set_soniox_region(region: str) -> str:
+    """Select a Soniox regional endpoint (us | eu | jp) and update the websocket URL.
+
+    Returns the normalized region. Safe to call repeatedly (hot-switch).
+    """
+    global SONIOX_WEBSOCKET_URL, SONIOX_REGION
+
+    r = str(region or "").strip().lower()
+    if r not in SONIOX_REGION_URLS:
+        r = "us"
+    SONIOX_REGION = r
+    SONIOX_WEBSOCKET_URL = SONIOX_REGION_URLS[r]
+    return r
 
 # ============ IPC Configuration (realtime-subtitle <-> Yakutan) ============
 

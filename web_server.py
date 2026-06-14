@@ -182,6 +182,7 @@ class WebServer:
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
             "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
             "hide_speaker_labels": bool(HIDE_SPEAKER_LABELS),
+            "soniox_region": config.SONIOX_REGION,
         }
 
         if manager is not None:
@@ -256,16 +257,23 @@ class WebServer:
             if not api_key:
                 api_key = None
 
+        # Soniox regional endpoint (us | eu | jp); ignored for other providers.
+        soniox_region = str(payload.get("soniox_region") or "").strip().lower() or None
+        if soniox_region is not None and soniox_region not in config.SONIOX_REGION_URLS:
+            soniox_region = None
+
         # Validate the key (if provided) before activating it.
         if api_key is not None:
-            ok, error = self._validate_provider_key(provider, api_key)
+            ok, error = self._validate_provider_key(provider, api_key, soniox_region=soniox_region)
             if not ok:
                 return web.json_response(
                     {"status": "error", "message": error or "API key validation failed"},
                     status=400,
                 )
 
-        result = await manager.apply_provider(provider, api_key=api_key, use_env=(api_key is None))
+        result = await manager.apply_provider(
+            provider, api_key=api_key, use_env=(api_key is None), soniox_region=soniox_region
+        )
         if not result.get("started") and result.get("error") and api_key is None:
             # No key provided and env had none either.
             return web.json_response(
@@ -280,6 +288,7 @@ class WebServer:
             "translation_mode": manager.translation_mode,
             "setup_required": bool(manager.setup_required),
             "downgraded_two_way": bool(result.get("downgraded_two_way")),
+            "soniox_region": config.SONIOX_REGION,
         })
 
     async def use_env_handler(self, request):
@@ -307,7 +316,11 @@ class WebServer:
         if provider not in ("soniox", "gemini"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
 
-        result = await manager.apply_provider(provider, use_env=True)
+        soniox_region = str((payload or {}).get("soniox_region") or "").strip().lower() or None
+        if soniox_region is not None and soniox_region not in config.SONIOX_REGION_URLS:
+            soniox_region = None
+
+        result = await manager.apply_provider(provider, use_env=True, soniox_region=soniox_region)
         return web.json_response({
             "status": "ok",
             "boot_id": manager.boot_id,
@@ -315,16 +328,21 @@ class WebServer:
             "translation_mode": manager.translation_mode,
             "setup_required": bool(manager.setup_required),
             "downgraded_two_way": bool(result.get("downgraded_two_way")),
+            "soniox_region": config.SONIOX_REGION,
         })
 
     @staticmethod
-    def _validate_provider_key(provider: str, api_key: str) -> tuple[bool, str | None]:
+    def _validate_provider_key(
+        provider: str, api_key: str, *, soniox_region: str | None = None
+    ) -> tuple[bool, str | None]:
         try:
             if provider == "gemini":
                 from gemini_key_setup import validate_gemini_api_key
                 return validate_gemini_api_key(api_key)
             from soniox_key_setup import validate_soniox_api_key
-            return validate_soniox_api_key(api_key)
+            # Validate against the selected regional endpoint when provided.
+            websocket_url = config.SONIOX_REGION_URLS.get(soniox_region) if soniox_region else None
+            return validate_soniox_api_key(api_key, websocket_url)
         except Exception as error:
             return False, str(error)
 
