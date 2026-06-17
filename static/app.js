@@ -2507,14 +2507,10 @@ function handleMessage(data) {
     
     if (data.type === 'update') {
         let hasNewFinalContent = false;
-        let hasSeparator = false;
         if (data.final_tokens && data.final_tokens.length > 0) {
             data.final_tokens.forEach(token => {
                 if (token.text === '<end>') {
                     return;
-                }
-                if (token.is_separator) {
-                    hasSeparator = true;
                 }
                 hasNewFinalContent = true;
                 insertFinalToken(token);
@@ -2522,12 +2518,12 @@ function handleMessage(data) {
         }
 
         // 更新non-final tokens并过滤 <end>
+        // 注意：即使本帧带有 separator（断句）也不要清空 non-final tail。
+        // separator 现在由后端在句号处即时下发，而 non_final_tokens 是后端权威的
+        // 当前进行中尾巴（属于下一句），与已确定 final token 不重叠。清空它只会让
+        // 这段预览消失一帧、等下一帧再出现，造成界面闪烁。
         currentNonFinalTokens = (data.non_final_tokens || []).filter(token => token.text !== '<end>');
         currentNonFinalTokens.forEach(assignSequenceIndex);
-
-        if (hasSeparator) {
-            currentNonFinalTokens = [];
-        }
 
         // 合并新增的final tokens
         if (hasNewFinalContent) {

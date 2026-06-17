@@ -178,6 +178,57 @@ def test_same_language_source_punctuation_segments_in_punctuation_mode(monkeypat
     assert _separator_in_updates(updates)
 
 
+def _feed_original_batch(session, texts, language):
+    return session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": text,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": language,
+                }
+                for text in texts
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def test_punctuation_separator_lands_at_period_within_batch(monkeypatch):
+    """Regression: when Soniox confirms the ending punctuation together with the
+    words that follow it in a single batch, the line break must be inserted right
+    after the period, not at the end of the batch."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    # The period and the next sentence's first words are all confirmed at once.
+    _feed_original_batch(session, ["foo.", "and", "you"], "en")
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    # Expected order: "foo.", <separator>, "and", "you"
+    kinds = [
+        "SEP" if t.get("is_separator") else t.get("text")
+        for t in final_tokens
+    ]
+    assert kinds == ["foo.", "SEP", "and", "you"], kinds
+
+
 def test_cross_language_source_punctuation_does_not_segment_in_punctuation_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

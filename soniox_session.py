@@ -1490,15 +1490,59 @@ class SonioxSession:
         separator_tokens: list[dict] = []
         outgoing_final_tokens: list[dict] = []
 
-        if new_final_tokens:
+        # In punctuation mode the line break must land at the position of the
+        # ending punctuation, not at the end of the batch. Soniox sometimes
+        # confirms the period together with the words that follow it in a single
+        # batch (e.g. "…的。而你是法官"); appending one separator after the whole
+        # batch would leave the next sentence stuck on the previous line. So we
+        # walk the tokens in order, building the outgoing stream and finalizing /
+        # inserting a separator exactly when we cross an ending punctuation.
+        interleaved_punctuation = (self._segment_mode == "punctuation")
+
+        if new_final_tokens and not interleaved_punctuation:
             for token in new_final_tokens:
                 if token.get("text") is None:
                     continue
                 self._process_token_for_sentence(token)
 
+        if interleaved_punctuation and new_final_tokens:
+            # When the speech is already in the target language there are no
+            # translation tokens, so the source text is used as the output;
+            # segment on punctuation in the original tokens too (gated by
+            # _can_use_source_as_translation so we never cut before a real
+            # translation arrives).
+            source_as_output = self._can_use_source_as_translation(new_final_tokens)
+            last_real_speaker = None
+            for token in new_final_tokens:
+                text = token.get("text")
+                if text is None:
+                    continue
+                self._process_token_for_sentence(token)
+                is_internal = self._is_internal_soniox_token(token)
+                if not is_internal:
+                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
+                    spk = token.get("speaker")
+                    if spk is not None and spk != "":
+                        last_real_speaker = str(spk)
+                is_boundary = (text == "<end>") or (
+                    not is_internal
+                    and (token.get("translation_status") == "translation" or source_as_output)
+                    and self._is_sentence_ending_punctuation(text)
+                )
+                if not is_boundary:
+                    continue
+                spk = token.get("speaker")
+                speaker_value = str(spk) if (spk is not None and spk != "") else last_real_speaker
+                if speaker_value is None and self._sentence_buffers:
+                    speaker_value = next(iter(self._sentence_buffers.keys()))
+                if speaker_value and self._trigger_sentence_finalization(speaker_value):
+                    outgoing_final_tokens.append(
+                        self._minify_token(self._make_separator_token("punctuation"))
+                    )
+
         self._maybe_send_live_osc_translation(non_final_tokens)
 
-        if new_final_tokens or endpoint_detected:
+        if (new_final_tokens or endpoint_detected) and not interleaved_punctuation:
             if self._segment_mode == "translation":
                 translation_hit = any(
                     t.get("text") is not None
@@ -1555,44 +1599,10 @@ class SonioxSession:
                         self._trigger_sentence_finalization(speaker_value)
                     separator_tokens.append(self._make_separator_token("endpoint"))
 
-            elif self._segment_mode == "punctuation":
-                # When the speech is already in the target language there are no
-                # translation tokens, so the source text is used as the output;
-                # segment on punctuation in the original tokens too (gated by
-                # _can_use_source_as_translation so we never cut before a real
-                # translation arrives).
-                source_as_output = self._can_use_source_as_translation(new_final_tokens)
-                punctuation_hit = any(
-                    t.get("text") == "<end>"
-                    for t in new_final_tokens
-                ) or any(
-                    t.get("text")
-                    and not self._is_internal_soniox_token(t)
-                    and (t.get("translation_status") == "translation" or source_as_output)
-                    and self._is_sentence_ending_punctuation(t.get("text", ""))
-                    for t in new_final_tokens
-                )
-                if punctuation_hit:
-                    speaker_value = None
-                    for token in reversed(new_final_tokens):
-                        if token.get("translation_status") == "translation" and token.get("text"):
-                            spk = token.get("speaker")
-                            if spk is not None and spk != "":
-                                speaker_value = str(spk)
-                                break
-                    if speaker_value is None:
-                        for token in reversed(new_final_tokens):
-                            if token.get("text") and not self._is_internal_soniox_token(token):
-                                spk = token.get("speaker")
-                                if spk is not None and spk != "":
-                                    speaker_value = str(spk)
-                                    break
-                    if speaker_value is None and self._sentence_buffers:
-                        speaker_value = next(iter(self._sentence_buffers.keys()))
-                    if speaker_value and self._trigger_sentence_finalization(speaker_value):
-                        separator_tokens.append(self._make_separator_token("punctuation"))
+            # punctuation mode is handled by the interleaved pass above so the
+            # separator lands at the period's position within the batch.
 
-        if new_final_tokens:
+        if new_final_tokens and not interleaved_punctuation:
             for token in new_final_tokens:
                 if token.get("text") is None:
                     continue
@@ -1600,8 +1610,9 @@ class SonioxSession:
                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
 
         # 将新的final tokens写入日志
-        if outgoing_final_tokens and not self.is_paused:
-            self.logger.write_to_log([t for t in new_final_tokens if not self._is_internal_soniox_token(t)])
+        loggable_tokens = [t for t in new_final_tokens if not self._is_internal_soniox_token(t)]
+        if loggable_tokens and not self.is_paused:
+            self.logger.write_to_log(loggable_tokens)
 
         # 混入 IPC 消息（作为 S0）
         ipc_final_tokens = []
