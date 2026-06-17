@@ -166,6 +166,31 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def _env_optional_bool(name: str) -> bool | None:
+    """Parse an optional boolean env var. Returns None when unset/unrecognized."""
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = str(value).strip().lower()
+    if value in ("1", "true", "yes", "y", "on"):
+        return True
+    if value in ("0", "false", "no", "n", "off"):
+        return False
+    return None
+
+
+def _derive_sleep_on_silence(uses_temp: bool, override: bool | None) -> bool:
+    """Effective silence-sleep flag for a given key type.
+
+    Temporary (dispenser) keys never sleep on silence: their streams have a hard
+    lifetime managed by the rollover mechanism, so the cost saver is reserved for
+    persistent/real keys. The explicit env/CLI override only applies to real keys.
+    """
+    if uses_temp:
+        return False
+    return override if override is not None else True
+
+
 def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     if value is None:
@@ -274,9 +299,14 @@ if _SONIOX_STREAM_DURATION_SECONDS_RAW is not None and _SONIOX_STREAM_DURATION_S
 SONIOX_STREAM_DURATION_SECONDS = _SONIOX_STREAM_DURATION_SECONDS_RAW
 
 # Optional cost saver: close the Soniox websocket after long local silence and
-# reopen it when local VAD sees speech again. By default, keep temporary API key
-# streams open and sleep only when a persistent SONIOX_API_KEY is configured.
-SONIOX_SLEEP_ON_SILENCE = _env_bool("SONIOX_SLEEP_ON_SILENCE", not SONIOX_USES_TEMP_API_KEY)
+# reopen it when local VAD sees speech again. Only enabled for persistent/real
+# keys (temporary dispenser keys keep their streams open). The active key type
+# can change at runtime via provider/key hot-switch, so this is recomputed in
+# set_uses_temp_api_key().
+_SONIOX_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool("SONIOX_SLEEP_ON_SILENCE")
+SONIOX_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
+    SONIOX_USES_TEMP_API_KEY, _SONIOX_SLEEP_ON_SILENCE_OVERRIDE
+)
 
 SONIOX_SLEEP_IDLE_SECONDS = max(1.0, _env_float("SONIOX_SLEEP_IDLE_SECONDS", 30.0))
 SONIOX_SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("SONIOX_SLEEP_PRE_ROLL_SECONDS", 0.5))
@@ -305,7 +335,10 @@ GEMINI_STREAM_DURATION_SECONDS = _GEMINI_STREAM_DURATION_SECONDS_RAW
 # Optional cost saver: close the Gemini websocket after long local silence and
 # reopen it when local VAD sees speech again. By default, sleep only when a
 # persistent GEMINI_API_KEY is configured.
-GEMINI_SLEEP_ON_SILENCE = _env_bool("GEMINI_SLEEP_ON_SILENCE", not GEMINI_USES_TEMP_API_KEY)
+_GEMINI_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool("GEMINI_SLEEP_ON_SILENCE")
+GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
+    GEMINI_USES_TEMP_API_KEY, _GEMINI_SLEEP_ON_SILENCE_OVERRIDE
+)
 GEMINI_SLEEP_IDLE_SECONDS = max(1.0, _env_float("GEMINI_SLEEP_IDLE_SECONDS", 30.0))
 GEMINI_SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_PRE_ROLL_SECONDS", 0.5))
 GEMINI_SLEEP_SPEECH_GRACE_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_SPEECH_GRACE_SECONDS", 0.25))
@@ -668,6 +701,32 @@ def set_active_provider(provider: str) -> str:
     ENABLE_SPEAKER_DIARIZATION = _compute_enable_speaker_diarization(p)
     TRANSLATION_TARGET_LANG = _compute_translation_target_lang(p)
     return p
+
+
+def set_uses_temp_api_key(provider: str, uses_temp: bool) -> None:
+    """Record whether the active key for a provider is a dispenser temp key.
+
+    The silence-sleep cost saver is disabled by default for temporary keys. The
+    active key can change at runtime via hot-switch (localStorage override vs.
+    dispenser temp key) without re-importing config, so the derived
+    *_SLEEP_ON_SILENCE value must be recomputed here. An explicit env/CLI
+    override always wins and is left untouched. Safe to call repeatedly.
+    """
+    global SONIOX_USES_TEMP_API_KEY, GEMINI_USES_TEMP_API_KEY
+    global SONIOX_SLEEP_ON_SILENCE, GEMINI_SLEEP_ON_SILENCE
+
+    p = str(provider or "").strip().lower()
+    uses_temp = bool(uses_temp)
+    if p == "gemini":
+        GEMINI_USES_TEMP_API_KEY = uses_temp
+        GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
+            uses_temp, _GEMINI_SLEEP_ON_SILENCE_OVERRIDE
+        )
+    else:
+        SONIOX_USES_TEMP_API_KEY = uses_temp
+        SONIOX_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
+            uses_temp, _SONIOX_SLEEP_ON_SILENCE_OVERRIDE
+        )
 
 
 def set_soniox_region(region: str) -> str:

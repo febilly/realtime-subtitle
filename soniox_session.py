@@ -17,7 +17,6 @@ from websockets.sync.client import connect as sync_connect
 import config
 from config import (
     SONIOX_STREAM_DURATION_SECONDS,
-    SONIOX_SLEEP_ON_SILENCE,
     SONIOX_SLEEP_IDLE_SECONDS,
     SONIOX_SLEEP_PRE_ROLL_SECONDS,
     SONIOX_SLEEP_SPEECH_GRACE_SECONDS,
@@ -1223,7 +1222,9 @@ class SonioxSession:
         return value
 
     def _sleep_idle_seconds(self) -> float | None:
-        if not SONIOX_SLEEP_ON_SILENCE:
+        # Read dynamically: the active key (and thus whether silence-sleep is
+        # enabled) can change at runtime via provider/key hot-switch.
+        if not config.SONIOX_SLEEP_ON_SILENCE:
             return None
         try:
             value = float(SONIOX_SLEEP_IDLE_SECONDS)

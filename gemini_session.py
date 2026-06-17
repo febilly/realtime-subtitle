@@ -15,7 +15,6 @@ from websockets import ConnectionClosed, ConnectionClosedOK
 
 from config import (
     GEMINI_STREAM_DURATION_SECONDS,
-    GEMINI_SLEEP_ON_SILENCE,
     GEMINI_SLEEP_IDLE_SECONDS,
     GEMINI_SLEEP_PRE_ROLL_SECONDS,
     GEMINI_SLEEP_SPEECH_GRACE_SECONDS,
@@ -1215,7 +1214,10 @@ class GeminiSession:
         return value
 
     def _sleep_idle_seconds(self) -> float | None:
-        if not GEMINI_SLEEP_ON_SILENCE:
+        # Read dynamically: the active key (and thus whether silence-sleep is
+        # enabled) can change at runtime via provider/key hot-switch.
+        import config
+        if not config.GEMINI_SLEEP_ON_SILENCE:
             return None
         try:
             value = float(GEMINI_SLEEP_IDLE_SECONDS)

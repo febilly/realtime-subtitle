@@ -251,6 +251,19 @@ class ProviderManager:
             return "env"
         return "none"
 
+    def uses_temp_api_key(self, provider) -> bool:
+        """Whether the active key for a provider is a dispenser-fetched temp key.
+
+        A runtime override (localStorage) or a persistent env key counts as a
+        real key; otherwise the key comes from the temp-key dispenser URL. Note
+        this is NOT env_key_present(), which also treats a temp-key URL as a
+        present key.
+        """
+        if self.runtime_keys.get(provider):
+            return False
+        env_key = "GEMINI_API_KEY" if provider == "gemini" else "SONIOX_API_KEY"
+        return not bool(os.environ.get(env_key, "").strip())
+
     def get_api_key(self) -> str:
         """Return the active key for the current provider (may raise if none).
 
@@ -317,6 +330,10 @@ class ProviderManager:
             self.runtime_keys[provider] = None
         elif api_key is not None:
             self.runtime_keys[provider] = api_key
+
+        # Keep the silence-sleep cost saver in sync with the active key type:
+        # temporary (dispenser) keys keep the stream open; real keys may sleep.
+        self.config.set_uses_temp_api_key(provider, self.uses_temp_api_key(provider))
 
         if translation_mode is not None:
             self.translation_mode = translation_mode
