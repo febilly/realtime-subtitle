@@ -31,7 +31,7 @@ def validate_soniox_api_key(
     connect_impl = sync_connect if connect_func is None else connect_func
     config = {
         "api_key": api_key,
-        "model": "stt-rt-v4",
+        "model": "stt-rt-v5",
         "audio_format": "pcm_s16le",
         "sample_rate": 16000,
         "num_channels": 1,

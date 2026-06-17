@@ -93,7 +93,7 @@ def get_config(
     # (hot-switch) are reflected without re-importing this module.
     stt_config = {
         "api_key": api_key,
-        "model": "stt-rt-v4",
+        "model": "stt-rt-v5",
         "language_hints": ["en", "zh", "ja", "ko", "ru"],
         "enable_language_identification": True,
         "enable_speaker_diarization": bool(config.ENABLE_SPEAKER_DIARIZATION),
