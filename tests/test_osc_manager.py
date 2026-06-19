@@ -38,6 +38,7 @@ sys.modules["vrchat_oscquery.threaded"] = mock_vrchat_threaded
 sys.modules["vrchat_oscquery"] = type(sys)("vrchat_oscquery")
 
 from osc_manager import OSCManager, QueuedMessage
+import text_processor
 
 
 def _fresh_osc_manager():
@@ -213,6 +214,49 @@ def test_own_message_wrapped_in_brackets():
     assert len(input_calls) == 1
     text = input_calls[0][0][1][0]
     assert text == ">My speech<"
+
+
+def test_rtl_text_is_processed_before_osc_send(monkeypatch):
+    class FakeArabicReshaper:
+        @staticmethod
+        def reshape(text):
+            return f"reshaped:{text}"
+
+    monkeypatch.setattr(text_processor.config, "ENABLE_ARABIC_RESHAPER", True, raising=False)
+    monkeypatch.setattr(text_processor, "_arabic_reshaper", FakeArabicReshaper)
+    monkeypatch.setattr(text_processor, "_bidi_get_display", lambda text: f"display:{text}")
+
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._udp_send_target = ("127.0.0.1", 9000)
+    osc._compat_mode_enabled = lambda: False
+
+    osc.add_message_and_send("مرحبا", ongoing=False)
+
+    text = _last_chatbox_input_text(mock_client)
+    assert text == f"{text_processor.RTL_RLI}display:reshaped:مرحبا{text_processor.RTL_PDI}"
+
+
+def test_rtl_text_processing_can_be_disabled(monkeypatch):
+    class FailingArabicReshaper:
+        @staticmethod
+        def reshape(text):
+            raise AssertionError("reshaper should not be called when disabled")
+
+    monkeypatch.setattr(text_processor.config, "ENABLE_ARABIC_RESHAPER", False, raising=False)
+    monkeypatch.setattr(text_processor, "_arabic_reshaper", FailingArabicReshaper)
+
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._udp_send_target = ("127.0.0.1", 9000)
+    osc._compat_mode_enabled = lambda: False
+
+    osc.add_message_and_send("مرحبا", ongoing=False)
+
+    text = _last_chatbox_input_text(mock_client)
+    assert text == "مرحبا"
 
 
 def test_truncate_text():

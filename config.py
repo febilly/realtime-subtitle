@@ -349,6 +349,11 @@ GEMINI_SLEEP_SPEECH_GRACE_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_SPEECH_GRA
 # Requiring CJK on both sides avoids touching decimals, URLs, abbreviations, etc.
 GEMINI_FULLWIDTH_PUNCT_FIX = _env_bool("GEMINI_FULLWIDTH_PUNCT_FIX", True)
 
+# When enabled, Arabic/Hebrew text is reshaped and bidi-reordered before being
+# sent to the VRChat OSC chatbox. The browser subtitle UI keeps the original
+# logical text and uses CSS direction handling instead.
+ENABLE_ARABIC_RESHAPER = _env_bool("ENABLE_ARABIC_RESHAPER", True)
+
 # Auto use system language
 # True: detect system locale and use it as translation target language
 # False: use manually specified TARGET_LANG below

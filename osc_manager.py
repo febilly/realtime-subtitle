@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from vrchat_oscquery.common import dict_to_dispatcher, vrc_client
 import vrchat_oscquery.common as vrchat_osc_common
 from vrchat_oscquery.threaded import vrc_osc
+from text_processor import (
+    RTL_PDI,
+    RTL_RLI,
+    apply_arabic_reshaper_if_needed,
+    is_rtl_isolate_wrapped,
+)
 
 __all__ = ["OSCManager", "osc_manager"]
 
@@ -229,8 +235,14 @@ class OSCManager:
         if not getattr(self, "_truncate_enabled", True):
             return text
 
+        if max_length <= 0:
+            return ""
+
         if len(text) <= max_length:
             return text
+
+        if self._contains_only_wrapped_rtl_lines(text):
+            return self._truncate_wrapped_rtl_lines(text, max_length)
         
         # 句子结束标记
         SENTENCE_ENDERS = [
@@ -260,6 +272,53 @@ class OSCManager:
                 break
         
         return text
+
+    @staticmethod
+    def _contains_only_wrapped_rtl_lines(text: str) -> bool:
+        lines = [line for line in (text or "").split("\n") if line]
+        return bool(lines) and all(is_rtl_isolate_wrapped(line) for line in lines)
+
+    def _truncate_wrapped_rtl_lines(self, text: str, max_length: int) -> str:
+        lines = [line for line in (text or "").split("\n") if line]
+        if not lines or max_length <= 0:
+            return ""
+
+        def assemble(line_list):
+            return "\n".join(line_list)
+
+        while len(lines) > 1 and len(assemble(lines)) > max_length:
+            lines.pop(0)
+
+        combined = assemble(lines)
+        if len(combined) <= max_length:
+            return combined
+
+        line_overhead = len(RTL_RLI) + len(RTL_PDI)
+        if max_length <= line_overhead:
+            return ""
+
+        inner_text = lines[-1][len(RTL_RLI):-len(RTL_PDI)]
+        inner_text = self._truncate_text(inner_text, max_length=max_length - line_overhead)
+        if not inner_text:
+            return ""
+        return f"{RTL_RLI}{inner_text}{RTL_PDI}"
+
+    @staticmethod
+    def _prepare_text_for_osc(text: str, max_length: Optional[int] = None) -> str:
+        """Apply OSC-only transforms while keeping panel/log text unchanged."""
+        raw_text = text or ""
+        processed_text = apply_arabic_reshaper_if_needed(raw_text, max_chars=max_length)
+        if processed_text != raw_text:
+            print(f"[TextPost] OSC发送原文：{raw_text}")
+            print(f"[TextPost] OSC发送处理后：{processed_text} (repr={processed_text!r})")
+        return processed_text
+
+    def _prepare_outgoing_text_for_osc(self, text: str) -> str:
+        max_length = MAX_LENGTH if getattr(self, "_truncate_enabled", True) else None
+        text = self._prepare_text_for_osc(text, max_length=max_length)
+        if max_length is None:
+            return text
+        return self._truncate_text(text, max_length=max_length)
 
     def _prune_history_locked(self, now: float):
         """移除超过 TTL 的历史消息（需要在锁内调用）"""
@@ -532,8 +591,7 @@ class OSCManager:
 
     def send_text_sync(self, text: str, ongoing: bool):
         """发送文本到 VRChat（带冷却，最多保留一个待发消息）"""
-        # 截断过长的文本
-        text = self._truncate_text(text, max_length=MAX_LENGTH)
+        text = self._prepare_outgoing_text_for_osc(text)
         
         # 确定优先级
         priority = PRIORITY_LOW if ongoing else PRIORITY_HIGH

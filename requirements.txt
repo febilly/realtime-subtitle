@@ -3,6 +3,8 @@ soundcard
 numpy<2.0.0
 ten-vad
 python-dotenv
+arabic-reshaper
+python-bidi
 aiohttp
 aiohttp-jinja2
 requests
