@@ -229,6 +229,66 @@ def test_punctuation_separator_lands_at_period_within_batch(monkeypatch):
     assert kinds == ["foo.", "SEP", "and", "you"], kinds
 
 
+def _feed_tokens(session, tokens):
+    return session._process_soniox_response(
+        {
+            "tokens": [
+                {"is_final": True, "speaker": "1", **token}
+                for token in tokens
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def test_endpoint_split_keeps_late_translation_with_its_own_sentence(monkeypatch):
+    """Regression: when an utterance is split by <end> (a pause) rather than a
+    sentence-ending period, the cross-language translation streams in *after*
+    <end>. The line break must still land before the next sentence so the next
+    sentence's translation does not run onto the previous translation."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "en"  # source ja != target en -> needs translation
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    # Batch 1: sentence 1 original (ja) finalized, then <end>. Translation for
+    # sentence 1 has not arrived yet, and the utterance has no ending period.
+    _feed_tokens(session, [
+        {"text": "こんにちは", "translation_status": "original", "language": "ja"},
+        {"text": "<end>", "translation_status": "original"},
+    ])
+
+    # Batch 2: sentence 1's translation (en, no ending punctuation) arrives,
+    # immediately followed by sentence 2's first original token.
+    _feed_tokens(session, [
+        {"text": "Hello", "translation_status": "translation",
+         "language": "en", "source_language": "ja"},
+        {"text": "またね", "translation_status": "original", "language": "ja"},
+    ])
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = [
+        "SEP" if t.get("is_separator") else t.get("text")
+        for t in final_tokens
+    ]
+    # The separator must split sentence 1 (こんにちは + Hello) from sentence 2
+    # (またね), not leave them merged.
+    assert kinds == ["こんにちは", "Hello", "SEP", "またね"], kinds
+
+
 def test_cross_language_source_punctuation_does_not_segment_in_punctuation_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

@@ -193,6 +193,12 @@ class SonioxSession:
         self.osc_translation_enabled = False
         self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
         self._sentence_buffers: dict[str, dict] = {}
+        # Speakers whose <end> fired before the sentence's translation was ready.
+        # The line break is deferred until the translation arrives (or the next
+        # sentence starts) so the late translation stays attached to this
+        # sentence instead of merging into the next one. See the interleaved
+        # punctuation pass in _process_soniox_response.
+        self._pending_endpoint_speakers: set[str] = set()
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
         self._osc_live_last_text_by_speaker: dict[str, str] = {}
@@ -258,6 +264,7 @@ class SonioxSession:
         self.translation = translation
         self.loop = loop
         self._sentence_buffers.clear()
+        self._pending_endpoint_speakers.clear()
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
         self._refine_context_history.clear()
@@ -415,6 +422,7 @@ class SonioxSession:
             self.stop_event = None
             osc_manager.clear_history()
             self._sentence_buffers.clear()
+            self._pending_endpoint_speakers.clear()
             self._reset_osc_live_state()
             with self._ipc_lock:
                 self._ipc_ongoing_text = ""
@@ -791,6 +799,7 @@ class SonioxSession:
             return False
 
         self._sentence_buffers.pop(speaker, None)
+        self._pending_endpoint_speakers.discard(speaker)
         self._reset_osc_live_state(speaker)
 
         self._llm_sentence_counter += 1
@@ -1172,6 +1181,7 @@ class SonioxSession:
 
         self._segment_mode = mode
         self._sentence_buffers.clear()
+        self._pending_endpoint_speakers.clear()
         self._reset_osc_live_state()
         if self.loop:
             asyncio.run_coroutine_threadsafe(
@@ -1517,8 +1527,30 @@ class SonioxSession:
                 text = token.get("text")
                 if text is None:
                     continue
-                self._process_token_for_sentence(token)
                 is_internal = self._is_internal_soniox_token(token)
+                is_translation = token.get("translation_status") == "translation"
+
+                # A pending endpoint means an earlier <end> fired before this
+                # sentence's translation had streamed in, so the line break was
+                # deferred (see the <end> branch below). The first *original*
+                # token of the next sentence is the signal that the previous
+                # sentence — together with whatever translation has since been
+                # buffered — is complete: finalize it now and break the line
+                # before this new token, so the late translation stays attached
+                # to the previous sentence instead of merging into this one.
+                if (not is_internal) and (not is_translation) and self._pending_endpoint_speakers:
+                    spk = token.get("speaker")
+                    pending_speaker = str(spk) if (spk is not None and spk != "") else last_real_speaker
+                    if pending_speaker is None and len(self._pending_endpoint_speakers) == 1:
+                        pending_speaker = next(iter(self._pending_endpoint_speakers))
+                    if pending_speaker in self._pending_endpoint_speakers:
+                        self._pending_endpoint_speakers.discard(pending_speaker)
+                        if self._trigger_sentence_finalization(pending_speaker):
+                            outgoing_final_tokens.append(
+                                self._minify_token(self._make_separator_token("endpoint"))
+                            )
+
+                self._process_token_for_sentence(token)
                 if not is_internal:
                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
                     spk = token.get("speaker")
@@ -1526,7 +1558,7 @@ class SonioxSession:
                         last_real_speaker = str(spk)
                 is_boundary = (text == "<end>") or (
                     not is_internal
-                    and (token.get("translation_status") == "translation" or source_as_output)
+                    and (is_translation or source_as_output)
                     and self._is_sentence_ending_punctuation(text)
                 )
                 if not is_boundary:
@@ -1535,10 +1567,23 @@ class SonioxSession:
                 speaker_value = str(spk) if (spk is not None and spk != "") else last_real_speaker
                 if speaker_value is None and self._sentence_buffers:
                     speaker_value = next(iter(self._sentence_buffers.keys()))
-                if speaker_value and self._trigger_sentence_finalization(speaker_value):
+                if not speaker_value:
+                    continue
+                if self._trigger_sentence_finalization(speaker_value):
                     outgoing_final_tokens.append(
                         self._minify_token(self._make_separator_token("punctuation"))
                     )
+                elif text == "<end>":
+                    # Endpoint detected, but the translation for this sentence
+                    # has not been finalized yet (Soniox streams translation
+                    # tokens in after <end>). Defer the line break: mark the
+                    # speaker pending so it is finalized once the translation
+                    # arrives (via a later boundary) or, at the latest, when the
+                    # next sentence's first original token is seen. This stops
+                    # the next sentence's translation from running onto this one
+                    # when the utterance was split by a pause rather than a
+                    # sentence-ending period.
+                    self._pending_endpoint_speakers.add(speaker_value)
 
         self._maybe_send_live_osc_translation(non_final_tokens)
 
