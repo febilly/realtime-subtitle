@@ -99,6 +99,7 @@ const settingsForm = document.getElementById('settingsForm');
 const settingsCloseButton = document.getElementById('settingsCloseButton');
 const settingsCancelButton = document.getElementById('settingsCancelButton');
 const settingsSaveButton = document.getElementById('settingsSaveButton');
+const settingsModeBackButton = document.getElementById('settingsModeBackButton');
 const resetAllButton = document.getElementById('resetAllButton');
 const settingsErrorEl = document.getElementById('settingsError');
 const confirmOverlay = document.getElementById('confirmOverlay');
@@ -141,6 +142,79 @@ let suppressTranslationDisplay = false;
 let pushedOverrideBootId = null;
 let settingsForcedOpen = false;
 let toastTimer = null;
+
+// ---- Subtitle-server relay (hosted mode) state ----
+const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
+let relayAvailable = false;
+let relayServerUrl = '';
+let backendMode = 'direct';
+let backendLoggedIn = false;
+let loginForcedOpen = false;
+let relayPricing = null; // { soniox: {price_per_second, free_*}, gemini: {...} }
+let loginChallengeId = '';
+let loginExpiryTimer = null;
+let loginRegistrationInfo = null; // { bonuses: [...], registration_threshold }
+// Balance bar / this-session cost meter.
+let balancePollTimer = null;
+let sessionCostTimer = null;
+let sessionAccumMs = 0;
+let sessionRunSince = null;
+let pricePerSecond = 0;
+// Maps backend relay close-code tags to localized message keys.
+const RELAY_ERROR_KEYS = {
+    billing_exhausted: 'relay_err_billing_exhausted',
+    upstream_key_error: 'relay_err_upstream_key_error',
+    forbidden: 'relay_err_forbidden',
+    model_not_allowed: 'relay_err_model_not_allowed',
+    concurrency_limit: 'relay_err_concurrency_limit',
+};
+
+function loadServerSettings() {
+    try {
+        const raw = localStorage.getItem(SUBTITLE_SERVER_STORAGE_KEY);
+        if (raw) {
+            const obj = JSON.parse(raw);
+            if (obj && typeof obj === 'object') {
+                return Object.assign({ mode: null, modeChosen: false, token: '', displayName: '', trustRank: '' }, obj);
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+    return { mode: null, modeChosen: false, token: '', displayName: '', trustRank: '' };
+}
+
+function saveServerSettings(settings) {
+    try {
+        localStorage.setItem(SUBTITLE_SERVER_STORAGE_KEY, JSON.stringify(settings));
+    } catch (e) {
+        // ignore
+    }
+}
+
+function hasExplicitConnectionMode(settings) {
+    if (!settings || typeof settings !== 'object') {
+        return false;
+    }
+    if (settings.modeChosen === true) {
+        return true;
+    }
+    // Backwards-compatible migration for users who already completed hosted
+    // login before this flag existed.
+    return settings.mode === 'relay' && !!settings.token;
+}
+
+// Resolved connection mode: 'relay' | 'direct' | null (undecided / first launch).
+function getConnectionMode() {
+    if (!relayAvailable) {
+        return 'direct';
+    }
+    const s = loadServerSettings();
+    if ((s.mode === 'relay' || s.mode === 'direct') && hasExplicitConnectionMode(s)) {
+        return s.mode;
+    }
+    return null;
+}
 
 let uiTranslationMode = localStorage.getItem(UI_TRANSLATION_MODE_STORAGE_KEY);
 if (!['none', 'one_way', 'two_way'].includes(uiTranslationMode)) {
@@ -836,6 +910,20 @@ async function fetchUiConfig() {
         if (typeof data.soniox_custom_url === 'boolean') {
             backendSonioxCustomUrl = data.soniox_custom_url;
         }
+        // Subtitle-server relay (hosted mode) state.
+        if (typeof data.relay_available === 'boolean') {
+            relayAvailable = data.relay_available;
+        }
+        if (typeof data.server_url === 'string') {
+            relayServerUrl = data.server_url;
+        }
+        if (typeof data.mode === 'string') {
+            backendMode = data.mode;
+        }
+        if (typeof data.logged_in === 'boolean') {
+            backendLoggedIn = data.logged_in;
+        }
+        updateBalanceBarVisibility();
         if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
             backendTranslationMode = data.translation_mode.trim().toLowerCase();
         }
@@ -2162,6 +2250,11 @@ async function restartRecognition({ auto = false, targetLang = null, translation
         return false;
     }
 
+    // A manual restart begins a fresh recognition session; reset the
+    // this-session cost meter so it counts from zero again.
+    if (!auto) {
+        sessionCostReset();
+    }
     isRestarting = true;
     shouldReconnect = false;
 
@@ -2295,6 +2388,7 @@ pauseButton.addEventListener('click', async () => {
                 pauseIcon.textContent = '⏸️';
                 pauseButton.title = t('pause');
                 console.log('Recognition resumed');
+                sessionCostResume();
             }
         } else {
             // 暂停识别
@@ -2304,6 +2398,7 @@ pauseButton.addEventListener('click', async () => {
                 pauseIcon.textContent = '▶️';
                 pauseButton.title = t('resume');
                 console.log('Recognition paused');
+                sessionCostPause();
             }
         }
     } catch (error) {
@@ -2420,6 +2515,11 @@ function connect() {
 
     socket.onopen = () => {
         console.log('WebSocket connected');
+        // The this-session cost meter is NOT started here: opening the local
+        // browser↔server socket happens at page load, before login or any
+        // billed relay link exists. The meter is driven by recognition-session
+        // events from the backend ('session_connected' / 'session_idle' /
+        // 'session_disconnected') so it only counts while we're actually billed.
     };
 
     socket.onmessage = (event) => {
@@ -2433,6 +2533,9 @@ function connect() {
 
     socket.onclose = () => {
         console.log('WebSocket closed');
+        // Don't pause the cost meter on a local socket drop: recognition (and
+        // billing) may still be running on the backend. The meter is paused by
+        // explicit recognition-session events instead.
         if (ws === socket) {
             ws = null;
         }
@@ -2481,8 +2584,40 @@ function handleMessage(data) {
         handleSegmentModeChanged(data);
         return;
     }
+    if (data.type === 'session_connected') {
+        // The billed relay link is live (first connect or wake from silence
+        // sleep); start counting this-session cost from now.
+        if (!isPaused) {
+            sessionCostResume();
+        }
+        return;
+    }
+    if (data.type === 'session_idle') {
+        // Relay link closed for silence sleep (no longer billed); pause the meter.
+        sessionCostPause();
+        return;
+    }
     if (data.type === 'session_disconnected') {
         console.warn('Recognition session disconnected:', data.reason || 'unknown');
+        sessionCostPause();
+        // Relay (hosted) close codes: show a friendly message and, for terminal
+        // ones, stop auto-restart (and re-prompt login when the token is bad).
+        const relayKey = RELAY_ERROR_KEYS[data.code];
+        if (relayKey) {
+            showToast(t(relayKey), true);
+            if (data.code === 'forbidden' && !lockManualControls) {
+                const server = loadServerSettings();
+                server.token = '';
+                saveServerSettings(server);
+                backendLoggedIn = false;
+                updateBalanceBarVisibility();
+                openLogin({ forced: true });
+                return;
+            }
+            if (data.relay_terminal) {
+                return; // do not auto-restart on terminal relay errors
+            }
+        }
         if (data.code === 'api_key' && !lockManualControls) {
             openSettings({ forced: true });
             return;
@@ -3785,6 +3920,14 @@ function applySettingsI18n() {
         }
     };
     setText('settingsTitle', 'settings');
+    setText('modeLabel', 'conn_mode');
+    setText('modeRelayLabel', 'conn_mode_relay');
+    setText('modeDirectLabel', 'conn_mode_direct');
+    setText('accountLabel', 'account');
+    setText('redeemLabel', 'account_redeem_label');
+    setText('redeemButton', 'account_redeem');
+    setText('reLoginButton', 'account_relogin');
+    setText('logoutButton', 'account_logout');
     setText('providerLabel', 'api_selection');
     setText('providerSonioxLabel', 'provider_soniox');
     setText('providerGeminiLabel', 'provider_gemini');
@@ -3793,6 +3936,7 @@ function applySettingsI18n() {
     renderSonioxRegionPicker(getSelectedSonioxRegion());
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
     if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
+    if (settingsModeBackButton) settingsModeBackButton.textContent = t('mode_back_to_chooser');
     if (resetAllButton) resetAllButton.textContent = t('reset_all');
     if (settingsButton) settingsButton.title = t('settings');
     if (settingsCloseButton) settingsCloseButton.title = t('close');
@@ -3824,6 +3968,47 @@ function getSelectedProvider() {
 
 function getProviderDisplayName(provider) {
     return provider === 'gemini' ? t('provider_gemini') : t('provider_soniox');
+}
+
+// Format a per-second rate with enough precision for small fractional values.
+function formatRate(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '—';
+    if (n === 0) return '0';
+    if (n < 1) return parseFloat(n.toPrecision(2)).toString();
+    return (Math.round(n * 100) / 100).toString();
+}
+
+// Provider description line. In relay mode show the server's unit price
+// (credits/sec) for that provider's model instead of the direct-mode blurb.
+function getProviderDescriptionText(provider) {
+    if (getSettingsMode() === 'relay') {
+        const info = relayPricing && relayPricing[provider];
+        if (!info) {
+            return t('provider_relay_desc_loading');
+        }
+        if (info.free_unlimited) {
+            return t('provider_relay_desc_free');
+        }
+        return t('provider_relay_desc', { price: formatRate(info.price_per_second) });
+    }
+    return t(`provider_${provider}_desc`);
+}
+
+async function fetchRelayPricing() {
+    if (!relayAvailable) return;
+    try {
+        const resp = await fetch('/account/pricing');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        relayPricing = (data && data.pricing) || {};
+        // Refresh the description if the settings panel is open in relay mode.
+        if (settingsPanel && !settingsPanel.hidden) {
+            updateApiKeyFieldForProvider(getSelectedProvider());
+        }
+    } catch (e) {
+        // ignore
+    }
 }
 
 function normalizeSonioxRegion(region) {
@@ -3869,12 +4054,14 @@ function renderSonioxRegionPicker(selectedRegion) {
     sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
 }
 
-// Region applies to Soniox only; the row is hidden for other providers.
+// Region applies to Soniox direct mode only; hidden for other providers and in
+// relay mode (the hosted server picks the endpoint).
 function updateSonioxRegionForProvider(provider) {
+    const relay = getSettingsMode() === 'relay';
     if (sonioxRegionSection) {
-        sonioxRegionSection.hidden = (provider !== 'soniox');
+        sonioxRegionSection.hidden = relay || (provider !== 'soniox');
     }
-    if (provider === 'soniox') {
+    if (!relay && provider === 'soniox') {
         renderSonioxRegionPicker(getDesiredSonioxRegion());
     }
 }
@@ -3901,7 +4088,7 @@ function updateApiKeyFieldForProvider(provider) {
         apiKeySourceHint.textContent = '';
     }
     if (providerDescription) {
-        providerDescription.textContent = t(`provider_${provider}_desc`);
+        providerDescription.textContent = getProviderDescriptionText(provider);
     }
     if (apiKeyGetLink) {
         const url = PROVIDER_KEY_URLS[provider];
@@ -3920,10 +4107,70 @@ function updateApiKeyFieldForProvider(provider) {
 function populateSettingsForm() {
     const provider = getDesiredProvider();
     setProviderRadio(provider);
+    // Set the mode radio first so the region/description helpers (which read it)
+    // see the correct mode.
+    const mode = (getConnectionMode() === 'relay') ? 'relay' : 'direct';
+    setModeRadio(mode);
     updateApiKeyFieldForProvider(provider);
     updateSonioxRegionForProvider(provider);
+    applyModeSectionsVisibility(mode);
+    updateAccountSection();
     if (settingsErrorEl) {
         settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
+    }
+}
+
+function setModeRadio(mode) {
+    if (!settingsForm) {
+        return;
+    }
+    settingsForm.querySelectorAll('input[name="connmode"]').forEach((radio) => {
+        radio.checked = (radio.value === mode);
+    });
+}
+
+function getSettingsMode() {
+    if (!relayAvailable) {
+        return 'direct';
+    }
+    if (settingsForm) {
+        const checked = settingsForm.querySelector('input[name="connmode"]:checked');
+        if (checked) {
+            return checked.value;
+        }
+    }
+    return (getConnectionMode() === 'relay') ? 'relay' : 'direct';
+}
+
+// Show the mode toggle only when a server is configured; in relay mode swap the
+// API-key field for the account panel (provider + region stay in both modes).
+function applyModeSectionsVisibility(mode) {
+    const modeSection = document.getElementById('modeSection');
+    const accountSection = document.getElementById('accountSection');
+    const apiKeySection = document.getElementById('apiKeySection');
+    if (modeSection) modeSection.hidden = !relayAvailable;
+    const relay = (mode === 'relay');
+    if (accountSection) accountSection.hidden = !relay;
+    if (apiKeySection) apiKeySection.hidden = relay;
+    const modeDesc = document.getElementById('modeDescription');
+    if (modeDesc) modeDesc.textContent = t(relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc');
+}
+
+function updateAccountSection() {
+    const serverHint = document.getElementById('accountServerHint');
+    const identityHint = document.getElementById('accountIdentityHint');
+    if (serverHint) {
+        serverHint.textContent = relayServerUrl ? t('account_server', { url: relayServerUrl }) : '';
+    }
+    if (identityHint) {
+        const server = loadServerSettings();
+        if (backendLoggedIn || server.token) {
+            const name = server.displayName || '—';
+            const rank = server.trustRank || '—';
+            identityHint.textContent = t('account_identity', { name, rank });
+        } else {
+            identityHint.textContent = t('account_not_signed_in');
+        }
     }
 }
 
@@ -3934,11 +4181,15 @@ function openSettings({ forced = false } = {}) {
     settingsForcedOpen = !!forced;
     applySettingsI18n();
     populateSettingsForm();
+    if (relayAvailable && getConnectionMode() === 'relay') {
+        void fetchRelayPricing();
+    }
     if (settingsOverlay) settingsOverlay.hidden = false;
     if (settingsPanel) settingsPanel.hidden = false;
     const hideClose = settingsForcedOpen ? 'none' : '';
     if (settingsCancelButton) settingsCancelButton.style.display = hideClose;
     if (settingsCloseButton) settingsCloseButton.style.display = hideClose;
+    if (settingsModeBackButton) settingsModeBackButton.hidden = !(settingsForcedOpen && relayAvailable);
 }
 
 function hideSettingsPanel() {
@@ -3954,10 +4205,17 @@ function closeSettings() {
     hideSettingsPanel();
 }
 
-async function pushSetup(provider, apiKey, { silent = false, region = null } = {}) {
+async function pushSetup(provider, apiKey, { silent = false, region = null, mode = null, token = null } = {}) {
     try {
         const body = { provider };
-        if (apiKey) {
+        if (mode) {
+            body.mode = mode;
+        }
+        if (mode === 'relay') {
+            if (token) {
+                body.token = token;
+            }
+        } else if (apiKey) {
             body.api_key = apiKey;
         }
         if (provider === 'soniox' && region) {
@@ -3975,6 +4233,12 @@ async function pushSetup(provider, apiKey, { silent = false, region = null } = {
         translationProvider = data.provider || provider;
         backendBootId = data.boot_id || backendBootId;
         setupRequired = !!data.setup_required;
+        if (typeof data.mode === 'string') {
+            backendMode = data.mode;
+        }
+        if (typeof data.logged_in === 'boolean') {
+            backendLoggedIn = !!data.logged_in;
+        }
         pushedOverrideBootId = backendBootId;
         if (data.downgraded_two_way) {
             showToast(t('gemini_no_two_way_warning'), true);
@@ -4085,14 +4349,52 @@ async function handleSettingsSave(event) {
         event.preventDefault();
     }
     const provider = getSelectedProvider();
-    const key = (apiKeyInput && apiKeyInput.value || '').trim();
     const region = getSelectedSonioxRegion();
+    const mode = getSettingsMode();
     const settings = loadProviderSettings();
     settings.providerOverride = provider;
     if (region) {
         settings.sonioxRegion = region;
     }
     settings.keys = settings.keys || {};
+
+    const server = loadServerSettings();
+    server.mode = mode;
+    server.modeChosen = true;
+    saveServerSettings(server);
+
+    if (mode === 'relay') {
+        // Hosted mode: no provider key needed; sign-in supplies the token.
+        if (!server.token) {
+            saveProviderSettings(settings);
+            hideSettingsPanel();
+            openLogin({ forced: false });
+            return;
+        }
+        if (settingsSaveButton) { settingsSaveButton.disabled = true; settingsSaveButton.textContent = t('saving'); }
+        if (settingsErrorEl) settingsErrorEl.textContent = '';
+        saveProviderSettings(settings);
+        const result = await pushSetup(provider, null, {
+            silent: false, mode: 'relay', token: server.token, region,
+        });
+        if (settingsSaveButton) { settingsSaveButton.disabled = false; settingsSaveButton.textContent = t('save'); }
+        if (!result.ok) {
+            const msg = (result.data && result.data.message) || t('validation_api_key');
+            if (settingsErrorEl) settingsErrorEl.textContent = localizeBackendMessage(msg);
+            return;
+        }
+        if (result.data && result.data.setup_required) {
+            hideSettingsPanel();
+            openLogin({ forced: true });
+            return;
+        }
+        hideSettingsPanel();
+        clearSubtitleState();
+        return;
+    }
+
+    // ----- direct mode (user's own provider key) -----
+    const key = (apiKeyInput && apiKeyInput.value || '').trim();
     if (key) {
         settings.keys[provider] = key;
     } else {
@@ -4110,7 +4412,7 @@ async function handleSettingsSave(event) {
     if (settingsErrorEl) settingsErrorEl.textContent = '';
 
     const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
-    const result = await pushSetup(provider, apiKeyToPush, { silent: false, region });
+    const result = await pushSetup(provider, apiKeyToPush, { silent: false, region, mode: 'direct' });
 
     if (settingsSaveButton) settingsSaveButton.disabled = false;
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
@@ -4135,29 +4437,62 @@ async function syncProviderFromStorage() {
     }
     const settings = loadProviderSettings();
     const desiredProvider = settings.providerOverride || translationProvider || 'soniox';
-    const overrideKey = settings.keys && settings.keys[desiredProvider];
     // When the backend pins a custom endpoint, never push a region (it would override the URL).
     const desiredRegion = backendSonioxCustomUrl ? null : getDesiredSonioxRegion();
     const providerMismatch = settings.providerOverride && desiredProvider !== translationProvider;
-    const needKeyPush = overrideKey && backendKeySource !== 'localstorage';
-    const regionMismatch = !backendSonioxCustomUrl
-        && desiredProvider === 'soniox'
-        && settings.sonioxRegion
-        && desiredRegion !== backendSonioxRegion;
-    if (!providerMismatch && !needKeyPush && !regionMismatch) {
+    const mode = getConnectionMode();
+
+    if (mode === 'relay') {
+        const server = loadServerSettings();
+        const token = server.token || '';
+        const modeMismatch = backendMode !== 'relay';
+        const needTokenPush = token && !backendLoggedIn;
+        if (!providerMismatch && !modeMismatch && !needTokenPush) {
+            return;
+        }
+        if (pushedOverrideBootId === backendBootId) {
+            return;
+        }
+        await pushSetup(desiredProvider, null, {
+            silent: true, mode: 'relay', token, region: desiredRegion,
+        });
         return;
     }
-    if (pushedOverrideBootId === backendBootId) {
-        return;
+
+    if (mode === 'direct') {
+        const overrideKey = settings.keys && settings.keys[desiredProvider];
+        const needKeyPush = overrideKey && backendKeySource !== 'localstorage';
+        const regionMismatch = !backendSonioxCustomUrl
+            && desiredProvider === 'soniox'
+            && settings.sonioxRegion
+            && desiredRegion !== backendSonioxRegion;
+        const modeMismatch = backendMode !== 'direct';
+        if (!providerMismatch && !needKeyPush && !regionMismatch && !modeMismatch) {
+            return;
+        }
+        if (pushedOverrideBootId === backendBootId) {
+            return;
+        }
+        await pushSetup(desiredProvider, overrideKey || null, {
+            silent: true, mode: 'direct', region: desiredRegion,
+        });
     }
-    await pushSetup(desiredProvider, overrideKey || null, { silent: true, region: desiredRegion });
+    // mode === null (undecided) is handled by the first-launch chooser.
 }
 
 function maybeForceOpenSettings() {
     if (lockManualControls) {
         return;
     }
-    if (setupRequired) {
+    const mode = getConnectionMode();
+    if (mode === 'relay') {
+        const hasToken = !!loadServerSettings().token;
+        if (!hasToken || setupRequired) {
+            openLogin({ forced: true });
+        }
+        return;
+    }
+    if (mode === 'direct' && setupRequired) {
         openSettings({ forced: true });
     }
 }
@@ -4170,6 +4505,9 @@ if (settingsCloseButton) {
 }
 if (settingsCancelButton) {
     settingsCancelButton.addEventListener('click', () => closeSettings());
+}
+if (settingsModeBackButton) {
+    settingsModeBackButton.addEventListener('click', () => returnToModeChooser());
 }
 if (resetAllButton) {
     resetAllButton.addEventListener('click', () => handleResetAll());
@@ -4186,16 +4524,600 @@ if (settingsForm) {
             updateSonioxRegionForProvider(provider);
         });
     });
+    settingsForm.querySelectorAll('input[name="connmode"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+            const mode = getSettingsMode();
+            applyModeSectionsVisibility(mode);
+            updateAccountSection();
+            // Region + price description depend on the mode.
+            const provider = getSelectedProvider();
+            updateSonioxRegionForProvider(provider);
+            updateApiKeyFieldForProvider(provider);
+            if (mode === 'relay') {
+                void fetchRelayPricing();
+            }
+        });
+    });
+}
+
+// Account actions (relay/hosted mode).
+const redeemButton = document.getElementById('redeemButton');
+const redeemInput = document.getElementById('redeemInput');
+const reLoginButton = document.getElementById('reLoginButton');
+const logoutButton = document.getElementById('logoutButton');
+if (redeemButton) {
+    redeemButton.addEventListener('click', () => handleRedeem());
+}
+if (reLoginButton) {
+    reLoginButton.addEventListener('click', () => {
+        hideSettingsPanel();
+        openLogin({ forced: false });
+    });
+}
+if (logoutButton) {
+    logoutButton.addEventListener('click', () => handleLogout());
+}
+
+// ===================== Relay (hosted) client: chooser / login / account / balance =====================
+
+const modeChooserOverlay = document.getElementById('modeChooserOverlay');
+const modeChooserEl = document.getElementById('modeChooser');
+const loginOverlay = document.getElementById('loginOverlay');
+const loginPanel = document.getElementById('loginPanel');
+const loginForm = document.getElementById('loginForm');
+const loginCloseButton = document.getElementById('loginCloseButton');
+const loginUserInput = document.getElementById('loginUserInput');
+const loginPrimaryButton = document.getElementById('loginPrimaryButton');
+const loginModeBackButton = document.getElementById('loginModeBackButton');
+const loginBackButton = document.getElementById('loginBackButton');
+const loginCopyButton = document.getElementById('loginCopyButton');
+const loginErrorEl = document.getElementById('loginError');
+const balanceBar = document.getElementById('balanceBar');
+
+function setElText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+
+// ---- First-launch mode chooser ----
+function applyChooserI18n() {
+    setElText('modeChooserTitle', t('chooser_title'));
+    setElText('modeChooserHint', t('chooser_hint'));
+    setElText('modeChooserRelayTitle', t('chooser_relay_title'));
+    setElText('modeChooserRelayDesc', t('chooser_relay_desc'));
+    setElText('modeChooserDirectTitle', t('chooser_direct_title'));
+    setElText('modeChooserDirectDesc', t('chooser_direct_desc'));
+}
+
+function openModeChooser() {
+    return new Promise((resolve) => {
+        applyChooserI18n();
+        if (modeChooserOverlay) modeChooserOverlay.hidden = false;
+        if (modeChooserEl) modeChooserEl.hidden = false;
+        const relayBtn = document.getElementById('modeChooserRelay');
+        const directBtn = document.getElementById('modeChooserDirect');
+        const choose = (mode) => {
+            const s = loadServerSettings();
+            s.mode = mode;
+            s.modeChosen = true;
+            saveServerSettings(s);
+            if (modeChooserOverlay) modeChooserOverlay.hidden = true;
+            if (modeChooserEl) modeChooserEl.hidden = true;
+            resolve(mode);
+        };
+        if (relayBtn) relayBtn.onclick = () => choose('relay');
+        if (directBtn) directBtn.onclick = () => choose('direct');
+    });
+}
+
+function clearConnectionModeChoice() {
+    const s = loadServerSettings();
+    s.mode = null;
+    s.modeChosen = false;
+    saveServerSettings(s);
+}
+
+async function returnToModeChooser() {
+    if (lockManualControls || !relayAvailable) {
+        return;
+    }
+    clearConnectionModeChoice();
+    pushedOverrideBootId = null;
+    hideSettingsPanel();
+    hideLogin();
+    await openModeChooser();
+    await syncProviderFromStorage();
+    maybeForceOpenSettings();
+    updateBalanceBarVisibility();
+}
+
+async function maybeRunFirstLaunchFlow() {
+    if (lockManualControls) {
+        return;
+    }
+    const s = loadServerSettings();
+    if ((s.mode === 'relay' || s.mode === 'direct') && hasExplicitConnectionMode(s)) {
+        return;
+    }
+    if (!relayAvailable) {
+        // No server configured: implicitly direct mode, no chooser shown.
+        s.mode = 'direct';
+        s.modeChosen = false;
+        saveServerSettings(s);
+        return;
+    }
+    await openModeChooser();
+}
+
+// ---- Login overlay (VRChat profile proof) ----
+function applyLoginI18n() {
+    setElText('loginTitle', t('login_title'));
+    setElText('loginUserInputLabel', t('login_user_input_label'));
+    setElText('loginInputHint', t('login_input_hint'));
+    setElText('loginChallengeHint', t('login_challenge_hint'));
+    setElText('loginRemoveHint', t('login_remove_hint'));
+    setElText('loginCopyButton', t('login_copy'));
+    setElText('loginModeBackButton', t('mode_back_to_chooser'));
+    setElText('loginBackButton', t('login_back'));
+    setElText('loginBonusLabel', t('login_bonus_label'));
+    const serverHint = document.getElementById('loginServerHint');
+    if (serverHint) serverHint.textContent = relayServerUrl ? t('login_server', { url: relayServerUrl }) : '';
+}
+
+function setLoginStep(step) {
+    const inputStep = document.getElementById('loginStepInput');
+    const challengeStep = document.getElementById('loginStepChallenge');
+    if (inputStep) inputStep.hidden = (step !== 'input');
+    if (challengeStep) challengeStep.hidden = (step !== 'challenge');
+    if (loginBackButton) loginBackButton.hidden = (step !== 'challenge');
+    if (loginPrimaryButton) {
+        loginPrimaryButton.textContent = (step === 'challenge') ? t('login_check') : t('login_start');
+    }
+    loginForm && loginForm.setAttribute('data-step', step);
+}
+
+function resetLoginToInput() {
+    stopLoginCountdown();
+    loginChallengeId = '';
+    if (loginErrorEl) loginErrorEl.textContent = '';
+    setLoginStep('input');
+}
+
+function stopLoginCountdown() {
+    if (loginExpiryTimer) {
+        clearInterval(loginExpiryTimer);
+        loginExpiryTimer = null;
+    }
+}
+
+function startLoginCountdown(expiresAtIso) {
+    stopLoginCountdown();
+    const expiresAt = Date.parse(expiresAtIso);
+    const expiryHint = document.getElementById('loginExpiryHint');
+    const tick = () => {
+        const remaining = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
+        if (expiryHint) expiryHint.textContent = t('login_expiry', { seconds: remaining });
+        if (remaining <= 0) {
+            stopLoginCountdown();
+            if (loginErrorEl) loginErrorEl.textContent = t('login_expired');
+            resetLoginToInput();
+        }
+    };
+    tick();
+    loginExpiryTimer = setInterval(tick, 1000);
+}
+
+async function fetchRegistrationInfo() {
+    const section = document.getElementById('loginBonusSection');
+    try {
+        const resp = await fetch('/account/registration-info');
+        if (!resp.ok) {
+            if (section) section.hidden = true;
+            return;
+        }
+        loginRegistrationInfo = await resp.json();
+        renderBonusLadder(null);
+    } catch (e) {
+        if (section) section.hidden = true;
+    }
+}
+
+function rankLabel(rank) {
+    return String(rank || '').replace(/_/g, ' ');
+}
+
+function renderBonusLadder(yourRank) {
+    const section = document.getElementById('loginBonusSection');
+    const list = document.getElementById('loginBonusList');
+    const thresholdHint = document.getElementById('loginThresholdHint');
+    if (!section || !list) return;
+    const info = loginRegistrationInfo;
+    const bonuses = (info && Array.isArray(info.bonuses)) ? info.bonuses : [];
+    list.innerHTML = '';
+    if (!bonuses.length) {
+        section.hidden = false;
+        const p = document.createElement('div');
+        p.className = 'bonus-row';
+        p.textContent = t('login_bonus_none');
+        list.appendChild(p);
+    } else {
+        section.hidden = false;
+        bonuses.forEach((b) => {
+            const row = document.createElement('div');
+            const isYours = yourRank && String(b.trust_rank).toLowerCase() === String(yourRank).toLowerCase();
+            row.className = isYours ? 'bonus-row bonus-yours' : 'bonus-row';
+            const key = isYours ? 'login_bonus_yours' : 'login_bonus_row';
+            row.textContent = t(key, { rank: rankLabel(b.trust_rank), credits: b.grant_credits });
+            list.appendChild(row);
+        });
+    }
+    if (thresholdHint) {
+        const threshold = info && info.registration_threshold;
+        if (threshold) {
+            thresholdHint.hidden = false;
+            thresholdHint.textContent = t('login_threshold', { rank: rankLabel(threshold) });
+        } else {
+            thresholdHint.hidden = true;
+            thresholdHint.textContent = '';
+        }
+    }
+}
+
+function openLogin({ forced = false } = {}) {
+    if (lockManualControls) return;
+    loginForcedOpen = !!forced;
+    applyLoginI18n();
+    resetLoginToInput();
+    if (loginUserInput) loginUserInput.value = '';
+    void fetchRegistrationInfo();
+    if (loginOverlay) loginOverlay.hidden = false;
+    if (loginPanel) loginPanel.hidden = false;
+    if (loginCloseButton) loginCloseButton.style.display = loginForcedOpen ? 'none' : '';
+    if (loginModeBackButton) loginModeBackButton.hidden = !(loginForcedOpen && relayAvailable);
+}
+
+function hideLogin() {
+    stopLoginCountdown();
+    if (loginOverlay) loginOverlay.hidden = true;
+    if (loginPanel) loginPanel.hidden = true;
+    loginForcedOpen = false;
+}
+
+function closeLogin() {
+    if (loginForcedOpen) return;
+    hideLogin();
+}
+
+async function startVerification() {
+    const userInput = (loginUserInput && loginUserInput.value || '').trim();
+    if (!userInput) {
+        if (loginErrorEl) loginErrorEl.textContent = t('login_user_input_label');
+        return;
+    }
+    if (loginPrimaryButton) { loginPrimaryButton.disabled = true; }
+    if (loginErrorEl) loginErrorEl.textContent = '';
+    try {
+        const resp = await fetch('/account/verify/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_input: userInput, context_label: 'Realtime Subtitle' }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
+            return;
+        }
+        loginChallengeId = data.challenge_id || '';
+        const challengeText = document.getElementById('loginChallengeText');
+        if (challengeText) challengeText.textContent = data.text || '';
+        setLoginStep('challenge');
+        if (data.expires_at) startLoginCountdown(data.expires_at);
+    } catch (e) {
+        if (loginErrorEl) loginErrorEl.textContent = String(e);
+    } finally {
+        if (loginPrimaryButton) loginPrimaryButton.disabled = false;
+    }
+}
+
+async function checkVerification() {
+    if (!loginChallengeId) {
+        resetLoginToInput();
+        return;
+    }
+    if (loginPrimaryButton) { loginPrimaryButton.disabled = true; loginPrimaryButton.textContent = t('login_checking'); }
+    if (loginErrorEl) loginErrorEl.textContent = '';
+    try {
+        const resp = await fetch('/account/verify/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ challenge_id: loginChallengeId }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data && data.success && data.api_key) {
+            const server = loadServerSettings();
+            server.mode = 'relay';
+            server.modeChosen = true;
+            server.token = data.api_key;
+            server.displayName = data.display_name || '';
+            server.trustRank = data.trust_rank || '';
+            saveServerSettings(server);
+            renderBonusLadder(data.trust_rank);
+            // Persist provider override and start a relay session.
+            const settings = loadProviderSettings();
+            const provider = settings.providerOverride || translationProvider || 'soniox';
+            await pushSetup(provider, null, { silent: true, mode: 'relay', token: data.api_key });
+            showToast(t('login_success', { name: server.displayName || data.display_name || '' }));
+            hideLogin();
+            updateBalanceBarVisibility();
+            void fetchBalance();
+            clearSubtitleState();
+            return;
+        }
+        if (resp.ok) {
+            // success=false: not found in bio yet.
+            if (loginErrorEl) loginErrorEl.textContent = t('login_not_verified');
+            return;
+        }
+        if (resp.status === 410 || resp.status === 409) {
+            if (loginErrorEl) loginErrorEl.textContent = t('login_expired');
+            resetLoginToInput();
+            return;
+        }
+        if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
+    } catch (e) {
+        if (loginErrorEl) loginErrorEl.textContent = String(e);
+    } finally {
+        if (loginPrimaryButton) { loginPrimaryButton.disabled = false; loginPrimaryButton.textContent = t('login_check'); }
+    }
+}
+
+function mapVerifyError(status, data) {
+    if (status === 429) return t('login_rate_limited');
+    if (status === 403) {
+        const threshold = (loginRegistrationInfo && loginRegistrationInfo.registration_threshold) || '';
+        if (threshold) return t('login_threshold', { rank: rankLabel(threshold) });
+    }
+    const msg = data && (data.detail || data.message);
+    return localizeBackendMessage(msg || t('connection_error_try_again'));
+}
+
+if (loginForm) {
+    loginForm.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const step = loginForm.getAttribute('data-step');
+        if (step === 'challenge') {
+            void checkVerification();
+        } else {
+            void startVerification();
+        }
+    });
+}
+if (loginBackButton) {
+    loginBackButton.addEventListener('click', () => resetLoginToInput());
+}
+if (loginModeBackButton) {
+    loginModeBackButton.addEventListener('click', () => returnToModeChooser());
+}
+if (loginCloseButton) {
+    loginCloseButton.addEventListener('click', () => closeLogin());
+}
+if (loginOverlay) {
+    loginOverlay.addEventListener('click', () => closeLogin());
+}
+if (loginCopyButton) {
+    loginCopyButton.addEventListener('click', async () => {
+        const challengeText = document.getElementById('loginChallengeText');
+        const text = challengeText ? challengeText.textContent : '';
+        if (!text) return;
+        try {
+            await navigator.clipboard.writeText(text);
+            loginCopyButton.textContent = t('login_copied');
+            setTimeout(() => { loginCopyButton.textContent = t('login_copy'); }, 1500);
+        } catch (e) {
+            // Clipboard may be unavailable; selection fallback is the <code> user-select:all.
+        }
+    });
+}
+
+// ---- Account actions ----
+async function handleRedeem() {
+    const input = document.getElementById('redeemInput');
+    const code = (input && input.value || '').trim();
+    if (!code) return;
+    try {
+        const resp = await fetch('/account/redeem', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data && data.success) {
+            if (input) input.value = '';
+            showToast(t('account_redeem_success', {
+                credits: formatCredits(data.granted_credits),
+                balance: formatCredits(data.new_balance),
+            }));
+            void fetchBalance();
+        } else {
+            showToast(localizeBackendMessage((data && (data.detail || data.message)) || t('connection_error_try_again')), true);
+        }
+    } catch (e) {
+        showToast(String(e), true);
+    }
+}
+
+async function handleLogout() {
+    const confirmed = await showConfirm(t('account_logout_confirm'), {
+        okLabel: t('account_logout'),
+        cancelLabel: t('cancel'),
+        danger: true,
+    });
+    if (!confirmed) return;
+    try {
+        await fetch('/account/logout', { method: 'POST' });
+    } catch (e) {
+        // ignore
+    }
+    const server = loadServerSettings();
+    server.token = '';
+    server.displayName = '';
+    server.trustRank = '';
+    saveServerSettings(server);
+    backendLoggedIn = false;
+    pushedOverrideBootId = null;
+    updateAccountSection();
+    updateBalanceBarVisibility();
+    hideSettingsPanel();
+    openLogin({ forced: true });
+}
+
+// ---- Balance bar + this-session cost ----
+function formatCredits(value) {
+    if (value === null || value === undefined) return '—';
+    const n = Number(value);
+    if (!Number.isFinite(n)) return '—';
+    return (Math.round(n * 100) / 100).toString();
+}
+
+function balanceBarShouldShow() {
+    return getConnectionMode() === 'relay' && (backendLoggedIn || !!loadServerSettings().token);
+}
+
+function updateBalanceBarVisibility() {
+    if (!balanceBar) return;
+    if (balanceBarShouldShow()) {
+        balanceBar.hidden = false;
+        startBalancePolling();
+    } else {
+        balanceBar.hidden = true;
+        stopBalancePolling();
+    }
+}
+
+function startBalancePolling() {
+    void fetchBalance();
+    if (!balancePollTimer) {
+        balancePollTimer = setInterval(fetchBalance, 45000);
+    }
+}
+
+function stopBalancePolling() {
+    if (balancePollTimer) {
+        clearInterval(balancePollTimer);
+        balancePollTimer = null;
+    }
+}
+
+async function fetchBalance() {
+    if (!balanceBarShouldShow()) return;
+    try {
+        const resp = await fetch('/account/balance');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        pricePerSecond = Number(data.price_per_second) || 0;
+        renderBalance(data);
+    } catch (e) {
+        // ignore transient errors
+    }
+}
+
+function renderBalance(data) {
+    setElText('balanceLabel', t('balance_label'));
+    setElText('balanceValue', formatCredits(data.prepaid_balance));
+    setElText('sessionLabel', t('balance_session'));
+
+    // Free quota: show remaining today / daily cap (or "unlimited").
+    const freeItem = document.getElementById('freeItem');
+    if (freeItem) {
+        if (data.free) {
+            freeItem.hidden = false;
+            setElText('freeLabel', t('balance_free'));
+            if (data.free.unlimited) {
+                setElText('freeValue', t('balance_free_unlimited'));
+            } else {
+                setElText('freeValue', t('balance_free_remaining', {
+                    remaining: formatCredits(data.free.remaining),
+                    cap: formatCredits(data.free.max_credits_per_day),
+                }));
+            }
+        } else {
+            freeItem.hidden = true;
+        }
+    }
+
+    // Subscription quota: show remaining for the first active plan, if any.
+    const subItem = document.getElementById('subItem');
+    if (subItem) {
+        const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
+        if (subs.length) {
+            const sub = subs[0];
+            subItem.hidden = false;
+            setElText('subLabel', t('balance_subscription'));
+            setElText('subValue', t('balance_free_remaining', {
+                remaining: formatCredits(sub.remaining_credits),
+                cap: formatCredits(sub.quota_credits),
+            }));
+        } else {
+            subItem.hidden = true;
+        }
+    }
+
+    updateSessionCostDisplay();
+}
+
+function sessionElapsedMs() {
+    let total = sessionAccumMs;
+    if (sessionRunSince != null) {
+        total += (Date.now() - sessionRunSince);
+    }
+    return total;
+}
+
+function updateSessionCostDisplay() {
+    const cost = (sessionElapsedMs() / 1000) * pricePerSecond;
+    setElText('sessionValue', formatCredits(cost));
+}
+
+function sessionCostResume() {
+    if (getConnectionMode() !== 'relay') return;
+    if (sessionRunSince == null) {
+        sessionRunSince = Date.now();
+    }
+    if (!sessionCostTimer) {
+        sessionCostTimer = setInterval(updateSessionCostDisplay, 1000);
+    }
+    updateSessionCostDisplay();
+}
+
+function sessionCostPause() {
+    if (sessionRunSince != null) {
+        sessionAccumMs += (Date.now() - sessionRunSince);
+        sessionRunSince = null;
+    }
+    if (sessionCostTimer) {
+        clearInterval(sessionCostTimer);
+        sessionCostTimer = null;
+    }
+    updateSessionCostDisplay();
+}
+
+function sessionCostReset() {
+    const wasRunning = sessionRunSince != null;
+    sessionAccumMs = 0;
+    sessionRunSince = wasRunning ? Date.now() : null;
+    updateSessionCostDisplay();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
     (async () => {
         await fetchUiConfig();
+        await maybeRunFirstLaunchFlow();
         await syncProviderFromStorage();
         await fetchLlmRefineStatus();
         fetchApiKeyStatus();
         fetchOscTranslationStatus();
         maybeForceOpenSettings();
+        updateBalanceBarVisibility();
         connect();
     })();
 });

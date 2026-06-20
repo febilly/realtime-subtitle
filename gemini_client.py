@@ -225,14 +225,26 @@ def connect_live(
     if not api_key:
         raise RuntimeError("Gemini API key is missing")
 
-    url = f"{GEMINI_WEBSOCKET_URL}?key={api_key}"
+    # Hosted mode: connect through the subtitle-server relay. The relay injects
+    # its own upstream key into the upstream URL, so we send no ?key= and instead
+    # authenticate with the account token as the Authorization bearer.
+    import config as _config
+    if _config.RELAY_MODE:
+        url = _config.relay_ws_url("gemini")
+        connect_kwargs = {
+            "max_size": None,
+            "additional_headers": {"Authorization": f"Bearer {_config.RELAY_TOKEN}"},
+        }
+    else:
+        url = f"{GEMINI_WEBSOCKET_URL}?key={api_key}"
+        connect_kwargs = {"max_size": None}
 
     global _working_setup_layout
     layouts = [_working_setup_layout] if _working_setup_layout else list(SETUP_LAYOUTS)
 
     last_error: Exception | None = None
     for layout in layouts:
-        ws = sync_connect(url, max_size=None)
+        ws = sync_connect(url, **connect_kwargs)
         try:
             setup_message = get_setup_message(translation, translation_target_lang, layout=layout)
             ws.send(json.dumps(setup_message))

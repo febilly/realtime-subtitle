@@ -214,6 +214,13 @@ class ProviderManager:
         # Runtime key overrides pushed from the UI; None => fall back to env.
         self.runtime_keys = {"soniox": None, "gemini": None}
 
+        # Connection mode: "direct" (user's own provider key) or "relay" (hosted
+        # subtitle-server). The relay token is the long-lived ss_ account key,
+        # shared across providers; the UI login / localStorage override take
+        # priority over the optional env fallback.
+        self.mode = "direct"
+        self.relay_token = config.SUBTITLE_SERVER_TOKEN or ""
+
         self.provider = config.TRANSLATION_PROVIDER
         self.translation_mode = config.TRANSLATION_MODE
         self.target_lang = config.TRANSLATION_TARGET_LANG
@@ -245,6 +252,12 @@ class ProviderManager:
         return provider_has_env_key(provider)
 
     def key_source(self) -> str:
+        if self.mode == "relay":
+            if self.relay_token:
+                # Distinguish an env-pinned token from a UI/localStorage one so
+                # the frontend knows whether it must push its saved token.
+                return "env" if self.relay_token == (self.config.SUBTITLE_SERVER_TOKEN or "") and self.config.SUBTITLE_SERVER_TOKEN else "localstorage"
+            return "none"
         if self.runtime_keys.get(self.provider):
             return "localstorage"
         if self.env_key_present(self.provider):
@@ -269,6 +282,10 @@ class ProviderManager:
 
         Used by web_server restart/resume handlers.
         """
+        if self.mode == "relay":
+            if self.relay_token:
+                return self.relay_token
+            raise RuntimeError("Not signed in to the subtitle server")
         override = self.runtime_keys.get(self.provider)
         if override:
             return override
@@ -277,7 +294,15 @@ class ProviderManager:
         return self._env_get_api_key()
 
     def _resolve_current_key(self):
-        """Non-raising key resolution. Returns (key_or_none, error_or_none)."""
+        """Non-raising key resolution. Returns (key_or_none, error_or_none).
+
+        In relay mode the active credential is the subtitle-server account token
+        (shared across providers); the session uses it as the relay bearer.
+        """
+        if self.mode == "relay":
+            if self.relay_token:
+                return self.relay_token, None
+            return None, "Not signed in to the subtitle server"
         override = self.runtime_keys.get(self.provider)
         if override:
             return override, None
@@ -313,14 +338,27 @@ class ProviderManager:
         api_key=None,
         use_env=False,
         soniox_region=None,
+        mode=None,
+        relay_token=None,
         translation_mode=None,
         target_lang=None,
         target_lang_1=None,
         target_lang_2=None,
     ) -> dict:
-        """Switch provider/key (and optionally translation settings) in-process."""
+        """Switch provider/key/mode (and optionally translation) in-process."""
         provider = self.config.set_active_provider(provider)
         self.provider = provider
+
+        # Connection mode: "direct" (own provider key) or "relay" (hosted).
+        if mode is not None:
+            m = str(mode).strip().lower()
+            if m in ("direct", "relay"):
+                self.mode = m
+        if relay_token is not None:
+            self.relay_token = str(relay_token).strip()
+        # Push relay state into config so the sessions connect appropriately.
+        self.config.set_relay_mode(self.mode == "relay")
+        self.config.set_relay_token(self.relay_token)
 
         # Soniox regional endpoint (us | eu | jp); only meaningful for Soniox.
         if provider == "soniox" and soniox_region is not None:
@@ -333,7 +371,10 @@ class ProviderManager:
 
         # Keep the silence-sleep cost saver in sync with the active key type:
         # temporary (dispenser) keys keep the stream open; real keys may sleep.
-        self.config.set_uses_temp_api_key(provider, self.uses_temp_api_key(provider))
+        # In relay mode the account token behaves like a persistent real key
+        # (and sleeping during silence also stops relay billing).
+        uses_temp = False if self.mode == "relay" else self.uses_temp_api_key(provider)
+        self.config.set_uses_temp_api_key(provider, uses_temp)
 
         if translation_mode is not None:
             self.translation_mode = translation_mode
