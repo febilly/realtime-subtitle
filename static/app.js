@@ -169,24 +169,81 @@ const RELAY_ERROR_KEYS = {
     concurrency_limit: 'relay_err_concurrency_limit',
 };
 
-function loadServerSettings() {
+// Normalize a server URL into a stable storage key (host is case-insensitive,
+// trailing slash stripped) so the same server maps to one credential bucket.
+function normalizeServerUrl(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    try {
+        const u = new URL(raw);
+        const path = u.pathname.replace(/\/+$/, '');
+        return u.protocol + '//' + u.host.toLowerCase() + path;
+    } catch (e) {
+        return raw.replace(/\/+$/, '');
+    }
+}
+
+// Raw on-disk shape: global `mode`/`modeChosen` + per-server credentials keyed
+// by normalized server URL: { servers: { <url>: { token, displayName, trustRank } } }.
+function loadServerSettingsRaw() {
     try {
         const raw = localStorage.getItem(SUBTITLE_SERVER_STORAGE_KEY);
         if (raw) {
             const obj = JSON.parse(raw);
             if (obj && typeof obj === 'object') {
-                return Object.assign({ mode: null, modeChosen: false, token: '', displayName: '', trustRank: '' }, obj);
+                const out = Object.assign({ mode: null, modeChosen: false }, obj);
+                if (!out.servers || typeof out.servers !== 'object') {
+                    out.servers = {};
+                }
+                return out;
             }
         }
     } catch (e) {
         // ignore
     }
-    return { mode: null, modeChosen: false, token: '', displayName: '', trustRank: '' };
+    return { mode: null, modeChosen: false, servers: {} };
+}
+
+// A per-server *view*: flattens the current server's credentials to the top
+// level so callers can read/write `token`/`displayName`/`trustRank` directly.
+// `mode`/`modeChosen` stay global. The current server is `relayServerUrl`.
+function loadServerSettings() {
+    const raw = loadServerSettingsRaw();
+    const key = normalizeServerUrl(relayServerUrl);
+    let creds = key ? raw.servers[key] : null;
+    // Migrate pre-per-server data: a top-level token belongs to the current server.
+    if (!creds && (raw.token || raw.displayName || raw.trustRank)) {
+        creds = { token: raw.token || '', displayName: raw.displayName || '', trustRank: raw.trustRank || '' };
+    }
+    creds = creds || { token: '', displayName: '', trustRank: '' };
+    return {
+        mode: raw.mode,
+        modeChosen: raw.modeChosen,
+        token: creds.token || '',
+        displayName: creds.displayName || '',
+        trustRank: creds.trustRank || '',
+        servers: raw.servers,
+    };
 }
 
 function saveServerSettings(settings) {
     try {
-        localStorage.setItem(SUBTITLE_SERVER_STORAGE_KEY, JSON.stringify(settings));
+        const raw = loadServerSettingsRaw();
+        raw.mode = settings.mode;
+        raw.modeChosen = settings.modeChosen;
+        const key = normalizeServerUrl(relayServerUrl);
+        if (key) {
+            raw.servers[key] = {
+                token: settings.token || '',
+                displayName: settings.displayName || '',
+                trustRank: settings.trustRank || '',
+            };
+            // Drop legacy top-level credentials once migrated to a per-server bucket.
+            delete raw.token;
+            delete raw.displayName;
+            delete raw.trustRank;
+        }
+        localStorage.setItem(SUBTITLE_SERVER_STORAGE_KEY, JSON.stringify(raw));
     } catch (e) {
         // ignore
     }
