@@ -228,6 +228,7 @@ class GeminiSession:
         self.translation: Optional[str] = None
         self.translation_target_lang: str = "en"
         self._relay_session_active = False
+        self.last_disconnect_payload: Optional[dict] = None
         self.sample_rate = 16000
         # Gemini Live API recommends ~100ms audio chunks (1600 samples @16kHz).
         self.chunk_size = 1600
@@ -293,6 +294,7 @@ class GeminiSession:
 
         self.last_sent_count = 0
         self.is_paused = False
+        self.last_disconnect_payload = None
         self.api_key = api_key
         self.audio_format = audio_format
         self.translation = translation
@@ -411,6 +413,7 @@ class GeminiSession:
     def stop(self):
         """停止当前会话"""
         self._relay_session_active = False
+        self.last_disconnect_payload = None
         if self.stop_event:
             self.stop_event.set()
 
@@ -1839,13 +1842,31 @@ class GeminiSession:
         )
 
         try:
-            active_stream = self._open_stream_state(
-                current_api_key,
-                stream_index,
-                audio_format,
-                translation,
-                translation_target_lang,
-            )
+            try:
+                active_stream = self._open_stream_state(
+                    current_api_key,
+                    stream_index,
+                    audio_format,
+                    translation,
+                    translation_target_lang,
+                )
+            except ConnectionClosed as error:
+                info = relay_close_info(getattr(error, "code", None))
+                if info is not None:
+                    relay_close = info
+                    disconnect_reason = f"relay: {info[0]}"
+                else:
+                    disconnect_reason = f"connection closed: {error}"
+                return
+            except Exception as error:
+                info = relay_close_info(getattr(error, "code", None))
+                if info is not None:
+                    relay_close = info
+                    disconnect_reason = f"relay: {info[0]}"
+                else:
+                    disconnect_reason = f"connection error: {error}"
+                print(f"Error connecting to Gemini: {error}")
+                return
             self.ws = active_stream.ws
             self.last_sent_count = 0
             self._notify_relay_session(loop, "session_connected")
@@ -2239,9 +2260,12 @@ class GeminiSession:
                         disconnect_payload["message"] = message
                     elif _is_api_key_error_reason(disconnect_reason):
                         disconnect_payload["code"] = "api_key"
+                    self.last_disconnect_payload = disconnect_payload
                     asyncio.run_coroutine_threadsafe(
                         self.broadcast_callback(disconnect_payload),
                         loop,
                     )
                 except Exception as notify_error:
                     print(f"⚠️  Failed to notify clients about Gemini disconnect: {notify_error}")
+            elif stop_requested:
+                self.last_disconnect_payload = None

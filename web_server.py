@@ -140,12 +140,14 @@ class WebServer:
                 connected = len(self.ipc_server._clients) > 0
             await ws.send_str(json.dumps({"type": "ipc_status", "connected": connected}))
             manager = self.provider_manager
-            if (
-                manager is not None
-                and manager.mode == "relay"
-                and getattr(self.session, "_relay_session_active", False)
-            ):
-                await ws.send_str(json.dumps({"type": "session_connected"}))
+            if manager is not None:
+                if getattr(self.session, "_relay_session_active", False):
+                    if manager.mode == "relay":
+                        await ws.send_str(json.dumps({"type": "session_connected"}))
+                else:
+                    last_disconnect = getattr(self.session, "last_disconnect_payload", None)
+                    if last_disconnect is not None:
+                        await ws.send_str(json.dumps(last_disconnect))
         except Exception as e:
             self.logger.error(f"Failed to send initial IPC status to client: {e}")
 
