@@ -486,9 +486,6 @@ class WebServer:
         if not user_input:
             return web.json_response({"status": "error", "message": "Missing user_input"}, status=400)
         body = {"user_input": user_input}
-        label = str((payload or {}).get("context_label") or "").strip()
-        if label:
-            body["context_label"] = label
         status, data = await self._server_request("POST", "/auth/verify/start", json_body=body)
         return web.json_response(data, status=status)
 

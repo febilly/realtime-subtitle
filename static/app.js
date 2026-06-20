@@ -4800,7 +4800,7 @@ async function startVerification() {
         const resp = await fetch('/account/verify/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_input: userInput, context_label: 'Realtime Subtitle' }),
+            body: JSON.stringify({ user_input: userInput }),
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
