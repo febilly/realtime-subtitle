@@ -29,6 +29,7 @@ from config import (
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
 from llm_client import close_llm_http_session
+import local_store
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -170,6 +171,40 @@ class WebServer:
     async def health_handler(self, request):
         """健康检查端点 - 用于浏览器定期检测服务器是否存活"""
         return web.json_response({"status": "ok"})
+
+    async def local_store_get_handler(self, request):
+        """返回跨实例共享的浏览器设置（localStorage 镜像）。
+
+        每个实例都连自己的后端，但后端读写的是同一个共享文件，因此第二个
+        实例（不同端口/origin）也能拿到第一个实例保存的设置与登录信息。
+        """
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        return web.json_response({"store": local_store.load()})
+
+    async def local_store_post_handler(self, request):
+        """写入共享设置：{set:{k:v}, remove:[k], clear:bool}。"""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
+
+        if payload.get("clear"):
+            store = local_store.clear()
+            return web.json_response({"status": "ok", "store": store})
+
+        updates = payload.get("set")
+        removals = payload.get("remove")
+        if updates is not None and not isinstance(updates, dict):
+            return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
+        if removals is not None and not isinstance(removals, list):
+            return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
+        store = local_store.merge(updates=updates, removals=removals)
+        return web.json_response({"status": "ok", "store": store})
 
     def _supports_segment_mode(self) -> bool:
         return hasattr(self.session, "get_segment_mode")
@@ -1059,6 +1094,8 @@ class WebServer:
         app.router.add_get('/', self.index_handler)
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/health', self.health_handler)
+        app.router.add_get('/local-store', self.local_store_get_handler)
+        app.router.add_post('/local-store', self.local_store_post_handler)
         app.router.add_get('/ui-config', self.ui_config_handler)
         app.router.add_get('/api/ipc_status', self.ipc_status_handler)
         app.router.add_get('/segment-mode', self.segment_mode_get_handler)

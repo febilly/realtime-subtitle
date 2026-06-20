@@ -824,3 +824,30 @@ IPC_DISCOVERY_FILE = _env_str(
     "IPC_DISCOVERY_FILE",
     get_discovery_path()
 )
+
+
+def get_app_data_dir() -> str:
+    """Per-user persistent directory for settings shared across local instances.
+
+    Unlike the IPC discovery file (which lives in TEMP), this must survive
+    reboots, so it goes under the platform's per-user application-data dir.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config"
+        )
+    return os.path.join(base, "RealtimeSubtitle")
+
+
+# Shared browser-settings store. All local instances read/write this single
+# file so that settings + login (normally kept in per-origin localStorage)
+# survive the dynamic-port origin change when a second instance launches on a
+# new port. See local_store.py and static/local-store-sync.js.
+LOCAL_SETTINGS_FILE = _env_str(
+    "LOCAL_SETTINGS_FILE",
+    os.path.join(get_app_data_dir(), "local_settings.json"),
+)
