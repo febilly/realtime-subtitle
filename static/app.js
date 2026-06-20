@@ -147,6 +147,7 @@ let toastTimer = null;
 const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
 let relayAvailable = false;
 let relayServerUrl = '';
+let creditsPurchaseUrl = '';
 let backendMode = 'direct';
 let backendLoggedIn = false;
 let loginForcedOpen = false;
@@ -168,6 +169,20 @@ const RELAY_ERROR_KEYS = {
     model_not_allowed: 'relay_err_model_not_allowed',
     concurrency_limit: 'relay_err_concurrency_limit',
 };
+
+function safeHttpUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    try {
+        const url = new URL(raw);
+        if (url.protocol === 'http:' || url.protocol === 'https:') {
+            return url.href;
+        }
+    } catch (e) {
+        return '';
+    }
+    return '';
+}
 
 // Normalize a server URL into a stable storage key (host is case-insensitive,
 // trailing slash stripped) so the same server maps to one credential bucket.
@@ -974,6 +989,7 @@ async function fetchUiConfig() {
         if (typeof data.server_url === 'string') {
             relayServerUrl = data.server_url;
         }
+        creditsPurchaseUrl = safeHttpUrl(data && data.credits_purchase_url);
         if (typeof data.mode === 'string') {
             backendMode = data.mode;
         }
@@ -981,6 +997,7 @@ async function fetchUiConfig() {
             backendLoggedIn = data.logged_in;
         }
         updateBalanceBarVisibility();
+        updateAccountSection();
         if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
             backendTranslationMode = data.translation_mode.trim().toLowerCase();
         }
@@ -3983,6 +4000,7 @@ function applySettingsI18n() {
     setText('accountLabel', 'account');
     setText('redeemLabel', 'account_redeem_label');
     setText('redeemButton', 'account_redeem');
+    setText('purchaseCreditsLink', 'account_purchase_credits');
     setText('reLoginButton', 'account_relogin');
     setText('logoutButton', 'account_logout');
     setText('providerLabel', 'api_selection');
@@ -4216,6 +4234,8 @@ function applyModeSectionsVisibility(mode) {
 function updateAccountSection() {
     const serverHint = document.getElementById('accountServerHint');
     const identityHint = document.getElementById('accountIdentityHint');
+    const purchaseHint = document.getElementById('purchaseCreditsHint');
+    const purchaseLink = document.getElementById('purchaseCreditsLink');
     if (serverHint) {
         serverHint.textContent = relayServerUrl ? t('account_server', { url: relayServerUrl }) : '';
     }
@@ -4227,6 +4247,16 @@ function updateAccountSection() {
             identityHint.textContent = t('account_identity', { name, rank });
         } else {
             identityHint.textContent = t('account_not_signed_in');
+        }
+    }
+    if (purchaseHint && purchaseLink) {
+        if (creditsPurchaseUrl) {
+            purchaseLink.href = creditsPurchaseUrl;
+            purchaseLink.textContent = t('account_purchase_credits');
+            purchaseHint.hidden = false;
+        } else {
+            purchaseLink.removeAttribute('href');
+            purchaseHint.hidden = true;
         }
     }
 }

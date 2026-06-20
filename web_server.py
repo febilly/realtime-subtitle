@@ -204,7 +204,17 @@ class WebServer:
             # read only from .env and is never editable in the UI.
             "relay_available": bool(config.RELAY_AVAILABLE),
             "server_url": config.SUBTITLE_SERVER_URL,
+            "credits_purchase_url": "",
         }
+
+        if config.RELAY_AVAILABLE:
+            status, public_settings = await self._server_request(
+                "GET", "/public/settings", timeout=5
+            )
+            if status == 200 and isinstance(public_settings, dict):
+                payload["credits_purchase_url"] = str(
+                    public_settings.get("credits_purchase_url") or ""
+                ).strip()
 
         if manager is not None:
             payload.update({
