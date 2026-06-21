@@ -413,6 +413,115 @@ class SubtitleTextEdit(QTextEdit):
 
 
 # ===========================================================================
+# Windows 专用：让窗口不抢焦点（点击不激活），并置顶。
+# ===========================================================================
+def _apply_no_activate_style(hwnd: int, app_window: bool = False):
+    """让窗口点击不激活并置顶。
+
+    app_window=True 时把窗口注册为任务栏窗口（WS_EX_APPWINDOW，去掉 WS_EX_TOOLWINDOW），
+    这样它会出现在 Windows 任务栏，并能被 OBS 等软件作为独立窗口捕捉；
+    False（默认）则保持工具窗口，不进任务栏。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = ctypes.windll.user32
+        is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
+
+        get_window_long = (
+            user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
+        )
+        set_window_long = (
+            user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
+        )
+        long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
+        get_window_long.restype = long_type
+        get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
+        set_window_long.restype = long_type
+        set_window_long.argtypes = (
+            ctypes.wintypes.HWND,
+            ctypes.c_int,
+            long_type,
+        )
+
+        GWL_EXSTYLE = -20
+        WS_EX_TOOLWINDOW = 0x00000080
+        WS_EX_APPWINDOW = 0x00040000
+        WS_EX_NOACTIVATE = 0x08000000
+        style = int(get_window_long(hwnd, GWL_EXSTYLE))
+        style |= WS_EX_NOACTIVATE
+        if app_window:
+            style |= WS_EX_APPWINDOW
+            style &= ~WS_EX_TOOLWINDOW
+        else:
+            style |= WS_EX_TOOLWINDOW
+        set_window_long(hwnd, GWL_EXSTYLE, long_type(style))
+
+        HWND_TOPMOST = -1
+        SWP_NOSIZE = 0x0001
+        SWP_NOMOVE = 0x0002
+        SWP_NOACTIVATE = 0x0010
+        SWP_FRAMECHANGED = 0x0020
+        user32.SetWindowPos(
+            ctypes.wintypes.HWND(hwnd),
+            ctypes.wintypes.HWND(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )
+    except Exception:
+        pass
+
+
+def _set_click_through(hwnd: int, enabled: bool):
+    """切换 Windows 鼠标穿透（WS_EX_TRANSPARENT）。
+
+    开启后该窗口不再接收任何鼠标事件，点击会落到下方窗口；关闭则恢复正常。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        import ctypes.wintypes
+
+        user32 = ctypes.windll.user32
+        is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
+
+        get_window_long = (
+            user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
+        )
+        set_window_long = (
+            user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
+        )
+        long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
+        get_window_long.restype = long_type
+        get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
+        set_window_long.restype = long_type
+        set_window_long.argtypes = (
+            ctypes.wintypes.HWND,
+            ctypes.c_int,
+            long_type,
+        )
+
+        GWL_EXSTYLE = -20
+        WS_EX_TRANSPARENT = 0x00000020
+        WS_EX_LAYERED = 0x00080000
+        style = int(get_window_long(hwnd, GWL_EXSTYLE))
+        if enabled:
+            style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
+        else:
+            style &= ~WS_EX_TRANSPARENT
+        set_window_long(hwnd, GWL_EXSTYLE, long_type(style))
+    except Exception:
+        pass
+
+
+# ===========================================================================
 # 悬浮窗
 # ===========================================================================
 class OverlayWindow(QWidget):
@@ -430,6 +539,8 @@ class OverlayWindow(QWidget):
         self.display_mode = str(self.settings.value("display_mode", "both"))
         self.is_paused = False
         self._restart_in_flight = False
+        self._passthrough = False
+        self._click_through_on = False
 
         self._drag_offset = None
         self._resize_edges = None
@@ -441,9 +552,10 @@ class OverlayWindow(QWidget):
         self._init_ws()
         self._restart_finished.connect(self._on_restart_finished)
 
-        # 轮询光标位置以决定按钮显隐（比 enter/leave 更稳，避免子控件抖动）
+        # 轮询光标位置以决定按钮显隐 + 穿透模式下的点击区域（比 enter/leave 更稳）。
+        # 穿透模式要靠它实时切换「鼠标在按钮上→可点 / 其他地方→穿透」，故频率高一些。
         self._hover_timer = QTimer(self)
-        self._hover_timer.setInterval(120)
+        self._hover_timer.setInterval(50)
         self._hover_timer.timeout.connect(self._update_button_visibility)
         self._hover_timer.start()
 
@@ -457,9 +569,9 @@ class OverlayWindow(QWidget):
     def _init_ui(self):
         self.setWindowTitle("Realtime Subtitle Overlay")
         self.setWindowFlags(
-            Qt.FramelessWindowHint
+            Qt.Window
+            | Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
-            | Qt.Tool
             | Qt.WindowDoesNotAcceptFocus
         )
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
@@ -490,12 +602,13 @@ class OverlayWindow(QWidget):
         self.btn_alpha_dec = self._make_button("░", "背景更透明", self._dec_alpha)
         self.btn_alpha_inc = self._make_button("▓", "背景更不透明", self._inc_alpha)
         self.btn_display = self._make_button("O/T", "Toggle display: original + translation / original only / translation only", self._cycle_display)
+        self.btn_passthrough = self._make_button("✋", "Click-through mode: mouse passes through everywhere except these buttons", self._toggle_passthrough)
         self.btn_restart = self._make_button("↻", "重启识别", self._restart_recognition)
         self.btn_pause = self._make_button("⏸", "暂停/继续识别", self._toggle_pause)
         self.btn_close = self._make_button("✕", "关闭悬浮窗", self.close)
         for b in (self.btn_font_dec, self.btn_font_inc,
                   self.btn_alpha_dec, self.btn_alpha_inc,
-                  self.btn_display,
+                  self.btn_display, self.btn_passthrough,
                   self.btn_restart, self.btn_pause, self.btn_close):
             bar_layout.addWidget(b)
         self._update_display_button()
@@ -511,58 +624,29 @@ class OverlayWindow(QWidget):
 
     def _apply_windows_no_activate_style(self):
         """Keep clicks on the overlay from activating it on Windows fullscreen apps."""
-        if sys.platform != "win32":
-            return
-        try:
-            import ctypes
-            import ctypes.wintypes
+        _apply_no_activate_style(int(self.winId()), app_window=True)
 
-            hwnd = int(self.winId())
-            user32 = ctypes.windll.user32
-            is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
-
-            get_window_long = (
-                user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
-            )
-            set_window_long = (
-                user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
-            )
-            long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
-            get_window_long.restype = long_type
-            get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
-            set_window_long.restype = long_type
-            set_window_long.argtypes = (
-                ctypes.wintypes.HWND,
-                ctypes.c_int,
-                long_type,
-            )
-
-            GWL_EXSTYLE = -20
-            WS_EX_TOOLWINDOW = 0x00000080
-            WS_EX_NOACTIVATE = 0x08000000
-            style = int(get_window_long(hwnd, GWL_EXSTYLE))
-            set_window_long(
-                hwnd,
-                GWL_EXSTYLE,
-                long_type(style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
-            )
-
-            HWND_TOPMOST = -1
-            SWP_NOSIZE = 0x0001
-            SWP_NOMOVE = 0x0002
-            SWP_NOACTIVATE = 0x0010
-            SWP_FRAMECHANGED = 0x0020
-            user32.SetWindowPos(
-                ctypes.wintypes.HWND(hwnd),
-                ctypes.wintypes.HWND(HWND_TOPMOST),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            )
-        except Exception:
-            pass
+    _BTN_QSS = (
+        "QPushButton {"
+        "  color: #f3f4f6;"
+        "  background: rgba(255,255,255,0.14);"
+        "  border: none; border-radius: 6px;"
+        "  font-size: 13px; font-weight: 600;"
+        "}"
+        "QPushButton:hover { background: rgba(255,255,255,0.30); }"
+        "QPushButton:pressed { background: rgba(255,255,255,0.45); }"
+    )
+    # 激活态（如穿透模式开启）：蓝色高亮，和网页版 active 按钮一致。
+    _BTN_QSS_ACTIVE = (
+        "QPushButton {"
+        "  color: #bfdbfe;"
+        "  background: rgba(96,165,250,0.45);"
+        "  border: none; border-radius: 6px;"
+        "  font-size: 13px; font-weight: 600;"
+        "}"
+        "QPushButton:hover { background: rgba(96,165,250,0.60); }"
+        "QPushButton:pressed { background: rgba(96,165,250,0.70); }"
+    )
 
     def _make_button(self, text, tip, slot):
         b = QPushButton(text, self.button_bar)
@@ -570,16 +654,7 @@ class OverlayWindow(QWidget):
         b.setCursor(Qt.PointingHandCursor)
         b.setFixedSize(28, 24)
         b.setFocusPolicy(Qt.NoFocus)
-        b.setStyleSheet(
-            "QPushButton {"
-            "  color: #f3f4f6;"
-            "  background: rgba(255,255,255,0.14);"
-            "  border: none; border-radius: 6px;"
-            "  font-size: 13px; font-weight: 600;"
-            "}"
-            "QPushButton:hover { background: rgba(255,255,255,0.30); }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.45); }"
-        )
+        b.setStyleSheet(self._BTN_QSS)
         b.clicked.connect(slot)
         return b
 
@@ -707,12 +782,19 @@ class OverlayWindow(QWidget):
 
     # ------------------------------------------------ 按钮显隐（悬停） ----
     def _update_button_visibility(self):
-        inside = self.geometry().contains(QCursor.pos())
+        pos = QCursor.pos()
+        inside = self.geometry().contains(pos)
+        # 按钮条：鼠标在窗口内才显示（穿透模式下也照常显示）。
         if inside != self.button_bar.isVisible():
             self.button_bar.setVisible(inside)
             if inside:
                 self._reposition_buttons()
                 self.button_bar.raise_()
+        # 穿透模式：鼠标悬在按钮条上 -> 关闭穿透（按钮可点）；其余位置 -> 穿透。
+        if self._passthrough:
+            over_buttons = (self.button_bar.isVisible()
+                            and self._button_bar_global_rect().contains(pos))
+            self._set_click_through_state(not over_buttons)
 
     # ----------------------------------------------------------- 按钮动作 --
     def _inc_font(self):
@@ -761,6 +843,32 @@ class OverlayWindow(QWidget):
         self._update_display_button()
         self._last_html = None   # 模式变了，强制重渲染
         self._render()
+
+    # ----------------------------------------------------- 鼠标穿透模式 ----
+    def _button_bar_global_rect(self) -> QRect:
+        tl = self.button_bar.mapToGlobal(QPoint(0, 0))
+        return QRect(tl, self.button_bar.size())
+
+    def _set_click_through_state(self, enabled: bool):
+        """按需切换鼠标穿透，仅在状态变化时调用系统 API。"""
+        if enabled == self._click_through_on:
+            return
+        self._click_through_on = enabled
+        _set_click_through(int(self.winId()), enabled)
+
+    def _toggle_passthrough(self):
+        self._passthrough = not self._passthrough
+        self._update_passthrough_button()
+        if self._passthrough:
+            # 进入：按当前鼠标位置立刻决定穿透/可点（通常鼠标在按钮上，先保持可点）。
+            self._update_button_visibility()
+        else:
+            # 退出：确保恢复正常可点。
+            self._set_click_through_state(False)
+
+    def _update_passthrough_button(self):
+        self.btn_passthrough.setStyleSheet(
+            self._BTN_QSS_ACTIVE if self._passthrough else self._BTN_QSS)
 
     def _toggle_pause(self):
         target = "/resume" if self.is_paused else "/pause"
@@ -847,9 +955,13 @@ class OverlayWindow(QWidget):
 
         if not lines:
             fs = self.font_size
+            # 占位文案垂直居中：QTextEdit 默认顶对齐，按可用高度补一段上边距。
+            line_h = fs * 1.2
+            usable_h = max(0, self.text.height())
+            top = max(0, int((usable_h - line_h) / 2))
             html = (
                 f'<div style="color:{PLACEHOLDER_COLOR}; font-size:{fs}px; '
-                f'text-align:center;">等待字幕…</div>'
+                f'text-align:center; margin-top:{top}px;">等待字幕…</div>'
             )
         else:
             # 只渲染底部最近的完整句子组，避免把一句的顶部切成残缺 token。
