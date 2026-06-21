@@ -4,6 +4,7 @@ Web服务器模块 - 处理HTTP和WebSocket连接
 import json
 import asyncio
 import os
+import aiohttp
 from aiohttp import web
 from aiohttp import WSMsgType
 
@@ -28,6 +29,7 @@ from config import (
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
 from llm_client import close_llm_http_session
+import local_store
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -64,6 +66,8 @@ class WebServer:
         # Runtime provider/key manager (hot-switch); injected by server.py.
         self.provider_manager = None
         self._ipc_polling_task = None
+        # Lazy aiohttp client for proxying REST calls to the subtitle-server.
+        self._http = None
 
     def set_window_on_top_callback(self, callback):
         self.window_on_top_callback = callback
@@ -136,6 +140,15 @@ class WebServer:
             if self.ipc_server is not None:
                 connected = len(self.ipc_server._clients) > 0
             await ws.send_str(json.dumps({"type": "ipc_status", "connected": connected}))
+            manager = self.provider_manager
+            if manager is not None:
+                if getattr(self.session, "_relay_session_active", False):
+                    if manager.mode == "relay":
+                        await ws.send_str(json.dumps({"type": "session_connected"}))
+                else:
+                    last_disconnect = getattr(self.session, "last_disconnect_payload", None)
+                    if last_disconnect is not None:
+                        await ws.send_str(json.dumps(last_disconnect))
         except Exception as e:
             self.logger.error(f"Failed to send initial IPC status to client: {e}")
 
@@ -158,6 +171,40 @@ class WebServer:
     async def health_handler(self, request):
         """健康检查端点 - 用于浏览器定期检测服务器是否存活"""
         return web.json_response({"status": "ok"})
+
+    async def local_store_get_handler(self, request):
+        """返回跨实例共享的浏览器设置（localStorage 镜像）。
+
+        每个实例都连自己的后端，但后端读写的是同一个共享文件，因此第二个
+        实例（不同端口/origin）也能拿到第一个实例保存的设置与登录信息。
+        """
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        return web.json_response({"store": local_store.load()})
+
+    async def local_store_post_handler(self, request):
+        """写入共享设置：{set:{k:v}, remove:[k], clear:bool}。"""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
+
+        if payload.get("clear"):
+            store = local_store.clear()
+            return web.json_response({"status": "ok", "store": store})
+
+        updates = payload.get("set")
+        removals = payload.get("remove")
+        if updates is not None and not isinstance(updates, dict):
+            return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
+        if removals is not None and not isinstance(removals, list):
+            return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
+        store = local_store.merge(updates=updates, removals=removals)
+        return web.json_response({"status": "ok", "store": store})
 
     def _supports_segment_mode(self) -> bool:
         return hasattr(self.session, "get_segment_mode")
@@ -188,7 +235,21 @@ class WebServer:
             "hide_speaker_labels": bool(HIDE_SPEAKER_LABELS),
             "soniox_region": config.SONIOX_REGION,
             "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
+            # Subtitle-server relay (hosted mode) availability. The server URL is
+            # read only from .env and is never editable in the UI.
+            "relay_available": bool(config.RELAY_AVAILABLE),
+            "server_url": config.SUBTITLE_SERVER_URL,
+            "credits_purchase_url": "",
         }
+
+        if config.RELAY_AVAILABLE:
+            status, public_settings = await self._server_request(
+                "GET", "/public/settings", timeout=5
+            )
+            if status == 200 and isinstance(public_settings, dict):
+                payload["credits_purchase_url"] = str(
+                    public_settings.get("credits_purchase_url") or ""
+                ).strip()
 
         if manager is not None:
             payload.update({
@@ -199,6 +260,8 @@ class WebServer:
                     "soniox": manager.env_key_present("soniox"),
                     "gemini": manager.env_key_present("gemini"),
                 },
+                "mode": manager.mode,
+                "logged_in": bool(manager.relay_token),
                 "translation_mode": manager.translation_mode,
                 "target_lang_1": manager.target_lang_1,
                 "target_lang_2": manager.target_lang_2,
@@ -209,6 +272,8 @@ class WebServer:
                 "setup_required": False,
                 "key_source": "env",
                 "env_key_present": {"soniox": False, "gemini": False},
+                "mode": "direct",
+                "logged_in": False,
                 "translation_mode": str(getattr(self.session, "translation", None) or TRANSLATION_MODE),
                 "target_lang_1": "en",
                 "target_lang_2": "zh",
@@ -256,16 +321,56 @@ class WebServer:
         if provider not in ("soniox", "gemini"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
 
-        api_key = payload.get("api_key")
-        if api_key is not None:
-            api_key = str(api_key).strip()
-            if not api_key:
-                api_key = None
+        # Connection mode: "direct" (own provider key) or "relay" (hosted).
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode not in ("direct", "relay"):
+            mode = "direct"
 
         # Soniox regional endpoint (us | eu | jp); ignored for other providers.
         soniox_region = str(payload.get("soniox_region") or "").strip().lower() or None
         if soniox_region is not None and soniox_region not in config.SONIOX_REGION_URLS:
             soniox_region = None
+
+        if mode == "relay":
+            if not config.RELAY_AVAILABLE:
+                return web.json_response(
+                    {"status": "error", "message": "Subtitle server not configured"}, status=400
+                )
+            # The relay token (ss_ account key) may come from the request or from
+            # a prior login already held in memory.
+            token = str(payload.get("token") or payload.get("api_key") or "").strip()
+            if not token:
+                token = manager.relay_token
+            if token:
+                ok, error, _account, auth_failed = await self._validate_relay_token(token)
+                if not ok and auth_failed:
+                    # The server actively rejected the token: the user must
+                    # sign in again.
+                    return web.json_response(
+                        {"status": "error", "message": error or "Token validation failed",
+                         "setup_required": True, "boot_id": manager.boot_id},
+                        status=400,
+                    )
+                # On a transient validation failure (server unreachable / 5xx)
+                # we keep the saved token and proceed, so a brief server outage
+                # at startup doesn't log the user out.
+            result = await manager.apply_provider(
+                provider, mode="relay", relay_token=token, soniox_region=soniox_region
+            )
+            if not result.get("started") and result.get("error") and not token:
+                return web.json_response(
+                    {"status": "error", "message": result.get("error"),
+                     "boot_id": manager.boot_id, "setup_required": True},
+                    status=400,
+                )
+            return self._setup_response(manager, result)
+
+        # ----- direct mode (user's own provider key) -----
+        api_key = payload.get("api_key")
+        if api_key is not None:
+            api_key = str(api_key).strip()
+            if not api_key:
+                api_key = None
 
         # Validate the key (if provided) before activating it.
         if api_key is not None:
@@ -277,7 +382,8 @@ class WebServer:
                 )
 
         result = await manager.apply_provider(
-            provider, api_key=api_key, use_env=(api_key is None), soniox_region=soniox_region
+            provider, mode="direct", api_key=api_key, use_env=(api_key is None),
+            soniox_region=soniox_region,
         )
         if not result.get("started") and result.get("error") and api_key is None:
             # No key provided and env had none either.
@@ -286,10 +392,16 @@ class WebServer:
                 status=400,
             )
 
+        return self._setup_response(manager, result)
+
+    @staticmethod
+    def _setup_response(manager, result):
         return web.json_response({
             "status": "ok",
             "boot_id": manager.boot_id,
             "provider": manager.provider,
+            "mode": manager.mode,
+            "logged_in": bool(manager.relay_token) if manager.mode == "relay" else None,
             "translation_mode": manager.translation_mode,
             "setup_required": bool(manager.setup_required),
             "downgraded_two_way": bool(result.get("downgraded_two_way")),
@@ -352,6 +464,245 @@ class WebServer:
             return validate_soniox_api_key(api_key, websocket_url)
         except Exception as error:
             return False, str(error)
+
+    # ===================== Subtitle-server relay (hosted) =====================
+
+    async def _get_http_session(self):
+        if self._http is None or self._http.closed:
+            self._http = aiohttp.ClientSession()
+        return self._http
+
+    async def _server_request(self, method, path, *, json_body=None, token=None, timeout=15):
+        """Proxy a REST call to the configured subtitle-server.
+
+        Returns (status, data). FastAPI errors arrive as {"detail": ...}.
+        """
+        if not config.RELAY_AVAILABLE:
+            return 503, {"detail": "Subtitle server not configured"}
+        url = config.relay_rest_url(path)
+        headers = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            session = await self._get_http_session()
+            async with session.request(
+                method, url, json=json_body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                try:
+                    data = await resp.json()
+                except Exception:
+                    data = {"detail": (await resp.text())[:500]}
+                return resp.status, data
+        except Exception as e:
+            return 502, {"detail": str(e)}
+
+    async def _validate_relay_token(self, token):
+        """Validate an ss_ account token via GET /me.
+
+        Returns (ok, error, account, auth_failed). ``auth_failed`` is True only
+        when the server actively rejects the token (401/403) — i.e. the user
+        really needs to sign in again. A transient failure (server unreachable
+        or 5xx) returns auth_failed=False so callers can keep the saved token
+        instead of forcing a needless re-login.
+        """
+        if not token:
+            return False, "Missing token", None, True
+        status, data = await self._server_request("GET", "/me", token=token)
+        if status == 200 and isinstance(data, dict):
+            return True, None, data, False
+        if status in (401, 403):
+            return False, "Invalid or unauthorized token", None, True
+        msg = data.get("detail") if isinstance(data, dict) else None
+        return False, msg or f"Server error {status}", None, False
+
+    def _relay_token(self):
+        manager = self.provider_manager
+        return (manager.relay_token if manager else "") or ""
+
+    async def account_verify_start_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        user_input = str((payload or {}).get("user_input") or "").strip()
+        if not user_input:
+            return web.json_response({"status": "error", "message": "Missing user_input"}, status=400)
+        body = {"user_input": user_input}
+        status, data = await self._server_request("POST", "/auth/verify/start", json_body=body)
+        return web.json_response(data, status=status)
+
+    async def account_verify_check_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        challenge_id = str((payload or {}).get("challenge_id") or "").strip()
+        if not challenge_id:
+            return web.json_response({"status": "error", "message": "Missing challenge_id"}, status=400)
+        status, data = await self._server_request(
+            "POST", "/auth/verify/check", json_body={"challenge_id": challenge_id}
+        )
+        # On success, remember the token so /account/* works immediately. The
+        # frontend persists it (localStorage) and calls /setup to start a session.
+        if (
+            status == 200 and isinstance(data, dict)
+            and data.get("success") and data.get("api_key")
+            and self.provider_manager is not None
+        ):
+            self.provider_manager.relay_token = str(data["api_key"]).strip()
+            config.set_relay_token(self.provider_manager.relay_token)
+        return web.json_response(data, status=status)
+
+    async def account_registration_info_handler(self, request):
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        status, data = await self._server_request("GET", "/auth/registration-info")
+        return web.json_response(data, status=status)
+
+    async def account_status_handler(self, request):
+        manager = self.provider_manager
+        token = self._relay_token()
+        payload = {
+            "relay_available": bool(config.RELAY_AVAILABLE),
+            "server_url": config.SUBTITLE_SERVER_URL,
+            "mode": manager.mode if manager else "direct",
+            "logged_in": bool(token),
+            "display_name": None,
+            "trust_rank": None,
+        }
+        if token and config.RELAY_AVAILABLE:
+            status, data = await self._server_request("GET", "/me", token=token)
+            if status == 200 and isinstance(data, dict):
+                payload["display_name"] = data.get("display_name")
+                payload["trust_rank"] = data.get("trust_rank")
+            elif status in (401, 403):
+                payload["logged_in"] = False
+        return web.json_response(payload)
+
+    @staticmethod
+    def _active_relay_model(provider):
+        return (
+            "models/gemini-3.5-live-translate-preview"
+            if provider == "gemini" else "stt-rt-v5"
+        )
+
+    async def account_balance_handler(self, request):
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+
+        provider = config.TRANSLATION_PROVIDER
+        model = self._active_relay_model(provider)
+
+        # /billing/summary gives prepaid balance + subscription used/remaining +
+        # free used-today/remaining in one call.
+        s_sum, summary = await self._server_request("GET", "/billing/summary", token=token)
+        if s_sum != 200:
+            return web.json_response(summary, status=s_sum)
+
+        prepaid = summary.get("prepaid_balance")
+        subscriptions = []
+        price_per_second = 1.0
+        free = None
+        for api in summary.get("apis", []):
+            if api.get("name") == provider or api.get("provider") == provider:
+                if api.get("prepaid_balance") is not None:
+                    prepaid = api.get("prepaid_balance")
+                subscriptions = api.get("subscriptions") or []
+                for m in api.get("models", []):
+                    if m.get("model_name") == model:
+                        price_per_second = m.get("price_per_second", 1.0)
+                        free = m.get("free")  # None unless the model offers free quota
+                        break
+                break
+
+        return web.json_response({
+            "provider": provider,
+            "model": model,
+            "prepaid_balance": prepaid,
+            "subscriptions": subscriptions,
+            "price_per_second": float(price_per_second),
+            "free": free,
+        })
+
+    async def account_pricing_handler(self, request):
+        """Per-provider unit price of the active relay model, for the Settings UI.
+
+        Uses the public /billing/policies endpoint (no token needed) so the
+        Settings panel can show each provider's price before a session starts.
+        """
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        status, pol = await self._server_request("GET", "/billing/policies")
+        pricing = {}
+        if status == 200 and isinstance(pol, dict):
+            for provider in ("soniox", "gemini"):
+                model = self._active_relay_model(provider)
+                for p in pol.get("policies", []):
+                    if p.get("name") == provider or p.get("provider") == provider:
+                        for m in p.get("models", []):
+                            if m.get("model_name") == model:
+                                pps = float(m.get("price_rate", 1.0)) * float(m.get("price_multiplier", 1.0))
+                                entry = {"model": model, "price_per_second": pps}
+                                if m.get("free_unlimited"):
+                                    entry["free_unlimited"] = True
+                                elif "free_max_credits_per_day" in m:
+                                    entry["free_max_credits_per_day"] = m["free_max_credits_per_day"]
+                                pricing[provider] = entry
+                                break
+                        break
+        return web.json_response({"pricing": pricing})
+
+    async def account_usage_handler(self, request):
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        limit = request.query.get("limit", "50")
+        status, data = await self._server_request("GET", f"/me/usage?limit={limit}", token=token)
+        return web.json_response(data, status=status)
+
+    async def account_redeem_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        code = str((payload or {}).get("code") or "").strip()
+        if not code:
+            return web.json_response({"status": "error", "message": "Missing code"}, status=400)
+        status, data = await self._server_request(
+            "POST", "/redeem", json_body={"code": code}, token=token
+        )
+        return web.json_response(data, status=status)
+
+    async def account_logout_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        manager = self.provider_manager
+        if manager is None:
+            return web.json_response({"status": "error", "message": "Setup unavailable"}, status=503)
+        # Clear the token and stop any running relay session.
+        await manager.apply_provider(manager.provider, mode="relay", relay_token="")
+        return web.json_response({"status": "ok", "boot_id": manager.boot_id})
 
     async def segment_mode_get_handler(self, request):
         """获取当前断句模式（仅支持断句的 provider）"""
@@ -729,11 +1080,22 @@ class WebServer:
                 pass
 
         app.on_cleanup.append(_cleanup_llm_session)
-        
+
+        async def _cleanup_http_session(app_instance):
+            try:
+                if self._http is not None and not self._http.closed:
+                    await self._http.close()
+            except Exception:
+                pass
+
+        app.on_cleanup.append(_cleanup_http_session)
+
         # 路由设置
         app.router.add_get('/', self.index_handler)
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/health', self.health_handler)
+        app.router.add_get('/local-store', self.local_store_get_handler)
+        app.router.add_post('/local-store', self.local_store_post_handler)
         app.router.add_get('/ui-config', self.ui_config_handler)
         app.router.add_get('/api/ipc_status', self.ipc_status_handler)
         app.router.add_get('/segment-mode', self.segment_mode_get_handler)
@@ -743,6 +1105,16 @@ class WebServer:
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
         app.router.add_post('/setup', self.setup_handler)
         app.router.add_post('/use-env', self.use_env_handler)
+        # Subtitle-server relay (hosted mode) account endpoints.
+        app.router.add_post('/account/verify/start', self.account_verify_start_handler)
+        app.router.add_post('/account/verify/check', self.account_verify_check_handler)
+        app.router.add_get('/account/registration-info', self.account_registration_info_handler)
+        app.router.add_get('/account/status', self.account_status_handler)
+        app.router.add_get('/account/balance', self.account_balance_handler)
+        app.router.add_get('/account/pricing', self.account_pricing_handler)
+        app.router.add_get('/account/usage', self.account_usage_handler)
+        app.router.add_post('/account/redeem', self.account_redeem_handler)
+        app.router.add_post('/account/logout', self.account_logout_handler)
         app.router.add_post('/restart', self.restart_handler)
         app.router.add_post('/pause', self.pause_handler)
         app.router.add_post('/resume', self.resume_handler)

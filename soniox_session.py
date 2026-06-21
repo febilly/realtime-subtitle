@@ -44,6 +44,7 @@ from config import (
 )
 ipc_server = None
 from audio_router import AudioSendRouter
+from relay_errors import relay_close_info
 from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
@@ -184,6 +185,8 @@ class SonioxSession:
         self.audio_format: Optional[str] = None
         self.translation: Optional[str] = None
         self.translation_target_lang: str = "en"
+        self._relay_session_active = False
+        self.last_disconnect_payload: Optional[dict] = None
         self.sample_rate = 16000
         self.chunk_size = 3840
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
@@ -259,6 +262,7 @@ class SonioxSession:
 
         self.last_sent_count = 0
         self.is_paused = False
+        self.last_disconnect_payload = None
         self.api_key = api_key
         self.audio_format = audio_format
         self.translation = translation
@@ -395,6 +399,8 @@ class SonioxSession:
     
     def stop(self):
         """停止当前会话"""
+        self._relay_session_active = False
+        self.last_disconnect_payload = None
         if self.stop_event:
             self.stop_event.set()
 
@@ -1310,9 +1316,22 @@ class SonioxSession:
         )
         label = f"stream #{stream_index}"
         purpose = " warmup" if warming else ""
-        print(f"Connecting to Soniox ({label}{purpose})...")
-        # Read dynamically so a runtime region switch takes effect on the next stream.
-        ws = sync_connect(config.SONIOX_WEBSOCKET_URL)
+        # Read dynamically so a runtime region / relay switch takes effect on the
+        # next stream.
+        if config.RELAY_MODE:
+            # Hosted mode: connect through the subtitle-server relay. The relay
+            # injects its own upstream key, so the body key is blanked and the
+            # account token is sent as the Authorization bearer.
+            stream_config["api_key"] = ""
+            relay_url = config.relay_ws_url("soniox")
+            print(f"Connecting to relay Soniox ({label}{purpose}): {relay_url}")
+            ws = sync_connect(
+                relay_url,
+                additional_headers={"Authorization": f"Bearer {config.RELAY_TOKEN}"},
+            )
+        else:
+            print(f"Connecting to Soniox ({label}{purpose})...")
+            ws = sync_connect(config.SONIOX_WEBSOCKET_URL)
         ws.send(json.dumps(stream_config))
         state = _SonioxStreamState(
             ws=ws,
@@ -1452,6 +1471,24 @@ class SonioxSession:
         )
         ws_state.silence_sender = self._make_rollover_silence_sender(ws_state.ws)
         return ws_state
+
+    def _notify_relay_session(self, loop: asyncio.AbstractEventLoop, event: str) -> None:
+        """Tell clients when the billed relay link goes live/idle.
+
+        The frontend "this session" cost meter only counts while we are
+        actually connected to the relay (and thus being billed). Emitted only
+        in hosted/relay mode; direct mode ignores these events.
+        """
+        if not getattr(config, "RELAY_MODE", False):
+            return
+        self._relay_session_active = (event == "session_connected")
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast_callback({"type": event}),
+                loop,
+            )
+        except Exception as error:
+            print(f"⚠️  Failed to notify clients about relay session {event}: {error}")
 
     def _broadcast_preserve_existing_subtitles(self, loop: asyncio.AbstractEventLoop) -> None:
         try:
@@ -1800,6 +1837,7 @@ class SonioxSession:
         self.stop_event = threading.Event()
         disconnect_reason = "connection ended"
         notify_disconnect = True
+        relay_close = None  # (tag, terminal, message) when a relay code closes us
         current_api_key = api_key
         stream_index = 1
         audio_stream_started = False
@@ -1820,15 +1858,34 @@ class SonioxSession:
         )
 
         try:
-            active_stream = self._open_soniox_stream_state(
-                current_api_key,
-                stream_index,
-                audio_format,
-                translation,
-                translation_target_lang,
-            )
+            try:
+                active_stream = self._open_soniox_stream_state(
+                    current_api_key,
+                    stream_index,
+                    audio_format,
+                    translation,
+                    translation_target_lang,
+                )
+            except ConnectionClosed as error:
+                info = relay_close_info(getattr(error, "code", None))
+                if info is not None:
+                    relay_close = info
+                    disconnect_reason = f"relay: {info[0]}"
+                else:
+                    disconnect_reason = f"connection closed: {error}"
+                return
+            except Exception as error:
+                info = relay_close_info(getattr(error, "code", None))
+                if info is not None:
+                    relay_close = info
+                    disconnect_reason = f"relay: {info[0]}"
+                else:
+                    disconnect_reason = f"connection error: {error}"
+                print(f"Error connecting to Soniox: {error}")
+                return
             self.ws = active_stream.ws
             self.last_sent_count = 0
+            self._notify_relay_session(loop, "session_connected")
 
             if not audio_router.set_target(active_stream.ws):
                 disconnect_reason = "failed to attach audio to Soniox stream"
@@ -1865,6 +1922,7 @@ class SonioxSession:
                                 self.ws = active_stream.ws
                                 self.last_sent_count = active_stream.sent_count
                                 dormant_for_silence = False
+                                self._notify_relay_session(loop, "session_connected")
                                 disconnect_reason = "silence sleep resumed"
                                 print(
                                     f"▶️  Speech detected after silence; reopened Soniox stream "
@@ -1908,6 +1966,7 @@ class SonioxSession:
                     active_stream = None
                     self.ws = None
                     dormant_for_silence = True
+                    self._notify_relay_session(loop, "session_idle")
                     sleeping_stream.sent_count = self._finalize_stream_before_rollover(
                         sleeping_stream.ws,
                         sleeping_stream.all_final_tokens,
@@ -2097,7 +2156,12 @@ class SonioxSession:
                             print(f"Error reconnecting to Soniox after rollover closure: {reconnect_error}")
                             break
 
-                    disconnect_reason = f"connection closed: {error}"
+                    info = relay_close_info(getattr(error, "code", None))
+                    if info is not None:
+                        relay_close = info
+                        disconnect_reason = f"relay: {info[0]}"
+                    else:
+                        disconnect_reason = f"connection closed: {error}"
                     break
                 except KeyboardInterrupt:
                     disconnect_reason = "interrupted by user"
@@ -2188,6 +2252,7 @@ class SonioxSession:
                 self.stop_event.set()
             self.stop_event = None
             self.ws = None
+            self._relay_session_active = False
             audio_router.close()
             self._stop_audio_streamer()
             if warmup_stream is not None:
@@ -2201,11 +2266,19 @@ class SonioxSession:
                         "type": "session_disconnected",
                         "reason": disconnect_reason,
                     }
-                    if _is_api_key_error_reason(disconnect_reason):
+                    if relay_close is not None:
+                        tag, terminal, message = relay_close
+                        disconnect_payload["code"] = tag
+                        disconnect_payload["relay_terminal"] = bool(terminal)
+                        disconnect_payload["message"] = message
+                    elif _is_api_key_error_reason(disconnect_reason):
                         disconnect_payload["code"] = "api_key"
+                    self.last_disconnect_payload = disconnect_payload
                     asyncio.run_coroutine_threadsafe(
                         self.broadcast_callback(disconnect_payload),
                         loop,
                     )
                 except Exception as notify_error:
                     print(f"⚠️  Failed to notify clients about Soniox disconnect: {notify_error}")
+            elif stop_requested:
+                self.last_disconnect_payload = None

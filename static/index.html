@@ -11,10 +11,30 @@
 </head>
 <body>
     <div class="main-container">
-        <div class="subtitle-container" id="subtitleContainer">
-            <div class="empty-state">Subtitles will appear here...</div>
+        <div class="content-area">
+            <div class="balance-bar" id="balanceBar" hidden>
+                <span class="balance-item" id="balanceItem">
+                    <span class="balance-label" id="balanceLabel">Balance</span>
+                    <span class="balance-value" id="balanceValue">—</span>
+                </span>
+                <span class="balance-item" id="freeItem" hidden>
+                    <span class="balance-label" id="freeLabel">Free</span>
+                    <span class="balance-value" id="freeValue">—</span>
+                </span>
+                <span class="balance-item" id="subItem" hidden>
+                    <span class="balance-label" id="subLabel">Subscription</span>
+                    <span class="balance-value" id="subValue">—</span>
+                </span>
+                <span class="balance-item" id="sessionItem">
+                    <span class="balance-label" id="sessionLabel">This session</span>
+                    <span class="balance-value" id="sessionValue">0</span>
+                </span>
+            </div>
+            <div class="subtitle-container" id="subtitleContainer">
+                <div class="empty-state">Subtitles will appear here...</div>
+            </div>
         </div>
-        
+
         <div class="button-bar">
             <button class="control-button" id="themeToggle" title="Toggle theme">
                 <span id="themeIcon">☀️</span>
@@ -80,6 +100,41 @@
                 <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
             </div>
 
+            <section class="auth-section" id="modeSection" hidden>
+                <div class="settings-section-label" id="modeLabel">Connection</div>
+                <fieldset class="segmented-control" id="modeFieldset" aria-label="Connection mode">
+                    <label class="segmented-option">
+                        <input type="radio" name="connmode" value="relay" id="modeRelay">
+                        <span id="modeRelayLabel">Hosted</span>
+                    </label>
+                    <label class="segmented-option">
+                        <input type="radio" name="connmode" value="direct" id="modeDirect">
+                        <span id="modeDirectLabel">Own key</span>
+                    </label>
+                </fieldset>
+                <p class="field-hint" id="modeDescription"></p>
+            </section>
+
+            <section class="auth-section" id="accountSection" hidden>
+                <div class="settings-section-label" id="accountLabel">Account</div>
+                <p class="field-hint" id="accountServerHint"></p>
+                <p class="field-hint" id="accountIdentityHint"></p>
+                <label class="form-field" for="redeemInput">
+                    <span id="redeemLabel">Redeem code</span>
+                    <div class="redeem-row">
+                        <input id="redeemInput" type="text" autocomplete="off" spellcheck="false">
+                        <button class="secondary-button" id="redeemButton" type="button">Redeem</button>
+                    </div>
+                </label>
+                <p class="field-hint" id="purchaseCreditsHint" hidden>
+                    <a id="purchaseCreditsLink" href="#" target="_blank" rel="noopener noreferrer">Click here to get more Credits</a>
+                </p>
+                <div class="account-actions">
+                    <button class="secondary-button" id="reLoginButton" type="button">Re-verify</button>
+                    <button class="danger-button" id="logoutButton" type="button">Log out</button>
+                </div>
+            </section>
+
             <div class="settings-section-label" id="providerLabel">API selection</div>
             <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
                 <label class="segmented-option">
@@ -100,7 +155,7 @@
                 </div>
             </section>
 
-            <section class="auth-section">
+            <section class="auth-section" id="apiKeySection">
                 <label class="form-field" for="apiKeyInput">
                     <span id="apiKeyLabel">API Key</span>
                     <input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" spellcheck="false">
@@ -114,7 +169,10 @@
             <p class="settings-error" id="settingsError" role="alert"></p>
 
             <div class="settings-actions">
-                <button class="danger-button" id="resetAllButton" type="button"></button>
+                <div class="settings-actions-left">
+                    <button class="secondary-button" id="settingsModeBackButton" type="button" hidden>Back to mode selection</button>
+                    <button class="danger-button" id="resetAllButton" type="button"></button>
+                </div>
                 <div class="settings-actions-right">
                     <button class="secondary-button" id="settingsCancelButton" type="button">Cancel</button>
                     <button class="primary-button" id="settingsSaveButton" type="submit">Save</button>
@@ -132,8 +190,74 @@
         </div>
     </div>
 
+    <!-- First-launch connection-mode chooser (hosted vs own key) -->
+    <div class="confirm-overlay" id="modeChooserOverlay" hidden></div>
+    <div class="mode-chooser" id="modeChooser" role="dialog" aria-modal="true" aria-labelledby="modeChooserTitle" hidden>
+        <h1 id="modeChooserTitle">How do you want to connect?</h1>
+        <p class="field-hint" id="modeChooserHint"></p>
+        <div class="mode-chooser-options">
+            <button class="mode-card" id="modeChooserRelay" type="button">
+                <span class="mode-card-title" id="modeChooserRelayTitle">Hosted</span>
+                <span class="mode-card-desc" id="modeChooserRelayDesc"></span>
+            </button>
+            <button class="mode-card" id="modeChooserDirect" type="button">
+                <span class="mode-card-title" id="modeChooserDirectTitle">Own key</span>
+                <span class="mode-card-desc" id="modeChooserDirectDesc"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Subtitle-server sign-in (VRChat profile proof) -->
+    <div class="settings-overlay" id="loginOverlay" hidden></div>
+    <aside class="settings-panel" id="loginPanel" aria-label="Sign in" hidden>
+        <form class="settings-form" id="loginForm">
+            <div class="settings-header">
+                <h1 id="loginTitle">Sign in</h1>
+                <button class="panel-close-button" id="loginCloseButton" title="Close" type="button">×</button>
+            </div>
+            <p class="field-hint" id="loginServerHint"></p>
+
+            <section class="auth-section" id="loginBonusSection" hidden>
+                <div class="settings-section-label" id="loginBonusLabel">Free credits by trust rank</div>
+                <div class="bonus-list" id="loginBonusList"></div>
+                <p class="field-hint" id="loginThresholdHint" hidden></p>
+            </section>
+
+            <section class="auth-section" id="loginStepInput">
+                <label class="form-field" for="loginUserInput">
+                    <span id="loginUserInputLabel">VRChat user ID / profile URL / name</span>
+                    <input id="loginUserInput" type="text" autocomplete="off" spellcheck="false">
+                </label>
+                <p class="field-hint" id="loginInputHint"></p>
+            </section>
+
+            <section class="auth-section" id="loginStepChallenge" hidden>
+                <p class="field-hint" id="loginChallengeHint"></p>
+                <div class="challenge-box">
+                    <code id="loginChallengeText"></code>
+                    <button class="secondary-button" id="loginCopyButton" type="button">Copy</button>
+                </div>
+                <p class="field-hint" id="loginExpiryHint"></p>
+                <p class="field-hint" id="loginRemoveHint"></p>
+            </section>
+
+            <p class="settings-error" id="loginError" role="alert"></p>
+
+            <div class="settings-actions">
+                <div class="settings-actions-left">
+                    <button class="secondary-button" id="loginModeBackButton" type="button" hidden>Back to mode selection</button>
+                </div>
+                <div class="settings-actions-right">
+                    <button class="secondary-button" id="loginBackButton" type="button" hidden>Back</button>
+                    <button class="primary-button" id="loginPrimaryButton" type="submit">Start</button>
+                </div>
+            </div>
+        </form>
+    </aside>
+
     <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
+    <script src="local-store-sync.js"></script>
     <script src="/kuromoji/kuromoji.js"></script>
     <script src="i18n.js"></script>
     <script src="app.js"></script>

@@ -343,6 +343,25 @@ GEMINI_SLEEP_IDLE_SECONDS = max(1.0, _env_float("GEMINI_SLEEP_IDLE_SECONDS", 30.
 GEMINI_SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_PRE_ROLL_SECONDS", 0.5))
 GEMINI_SLEEP_SPEECH_GRACE_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_SPEECH_GRACE_SECONDS", 0.25))
 
+# ============ Subtitle-server relay (hosted mode) ============
+# When a server URL is configured, the app can run in "relay" (hosted) mode:
+# instead of connecting directly to Soniox/Gemini with the user's own upstream
+# key, it authenticates to a subtitle-server instance (VRChat profile proof) and
+# relays all STT/translation traffic through it. The server URL is read only from
+# the environment (.env) and is never editable from the UI.
+SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
+RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
+
+# Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
+# the UI login flow / localStorage override take priority at runtime.
+SUBTITLE_SERVER_TOKEN = _env_str("SUBTITLE_SERVER_TOKEN", "").strip()
+
+# Runtime relay state (hot-switchable, like provider/key). RELAY_MODE selects
+# whether sessions connect through the relay; RELAY_TOKEN is the active account
+# token used as the relay WebSocket Authorization bearer.
+RELAY_MODE = False
+RELAY_TOKEN = SUBTITLE_SERVER_TOKEN
+
 # When enabled, a half-width , . ? or ! in Gemini's returned text (source or
 # translation) is converted to its full-width form (，。？！) whenever it sits
 # directly between two CJK (Han) characters, e.g. "你好,世界" -> "你好，世界".
@@ -748,6 +767,45 @@ def set_soniox_region(region: str) -> str:
     SONIOX_WEBSOCKET_URL = SONIOX_REGION_URLS[r]
     return r
 
+
+def set_relay_mode(enabled) -> bool:
+    """Enable/disable subtitle-server relay (hosted) mode. Hot-switchable."""
+    global RELAY_MODE
+    RELAY_MODE = bool(enabled)
+    return RELAY_MODE
+
+
+def set_relay_token(token) -> str:
+    """Set the active relay account token (ss_ key). Hot-switchable."""
+    global RELAY_TOKEN
+    RELAY_TOKEN = str(token or "").strip()
+    return RELAY_TOKEN
+
+
+def _http_to_ws(url: str) -> str:
+    if url.startswith("https://"):
+        return "wss://" + url[len("https://"):]
+    if url.startswith("http://"):
+        return "ws://" + url[len("http://"):]
+    return url
+
+
+def relay_ws_url(provider: str | None = None) -> str:
+    """WebSocket relay endpoint for a provider on the configured server."""
+    p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
+    p = str(p).strip().lower()
+    if p not in ("soniox", "gemini"):
+        p = "soniox"
+    return f"{_http_to_ws(SUBTITLE_SERVER_URL)}/relay/{p}"
+
+
+def relay_rest_url(path: str = "") -> str:
+    """REST URL on the configured subtitle-server (path joined onto the base)."""
+    path = str(path or "")
+    if path and not path.startswith("/"):
+        path = "/" + path
+    return f"{SUBTITLE_SERVER_URL}{path}"
+
 # ============ IPC Configuration (realtime-subtitle <-> Yakutan) ============
 
 # Whether to enable IPC functionality
@@ -765,4 +823,31 @@ from shared.vrchat_bridge import get_discovery_path
 IPC_DISCOVERY_FILE = _env_str(
     "IPC_DISCOVERY_FILE",
     get_discovery_path()
+)
+
+
+def get_app_data_dir() -> str:
+    """Per-user persistent directory for settings shared across local instances.
+
+    Unlike the IPC discovery file (which lives in TEMP), this must survive
+    reboots, so it goes under the platform's per-user application-data dir.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.join(os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config"
+        )
+    return os.path.join(base, "RealtimeSubtitle")
+
+
+# Shared browser-settings store. All local instances read/write this single
+# file so that settings + login (normally kept in per-origin localStorage)
+# survive the dynamic-port origin change when a second instance launches on a
+# new port. See local_store.py and static/local-store-sync.js.
+LOCAL_SETTINGS_FILE = _env_str(
+    "LOCAL_SETTINGS_FILE",
+    os.path.join(get_app_data_dir(), "local_settings.json"),
 )
