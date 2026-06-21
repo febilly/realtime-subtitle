@@ -294,7 +294,7 @@ SLEEP_IDLE_SECONDS = max(1.0, _env_float_any(_provider_sleep_env_names("IDLE_SEC
 SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float_any(_provider_sleep_env_names("PRE_ROLL_SECONDS"), 1.0))
 SLEEP_SPEECH_GRACE_SECONDS = max(
     0.0,
-    _env_float_any(_provider_sleep_env_names("SPEECH_GRACE_SECONDS"), 0.5),
+    _env_float_any(_provider_sleep_env_names("SPEECH_GRACE_SECONDS"), 0.25),
 )
 SLEEP_SPEECH_WINDOW_SECONDS = max(
     SLEEP_SPEECH_GRACE_SECONDS,
