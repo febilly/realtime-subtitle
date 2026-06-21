@@ -60,6 +60,8 @@ class WebServer:
         self.api_key_error_message = None # 新增属性
         self.window_on_top_callback = None
         self.shutdown_callback = None
+        # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
+        self.overlay_manager = None
         self.ipc_server = None
         # Provider-specific API key getter; injected by server.py.
         self.get_api_key = None
@@ -1043,6 +1045,46 @@ class WebServer:
         except Exception as error:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
+    async def overlay_get_handler(self, request):
+        """查询原生字幕悬浮窗当前是否打开。"""
+        manager = self.overlay_manager
+        if manager is None:
+            return web.json_response({"status": "ok", "available": False, "open": False})
+        return web.json_response({
+            "status": "ok",
+            "available": True,
+            "open": bool(manager.is_open()),
+        })
+
+    async def overlay_post_handler(self, request):
+        """打开/关闭/切换原生字幕悬浮窗。
+
+        请求体：{"action": "toggle" | "open" | "close"}（缺省为 toggle）。
+        """
+        manager = self.overlay_manager
+        if manager is None:
+            return web.json_response(
+                {"status": "ignored", "available": False, "message": "Overlay unavailable"}
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        action = (payload.get("action") if isinstance(payload, dict) else None) or "toggle"
+
+        try:
+            if action == "open":
+                is_open = manager.open()
+            elif action == "close":
+                manager.close()
+                is_open = False
+            else:  # toggle
+                is_open = manager.close() if manager.is_open() else manager.open()
+            return web.json_response({"status": "ok", "available": True, "open": bool(is_open)})
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
     async def shutdown_handler(self, request):
         """请求退出应用（前端“重置所有设置并退出”调用）。"""
         if not callable(self.shutdown_callback):
@@ -1123,6 +1165,8 @@ class WebServer:
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
+        app.router.add_get('/overlay', self.overlay_get_handler)
+        app.router.add_post('/overlay', self.overlay_post_handler)
         app.router.add_post('/shutdown', self.shutdown_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由

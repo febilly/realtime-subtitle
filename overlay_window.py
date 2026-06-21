@@ -1,0 +1,969 @@
+"""原生（PySide6）半透明字幕悬浮窗。
+
+作为独立进程运行（与 pywebview 主窗口分离，避免两个 GUI 事件循环冲突）：
+
+    python overlay_window.py --url http://127.0.0.1:PORT
+
+冻结（PyInstaller）后由主程序通过 `--run-overlay` 重新拉起自身进入这里。
+
+窗口特性：
+  * 无边框、半透明黑底、白字、圆角
+  * 任意位置鼠标拖动；贴近边缘鼠标缩放
+  * 鼠标移入才在右下角显示一排常用按钮（字号 +/-、暂停/继续、关闭）
+  * 通过 WebSocket(`/ws`) 接收字幕，样式与网页版基本一致
+"""
+
+import sys
+import json
+import argparse
+import asyncio
+import threading
+import urllib.request
+from html import escape as _html_escape
+
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QRect, QRectF, QSettings
+from PySide6.QtGui import (
+    QCursor,
+    QPainter,
+    QColor,
+    QBrush,
+    QFont,
+    QFontMetrics,
+    QPixmap,
+    QTextCursor,
+    QTextDocument,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QWidget,
+    QTextEdit,
+    QPushButton,
+    QHBoxLayout,
+)
+
+try:
+    import websockets
+except Exception:  # pragma: no cover - 仅在缺依赖时触发
+    websockets = None
+
+
+# ---------------------------------------------------------------------------
+# 颜色 / 样式常量（与网页版 dark 主题大致对应）
+# ---------------------------------------------------------------------------
+FINAL_COLOR = "#e5e7eb"        # 已确定文本（接近白）
+NONFINAL_COLOR = "#60a5fa"     # 进行中（蓝）
+PLACEHOLDER_COLOR = "#9ca3af"  # 空状态 / 占位
+TAG_BG = "rgba(255,255,255,0.16)"
+TAG_FG = "#d1d5db"
+SPEAKER_COLOR = "#9ca3af"
+
+RESIZE_MARGIN = 8              # 边缘缩放热区（像素）
+MIN_W, MIN_H = 220, 120
+BG_RADIUS = 14
+
+
+def _build_alpha_levels(n: int = 11) -> list[int]:
+    """背景不透明度挡位：按 CIE L*（人眼感知亮度）等距取点。
+
+    人眼感知的是「透过黑幕看到的背景亮度」，它正比于透光率 (1-alpha)，而非 alpha 本身；
+    且对暗处更敏感。所以让透光率的感知亮度 L* 等距，再反推 alpha：
+    透明端步子粗、不透明端步子细——这样从透明拨到不透明，每一挡的「变暗感」大致相同。
+    两端固定为完全透明(0) / 完全不透明(255)。
+    """
+    levels = []
+    for i in range(n):
+        p = i / (n - 1)                           # 0=透明, 1=不透明
+        l_star = 100.0 * (1.0 - p)                # 透过的背景亮度，感知等距
+        if l_star <= 8.0:                         # CIE 线性段
+            y = l_star / 903.3
+        else:
+            y = ((l_star + 16.0) / 116.0) ** 3    # CIE 立方段
+        levels.append(round((1.0 - y) * 255))     # alpha = 1 - 透光率
+    levels[0], levels[-1] = 0, 255                # 钉死两端
+    return levels
+
+
+# ≈ [0, 60, 110, 151, 183, 208, 226, 239, 247, 252, 255]
+ALPHA_LEVELS = _build_alpha_levels()
+# 默认沿用此前 ~150 的观感，取最接近的挡位（151）。
+DEFAULT_ALPHA = min(ALPHA_LEVELS, key=lambda a: abs(a - 150))
+
+
+# ===========================================================================
+# WebSocket 客户端（后台线程 + 独立 asyncio 事件循环）
+# ===========================================================================
+class WsBridge(QObject):
+    """跨线程把原始消息字符串投递回 GUI 线程。"""
+    message = Signal(str)
+    status = Signal(bool)  # True=已连接
+
+
+class WsClient(threading.Thread):
+    def __init__(self, ws_url: str, bridge: WsBridge):
+        super().__init__(daemon=True)
+        self.ws_url = ws_url
+        self.bridge = bridge
+        self._stop = False
+        self._loop = None
+
+    def run(self):
+        if websockets is None:
+            return
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_until_complete(self._main())
+        except Exception:
+            pass
+
+    async def _main(self):
+        while not self._stop:
+            try:
+                async with websockets.connect(self.ws_url, max_size=None,
+                                              ping_interval=20) as ws:
+                    self.bridge.status.emit(True)
+                    async for msg in ws:
+                        if self._stop:
+                            break
+                        if isinstance(msg, bytes):
+                            try:
+                                msg = msg.decode("utf-8")
+                            except Exception:
+                                continue
+                        self.bridge.message.emit(msg)
+            except Exception:
+                pass
+            self.bridge.status.emit(False)
+            if self._stop:
+                break
+            await asyncio.sleep(1.5)
+
+    def stop(self):
+        self._stop = True
+        loop = self._loop
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(lambda: None)
+            except Exception:
+                pass
+
+
+# ===========================================================================
+# 字幕状态 + 渲染（移植自网页版 app.js 的核心分句逻辑，做了简化）
+# ===========================================================================
+SENTENCE_PUNCT = "。．.!！?？…"
+
+
+def _ensure_speaker(spk):
+    return "undefined" if spk is None else spk
+
+
+class SubtitleModel:
+    """维护 final / non-final token，并产出可渲染的「说话人块」结构。"""
+
+    def __init__(self):
+        self.final_tokens = []
+        self.non_final_tokens = []
+
+    def clear(self, preserve_existing=False):
+        if preserve_existing:
+            # 把进行中的 token 落定，避免重启时闪烁
+            for tk in self.non_final_tokens:
+                tk = dict(tk)
+                tk["is_final"] = True
+                self.final_tokens.append(tk)
+        else:
+            self.final_tokens = []
+        self.non_final_tokens = []
+
+    def apply_update(self, data: dict):
+        for tk in (data.get("final_tokens") or []):
+            if tk.get("text") == "<end>":
+                continue
+            self.final_tokens.append(tk)
+        self.non_final_tokens = [
+            tk for tk in (data.get("non_final_tokens") or [])
+            if tk.get("text") != "<end>"
+        ]
+
+    # --- 构建渲染 token（final + non-final，必要时补 speculative 分隔） ---
+    def _build_render_tokens(self):
+        non_final = self.non_final_tokens or []
+        has_nf_translation = any(
+            (tk.get("translation_status") or "original") == "translation"
+            for tk in non_final
+        )
+        if has_nf_translation:
+            return [*self.final_tokens, *non_final]
+
+        tokens = list(self.final_tokens)
+        n = len(non_final)
+        for i, tk in enumerate(non_final):
+            tokens.append(tk)
+            is_last = i == n - 1
+            text = (tk.get("text") or "").rstrip()
+            if (not is_last and not tk.get("is_separator")
+                    and text and text[-1] in SENTENCE_PUNCT):
+                tokens.append({"is_separator": True, "is_final": False})
+        return tokens
+
+    # --- 分句（移植 renderSubtitles 的归组算法，去掉 furigana/LLM 等） ---
+    def build_blocks(self):
+        tokens = self._build_render_tokens()
+        sentences = []
+        current = None
+
+        def start_sentence(
+            speaker,
+            requires=None,
+            translation_only=False,
+        ):
+            nonlocal current
+            s = {
+                "speaker": _ensure_speaker(speaker),
+                "original": [],
+                "translation": [],
+                "original_lang": None,
+                "translation_lang": None,
+                "requires_translation": requires,
+                "translation_only": translation_only,
+                "fake_translation": False,
+            }
+            sentences.append(s)
+            if not translation_only:
+                current = s
+            return s
+
+        def find_last(speaker, predicate):
+            spk = _ensure_speaker(speaker)
+            for s in reversed(sentences):
+                if s["speaker"] == spk and predicate(s):
+                    return s
+            return None
+
+        for token in tokens:
+            if token.get("is_separator"):
+                if (current and current["requires_translation"] is not False
+                        and not current["translation"]):
+                    current["fake_translation"] = True
+                current = None
+                continue
+
+            speaker = _ensure_speaker(token.get("speaker"))
+            status = token.get("translation_status") or "original"
+
+            if status == "translation":
+                target = find_last(speaker, lambda s: not s["translation_only"])
+                if target is None:
+                    target = start_sentence(speaker, translation_only=True)
+                if target["translation_lang"] is None and token.get("language"):
+                    target["translation_lang"] = token.get("language")
+                if not target["original_lang"] and token.get("source_language"):
+                    target["original_lang"] = token.get("source_language")
+                target["translation"].append(token)
+            else:
+                requires = status != "none"
+                start_new = False
+                if not current:
+                    start_new = True
+                elif current["speaker"] != speaker:
+                    start_new = True
+                elif current["translation_only"]:
+                    start_new = True
+                elif (current["requires_translation"] is not None
+                      and current["requires_translation"] != requires):
+                    start_new = True
+                if start_new:
+                    current = start_sentence(speaker, requires=requires)
+                if current["requires_translation"] is None:
+                    current["requires_translation"] = requires
+                lang = token.get("language")
+                if current["original_lang"] is None and lang:
+                    current["original_lang"] = lang
+                elif current["original_lang"] and lang and current["original_lang"] != lang:
+                    current = start_sentence(speaker, requires=requires)
+                    current["original_lang"] = lang
+                current["original"].append(token)
+
+        # 归并为说话人块
+        blocks = []
+        block = None
+        for s in sentences:
+            if not s["original"] and not s["translation"]:
+                continue
+            if not block or block["speaker"] != s["speaker"]:
+                if block:
+                    blocks.append(block)
+                block = {"speaker": s["speaker"], "sentences": []}
+            block["sentences"].append(s)
+        if block:
+            blocks.append(block)
+        return blocks
+
+    def trim_final_tokens_to_recent_sentences(self, max_sentences: int) -> None:
+        """Trim history on the same sentence boundaries used for display."""
+        if max_sentences <= 0 or not self.final_tokens:
+            return
+
+        saved_non_final = self.non_final_tokens
+        self.non_final_tokens = []
+        try:
+            blocks = self.build_blocks()
+        finally:
+            self.non_final_tokens = saved_non_final
+
+        sentences = [
+            sentence
+            for block in blocks
+            for sentence in block["sentences"]
+            if sentence["original"] or sentence["translation"]
+        ]
+        if len(sentences) <= max_sentences:
+            return
+
+        retained = sentences[-max_sentences:]
+        retained_token_ids = {
+            id(token)
+            for sentence in retained
+            for token in (sentence["original"] + sentence["translation"])
+        }
+        if not retained_token_ids:
+            return
+
+        first_index = next(
+            (
+                index
+                for index, token in enumerate(self.final_tokens)
+                if id(token) in retained_token_ids
+            ),
+            None,
+        )
+        if first_index is not None and first_index > 0:
+            self.final_tokens = self.final_tokens[first_index:]
+
+
+# ===========================================================================
+# 语言标识：渲染成真正的圆角矩形（QTextEdit 的富文本不支持 span 的 border-radius，
+# 所以画成内联图片）。颜色沿用网页版 dark 主题（TAG_BG / TAG_FG）。
+# ===========================================================================
+_TAG_SCHEME = "langtag:"
+
+
+def _make_tag_pixmap(text: str, fs: int, dpr: float = 1.0) -> QPixmap:
+    text = (text or "").upper()
+    # 等宽字体（与网页版 .language-tag 的 monospace 一致）。
+    font = QFont("Consolas")
+    font.setStyleHint(QFont.Monospace)
+    font.setPixelSize(fs)
+    font.setBold(True)
+    fm = QFontMetrics(font)
+    pad_x = max(5, int(fs * 0.6))
+    pad_y = max(2, int(fs * 0.3))
+    pill_w = fm.horizontalAdvance(text) + pad_x * 2
+    pill_h = fm.height() + pad_y * 2
+    gap = max(4, int(fs * 0.45))           # 标识右侧与正文的间距
+    w = pill_w + gap
+    dpr = dpr or 1.0
+
+    pm = QPixmap(max(1, int(w * dpr)), max(1, int(pill_h * dpr)))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.transparent)
+
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(255, 255, 255, 41))  # TAG_BG = rgba(255,255,255,0.16)
+    radius = pill_h * 0.4                   # 明显的圆角矩形
+    p.drawRoundedRect(QRectF(0, 0, pill_w, pill_h), radius, radius)
+    p.setPen(QColor(TAG_FG))
+    p.setFont(font)
+    p.drawText(QRectF(0, 0, pill_w, pill_h), int(Qt.AlignCenter), text)
+    p.end()
+    return pm
+
+
+class SubtitleTextEdit(QTextEdit):
+    """QTextEdit，但把 ``langtag:<fs>|<TEXT>`` 的图片资源动态画成圆角语言标识。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._tag_cache = {}
+
+    def loadResource(self, rtype, name):
+        try:
+            s = name.toString()
+        except Exception:
+            s = str(name)
+        if rtype == QTextDocument.ImageResource and s.startswith(_TAG_SCHEME):
+            return self._tag_pixmap(s[len(_TAG_SCHEME):])
+        return super().loadResource(rtype, name)
+
+    def _tag_pixmap(self, spec: str) -> QPixmap:
+        cached = self._tag_cache.get(spec)
+        if cached is not None:
+            return cached
+        fs_str, _, text = spec.partition("-")  # fs 是数字，第一个 '-' 即分隔符
+        try:
+            fs = int(fs_str)
+        except ValueError:
+            fs = 12
+        pm = _make_tag_pixmap(text, fs, self.devicePixelRatioF())
+        self._tag_cache[spec] = pm
+        return pm
+
+
+# ===========================================================================
+# 悬浮窗
+# ===========================================================================
+class OverlayWindow(QWidget):
+    _restart_finished = Signal(bool)
+
+    def __init__(self, server_url: str):
+        super().__init__()
+        self.server_url = server_url.rstrip("/")
+        self.model = SubtitleModel()
+        self.settings = QSettings("RealtimeSubtitle", "Overlay")
+
+        self.font_size = int(self.settings.value("font_size", 20))
+        self.bg_alpha = int(self.settings.value("bg_alpha", DEFAULT_ALPHA))
+        # 显示模式：both（原文+译文）/ original（仅原文）/ translation（仅译文）
+        self.display_mode = str(self.settings.value("display_mode", "both"))
+        self.is_paused = False
+        self._restart_in_flight = False
+
+        self._drag_offset = None
+        self._resize_edges = None
+        self._resize_start_geo = None
+        self._resize_start_mouse = None
+
+        self._init_ui()
+        self._restore_geometry()
+        self._init_ws()
+        self._restart_finished.connect(self._on_restart_finished)
+
+        # 轮询光标位置以决定按钮显隐（比 enter/leave 更稳，避免子控件抖动）
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setInterval(120)
+        self._hover_timer.timeout.connect(self._update_button_visibility)
+        self._hover_timer.start()
+
+        # 缩放窗口时按 ~33fps 节流重渲染，让可见行数实时随高度变化（不必等下一帧字幕）。
+        self._resize_render_timer = QTimer(self)
+        self._resize_render_timer.setSingleShot(True)
+        self._resize_render_timer.setInterval(30)
+        self._resize_render_timer.timeout.connect(self._render)
+
+    # --------------------------------------------------------------- UI ----
+    def _init_ui(self):
+        self.setWindowTitle("Realtime Subtitle Overlay")
+        self.setWindowFlags(
+            Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+            | Qt.Tool
+            | Qt.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setMouseTracking(True)
+        self.setMinimumSize(MIN_W, MIN_H)
+        self._apply_windows_no_activate_style()
+
+        # 字幕文本区：不接收鼠标事件，让拖动/缩放在任意位置可用
+        self.text = SubtitleTextEdit(self)
+        self.text.setReadOnly(True)
+        self.text.setFrameStyle(0)
+        self.text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.text.setStyleSheet("background: transparent; border: none;")
+        self.text.setMouseTracking(True)
+
+        # 右下角按钮条
+        self.button_bar = QWidget(self)
+        self.button_bar.setMouseTracking(True)
+        bar_layout = QHBoxLayout(self.button_bar)
+        bar_layout.setContentsMargins(0, 0, 0, 0)
+        bar_layout.setSpacing(4)
+
+        self.btn_font_dec = self._make_button("A-", "减小字号", self._dec_font)
+        self.btn_font_inc = self._make_button("A+", "增大字号", self._inc_font)
+        self.btn_alpha_dec = self._make_button("░", "背景更透明", self._dec_alpha)
+        self.btn_alpha_inc = self._make_button("▓", "背景更不透明", self._inc_alpha)
+        self.btn_display = self._make_button("O/T", "Toggle display: original + translation / original only / translation only", self._cycle_display)
+        self.btn_restart = self._make_button("↻", "重启识别", self._restart_recognition)
+        self.btn_pause = self._make_button("⏸", "暂停/继续识别", self._toggle_pause)
+        self.btn_close = self._make_button("✕", "关闭悬浮窗", self.close)
+        for b in (self.btn_font_dec, self.btn_font_inc,
+                  self.btn_alpha_dec, self.btn_alpha_inc,
+                  self.btn_display,
+                  self.btn_restart, self.btn_pause, self.btn_close):
+            bar_layout.addWidget(b)
+        self._update_display_button()
+
+        self.button_bar.adjustSize()
+        self.button_bar.setVisible(False)
+
+        self._render()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._apply_windows_no_activate_style()
+
+    def _apply_windows_no_activate_style(self):
+        """Keep clicks on the overlay from activating it on Windows fullscreen apps."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            import ctypes.wintypes
+
+            hwnd = int(self.winId())
+            user32 = ctypes.windll.user32
+            is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
+
+            get_window_long = (
+                user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
+            )
+            set_window_long = (
+                user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
+            )
+            long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
+            get_window_long.restype = long_type
+            get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
+            set_window_long.restype = long_type
+            set_window_long.argtypes = (
+                ctypes.wintypes.HWND,
+                ctypes.c_int,
+                long_type,
+            )
+
+            GWL_EXSTYLE = -20
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_NOACTIVATE = 0x08000000
+            style = int(get_window_long(hwnd, GWL_EXSTYLE))
+            set_window_long(
+                hwnd,
+                GWL_EXSTYLE,
+                long_type(style | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE),
+            )
+
+            HWND_TOPMOST = -1
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOACTIVATE = 0x0010
+            SWP_FRAMECHANGED = 0x0020
+            user32.SetWindowPos(
+                ctypes.wintypes.HWND(hwnd),
+                ctypes.wintypes.HWND(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+        except Exception:
+            pass
+
+    def _make_button(self, text, tip, slot):
+        b = QPushButton(text, self.button_bar)
+        b.setToolTip(tip)
+        b.setCursor(Qt.PointingHandCursor)
+        b.setFixedSize(28, 24)
+        b.setFocusPolicy(Qt.NoFocus)
+        b.setStyleSheet(
+            "QPushButton {"
+            "  color: #f3f4f6;"
+            "  background: rgba(255,255,255,0.14);"
+            "  border: none; border-radius: 6px;"
+            "  font-size: 13px; font-weight: 600;"
+            "}"
+            "QPushButton:hover { background: rgba(255,255,255,0.30); }"
+            "QPushButton:pressed { background: rgba(255,255,255,0.45); }"
+        )
+        b.clicked.connect(slot)
+        return b
+
+    # ------------------------------------------------------------ geometry --
+    def _restore_geometry(self):
+        geo = self.settings.value("geometry")
+        if geo is not None:
+            try:
+                self.restoreGeometry(geo)
+                return
+            except Exception:
+                pass
+        # 默认：屏幕底部居中
+        screen = QApplication.primaryScreen().availableGeometry()
+        w, h = 640, 200
+        self.setGeometry(
+            screen.left() + (screen.width() - w) // 2,
+            screen.bottom() - h - 60,
+            w, h,
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        margin = 12
+        self.text.setGeometry(
+            margin, margin,
+            max(0, self.width() - 2 * margin),
+            max(0, self.height() - 2 * margin),
+        )
+        self._reposition_buttons()
+        # 高度变了 -> 可见行数变了，实时重渲染（节流，避免连续缩放时狂刷）。
+        # 用 getattr 兜底：构造期 _restore_geometry 的 setGeometry 也会触发本事件，
+        # 此时节流定时器可能还没建好。
+        timer = getattr(self, "_resize_render_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start()
+
+    def _reposition_buttons(self):
+        self.button_bar.adjustSize()
+        bw = self.button_bar.width()
+        bh = self.button_bar.height()
+        pad = 8
+        self.button_bar.move(self.width() - bw - pad, self.height() - bh - pad)
+
+    # --------------------------------------------------------------- paint --
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QBrush(QColor(0, 0, 0, self.bg_alpha)))  # 黑色 + 可调半透明
+        painter.setPen(Qt.NoPen)
+        painter.drawRoundedRect(self.rect(), BG_RADIUS, BG_RADIUS)
+
+    # -------------------------------------------------- 鼠标拖动 / 缩放 ----
+    def _edges_at(self, pos):
+        r = self.rect()
+        left = pos.x() <= RESIZE_MARGIN
+        right = pos.x() >= r.width() - RESIZE_MARGIN
+        top = pos.y() <= RESIZE_MARGIN
+        bottom = pos.y() >= r.height() - RESIZE_MARGIN
+        return left, top, right, bottom
+
+    @staticmethod
+    def _cursor_for_edges(edges):
+        left, top, right, bottom = edges
+        if (left and top) or (right and bottom):
+            return Qt.SizeFDiagCursor
+        if (right and top) or (left and bottom):
+            return Qt.SizeBDiagCursor
+        if left or right:
+            return Qt.SizeHorCursor
+        if top or bottom:
+            return Qt.SizeVerCursor
+        return Qt.ArrowCursor
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            return
+        pos = event.position().toPoint()
+        edges = self._edges_at(pos)
+        if any(edges):
+            self._resize_edges = edges
+            self._resize_start_geo = self.geometry()
+            self._resize_start_mouse = event.globalPosition().toPoint()
+        else:
+            self._drag_offset = (event.globalPosition().toPoint()
+                                 - self.frameGeometry().topLeft())
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._resize_edges is not None:
+            self._do_resize(event.globalPosition().toPoint())
+            event.accept()
+            return
+        if self._drag_offset is not None:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+            event.accept()
+            return
+        # 未按下：根据边缘更新光标
+        self.setCursor(self._cursor_for_edges(self._edges_at(event.position().toPoint())))
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        if self._resize_edges is not None:
+            self._resize_edges = None
+            self._save_geometry()
+        else:
+            self._save_geometry()
+        self.setCursor(Qt.ArrowCursor)
+
+    def _do_resize(self, global_pos):
+        left, top, right, bottom = self._resize_edges
+        geo = QRect(self._resize_start_geo)
+        delta = global_pos - self._resize_start_mouse
+        if left:
+            new_left = geo.left() + delta.x()
+            geo.setLeft(min(new_left, geo.right() - MIN_W))
+        if right:
+            geo.setRight(max(geo.right() + delta.x(), geo.left() + MIN_W))
+        if top:
+            new_top = geo.top() + delta.y()
+            geo.setTop(min(new_top, geo.bottom() - MIN_H))
+        if bottom:
+            geo.setBottom(max(geo.bottom() + delta.y(), geo.top() + MIN_H))
+        self.setGeometry(geo)
+
+    # ------------------------------------------------ 按钮显隐（悬停） ----
+    def _update_button_visibility(self):
+        inside = self.geometry().contains(QCursor.pos())
+        if inside != self.button_bar.isVisible():
+            self.button_bar.setVisible(inside)
+            if inside:
+                self._reposition_buttons()
+                self.button_bar.raise_()
+
+    # ----------------------------------------------------------- 按钮动作 --
+    def _inc_font(self):
+        self.font_size = min(self.font_size + 2, 72)
+        self.settings.setValue("font_size", self.font_size)
+        self._render()
+
+    def _dec_font(self):
+        self.font_size = max(self.font_size - 2, 10)
+        self.settings.setValue("font_size", self.font_size)
+        self._render()
+
+    def _step_alpha(self, direction: int):
+        """在感知等距的不透明度挡位间移动（+1 更不透明 / -1 更透明）。"""
+        # 先把当前值吸附到最接近的挡位，再朝目标方向走一挡。
+        idx = min(range(len(ALPHA_LEVELS)),
+                  key=lambda k: abs(ALPHA_LEVELS[k] - self.bg_alpha))
+        idx = max(0, min(len(ALPHA_LEVELS) - 1, idx + direction))
+        self.bg_alpha = ALPHA_LEVELS[idx]
+        self.settings.setValue("bg_alpha", self.bg_alpha)
+        self.update()
+
+    def _inc_alpha(self):
+        self._step_alpha(+1)
+
+    def _dec_alpha(self):
+        self._step_alpha(-1)
+
+    _DISPLAY_LABELS = {"both": "O/T", "original": "O", "translation": "T"}
+    _DISPLAY_TIPS = {
+        "both": "Current: original + translation (click for original only)",
+        "original": "Current: original only (click for translation only)",
+        "translation": "Current: translation only (click for original + translation)",
+    }
+
+    def _update_display_button(self):
+        mode = self.display_mode if self.display_mode in self._DISPLAY_LABELS else "both"
+        self.btn_display.setText(self._DISPLAY_LABELS[mode])
+        self.btn_display.setToolTip(self._DISPLAY_TIPS[mode])
+
+    def _cycle_display(self):
+        order = ["both", "original", "translation"]
+        idx = order.index(self.display_mode) if self.display_mode in order else 0
+        self.display_mode = order[(idx + 1) % len(order)]
+        self.settings.setValue("display_mode", self.display_mode)
+        self._update_display_button()
+        self._last_html = None   # 模式变了，强制重渲染
+        self._render()
+
+    def _toggle_pause(self):
+        target = "/resume" if self.is_paused else "/pause"
+        # 乐观更新；网络请求放后台线程避免卡 UI
+        self.is_paused = not self.is_paused
+        self.btn_pause.setText("▶" if self.is_paused else "⏸")
+        self.btn_pause.setToolTip("继续识别" if self.is_paused else "暂停识别")
+        threading.Thread(
+            target=self._post, args=(target,), daemon=True
+        ).start()
+
+    def _restart_recognition(self):
+        if self._restart_in_flight:
+            return
+        self._restart_in_flight = True
+        self.btn_restart.setEnabled(False)
+        self.btn_restart.setText("...")
+        self.btn_restart.setToolTip("正在重启识别")
+        threading.Thread(target=self._restart_worker, daemon=True).start()
+
+    def _restart_worker(self):
+        ok = self._post("/restart")
+        self._restart_finished.emit(ok)
+
+    def _on_restart_finished(self, ok: bool):
+        self._restart_in_flight = False
+        self.btn_restart.setEnabled(True)
+        self.btn_restart.setText("↻")
+        self.btn_restart.setToolTip("重启识别" if ok else "重启失败，点击重试")
+
+    def _post(self, path):
+        try:
+            req = urllib.request.Request(
+                self.server_url + path, data=b"", method="POST"
+            )
+            urllib.request.urlopen(req, timeout=8).read()
+            return True
+        except Exception:
+            return False
+
+    # --------------------------------------------------------------- WS ----
+    def _init_ws(self):
+        scheme = "wss" if self.server_url.startswith("https") else "ws"
+        host = self.server_url.split("://", 1)[-1]
+        ws_url = f"{scheme}://{host}/ws"
+        self.bridge = WsBridge()
+        self.bridge.message.connect(self._on_message)
+        self.ws_client = WsClient(ws_url, self.bridge)
+        self.ws_client.start()
+
+    def _on_message(self, raw: str):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return
+        mtype = data.get("type")
+        if mtype == "update":
+            self.model.apply_update(data)
+            self._render()
+        elif mtype == "clear":
+            self.model.clear(preserve_existing=bool(data.get("preserve_existing")))
+            self._render()
+
+    # ----------------------------------------------------------- 渲染 ------
+    def _max_visible_lines(self) -> int:
+        """根据文本区高度与字号估算大约能放下多少行字幕。"""
+        line_px = self.font_size * 1.2 + 2          # line-height 120% + 2px 间距
+        usable_h = max(1, self.text.height())
+        return max(1, int(usable_h / line_px) + 1)
+
+    def _trim_tokens(self, max_lines: int) -> None:
+        """限制历史句子数量，避免 build_blocks / setHtml 随时间越跑越慢卡 CPU。"""
+        cap = max(120, max_lines * 12)
+        ft = self.model.final_tokens
+        if len(ft) > cap:
+            self.model.trim_final_tokens_to_recent_sentences(max(20, max_lines * 4))
+
+    def _render(self):
+        max_lines = self._max_visible_lines()
+        self._trim_tokens(max_lines)
+        blocks = self.model.build_blocks()
+        line_groups = self._build_line_groups(blocks)
+        lines = [line for group in line_groups for line in group]
+
+        if not lines:
+            fs = self.font_size
+            html = (
+                f'<div style="color:{PLACEHOLDER_COLOR}; font-size:{fs}px; '
+                f'text-align:center;">等待字幕…</div>'
+            )
+        else:
+            # 只渲染底部最近的完整句子组，避免把一句的顶部切成残缺 token。
+            html = "".join(self._select_recent_lines(line_groups, max_lines))
+
+        sb = self.text.verticalScrollBar()
+
+        # 内容没变就不重建文档（避免无谓重排导致的闪烁），但仍保证停在底部。
+        if html == getattr(self, "_last_html", None):
+            if sb.value() != sb.maximum():
+                sb.setValue(sb.maximum())
+            return
+        self._last_html = html
+
+        # 关掉重绘再替换内容，确保只在最终（已滚到底部）状态画一次，避免闪烁。
+        self.text.setUpdatesEnabled(False)
+        try:
+            self.text.setHtml(html)
+            # 永远把光标移到末尾并滚到最底，露出最新字幕。
+            self.text.moveCursor(QTextCursor.End)
+            sb.setValue(sb.maximum())
+        finally:
+            self.text.setUpdatesEnabled(True)
+
+    def _select_recent_lines(self, line_groups, max_lines: int):
+        selected = []
+        line_count = 0
+        for group in reversed(line_groups):
+            group_len = len(group)
+            if selected and line_count + group_len > max_lines:
+                break
+            selected.insert(0, group)
+            line_count += group_len
+        return [line for group in selected for line in group]
+
+    def _build_line_groups(self, blocks):
+        """产出按显示句子分组的 HTML <div> 列表。
+
+        同一句的原文/译文贴紧（pair_mb），句与句之间留白（sent_mb），从而让一句的
+        原文+译文在视觉上成组。display_mode 控制只显示原文 / 只显示译文 / 两者都显示。
+        """
+        fs = self.font_size
+        tag_fs = max(9, int(fs * 0.55))
+        pair_mb = 0                          # 同句原文↔译文：贴紧
+        sent_mb = max(5, int(fs * 0.45))     # 句与句之间：留白
+
+        show_orig = self.display_mode in ("both", "original")
+        show_trans = self.display_mode in ("both", "translation")
+
+        groups = []
+        for block in blocks:
+            for sentence in block["sentences"]:
+                group = []
+                orig = sentence["original"] if show_orig else []
+                trans = sentence["translation"] if show_trans else []
+                if orig:
+                    mb = pair_mb if trans else sent_mb
+                    group.append(self._line_html(
+                        orig, sentence["original_lang"], fs, mb, tag_fs))
+                if trans:
+                    group.append(self._line_html(
+                        trans, sentence["translation_lang"], fs, sent_mb, tag_fs))
+                group = [line for line in group if line]
+                if group:
+                    groups.append(group)
+        return groups
+
+    def _line_html(self, tokens, lang, fs, margin_bottom, tag_fs):
+        spans = []
+        for tk in tokens:
+            text = tk.get("text") or ""
+            if not text:
+                continue
+            safe = _html_escape(text).replace("\n", "<br>")
+            if tk.get("is_final", True):
+                spans.append(safe)
+            else:
+                spans.append(f'<span style="color:{NONFINAL_COLOR};">{safe}</span>')
+        if not spans:
+            return ""
+        tag_html = ""
+        if lang:
+            # 圆角矩形语言标识：交给 SubtitleTextEdit.loadResource 画成内联图片。
+            spec = f"{tag_fs}-{_html_escape(str(lang)).upper()}"
+            tag_html = f'<img src="{_TAG_SCHEME}{spec}" style="vertical-align:middle;">'
+        style = (f"margin:0 0 {margin_bottom}px 0; line-height:110%; "
+                 f"font-size:{fs}px; color:{FINAL_COLOR};")
+        return f'<div style="{style}">{tag_html}{"".join(spans)}</div>'
+
+    # ------------------------------------------------------------- 关闭 ----
+    def _save_geometry(self):
+        self.settings.setValue("geometry", self.saveGeometry())
+
+    def closeEvent(self, event):
+        self._save_geometry()
+        try:
+            self.ws_client.stop()
+        except Exception:
+            pass
+        super().closeEvent(event)
+        QApplication.quit()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Realtime subtitle native overlay")
+    parser.add_argument("--url", required=True, help="服务器地址，如 http://127.0.0.1:8000")
+    args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
+
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(True)
+    win = OverlayWindow(args.url)
+    win.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

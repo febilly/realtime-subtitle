@@ -465,6 +465,56 @@ class ProviderManager:
         return result
 
 
+class OverlayManager:
+    """管理原生（PySide6）字幕悬浮窗子进程。
+
+    与 pywebview 主窗口分属不同进程，避免两个 GUI 事件循环冲突。子进程通过
+    WebSocket(`/ws`) 接收字幕，并用 REST(`/pause`,`/resume`) 控制识别。
+    """
+
+    def __init__(self, server_url: str):
+        self.server_url = server_url
+        self._proc = None
+
+    def is_open(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    def _build_command(self) -> list[str]:
+        args = ["--run-overlay", "--url", self.server_url]
+        if getattr(sys, "frozen", False):
+            # PyInstaller：重新拉起自身可执行文件，由 main() 顶部分发到 overlay。
+            return [sys.executable, *args]
+        overlay_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay_window.py")
+        return [sys.executable, overlay_script, *args]
+
+    def open(self) -> bool:
+        if self.is_open():
+            return True
+        import subprocess
+
+        kwargs = {}
+        if os.name == "nt":
+            # 不为悬浮窗弹出额外的控制台窗口。
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        try:
+            self._proc = subprocess.Popen(self._build_command(), **kwargs)
+        except Exception as error:
+            print(f"⚠️  Failed to launch subtitle overlay: {error}")
+            self._proc = None
+            raise
+        return True
+
+    def close(self) -> bool:
+        proc = self._proc
+        self._proc = None
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        return False
+
+
 def run_server(app, sock):
     """在单独的线程中运行Web服务器"""
     loop = asyncio.new_event_loop()
@@ -479,6 +529,12 @@ def run_server(app, sock):
 
 
 def main():
+    # 当以 `--run-overlay` 启动时，进入原生字幕悬浮窗（独立 GUI 进程）。
+    # 冻结成 exe 后由主程序重新拉起自身走到这里；源码模式下则直接拉起 overlay_window.py。
+    if "--run-overlay" in sys.argv:
+        from overlay_window import main as overlay_main
+        sys.exit(overlay_main())
+
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 
@@ -597,9 +653,19 @@ def main():
 
     web_server.set_window_on_top_callback(set_window_on_top)
 
+    def close_overlay() -> None:
+        """退出前关闭原生字幕悬浮窗子进程，避免遗留孤儿进程。"""
+        manager = getattr(web_server, "overlay_manager", None)
+        if manager is not None:
+            try:
+                manager.close()
+            except Exception:
+                pass
+
     def request_shutdown() -> None:
         """退出整个应用（重置设置后由前端触发）。"""
         print("\n👋 Reset requested, shutting down application...")
+        close_overlay()
         try:
             logger.close_log_file()
         except Exception:
@@ -611,6 +677,7 @@ def main():
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
         print("\n👋 Received termination signal, shutting down server...")
+        close_overlay()
         logger.close_log_file()
         os._exit(0)
     
@@ -678,6 +745,9 @@ def main():
     server_url = f"http://{resolve_display_host()}:{actual_port}"
     print(f"🚀 Server starting on {bind_host}:{actual_port}")
 
+    # 原生字幕悬浮窗始终走本地回环地址连接，避免依赖 LAN host 解析。
+    web_server.overlay_manager = OverlayManager(f"http://127.0.0.1:{actual_port}")
+
     debug = bool(args.debug)
 
     # 在新线程中启动 aiohttp 服务器
@@ -713,6 +783,7 @@ def main():
 
         def on_closed():
             print("👋 Window closed, shutting down application...")
+            close_overlay()
             try:
                 window_on_top_requests.put_nowait(None)
             except Exception:

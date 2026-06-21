@@ -9,6 +9,9 @@ const autoRestartButton = document.getElementById('autoRestartButton');
 const autoRestartIcon = document.getElementById('autoRestartIcon');
 const audioSourceButton = document.getElementById('audioSourceButton');
 const audioSourceIcon = document.getElementById('audioSourceIcon');
+const overlayButton = document.getElementById('overlayButton');
+const overlayIcon = document.getElementById('overlayIcon');
+let overlayOpen = false;  // 原生字幕悬浮窗当前是否打开
 const segmentModeButton = document.getElementById('segmentModeButton');
 const segmentModeText = document.getElementById('segmentModeText');
 const displayModeButton = document.getElementById('displayModeButton');
@@ -602,6 +605,10 @@ function applyStaticUiText() {
 
     if (pauseButton) {
         pauseButton.title = isPaused ? t('resume') : t('pause_resume');
+    }
+
+    if (overlayButton) {
+        overlayButton.title = overlayOpen ? t('overlay_close') : t('overlay_open');
     }
 
     if (subtitleContainer) {
@@ -2523,6 +2530,57 @@ if (audioSourceButton) {
 }
 
 
+// --- 原生字幕悬浮窗（PySide6）开关 ---
+function updateOverlayButton() {
+    if (!overlayButton) {
+        return;
+    }
+    // 仅更新提示文案，不切换 .active —— 按钮颜色不随悬浮窗开关变化。
+    overlayButton.title = overlayOpen ? t('overlay_close') : t('overlay_open');
+}
+
+async function refreshOverlayState() {
+    if (!overlayButton) {
+        return;
+    }
+    try {
+        const response = await fetch('/overlay');
+        const result = await response.json();
+        if (!result || result.available === false) {
+            // 该平台/模式不支持原生悬浮窗，隐藏按钮。
+            overlayButton.style.display = 'none';
+            return;
+        }
+        overlayOpen = !!result.open;
+        updateOverlayButton();
+    } catch (error) {
+        console.error('Failed to query overlay state:', error);
+    }
+}
+
+if (overlayButton) {
+    overlayButton.addEventListener('click', async () => {
+        try {
+            const response = await fetch('/overlay', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'toggle' })
+            });
+            const result = await response.json();
+            if (result && result.available === false) {
+                overlayButton.style.display = 'none';
+                return;
+            }
+            overlayOpen = !!(result && result.open);
+            updateOverlayButton();
+        } catch (error) {
+            console.error('Error toggling subtitle overlay:', error);
+        }
+    });
+    refreshOverlayState();
+}
+
+
 
 
 function displayErrorMessage(message) {
@@ -3357,7 +3415,6 @@ function renderSubtitles() {
 
     const sentences = [];
     let currentSentence = null;
-    let pendingTranslationSentence = null;
 
     const ensureSpeakerValue = (speaker) => {
         return (speaker === null || speaker === undefined) ? 'undefined' : speaker;
@@ -3382,33 +3439,6 @@ function renderSubtitles() {
         return sentence;
     };
 
-    const canAcceptTranslation = (sentence, token) => {
-        if (!sentence) return false;
-        if (sentence.hasFakeTranslation) return false;
-
-        if (sentence.isTranslationOnly) {
-            if (sentence.originalLang && token.source_language && sentence.originalLang !== token.source_language) {
-                return false;
-            }
-            if (sentence.translationLang && token.language && sentence.translationLang !== token.language) {
-                return false;
-            }
-            return true;
-        }
-
-        if (sentence.requiresTranslation === false) return false;
-
-        if (token.source_language && sentence.originalLang && sentence.originalLang !== token.source_language) {
-            return false;
-        }
-
-        if (sentence.translationLang && token.language && sentence.translationLang !== token.language) {
-            return false;
-        }
-
-        return true;
-    };
-
     const findLastSentenceForSpeaker = (speaker, predicate = () => true, options = {}) => {
         const normalizedSpeaker = ensureSpeakerValue(speaker);
         const stopOnFakeTranslation = !!options.stopOnFakeTranslation;
@@ -3424,6 +3454,14 @@ function renderSubtitles() {
         return null;
     };
 
+    const findNearestOriginalSentenceForSpeaker = (speaker) => {
+        return findLastSentenceForSpeaker(
+            speaker,
+            (sentence) => !sentence.isTranslationOnly,
+            { stopOnFakeTranslation: false }
+        );
+    };
+
     tokens.forEach(token => {
         if (token.is_separator) {
             if (
@@ -3435,8 +3473,6 @@ function renderSubtitles() {
             }
 
             currentSentence = null;
-            // 分隔符也会打断 pending 状态，迫使新的译文重新寻找匹配
-            pendingTranslationSentence = null;
             return;
         }
 
@@ -3444,25 +3480,11 @@ function renderSubtitles() {
         const translationStatus = token.translation_status || 'original';
 
         if (translationStatus === 'translation') {
-            let targetSentence = null;
+            // Strict policy: every translation token attaches to the nearest
+            // previous original sentence for the same speaker. If that sentence
+            // already has translation text, append to it.
+            let targetSentence = findNearestOriginalSentenceForSpeaker(speaker);
 
-            // 1. 尝试匹配 pending
-            if (pendingTranslationSentence && pendingTranslationSentence.speaker === speaker && canAcceptTranslation(pendingTranslationSentence, token)) {
-                targetSentence = pendingTranslationSentence;
-            }
-
-            // 2. 尝试匹配该说话人最近的一个可接受译文的句子
-            if (!targetSentence) {
-                targetSentence = findLastSentenceForSpeaker(
-                    speaker,
-                    (sentence) => canAcceptTranslation(sentence, token),
-                    {
-                        stopOnFakeTranslation: true
-                    }
-                );
-            }
-
-            // 3. 如果都匹配不到，创建一个纯译文句子
             if (!targetSentence) {
                 targetSentence = startSentence(speaker, { translationOnly: true });
             }
@@ -3476,7 +3498,6 @@ function renderSubtitles() {
             }
 
             targetSentence.translationTokens.push(token);
-            pendingTranslationSentence = targetSentence;
 
         } else {
             // 原文 token (original 或 none)

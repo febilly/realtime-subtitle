@@ -6,7 +6,8 @@ binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',
                  'provider_setup', 'soniox_session', 'gemini_session', 'soniox_client', 'gemini_client',
-                 'soniox_key_setup', 'gemini_key_setup']
+                 'soniox_key_setup', 'gemini_key_setup',
+                 'overlay_window']
 tmp_ret = collect_all('soundcard')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('aiohttp')
@@ -20,6 +21,12 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # tmp_ret = collect_all('streamlink')
 # datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('webview')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# 原生字幕悬浮窗（PySide6）。只需 QtWidgets/QtGui/QtCore，排除体积庞大的可选模块。
+tmp_ret = collect_all('PySide6',
+                      exclude_datas=['**/Qt6WebEngine*', '**/Qt6Quick*', '**/Qt6Qml*',
+                                     '**/Qt6Pdf*', '**/Qt6Designer*', '**/Qt63D*',
+                                     '**/Qt6Charts*', '**/Qt6DataVisualization*'])
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
