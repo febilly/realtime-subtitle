@@ -164,6 +164,12 @@ body.dark-theme .control-button:hover {
     background: rgba(255, 255, 255, 0.15);
 }
 
+/* “cc” 文字图标：暗色模式下用白字（emoji 图标自带颜色不受影响）。 */
+body.dark-theme #overlayIcon {
+    color: #ffffff;
+    font-weight: 700;
+}
+
 .restart-button.restarting {
     animation: spin 1s linear infinite;
     pointer-events: none;
@@ -435,8 +441,9 @@ body.chroma-theme .subtitle-container::-webkit-scrollbar-thumb:hover {
 }
 
 body.dark-theme .control-button.active {
-    background: rgba(96, 165, 250, 0.2);
-    color: #60a5fa;
+    background: rgba(96, 165, 250, 0.38);
+    color: #bfdbfe;
+    box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.55);
 }
 
 /* Ruby 假名注音样式 */
@@ -658,6 +665,23 @@ body.dark-theme .form-field input::placeholder {
 .form-field select:focus {
     border-color: #60a5fa;
     box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.20);
+}
+
+.input-with-button {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+
+.input-with-button input {
+    flex: 1;
+    min-width: 0;
+}
+
+.input-with-button .secondary-button {
+    flex: 0 0 auto;
+    align-self: stretch;
+    min-height: 38px;
 }
 
 .settings-error {

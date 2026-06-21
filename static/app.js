@@ -4679,6 +4679,7 @@ const loginPrimaryButton = document.getElementById('loginPrimaryButton');
 const loginModeBackButton = document.getElementById('loginModeBackButton');
 const loginBackButton = document.getElementById('loginBackButton');
 const loginCopyButton = document.getElementById('loginCopyButton');
+const loginPasteButton = document.getElementById('loginPasteButton');
 const loginErrorEl = document.getElementById('loginError');
 const balanceBar = document.getElementById('balanceBar');
 
@@ -4765,6 +4766,7 @@ function applyLoginI18n() {
     setElText('loginChallengeHint', t('login_challenge_hint'));
     setElText('loginRemoveHint', t('login_remove_hint'));
     setElText('loginCopyButton', t('login_copy'));
+    setElText('loginPasteButton', t('login_paste'));
     setElText('loginModeBackButton', t('mode_back_to_chooser'));
     setElText('loginBackButton', t('login_back'));
     setElText('loginBonusLabel', t('login_bonus_label'));
@@ -5023,6 +5025,19 @@ if (loginCopyButton) {
             setTimeout(() => { loginCopyButton.textContent = t('login_copy'); }, 1500);
         } catch (e) {
             // Clipboard may be unavailable; selection fallback is the <code> user-select:all.
+        }
+    });
+}
+if (loginPasteButton) {
+    loginPasteButton.addEventListener('click', async () => {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (loginUserInput) {
+                loginUserInput.value = (text || '').trim();
+                loginUserInput.focus();
+            }
+        } catch (e) {
+            // Clipboard read may be unavailable/denied; user can paste manually.
         }
     });
 }

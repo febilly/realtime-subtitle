@@ -57,7 +57,7 @@
             </button>
 
             <button class="control-button" id="overlayButton" title="Toggle subtitle overlay window">
-                <span id="overlayIcon">🪟</span>
+                <span id="overlayIcon">cc</span>
             </button>
 
             <button class="control-button" id="segmentModeButton" title="Toggle segmentation mode">
@@ -230,7 +230,10 @@
             <section class="auth-section" id="loginStepInput">
                 <label class="form-field" for="loginUserInput">
                     <span id="loginUserInputLabel">VRChat user ID / profile URL / name</span>
-                    <input id="loginUserInput" type="text" autocomplete="off" spellcheck="false">
+                    <div class="input-with-button">
+                        <input id="loginUserInput" type="text" autocomplete="off" spellcheck="false">
+                        <button class="secondary-button" id="loginPasteButton" type="button">Paste</button>
+                    </div>
                 </label>
                 <p class="field-hint" id="loginInputHint"></p>
             </section>
