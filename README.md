@@ -76,18 +76,20 @@ HIDE_SPEAKER_LABELS="True"
 
 This only hides the speaker tags in frontend display. Backend speaker diarization can still stay enabled, so transcripts from different speakers are less likely to be merged into the same sentence.
 
-### Soniox silence sleep
+### Silence sleep
 
-To reduce Soniox usage during long silent periods, enable local silence sleep:
+To reduce provider usage during long silent periods, enable local silence sleep:
 
 ```env
-SONIOX_SLEEP_ON_SILENCE="True"
-SONIOX_SLEEP_IDLE_SECONDS="30"
-SONIOX_SLEEP_PRE_ROLL_SECONDS="0.5"
-SONIOX_SLEEP_SPEECH_GRACE_SECONDS="0.25"
+SLEEP_ON_SILENCE="True"
+SLEEP_IDLE_SECONDS="30"
+SLEEP_PRE_ROLL_SECONDS="1.0"
+SLEEP_SPEECH_WINDOW_SECONDS="0.75"
+SLEEP_SPEECH_GRACE_SECONDS="0.5"
+SLEEP_VAD_THRESHOLD="0.2"
 ```
 
-When enabled, the app closes the Soniox stream after the configured idle time, keeps listening locally, then reopens Soniox when speech returns and flushes the local pre-roll buffer.
+When enabled, the app closes the active provider stream after the configured idle time, keeps listening locally, then reopens it when enough speech is detected in the recent confirmation window and flushes the local pre-roll buffer. The `SLEEP_*` tuning applies to both Soniox and Gemini; old provider-specific names are still accepted for compatibility.
 
 ### LLM translation refinement
 

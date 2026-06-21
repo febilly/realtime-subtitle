@@ -22,11 +22,28 @@ def _reload_config(monkeypatch, mode):
         monkeypatch.delenv("OSC_SEND_TEXT_MODE", raising=False)
     else:
         monkeypatch.setenv("OSC_SEND_TEXT_MODE", mode)
+    # Neutralize .env loading so a developer's local .env (e.g. SLEEP_IDLE_SECONDS)
+    # cannot leak into these reload-based config assertions.
+    import dotenv
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
     # Drop whatever is currently registered (possibly another test's mock) and
     # import a fresh, real config under the patched environment.
     sys.modules.pop("config", None)
     import config
     return importlib.reload(config)
+
+
+def _clear_sleep_env(monkeypatch):
+    for prefix in ("", "SONIOX_", "GEMINI_"):
+        for suffix in (
+            "SLEEP_ON_SILENCE",
+            "SLEEP_IDLE_SECONDS",
+            "SLEEP_PRE_ROLL_SECONDS",
+            "SLEEP_SPEECH_WINDOW_SECONDS",
+            "SLEEP_SPEECH_GRACE_SECONDS",
+            "SLEEP_VAD_THRESHOLD",
+        ):
+            monkeypatch.delenv(f"{prefix}{suffix}", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -53,3 +70,33 @@ def test_osc_mode_drives_echo_and_is_not_a_standalone_env(
     monkeypatch.setenv("GEMINI_ECHO_TARGET_LANGUAGE", "false")
     config = _reload_config(monkeypatch, "smart")
     assert config.GEMINI_ECHO_TARGET_LANGUAGE is True
+
+
+def test_shared_sleep_tuning_overrides_provider_specific_aliases(
+    monkeypatch, restore_config_module
+):
+    _clear_sleep_env(monkeypatch)
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "gemini")
+    monkeypatch.setenv("SLEEP_IDLE_SECONDS", "12")
+    monkeypatch.setenv("GEMINI_SLEEP_IDLE_SECONDS", "99")
+
+    config = _reload_config(monkeypatch, "smart")
+
+    assert config.SLEEP_IDLE_SECONDS == 12
+    assert config.GEMINI_SLEEP_IDLE_SECONDS == 12
+    assert config.SONIOX_SLEEP_IDLE_SECONDS == 12
+
+
+def test_sleep_tuning_reads_active_provider_legacy_alias(
+    monkeypatch, restore_config_module
+):
+    _clear_sleep_env(monkeypatch)
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_SLEEP_IDLE_SECONDS", "44")
+    monkeypatch.setenv("SONIOX_SLEEP_IDLE_SECONDS", "55")
+
+    config = _reload_config(monkeypatch, "smart")
+
+    assert config.SLEEP_IDLE_SECONDS == 44
+    assert config.GEMINI_SLEEP_IDLE_SECONDS == 44
+    assert config.SONIOX_SLEEP_IDLE_SECONDS == 44

@@ -15,9 +15,11 @@ from websockets import ConnectionClosed, ConnectionClosedOK
 
 from config import (
     GEMINI_STREAM_DURATION_SECONDS,
-    GEMINI_SLEEP_IDLE_SECONDS,
-    GEMINI_SLEEP_PRE_ROLL_SECONDS,
-    GEMINI_SLEEP_SPEECH_GRACE_SECONDS,
+    SLEEP_IDLE_SECONDS,
+    SLEEP_PRE_ROLL_SECONDS,
+    SLEEP_SPEECH_GRACE_SECONDS,
+    SLEEP_SPEECH_WINDOW_SECONDS,
+    SLEEP_VAD_THRESHOLD,
     USE_TWITCH_AUDIO_STREAM,
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     TWITCH_CHANNEL,
@@ -1226,7 +1228,7 @@ class GeminiSession:
         if not config.GEMINI_SLEEP_ON_SILENCE:
             return None
         try:
-            value = float(GEMINI_SLEEP_IDLE_SECONDS)
+            value = float(SLEEP_IDLE_SECONDS)
         except Exception:
             return None
         if value <= 0:
@@ -1815,7 +1817,9 @@ class GeminiSession:
         if sleep_idle_seconds is not None:
             print(
                 f"💤 Gemini silence sleep enabled: {sleep_idle_seconds:.1f}s idle, "
-                f"{float(GEMINI_SLEEP_PRE_ROLL_SECONDS):.2f}s pre-roll"
+                f"{float(SLEEP_PRE_ROLL_SECONDS):.2f}s pre-roll, "
+                f"{float(SLEEP_SPEECH_GRACE_SECONDS):.2f}s speech/"
+                f"{float(SLEEP_SPEECH_WINDOW_SECONDS):.2f}s window"
             )
 
         self.stop_event = threading.Event()
@@ -1836,9 +1840,11 @@ class GeminiSession:
             sample_rate=self.sample_rate,
             chunk_size=self.chunk_size,
             silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
+            vad_speech_threshold=SLEEP_VAD_THRESHOLD,
             sleep_idle_seconds=sleep_idle_seconds,
-            sleep_pre_roll_seconds=GEMINI_SLEEP_PRE_ROLL_SECONDS,
-            sleep_speech_grace_seconds=GEMINI_SLEEP_SPEECH_GRACE_SECONDS,
+            sleep_pre_roll_seconds=SLEEP_PRE_ROLL_SECONDS,
+            sleep_speech_grace_seconds=SLEEP_SPEECH_GRACE_SECONDS,
+            sleep_speech_window_seconds=SLEEP_SPEECH_WINDOW_SECONDS,
         )
 
         try:

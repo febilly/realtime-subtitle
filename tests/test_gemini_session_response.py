@@ -10,9 +10,11 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config = ModuleType("config")
     config.GEMINI_STREAM_DURATION_SECONDS = None
     config.GEMINI_SLEEP_ON_SILENCE = False
-    config.GEMINI_SLEEP_IDLE_SECONDS = 30.0
-    config.GEMINI_SLEEP_PRE_ROLL_SECONDS = 0.5
-    config.GEMINI_SLEEP_SPEECH_GRACE_SECONDS = 0.25
+    config.SLEEP_IDLE_SECONDS = 30.0
+    config.SLEEP_PRE_ROLL_SECONDS = 1.0
+    config.SLEEP_SPEECH_GRACE_SECONDS = 0.5
+    config.SLEEP_SPEECH_WINDOW_SECONDS = 0.75
+    config.SLEEP_VAD_THRESHOLD = 0.2
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
     config.TWITCH_CHANNEL = ""

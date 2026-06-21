@@ -72,6 +72,28 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help='Translation provider to use (otherwise read from TRANSLATION_PROVIDER / prompted at startup)',
     )
 
+    # --- Shared local VAD / silence-sleep options ---
+    sleep_group = parser.add_mutually_exclusive_group()
+    sleep_group.add_argument(
+        '--sleep-on-silence',
+        dest='sleep_on_silence',
+        action='store_true',
+        default=None,
+        help='Close the active provider stream after long local silence and reopen when speech resumes',
+    )
+    sleep_group.add_argument(
+        '--no-sleep-on-silence',
+        dest='sleep_on_silence',
+        action='store_false',
+        default=None,
+        help='Disable long-silence stream sleeping for the active provider',
+    )
+    parser.add_argument('--sleep-idle-seconds', dest='sleep_idle_seconds', type=float, default=None)
+    parser.add_argument('--sleep-pre-roll-seconds', dest='sleep_pre_roll_seconds', type=float, default=None)
+    parser.add_argument('--sleep-speech-window-seconds', dest='sleep_speech_window_seconds', type=float, default=None)
+    parser.add_argument('--sleep-speech-grace-seconds', dest='sleep_speech_grace_seconds', type=float, default=None)
+    parser.add_argument('--sleep-vad-threshold', dest='sleep_vad_threshold', type=float, default=None)
+
     # --- Soniox-specific options ---
     parser.add_argument('--soniox-temp-key-url', dest='soniox_temp_key_url', default=None)
     parser.add_argument('--soniox-websocket-url', dest='soniox_websocket_url', default=None)
@@ -163,6 +185,13 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
         _set_env_if_provided('SERVER_PORT', int(args.server_port))
 
     _set_env_if_provided('TRANSLATION_PROVIDER', args.translation_provider)
+
+    _set_env_bool_if_provided('SLEEP_ON_SILENCE', args.sleep_on_silence)
+    _set_env_if_provided('SLEEP_IDLE_SECONDS', args.sleep_idle_seconds)
+    _set_env_if_provided('SLEEP_PRE_ROLL_SECONDS', args.sleep_pre_roll_seconds)
+    _set_env_if_provided('SLEEP_SPEECH_WINDOW_SECONDS', args.sleep_speech_window_seconds)
+    _set_env_if_provided('SLEEP_SPEECH_GRACE_SECONDS', args.sleep_speech_grace_seconds)
+    _set_env_if_provided('SLEEP_VAD_THRESHOLD', args.sleep_vad_threshold)
 
     _set_env_if_provided('SONIOX_TEMP_KEY_URL', args.soniox_temp_key_url)
     _set_env_if_provided('SONIOX_WEBSOCKET_URL', args.soniox_websocket_url)

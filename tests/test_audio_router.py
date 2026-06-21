@@ -1,5 +1,18 @@
 import audio_router as audio_router_module
-from audio_router import AudioSendRouter, EnergySilenceDetector, TenVadSilenceDetector
+from audio_router import (
+    AudioSendRouter,
+    EnergySilenceDetector,
+    SileroVadLiteSilenceDetector,
+    TenVadSilenceDetector,
+)
+
+
+def _force_energy_backend(monkeypatch):
+    """Make every VAD backend unavailable so the router falls back to energy."""
+    monkeypatch.setattr(audio_router_module, "TenVadBackend", None)
+    monkeypatch.setattr(audio_router_module, "TenVadImportError", RuntimeError("missing"))
+    monkeypatch.setattr(audio_router_module, "SileroVadLiteBackend", None)
+    monkeypatch.setattr(audio_router_module, "SileroVadLiteImportError", RuntimeError("missing"))
 
 
 class RecordingTarget:
@@ -116,20 +129,44 @@ def test_ten_vad_silence_detector_waits_for_non_speech_hold(monkeypatch):
     assert detector.is_ready() is False
 
 
+def test_silero_vad_lite_silence_detector_waits_for_non_speech_hold(monkeypatch):
+    class FakeSileroVAD:
+        def __init__(self, sample_rate):
+            self.sample_rate = sample_rate
+            self.window_size_samples = 512
+
+        def process(self, audio_frame):
+            return 1.0 if float(audio_frame[0]) > 0.0 else 0.0
+
+    monkeypatch.setattr(audio_router_module, "SileroVadLiteBackend", FakeSileroVAD)
+    monkeypatch.setattr(audio_router_module, "SileroVadLiteImportError", None)
+
+    detector = SileroVadLiteSilenceDetector(sample_rate=16000, silence_hold_seconds=0.06)
+    silence_frame = b"\0" * 1024
+    speech_frame = (1000).to_bytes(2, "little", signed=True) + (b"\0" * 1022)
+
+    assert detector.update(silence_frame) is True
+    assert detector.is_ready() is False
+    assert detector.update(silence_frame) is True
+    assert detector.is_ready() is True
+    assert detector.update(speech_frame) is False
+    assert detector.is_ready() is False
+
+
 def _pcm_chunk(value: int, samples: int = 100) -> bytes:
     return int(value).to_bytes(2, "little", signed=True) * samples
 
 
-def test_sleep_gate_ignores_short_speech_blips(monkeypatch):
-    monkeypatch.setattr(audio_router_module, "TenVadBackend", None)
-    monkeypatch.setattr(audio_router_module, "TenVadImportError", RuntimeError("missing"))
+def test_sleep_gate_counts_short_speech_blips_as_silence(monkeypatch):
+    _force_energy_backend(monkeypatch)
 
     router = AudioSendRouter(
         max_buffered_chunks=8,
         sample_rate=1000,
         chunk_size=100,
         sleep_idle_seconds=0.5,
-        sleep_speech_grace_seconds=0.25,
+        sleep_speech_grace_seconds=0.5,
+        sleep_speech_window_seconds=0.75,
     )
 
     silence = _pcm_chunk(0)
@@ -138,18 +175,42 @@ def test_sleep_gate_ignores_short_speech_blips(monkeypatch):
     for _ in range(4):
         router.send(silence)
     router.send(blip)
-    router.send(blip)
-
-    assert router.sleep_ready() is False
-
-    router.send(silence)
 
     assert router.sleep_ready() is True
 
 
+def test_sleep_gate_accepts_enough_speech_inside_window(monkeypatch):
+    _force_energy_backend(monkeypatch)
+
+    router = AudioSendRouter(
+        max_buffered_chunks=8,
+        sample_rate=1000,
+        chunk_size=100,
+        sleep_idle_seconds=2.0,
+        sleep_speech_grace_seconds=0.5,
+        sleep_speech_window_seconds=0.75,
+    )
+
+    silence = _pcm_chunk(0)
+    speech = _pcm_chunk(2000)
+
+    for _ in range(9):
+        router.send(silence)
+    assert router.sleep_ready() is False
+
+    router.send(speech)
+    router.send(speech)
+    router.send(silence)
+    router.send(speech)
+    router.send(speech)
+    assert router.sleep_ready() is False
+
+    router.send(speech)
+    assert router.sleep_ready() is False
+
+
 def test_sleep_buffer_keeps_preroll_and_wake_audio(monkeypatch):
-    monkeypatch.setattr(audio_router_module, "TenVadBackend", None)
-    monkeypatch.setattr(audio_router_module, "TenVadImportError", RuntimeError("missing"))
+    _force_energy_backend(monkeypatch)
 
     router = AudioSendRouter(
         max_buffered_chunks=10,
@@ -157,7 +218,8 @@ def test_sleep_buffer_keeps_preroll_and_wake_audio(monkeypatch):
         chunk_size=100,
         sleep_idle_seconds=0.5,
         sleep_pre_roll_seconds=0.2,
-        sleep_speech_grace_seconds=0.2,
+        sleep_speech_grace_seconds=0.5,
+        sleep_speech_window_seconds=0.75,
     )
     first = RecordingTarget()
     resumed = RecordingTarget()
@@ -177,7 +239,22 @@ def test_sleep_buffer_keeps_preroll_and_wake_audio(monkeypatch):
     router.send(speech_a)
     assert router.wake_ready() is False
     router.send(speech_b)
+    assert router.wake_ready() is False
+    router.send(speech_a)
+    assert router.wake_ready() is False
+    router.send(speech_b)
+    assert router.wake_ready() is False
+    router.send(speech_a)
     assert router.wake_ready() is True
 
     assert router.set_target(resumed) is True
-    assert resumed.payloads == [silence, silence, speech_a, speech_b]
+    assert resumed.payloads == [
+        silence,
+        silence,
+        silence,
+        speech_a,
+        speech_b,
+        speech_a,
+        speech_b,
+        speech_a,
+    ]

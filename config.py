@@ -258,8 +258,65 @@ if TRANSLATION_PROVIDER not in ("soniox", "gemini"):
         print(f"⚠️  Invalid TRANSLATION_PROVIDER: {_TRANSLATION_PROVIDER_RAW}, fallback to: soniox")
     TRANSLATION_PROVIDER = "soniox"
 
+
+def _provider_sleep_env_names(suffix: str) -> tuple[str, str, str]:
+    active_prefix = TRANSLATION_PROVIDER.upper()
+    fallback_prefix = "GEMINI" if active_prefix == "SONIOX" else "SONIOX"
+    return (
+        f"SLEEP_{suffix}",
+        f"{active_prefix}_SLEEP_{suffix}",
+        f"{fallback_prefix}_SLEEP_{suffix}",
+    )
+
+
+def _env_float_any(names: tuple[str, ...], default: float) -> float:
+    for name in names:
+        if os.environ.get(name) is not None:
+            return _env_float(name, default)
+    return default
+
+
+def _env_optional_bool_any(names: tuple[str, ...]) -> bool | None:
+    for name in names:
+        value = _env_optional_bool(name)
+        if value is not None:
+            return value
+    return None
+
+
 # Active validation set (selected by the resolved provider).
 SUPPORTED_LANGUAGE_CODES = get_supported_language_codes(TRANSLATION_PROVIDER)
+
+# Shared local VAD/silence-sleep tuning. These values feed the same
+# AudioSendRouter for both Soniox and Gemini. Prefer SLEEP_* names; provider
+# specific *_SLEEP_* names remain accepted as compatibility aliases.
+SLEEP_IDLE_SECONDS = max(1.0, _env_float_any(_provider_sleep_env_names("IDLE_SECONDS"), 30.0))
+SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float_any(_provider_sleep_env_names("PRE_ROLL_SECONDS"), 1.0))
+SLEEP_SPEECH_GRACE_SECONDS = max(
+    0.0,
+    _env_float_any(_provider_sleep_env_names("SPEECH_GRACE_SECONDS"), 0.5),
+)
+SLEEP_SPEECH_WINDOW_SECONDS = max(
+    SLEEP_SPEECH_GRACE_SECONDS,
+    _env_float_any(_provider_sleep_env_names("SPEECH_WINDOW_SECONDS"), 0.75),
+)
+SLEEP_VAD_THRESHOLD = min(
+    1.0,
+    max(0.0, _env_float_any(_provider_sleep_env_names("VAD_THRESHOLD"), 0.2)),
+)
+
+# Backwards-compatible constant aliases for code/tests that still import the
+# provider-specific names.
+SONIOX_SLEEP_IDLE_SECONDS = SLEEP_IDLE_SECONDS
+SONIOX_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
+SONIOX_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
+SONIOX_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
+SONIOX_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
+GEMINI_SLEEP_IDLE_SECONDS = SLEEP_IDLE_SECONDS
+GEMINI_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
+GEMINI_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
+GEMINI_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
+GEMINI_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
 
 # Soniox API configuration
 SONIOX_WEBSOCKET_URL = _env_str("SONIOX_WEBSOCKET_URL", "wss://stt-rt.soniox.com/transcribe-websocket")
@@ -303,14 +360,10 @@ SONIOX_STREAM_DURATION_SECONDS = _SONIOX_STREAM_DURATION_SECONDS_RAW
 # keys (temporary dispenser keys keep their streams open). The active key type
 # can change at runtime via provider/key hot-switch, so this is recomputed in
 # set_uses_temp_api_key().
-_SONIOX_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool("SONIOX_SLEEP_ON_SILENCE")
+_SONIOX_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool_any(("SONIOX_SLEEP_ON_SILENCE", "SLEEP_ON_SILENCE"))
 SONIOX_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
     SONIOX_USES_TEMP_API_KEY, _SONIOX_SLEEP_ON_SILENCE_OVERRIDE
 )
-
-SONIOX_SLEEP_IDLE_SECONDS = max(1.0, _env_float("SONIOX_SLEEP_IDLE_SECONDS", 30.0))
-SONIOX_SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("SONIOX_SLEEP_PRE_ROLL_SECONDS", 0.5))
-SONIOX_SLEEP_SPEECH_GRACE_SECONDS = max(0.0, _env_float("SONIOX_SLEEP_SPEECH_GRACE_SECONDS", 0.25))
 
 # Gemini Live API configuration
 GEMINI_WEBSOCKET_URL = _env_str(
@@ -335,13 +388,10 @@ GEMINI_STREAM_DURATION_SECONDS = _GEMINI_STREAM_DURATION_SECONDS_RAW
 # Optional cost saver: close the Gemini websocket after long local silence and
 # reopen it when local VAD sees speech again. By default, sleep only when a
 # persistent GEMINI_API_KEY is configured.
-_GEMINI_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool("GEMINI_SLEEP_ON_SILENCE")
+_GEMINI_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool_any(("GEMINI_SLEEP_ON_SILENCE", "SLEEP_ON_SILENCE"))
 GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
     GEMINI_USES_TEMP_API_KEY, _GEMINI_SLEEP_ON_SILENCE_OVERRIDE
 )
-GEMINI_SLEEP_IDLE_SECONDS = max(1.0, _env_float("GEMINI_SLEEP_IDLE_SECONDS", 30.0))
-GEMINI_SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_PRE_ROLL_SECONDS", 0.5))
-GEMINI_SLEEP_SPEECH_GRACE_SECONDS = max(0.0, _env_float("GEMINI_SLEEP_SPEECH_GRACE_SECONDS", 0.25))
 
 # ============ Subtitle-server relay (hosted mode) ============
 # When a server URL is configured, the app can run in "relay" (hosted) mode:

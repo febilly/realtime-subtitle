@@ -2,6 +2,9 @@ websockets
 soundcard
 numpy<2.0.0
 ten-vad
+# Optional alternative VAD backend (not bundled in the packaged exe).
+# Install this and set DEFAULT_VAD_BACKEND="silero" in audio_router.py to switch.
+# silero-vad-lite==0.2.1
 python-dotenv
 arabic-reshaper
 python-bidi

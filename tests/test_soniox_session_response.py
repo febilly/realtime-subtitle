@@ -11,9 +11,16 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.SONIOX_WEBSOCKET_URL = "wss://example.invalid"
     config.SONIOX_STREAM_DURATION_SECONDS = None
     config.SONIOX_SLEEP_ON_SILENCE = False
-    config.SONIOX_SLEEP_IDLE_SECONDS = 30.0
-    config.SONIOX_SLEEP_PRE_ROLL_SECONDS = 0.5
-    config.SONIOX_SLEEP_SPEECH_GRACE_SECONDS = 0.25
+    config.SLEEP_IDLE_SECONDS = 30.0
+    config.SLEEP_PRE_ROLL_SECONDS = 1.0
+    config.SLEEP_SPEECH_GRACE_SECONDS = 0.5
+    config.SLEEP_SPEECH_WINDOW_SECONDS = 0.75
+    config.SLEEP_VAD_THRESHOLD = 0.2
+    config.SONIOX_USES_TEMP_API_KEY = False
+    config.SONIOX_TEMP_KEY_URL = None
+    config.RELAY_MODE = False
+    config.RELAY_TOKEN = ""
+    config.relay_ws_url = lambda provider=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
     config.TWITCH_CHANNEL = ""
@@ -347,6 +354,36 @@ def test_split_into_sentence_lines(monkeypatch):
     assert split("A。 B。 C") == ["A。", "B。", "C"]   # trailing partial kept, spaces trimmed
     assert split("no punct tail") == ["no punct tail"]
     assert split("") == []
+
+
+def test_stream_key_refresh_skips_temp_key_fetch_in_relay_mode(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    get_api_key = MagicMock(side_effect=AssertionError("should not fetch temp key"))
+    sys.modules["soniox_client"].get_api_key = get_api_key
+    module.config.RELAY_MODE = True
+    module.config.SONIOX_USES_TEMP_API_KEY = True
+    module.config.SONIOX_TEMP_KEY_URL = None
+    session = module.SonioxSession(MagicMock(), MagicMock())
+
+    assert session._fetch_api_key_for_next_stream("relay-placeholder") == "relay-placeholder"
+    get_api_key.assert_not_called()
+
+
+def test_stream_key_refresh_skips_missing_temp_key_url(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    get_api_key = MagicMock(side_effect=AssertionError("should not fetch temp key"))
+    sys.modules["soniox_client"].get_api_key = get_api_key
+    module.config.RELAY_MODE = False
+    module.config.SONIOX_USES_TEMP_API_KEY = True
+    module.config.SONIOX_TEMP_KEY_URL = None
+    session = module.SonioxSession(MagicMock(), MagicMock())
+
+    assert session._fetch_api_key_for_next_stream("current-key") == "current-key"
+    get_api_key.assert_not_called()
 
 
 def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):

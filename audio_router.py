@@ -9,6 +9,12 @@ from typing import Any
 
 import numpy as np
 
+# Default local VAD backend. "ten_vad" is the shipped default and the only
+# backend bundled into the packaged exe. "silero" is kept as a quick code-level
+# alternative: install silero-vad-lite and set DEFAULT_VAD_BACKEND = "silero"
+# (or pass vad_backend="silero" to AudioSendRouter) to switch.
+DEFAULT_VAD_BACKEND = "ten_vad"
+
 try:
     from ten_vad import TenVad as TenVadBackend
 except Exception as exc:  # noqa: BLE001 - optional at import time for tests/dev envs
@@ -16,6 +22,15 @@ except Exception as exc:  # noqa: BLE001 - optional at import time for tests/dev
     TenVadImportError = exc
 else:
     TenVadImportError = None
+
+try:
+    # Optional alternative backend; not installed/bundled by default.
+    from silero_vad_lite import SileroVAD as SileroVadLiteBackend
+except Exception as exc:  # noqa: BLE001 - optional at import time for tests/dev envs
+    SileroVadLiteBackend = None
+    SileroVadLiteImportError = exc
+else:
+    SileroVadLiteImportError = None
 
 
 class TenVadSilenceDetector:
@@ -74,6 +89,86 @@ class TenVadSilenceDetector:
             self.last_audio_at = time.monotonic()
 
             if int(flag) == 1:
+                saw_speech = True
+                speech_frames += 1
+                self.consecutive_silence_seconds = 0.0
+            else:
+                self.consecutive_silence_seconds += self.hop_size / self.sample_rate
+
+        if not processed_any:
+            self.last_observed_seconds = 0.0
+            self.last_speech_seconds = 0.0
+            return False
+        frame_duration = self.hop_size / self.sample_rate
+        self.last_observed_seconds = processed_frames * frame_duration
+        self.last_speech_seconds = speech_frames * frame_duration
+        return not saw_speech
+
+    def is_ready(self, *, min_observed_at: float | None = None) -> bool:
+        if self.last_audio_at is None:
+            return False
+        if min_observed_at is not None and self.last_audio_at < min_observed_at:
+            return False
+        return self.consecutive_silence_seconds >= self.silence_hold_seconds
+
+
+class SileroVadLiteSilenceDetector:
+    """Silero VAD Lite backed PCM_s16le detector used to find speech/silence."""
+
+    def __init__(
+        self,
+        *,
+        sample_rate: int = 16000,
+        sample_width_bytes: int = 2,
+        silence_hold_seconds: float = 0.7,
+        hop_size: int | None = None,
+        speech_threshold: float = 0.5,
+    ):
+        if SileroVadLiteBackend is None:
+            raise RuntimeError(f"silero-vad-lite is unavailable: {SileroVadLiteImportError}")
+
+        self.sample_rate = max(1, int(sample_rate))
+        self.sample_width_bytes = max(1, int(sample_width_bytes))
+        self.silence_hold_seconds = max(0.0, float(silence_hold_seconds))
+        self.speech_threshold = min(1.0, max(0.0, float(speech_threshold)))
+        self._vad = SileroVadLiteBackend(self.sample_rate)
+        self.hop_size = max(1, int(hop_size or self._vad.window_size_samples))
+        self._pending = bytearray()
+        self.consecutive_silence_seconds = 0.0
+        self.last_audio_at: float | None = None
+        self.last_probability = 0.0
+        self.last_flag = 0
+        self.last_observed_seconds = 0.0
+        self.last_speech_seconds = 0.0
+
+    def update(self, pcm_bytes: bytes) -> bool:
+        """Record real-audio chunks and return whether all processed frames were non-speech."""
+        if not pcm_bytes:
+            return False
+
+        frame_bytes = self.hop_size * self.sample_width_bytes
+        if frame_bytes <= 0:
+            return False
+
+        self._pending.extend(pcm_bytes)
+        processed_any = False
+        saw_speech = False
+        processed_frames = 0
+        speech_frames = 0
+
+        while len(self._pending) >= frame_bytes:
+            frame = bytes(self._pending[:frame_bytes])
+            del self._pending[:frame_bytes]
+            audio_frame = np.frombuffer(frame, dtype=np.int16)
+            float_frame = (audio_frame.astype(np.float32) / 32768.0).copy()
+            probability = self._vad.process(memoryview(float_frame))
+            self.last_probability = float(probability)
+            self.last_flag = int(self.last_probability >= self.speech_threshold)
+            processed_any = True
+            processed_frames += 1
+            self.last_audio_at = time.monotonic()
+
+            if self.last_flag == 1:
                 saw_speech = True
                 speech_frames += 1
                 self.consecutive_silence_seconds = 0.0
@@ -163,33 +258,67 @@ class EnergySilenceDetector:
 
 
 class TolerantSpeechActivityGate:
-    """Track long silence while ignoring short speech-like blips."""
+    """Track long silence while requiring enough speech in a recent window."""
 
     def __init__(
         self,
         *,
         idle_timeout_seconds: float,
-        speech_grace_seconds: float = 0.25,
+        speech_grace_seconds: float = 0.5,
+        speech_window_seconds: float = 0.75,
         wake_speech_seconds: float | None = None,
     ):
         self.idle_timeout_seconds = max(0.0, float(idle_timeout_seconds))
         self.speech_grace_seconds = max(0.0, float(speech_grace_seconds))
+        self.speech_window_seconds = max(
+            self.speech_grace_seconds,
+            float(speech_window_seconds),
+        )
         if wake_speech_seconds is None:
             wake_speech_seconds = self.speech_grace_seconds
         self.wake_speech_seconds = max(0.0, float(wake_speech_seconds))
         self.confirmed_silence_seconds = 0.0
-        self.pending_speech_seconds = 0.0
+        self._window: deque[tuple[float, float]] = deque()
+        self._window_observed_seconds = 0.0
+        self._window_speech_seconds = 0.0
         self.last_audio_at: float | None = None
         self._wake_ready = False
 
     def reset_after_wake(self) -> None:
         self.confirmed_silence_seconds = 0.0
-        self.pending_speech_seconds = 0.0
+        self._reset_window()
         self._wake_ready = False
 
     def reset_for_dormant(self) -> None:
-        self.pending_speech_seconds = 0.0
+        self._reset_window()
         self._wake_ready = False
+
+    def _reset_window(self) -> None:
+        self._window.clear()
+        self._window_observed_seconds = 0.0
+        self._window_speech_seconds = 0.0
+
+    def _append_observation(self, observed: float, speech: float) -> None:
+        self._window.append((observed, speech))
+        self._window_observed_seconds += observed
+        self._window_speech_seconds += speech
+
+        while self._window and self._window_observed_seconds > self.speech_window_seconds:
+            excess = self._window_observed_seconds - self.speech_window_seconds
+            oldest_observed, oldest_speech = self._window[0]
+            if oldest_observed <= excess + 1e-9:
+                self._window.popleft()
+                self._window_observed_seconds -= oldest_observed
+                self._window_speech_seconds -= oldest_speech
+                continue
+
+            remaining_observed = oldest_observed - excess
+            speech_fraction = oldest_speech / oldest_observed if oldest_observed > 0.0 else 0.0
+            removed_speech = oldest_speech - (remaining_observed * speech_fraction)
+            self._window[0] = (remaining_observed, oldest_speech - removed_speech)
+            self._window_observed_seconds -= excess
+            self._window_speech_seconds -= removed_speech
+            break
 
     def update(self, observed_seconds: float, speech_seconds: float) -> bool:
         observed = max(0.0, float(observed_seconds or 0.0))
@@ -198,20 +327,18 @@ class TolerantSpeechActivityGate:
             return self._wake_ready
 
         self.last_audio_at = time.monotonic()
-        silence = max(0.0, observed - speech)
+        self._append_observation(observed, speech)
 
-        if speech > 0.0:
-            self.pending_speech_seconds += speech
-            if self.pending_speech_seconds >= self.wake_speech_seconds:
+        speech_confirmed = (
+            self._window_speech_seconds >= self.speech_grace_seconds
+            and self._window_observed_seconds <= self.speech_window_seconds + 1e-9
+        )
+        if speech_confirmed:
+            if self._window_speech_seconds >= self.wake_speech_seconds:
                 self._wake_ready = True
-            if self.pending_speech_seconds >= self.speech_grace_seconds:
-                self.confirmed_silence_seconds = 0.0
-
-        if silence > 0.0:
-            if 0.0 < self.pending_speech_seconds < self.speech_grace_seconds:
-                self.confirmed_silence_seconds += self.pending_speech_seconds
-            self.pending_speech_seconds = 0.0
-            self.confirmed_silence_seconds += silence
+            self.confirmed_silence_seconds = 0.0
+        else:
+            self.confirmed_silence_seconds += observed
 
         return self._wake_ready
 
@@ -234,9 +361,12 @@ class AudioSendRouter:
         sample_rate: int = 16000,
         chunk_size: int = 3840,
         silence_hold_seconds: float = 0.7,
+        vad_speech_threshold: float = 0.5,
+        vad_backend: str | None = None,
         sleep_idle_seconds: float | None = None,
-        sleep_pre_roll_seconds: float = 0.5,
-        sleep_speech_grace_seconds: float = 0.25,
+        sleep_pre_roll_seconds: float = 1.0,
+        sleep_speech_grace_seconds: float = 0.5,
+        sleep_speech_window_seconds: float = 0.75,
     ):
         self._max_buffered_chunks = max(1, int(max_buffered_chunks))
         self._buffered_chunks: deque[bytes] = deque()
@@ -249,7 +379,7 @@ class AudioSendRouter:
         self._sleep_pre_roll_chunks = max(1, int(math.ceil(max(0.0, float(sleep_pre_roll_seconds)) / chunk_duration)))
         sleep_detection_chunks = max(
             1,
-            int(math.ceil(max(0.0, float(sleep_speech_grace_seconds)) / chunk_duration)),
+            int(math.ceil(max(0.0, float(sleep_speech_window_seconds)) / chunk_duration)),
         )
         self._sleep_pre_wake_chunks = max(
             self._sleep_pre_roll_chunks,
@@ -259,18 +389,47 @@ class AudioSendRouter:
             TolerantSpeechActivityGate(
                 idle_timeout_seconds=float(sleep_idle_seconds),
                 speech_grace_seconds=sleep_speech_grace_seconds,
+                speech_window_seconds=sleep_speech_window_seconds,
             )
             if sleep_idle_seconds is not None and float(sleep_idle_seconds) > 0
             else None
         )
+        backend = (vad_backend or DEFAULT_VAD_BACKEND or "ten_vad").strip().lower()
+        self._silence_detector = self._build_silence_detector(
+            backend,
+            sample_rate=sample_rate,
+            silence_hold_seconds=silence_hold_seconds,
+            vad_speech_threshold=vad_speech_threshold,
+        )
+
+    @staticmethod
+    def _build_silence_detector(
+        backend: str,
+        *,
+        sample_rate: int,
+        silence_hold_seconds: float,
+        vad_speech_threshold: float,
+    ):
+        """Build the configured VAD detector, falling back to energy on failure.
+
+        "ten_vad" is the default/shipped backend. "silero" is an optional
+        alternative kept for quick switching (requires silero-vad-lite).
+        """
+        if backend == "silero":
+            detector_cls = SileroVadLiteSilenceDetector
+            label = "Silero VAD Lite"
+        else:
+            detector_cls = TenVadSilenceDetector
+            label = "TEN VAD"
         try:
-            self._silence_detector = TenVadSilenceDetector(
+            return detector_cls(
                 sample_rate=sample_rate,
                 silence_hold_seconds=silence_hold_seconds,
+                speech_threshold=vad_speech_threshold,
             )
         except Exception as error:
-            print(f"⚠️  TEN VAD unavailable for stream rollover, using energy silence detector: {error}")
-            self._silence_detector = EnergySilenceDetector(
+            print(f"⚠️  {label} unavailable for stream rollover, using energy silence detector: {error}")
+            return EnergySilenceDetector(
                 sample_rate=sample_rate,
                 silence_hold_seconds=silence_hold_seconds,
             )
