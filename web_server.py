@@ -522,7 +522,17 @@ class WebServer:
         manager = self.provider_manager
         return (manager.relay_token if manager else "") or ""
 
-    async def account_verify_start_handler(self, request):
+    async def account_methods_handler(self, request):
+        """List the verification methods the server has enabled (bio/link/status)
+        plus whether VRChat verification is available at all."""
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        status, data = await self._server_request("GET", "/auth/methods")
+        return web.json_response(data, status=status)
+
+    async def account_resolve_handler(self, request):
+        """Resolve a VRChat user input to {vrc_user_id, display_name, trust_rank}
+        so the client can confirm the player before picking a method."""
         if not self._is_loopback_request(request):
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
         if not config.RELAY_AVAILABLE:
@@ -534,7 +544,54 @@ class WebServer:
         user_input = str((payload or {}).get("user_input") or "").strip()
         if not user_input:
             return web.json_response({"status": "error", "message": "Missing user_input"}, status=400)
-        body = {"user_input": user_input}
+        status, data = await self._server_request("POST", "/auth/resolve", json_body={"user_input": user_input})
+        return web.json_response(data, status=status)
+
+    async def account_login_code_handler(self, request):
+        """Redeem a one-time login code generated on the user web page. On
+        success, remember the token so /account/* works immediately."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        code = str((payload or {}).get("code") or "").strip()
+        if not code:
+            return web.json_response({"status": "error", "message": "Missing code"}, status=400)
+        status, data = await self._server_request("POST", "/auth/login-code", json_body={"code": code})
+        if (
+            status == 200 and isinstance(data, dict)
+            and data.get("success") and data.get("api_key")
+            and self.provider_manager is not None
+        ):
+            self.provider_manager.relay_token = str(data["api_key"]).strip()
+            config.set_relay_token(self.provider_manager.relay_token)
+        return web.json_response(data, status=status)
+
+    async def account_verify_start_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        user_input = str((payload or {}).get("user_input") or "").strip()
+        vrc_user_id = str((payload or {}).get("vrc_user_id") or "").strip()
+        if not user_input and not vrc_user_id:
+            return web.json_response({"status": "error", "message": "Missing user_input"}, status=400)
+        body = {}
+        if vrc_user_id:
+            body["vrc_user_id"] = vrc_user_id
+        if user_input:
+            body["user_input"] = user_input
+        method = str((payload or {}).get("method") or "").strip()
+        if method:
+            body["method"] = method
         status, data = await self._server_request("POST", "/auth/verify/start", json_body=body)
         return web.json_response(data, status=status)
 
@@ -684,6 +741,22 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
         status, data = await self._server_request("GET", "/me/invite", token=token)
         return web.json_response(data, status=status)
+
+    async def account_web_login_url_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        status, data = await self._server_request("POST", "/me/web-login-code", token=token)
+        if status != 200 or not isinstance(data, dict) or not data.get("web_login_code"):
+            return web.json_response(data, status=status)
+        base = config.relay_rest_url("/app/")
+        from urllib.parse import quote
+        url = f"{base}#/login?web_login_code={quote(str(data['web_login_code']))}"
+        return web.json_response({"url": url, "expires_at": data.get("expires_at")})
 
     async def account_redeem_handler(self, request):
         if not self._is_loopback_request(request):
@@ -1157,6 +1230,9 @@ class WebServer:
         app.router.add_post('/setup', self.setup_handler)
         app.router.add_post('/use-env', self.use_env_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
+        app.router.add_get('/account/methods', self.account_methods_handler)
+        app.router.add_post('/account/resolve', self.account_resolve_handler)
+        app.router.add_post('/account/login-code', self.account_login_code_handler)
         app.router.add_post('/account/verify/start', self.account_verify_start_handler)
         app.router.add_post('/account/verify/check', self.account_verify_check_handler)
         app.router.add_get('/account/registration-info', self.account_registration_info_handler)
@@ -1165,6 +1241,7 @@ class WebServer:
         app.router.add_get('/account/pricing', self.account_pricing_handler)
         app.router.add_get('/account/usage', self.account_usage_handler)
         app.router.add_get('/account/invite', self.account_invite_handler)
+        app.router.add_get('/account/web-login-url', self.account_web_login_url_handler)
         app.router.add_post('/account/redeem', self.account_redeem_handler)
         app.router.add_post('/account/logout', self.account_logout_handler)
         app.router.add_post('/restart', self.restart_handler)

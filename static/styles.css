@@ -863,6 +863,22 @@ body.dark-theme .confirm-dialog {
     background: rgba(153, 27, 27, 0.94);
 }
 
+.toast .toast-action,
+.balance-action-button {
+    border: none;
+    background: transparent;
+    color: #93c5fd;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 700;
+    padding: 0;
+    text-decoration: underline;
+}
+
+.toast .toast-action {
+    margin-left: 8px;
+}
+
 .lang-popover-title {
     margin: 0 0 12px;
     color: #111827;
@@ -1129,6 +1145,15 @@ body.chroma-theme .balance-bar {
     opacity: 0.95;
 }
 
+.balance-action-button {
+    color: #2563eb;
+    font-size: 12px;
+}
+
+body.dark-theme .balance-action-button {
+    color: #60a5fa;
+}
+
 /* Free pools listed inside the Settings account panel (stacked). */
 .account-free-pools {
     display: flex;
@@ -1266,6 +1291,92 @@ body.dark-theme .bonus-row.bonus-yours {
     color: #60a5fa;
 }
 
+/* Login: resolved-profile confirmation box. */
+.login-profile {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    margin-bottom: 10px;
+}
+
+body.dark-theme .login-profile {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.12);
+}
+
+.login-profile-name {
+    font-size: 15px;
+    font-weight: 700;
+    margin-top: 2px;
+}
+
+.login-profile-id {
+    font-size: 12px;
+    opacity: 0.7;
+    word-break: break-all;
+}
+
+.login-profile-rank {
+    margin-top: 6px;
+}
+
+.trust-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(37, 99, 235, 0.12);
+    color: #2563eb;
+}
+
+body.dark-theme .trust-badge {
+    background: rgba(96, 165, 250, 0.16);
+    color: #60a5fa;
+}
+
+/* Login: verification-method picker. */
+.method-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.method-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    cursor: pointer;
+    font-size: 13.5px;
+}
+
+.method-option:hover {
+    background: rgba(0, 0, 0, 0.03);
+}
+
+.method-option.method-selected {
+    border-color: #2563eb;
+    background: rgba(37, 99, 235, 0.06);
+}
+
+body.dark-theme .method-option {
+    border-color: rgba(255, 255, 255, 0.14);
+}
+
+body.dark-theme .method-option:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+body.dark-theme .method-option.method-selected {
+    border-color: #60a5fa;
+    background: rgba(96, 165, 250, 0.1);
+}
+
 /* Account: redeem row + actions. */
 .redeem-row {
     display: flex;
@@ -1279,9 +1390,15 @@ body.dark-theme .bonus-row.bonus-yours {
 
 .account-actions {
     display: flex;
-    justify-content: space-between;
+    flex-wrap: wrap;
+    justify-content: flex-start;
     gap: 8px;
     margin-top: 4px;
+}
+
+.account-actions button {
+    flex: 1 1 150px;
+    white-space: normal;
 }
 
 [hidden] {

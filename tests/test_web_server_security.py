@@ -186,6 +186,40 @@ class TestWebServerSecurity:
             ws.provider_manager.apply_provider.assert_not_called()
 
     @async_test
+    async def test_account_web_login_url_uses_short_web_login_code(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import config
+            config.RELAY_AVAILABLE = True
+            config.SUBTITLE_SERVER_URL = "https://subtitle.example"
+            config.relay_rest_url.side_effect = lambda path="": "https://subtitle.example" + (path if str(path).startswith("/") else "/" + str(path))
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            manager = self.mock_manager()
+            manager.relay_token = "ss_token"
+            ws.provider_manager = manager
+            ws._server_request = AsyncMock(return_value=(200, {
+                "web_login_code": "WEB-123",
+                "expires_at": "2026-06-22T00:01:00.000Z",
+            }))
+
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.account_web_login_url_handler(request)
+
+            assert status == 200
+            assert response_data["url"] == "https://subtitle.example/app/#/login?web_login_code=WEB-123"
+            ws._server_request.assert_awaited_once_with("POST", "/me/web-login-code", token="ss_token")
+
+    @async_test
     async def test_set_audio_source_invalid(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),
