@@ -4852,6 +4852,17 @@ function applyLoginI18n() {
     if (codeHint) codeHint.hidden = !relayServerUrl;
     // Re-render any visible method picker so its labels follow the language.
     if (loginMethods.length) renderLoginMethods();
+    renderLinkReuseHint(loginMethod);
+}
+
+// Show the "delete your old login link first" hint on the challenge step, but
+// only when link is the active method and the server flagged that this profile
+// still has a stale login link occupying one of its (full) link slots.
+function renderLinkReuseHint(method) {
+    const el = document.getElementById('loginLinkReuseHint');
+    if (!el) return;
+    const reuse = method === 'link' && loginProfile && loginProfile.recommended_link_reuse;
+    el.textContent = reuse ? t('login_link_reuse_hint') : '';
 }
 
 // Localized labels/hints per verification method, mirroring the web user UI.
@@ -5076,7 +5087,10 @@ async function resolveIdentity(raw) {
             loginMethods = ['bio'];
         }
     }
-    if (!loginMethods.includes(loginMethod)) loginMethod = loginMethods[0];
+    // Prefer the server's recommended method for this profile, if it's enabled.
+    const rec = profile && profile.recommended_method;
+    if (rec && loginMethods.includes(rec)) loginMethod = rec;
+    else if (!loginMethods.includes(loginMethod)) loginMethod = loginMethods[0];
     renderLoginProfile(profile);
     renderLoginMethods();
     renderBonusLadder(profile.trust_rank);
@@ -5106,7 +5120,9 @@ function renderLoginMethods() {
         radio.checked = (m === loginMethod);
         radio.addEventListener('change', () => { loginMethod = m; renderLoginMethods(); });
         const span = document.createElement('span');
-        span.textContent = t(LOGIN_METHOD_LABEL_KEYS[m] || LOGIN_METHOD_LABEL_KEYS.bio);
+        let label = t(LOGIN_METHOD_LABEL_KEYS[m] || LOGIN_METHOD_LABEL_KEYS.bio);
+        if (loginProfile && loginProfile.recommended_method === m) label += ' (' + t('login_method_recommended') + ')';
+        span.textContent = label;
         option.appendChild(radio);
         option.appendChild(span);
         loginMethodList.appendChild(option);
@@ -5135,6 +5151,7 @@ async function startVerify() {
         if (challengeText) challengeText.textContent = data.text || '';
         const challengeHint = document.getElementById('loginChallengeHint');
         if (challengeHint) challengeHint.textContent = t(LOGIN_METHOD_HINT_KEYS[method] || LOGIN_METHOD_HINT_KEYS.bio);
+        renderLinkReuseHint(method);
         setLoginStep('challenge');
         if (data.expires_at) startLoginCountdown(data.expires_at);
     } catch (e) {

@@ -702,8 +702,17 @@ body.dark-theme .form-field input::placeholder {
     display: none;
 }
 
+.field-hint-warn {
+    color: #b45309;
+    font-weight: 500;
+}
+
 body.dark-theme .field-hint {
     color: #9ca3af;
+}
+
+body.dark-theme .field-hint-warn {
+    color: #f59e0b;
 }
 
 .field-hint a {
