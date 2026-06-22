@@ -4,6 +4,7 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import pytest
 
 def _install_gemini_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "gemini_session", raising=False)
@@ -212,6 +213,84 @@ def test_gemini_go_away_requests_stream_end(monkeypatch):
     )
     assert should_end is True
     assert reason == "server goAway"
+
+
+@pytest.mark.parametrize("relay_mode", [False, True])
+def test_gemini_go_away_switches_to_replacement_stream_in_direct_and_relay_modes(monkeypatch, relay_mode):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import config
+    import gemini_session as module
+
+    config.RELAY_MODE = relay_mode
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+
+    async def broadcast(_data):
+        return None
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs):
+            self.target = None
+
+        def set_target(self, ws):
+            self.target = ws
+            return True
+
+        def clear_target(self, expected_current=None):
+            if self.target is expected_current:
+                self.target = None
+            return True
+
+        def close(self):
+            return None
+
+    class FirstWs:
+        def recv(self, timeout=None):
+            return '{"goAway":{"timeLeft":"10s"}}'
+
+        def close(self):
+            return None
+
+    class ReplacementWs:
+        def __init__(self, session):
+            self.session = session
+
+        def recv(self, timeout=None):
+            self.session.stop_event.set()
+            raise TimeoutError()
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(module, "AudioSendRouter", FakeRouter)
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session._start_audio_streamer = MagicMock()
+    session._stop_audio_streamer = MagicMock()
+    session._close_stream_state = MagicMock()
+
+    first = module._StreamState(
+        ws=FirstWs(),
+        index=1,
+        api_key="key",
+        started_at=module.time.monotonic(),
+        ready_at=module.time.monotonic(),
+        all_final_tokens=[],
+    )
+    replacement = module._StreamState(
+        ws=ReplacementWs(session),
+        index=2,
+        api_key="key",
+        started_at=module.time.monotonic(),
+        ready_at=module.time.monotonic(),
+        all_final_tokens=[],
+    )
+
+    session._open_stream_state = MagicMock(return_value=first)
+    session._open_and_switch_to_replacement_stream = MagicMock(return_value=(replacement, "key", 2))
+
+    session._run_session("key", "pcm_s16le", "one_way", "zh", object())
+
+    session._open_and_switch_to_replacement_stream.assert_called_once()
 
 
 def test_translation_none_mode_drops_output_transcription(monkeypatch):
