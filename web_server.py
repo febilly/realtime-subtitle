@@ -657,10 +657,10 @@ class WebServer:
                             if m.get("model_name") == model:
                                 pps = float(m.get("price_rate", 1.0)) * float(m.get("price_multiplier", 1.0))
                                 entry = {"model": model, "price_per_second": pps}
-                                if m.get("free_unlimited"):
-                                    entry["free_unlimited"] = True
-                                elif "free_max_credits_per_day" in m:
-                                    entry["free_max_credits_per_day"] = m["free_max_credits_per_day"]
+                                # Free pools (daily/weekly/monthly) the model offers,
+                                # so the Settings UI can show each configured quota.
+                                if m.get("free_pools"):
+                                    entry["free_pools"] = m["free_pools"]
                                 pricing[provider] = entry
                                 break
                         break

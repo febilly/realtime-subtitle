@@ -1114,6 +1114,12 @@ body.chroma-theme .balance-bar {
     white-space: nowrap;
 }
 
+/* Wrapper for the dynamically-rendered free pools in the top balance bar; lets
+   its .balance-item children flow inline with the bar's other items. */
+.balance-free-pools {
+    display: contents;
+}
+
 .balance-label {
     opacity: 0.75;
 }
@@ -1121,6 +1127,18 @@ body.chroma-theme .balance-bar {
 .balance-value {
     font-weight: 600;
     opacity: 0.95;
+}
+
+/* Free pools listed inside the Settings account panel (stacked). */
+.account-free-pools {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.account-free-pools .balance-item {
+    font-size: 12px;
+    opacity: 0.85;
 }
 
 /* First-launch connection-mode chooser. */

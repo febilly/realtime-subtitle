@@ -17,10 +17,7 @@
                     <span class="balance-label" id="balanceLabel">Balance</span>
                     <span class="balance-value" id="balanceValue">—</span>
                 </span>
-                <span class="balance-item" id="freeItem" hidden>
-                    <span class="balance-label" id="freeLabel">Free</span>
-                    <span class="balance-value" id="freeValue">—</span>
-                </span>
+                <span class="balance-free-pools" id="freePools"></span>
                 <span class="balance-item" id="subItem" hidden>
                     <span class="balance-label" id="subLabel">Subscription</span>
                     <span class="balance-value" id="subValue">—</span>
@@ -119,10 +116,25 @@
                 <p class="field-hint" id="modeDescription"></p>
             </section>
 
+            <div class="settings-section-label" id="providerLabel">API selection</div>
+            <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
+                <label class="segmented-option">
+                    <input type="radio" name="provider" value="soniox" id="providerSoniox">
+                    <span id="providerSonioxLabel">Soniox</span>
+                </label>
+                <label class="segmented-option">
+                    <input type="radio" name="provider" value="gemini" id="providerGemini">
+                    <span id="providerGeminiLabel">Gemini</span>
+                </label>
+            </fieldset>
+            <p class="field-hint" id="providerDescription"></p>
+
             <section class="auth-section" id="accountSection" hidden>
                 <div class="settings-section-label" id="accountLabel">Account</div>
                 <p class="field-hint" id="accountServerHint"></p>
                 <p class="field-hint" id="accountIdentityHint"></p>
+                <p class="field-hint" id="accountBalanceHint"></p>
+                <div class="account-free-pools" id="accountFreePools"></div>
                 <label class="form-field" for="redeemInput">
                     <span id="redeemLabel">Redeem code</span>
                     <div class="redeem-row">
@@ -138,19 +150,6 @@
                     <button class="danger-button" id="logoutButton" type="button">Log out</button>
                 </div>
             </section>
-
-            <div class="settings-section-label" id="providerLabel">API selection</div>
-            <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
-                <label class="segmented-option">
-                    <input type="radio" name="provider" value="soniox" id="providerSoniox">
-                    <span id="providerSonioxLabel">Soniox</span>
-                </label>
-                <label class="segmented-option">
-                    <input type="radio" name="provider" value="gemini" id="providerGemini">
-                    <span id="providerGeminiLabel">Gemini</span>
-                </label>
-            </fieldset>
-            <p class="field-hint" id="providerDescription"></p>
 
             <section class="auth-section" id="sonioxRegionSection" hidden>
                 <div class="form-field">

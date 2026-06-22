@@ -164,6 +164,7 @@ let sessionCostTimer = null;
 let sessionAccumMs = 0;
 let sessionRunSince = null;
 let pricePerSecond = 0;
+let lastBalanceData = null; // last /account/balance payload, for the account panel
 // Maps backend relay close-code tags to localized message keys.
 const RELAY_ERROR_KEYS = {
     billing_exhausted: 'relay_err_billing_exhausted',
@@ -4083,8 +4084,11 @@ function getProviderDescriptionText(provider) {
         if (!info) {
             return t('provider_relay_desc_loading');
         }
-        if (info.free_unlimited) {
-            return t('provider_relay_desc_free');
+        // Show every configured free pool (total allocation > 0) for this provider,
+        // e.g. "托管中转 · 免费 (日 100 / 周 500 / 月 2000)".
+        const summary = freePoolsSummary(info.free_pools);
+        if (summary) {
+            return `${t('provider_relay_desc_free')} (${summary})`;
         }
         return t('provider_relay_desc', { price: formatRate(info.price_per_second) });
     }
@@ -4280,6 +4284,31 @@ function updateAccountSection() {
             purchaseHint.hidden = true;
         }
     }
+    updateAccountBalance();
+}
+
+// Show the signed-in user's current balance and free pools inside the account
+// panel (requirement: account info also shows the current quota balance).
+function updateAccountBalance() {
+    const balanceHint = document.getElementById('accountBalanceHint');
+    const poolsBox = document.getElementById('accountFreePools');
+    const server = loadServerSettings();
+    const signedIn = backendLoggedIn || !!server.token;
+    if (balanceHint) {
+        if (signedIn && lastBalanceData && lastBalanceData.prepaid_balance != null) {
+            balanceHint.textContent = t('account_balance', {
+                balance: formatCredits(lastBalanceData.prepaid_balance),
+            });
+            balanceHint.hidden = false;
+        } else {
+            balanceHint.textContent = '';
+            balanceHint.hidden = true;
+        }
+    }
+    if (poolsBox) {
+        const pools = (signedIn && lastBalanceData && lastBalanceData.free) ? lastBalanceData.free.pools : null;
+        renderFreePools(poolsBox, pools);
+    }
 }
 
 function openSettings({ forced = false } = {}) {
@@ -4291,6 +4320,7 @@ function openSettings({ forced = false } = {}) {
     populateSettingsForm();
     if (relayAvailable && getConnectionMode() === 'relay') {
         void fetchRelayPricing();
+        void fetchBalance();
     }
     if (settingsOverlay) settingsOverlay.hidden = false;
     if (settingsPanel) settingsPanel.hidden = false;
@@ -5144,29 +5174,69 @@ async function fetchBalance() {
     }
 }
 
+// Localized short label for a free pool ("免费(日)" etc).
+function freePoolLabel(period) {
+    if (period === 'weekly') return t('balance_free_week');
+    if (period === 'monthly') return t('balance_free_month');
+    return t('balance_free_day');
+}
+
+// Compact short label for a pool period, for one-line summaries ("日"/"周"/"月").
+function freePoolPeriodShort(period) {
+    if (period === 'weekly') return t('free_period_week');
+    if (period === 'monthly') return t('free_period_month');
+    return t('free_period_day');
+}
+
+// One-line summary of a model's free pools (caps), e.g. "日 100 / 周 500 / 月 ∞".
+// Returns '' when there are no configured pools.
+function freePoolsSummary(pools) {
+    if (!Array.isArray(pools) || !pools.length) return '';
+    return pools
+        .map((p) => `${freePoolPeriodShort(p.period)} ${p.unlimited ? t('balance_free_unlimited') : formatCredits(p.max_credits)}`)
+        .join(' / ');
+}
+
+// Value text for one free pool: "剩 X / Y" or "无限".
+function freePoolValue(pool) {
+    if (pool.unlimited) return t('balance_free_unlimited');
+    return t('balance_free_remaining', {
+        remaining: formatCredits(pool.remaining),
+        cap: formatCredits(pool.max_credits),
+    });
+}
+
+// Render every configured free pool (daily/weekly/monthly) as balance items into
+// `container`. Pools the model doesn't offer are simply absent from the list.
+function renderFreePools(container, pools) {
+    if (!container) return;
+    container.innerHTML = '';
+    if (!Array.isArray(pools) || !pools.length) return;
+    for (const pool of pools) {
+        const item = document.createElement('span');
+        item.className = 'balance-item';
+        const label = document.createElement('span');
+        label.className = 'balance-label';
+        label.textContent = freePoolLabel(pool.period);
+        const value = document.createElement('span');
+        value.className = 'balance-value';
+        value.textContent = freePoolValue(pool);
+        item.append(label, value);
+        container.appendChild(item);
+    }
+}
+
 function renderBalance(data) {
+    lastBalanceData = data;
     setElText('balanceLabel', t('balance_label'));
     setElText('balanceValue', formatCredits(data.prepaid_balance));
     setElText('sessionLabel', t('balance_session'));
 
-    // Free quota: show remaining today / daily cap (or "unlimited").
-    const freeItem = document.getElementById('freeItem');
-    if (freeItem) {
-        if (data.free) {
-            freeItem.hidden = false;
-            setElText('freeLabel', t('balance_free'));
-            if (data.free.unlimited) {
-                setElText('freeValue', t('balance_free_unlimited'));
-            } else {
-                setElText('freeValue', t('balance_free_remaining', {
-                    remaining: formatCredits(data.free.remaining),
-                    cap: formatCredits(data.free.max_credits_per_day),
-                }));
-            }
-        } else {
-            freeItem.hidden = true;
-        }
-    }
+    // Free quota: one item per configured pool (daily/weekly/monthly).
+    renderFreePools(document.getElementById('freePools'), data.free && data.free.pools);
+
+    // Mirror the balance into the account panel if it's open.
+    updateAccountBalance();
 
     // Subscription quota: show remaining for the first active plan, if any.
     const subItem = document.getElementById('subItem');
