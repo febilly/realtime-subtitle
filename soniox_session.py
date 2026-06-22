@@ -1325,7 +1325,7 @@ class SonioxSession:
             # injects its own upstream key, so the body key is blanked and the
             # account token is sent as the Authorization bearer.
             stream_config["api_key"] = ""
-            relay_url = config.relay_ws_url("soniox")
+            relay_url = config.relay_ws_url("soniox", model=stream_config.get("model"))
             print(f"Connecting to relay Soniox ({label}{purpose}): {relay_url}")
             ws = sync_connect(
                 relay_url,

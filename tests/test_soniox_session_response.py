@@ -20,7 +20,7 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.SONIOX_TEMP_KEY_URL = None
     config.RELAY_MODE = False
     config.RELAY_TOKEN = ""
-    config.relay_ws_url = lambda provider=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
+    config.relay_ws_url = lambda provider=None, model=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
     config.TWITCH_CHANNEL = ""

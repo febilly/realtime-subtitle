@@ -840,13 +840,24 @@ def _http_to_ws(url: str) -> str:
     return url
 
 
-def relay_ws_url(provider: str | None = None) -> str:
-    """WebSocket relay endpoint for a provider on the configured server."""
+def relay_ws_url(provider: str | None = None, model: str | None = None) -> str:
+    """WebSocket relay endpoint for a provider on the configured server.
+
+    When ``model`` is given it is appended as a ``?model=`` query parameter so the
+    server can authenticate, authorize and meter the stream at the WebSocket
+    handshake (before the first frame). The model is still also sent in the first
+    frame, so older servers that read it from the body keep working.
+    """
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
     p = str(p).strip().lower()
     if p not in ("soniox", "gemini"):
         p = "soniox"
-    return f"{_http_to_ws(SUBTITLE_SERVER_URL)}/relay/{p}"
+    url = f"{_http_to_ws(SUBTITLE_SERVER_URL)}/relay/{p}"
+    if model:
+        from urllib.parse import quote
+
+        url += f"?model={quote(str(model), safe='')}"
+    return url
 
 
 def relay_rest_url(path: str = "") -> str:
