@@ -4023,6 +4023,7 @@ function applySettingsI18n() {
     setText('redeemLabel', 'account_redeem_label');
     setText('redeemButton', 'account_redeem');
     setText('purchaseCreditsLink', 'account_purchase_credits');
+    setText('copyInviteButton', 'account_invite_copy');
     setText('reLoginButton', 'account_relogin');
     setText('logoutButton', 'account_logout');
     setText('providerLabel', 'api_selection');
@@ -4683,8 +4684,12 @@ const redeemButton = document.getElementById('redeemButton');
 const redeemInput = document.getElementById('redeemInput');
 const reLoginButton = document.getElementById('reLoginButton');
 const logoutButton = document.getElementById('logoutButton');
+const copyInviteButton = document.getElementById('copyInviteButton');
 if (redeemButton) {
     redeemButton.addEventListener('click', () => handleRedeem());
+}
+if (copyInviteButton) {
+    copyInviteButton.addEventListener('click', () => handleCopyInvite());
 }
 if (reLoginButton) {
     reLoginButton.addEventListener('click', () => {
@@ -4891,6 +4896,12 @@ function renderBonusLadder(yourRank) {
             list.appendChild(row);
         });
     }
+    const freeNote = document.getElementById('loginFreeQuotaNote');
+    if (freeNote) {
+        // Some models grant periodic free quota to some ranks beyond the sign-up bonus.
+        freeNote.hidden = false;
+        freeNote.textContent = t('login_free_quota_note');
+    }
     if (thresholdHint) {
         const threshold = info && info.registration_threshold;
         if (threshold) {
@@ -5096,6 +5107,30 @@ async function handleRedeem() {
         }
     } catch (e) {
         showToast(String(e), true);
+    }
+}
+
+async function handleCopyInvite() {
+    if (copyInviteButton) copyInviteButton.disabled = true;
+    try {
+        const resp = await fetch('/account/invite');
+        const data = await resp.json().catch(() => ({}));
+        const link = data && data.invite_link;
+        if (!resp.ok || !link) {
+            showToast(localizeBackendMessage((data && (data.detail || data.message)) || t('account_invite_failed')), true);
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(link);
+            showToast(t('account_invite_copied'));
+        } catch (e) {
+            // Clipboard may be unavailable; show the link so the user can copy it manually.
+            showToast(link);
+        }
+    } catch (e) {
+        showToast(String(e), true);
+    } finally {
+        if (copyInviteButton) copyInviteButton.disabled = false;
     }
 }
 
