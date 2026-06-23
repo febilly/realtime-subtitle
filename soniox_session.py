@@ -1229,6 +1229,10 @@ class SonioxSession:
         return self._llm_refine_mode != "off"
 
     def _stream_rollover_seconds(self) -> float | None:
+        if config.RELAY_MODE:
+            return None
+        if not config.SONIOX_USES_TEMP_API_KEY:
+            return None
         if SONIOX_STREAM_DURATION_SECONDS is None:
             return None
         try:
