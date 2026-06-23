@@ -368,11 +368,8 @@ function normalizeSegmentMode(mode) {
 }
 
 // 译文自动修复开关（默认关闭）
-let llmRefineMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
-if (!LLM_REFINE_MODES.includes((llmRefineMode || '').toString().trim().toLowerCase())) {
-    llmRefineMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
-}
-if (!LLM_REFINE_MODES.includes(llmRefineMode)) {
+let llmRefineMode = getStoredLlmRefineMode();
+if (!llmRefineMode) {
     const legacy = localStorage.getItem('llmRefineEnabled');
     llmRefineMode = legacy === 'true' ? 'refine' : 'off';
 }
@@ -650,6 +647,17 @@ function normalizeLlmRefineMode(mode) {
         return value;
     }
     return 'off';
+}
+
+function getStoredLlmRefineMode() {
+    let rawStoredMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
+    if (!LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())) {
+        rawStoredMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
+    }
+    const normalized = normalizeLlmRefineMode(rawStoredMode);
+    return LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())
+        ? normalized
+        : null;
 }
 
 function isLlmTranslateMode() {
@@ -1127,21 +1135,20 @@ async function fetchLlmRefineStatus() {
 
         const preferredDefault = normalizeLlmRefineMode(defaultLlmRefineMode || serverMode);
 
-        let rawStoredMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
-        if (!LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())) {
-            rawStoredMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
-        }
-        const hasStoredMode = LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase());
-        const storedMode = hasStoredMode ? normalizeLlmRefineMode(rawStoredMode) : null;
+        const storedMode = getStoredLlmRefineMode();
+        const hasStoredMode = !!storedMode;
 
         if (lockManualControls) {
-            applyLlmRefineMode(preferredDefault);
+            applyLlmRefineMode(preferredDefault, { persist: false });
             return;
         }
 
         if (hasStoredMode && storedMode) {
             if (storedMode !== serverMode) {
-                void setLlmRefineMode(storedMode);
+                const appliedMode = await setLlmRefineMode(storedMode);
+                if (!appliedMode) {
+                    applyLlmRefineMode(serverMode, { persist: false });
+                }
             } else {
                 applyLlmRefineMode(storedMode);
             }
@@ -1149,7 +1156,10 @@ async function fetchLlmRefineStatus() {
         }
 
         if (preferredDefault !== serverMode) {
-            void setLlmRefineMode(preferredDefault);
+            const appliedMode = await setLlmRefineMode(preferredDefault);
+            if (!appliedMode) {
+                applyLlmRefineMode(serverMode, { persist: false });
+            }
         } else {
             applyLlmRefineMode(preferredDefault);
         }
@@ -2143,12 +2153,14 @@ async function setLlmRefineMode(mode) {
             const data = await response.json();
             const nextMode = normalizeLlmRefineMode(data && data.mode ? data.mode : mode);
             applyLlmRefineMode(nextMode);
+            return nextMode;
         } else {
             console.error('Failed to set LLM refine');
         }
     } catch (error) {
         console.error('Error setting LLM refine:', error);
     }
+    return null;
 }
 
 function updateAudioSourceButton() {
