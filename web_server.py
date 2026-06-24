@@ -242,6 +242,11 @@ class WebServer:
             "relay_available": bool(config.RELAY_AVAILABLE),
             "server_url": config.SUBTITLE_SERVER_URL,
             "credits_purchase_url": "",
+            "client_version": config.CLIENT_VERSION,
+            "client_latest_version": "",
+            "client_minimum_version": "",
+            "client_update_url": "",
+            "client_update_notes": "",
         }
 
         if config.RELAY_AVAILABLE:
@@ -251,6 +256,20 @@ class WebServer:
             if status == 200 and isinstance(public_settings, dict):
                 payload["credits_purchase_url"] = str(
                     public_settings.get("credits_purchase_url") or ""
+                ).strip()
+                payload["client_latest_version"] = str(
+                    public_settings.get("client_latest_version") or ""
+                ).strip()
+                payload["client_minimum_version"] = str(
+                    public_settings.get("client_minimum_version") or ""
+                ).strip()
+                payload["client_update_url"] = str(
+                    public_settings.get("client_update_url")
+                    or public_settings.get("client_download_url")
+                    or ""
+                ).strip()
+                payload["client_update_notes"] = str(
+                    public_settings.get("client_update_notes") or ""
                 ).strip()
 
         if manager is not None:

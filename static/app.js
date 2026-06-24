@@ -151,6 +151,11 @@ const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
 let relayAvailable = false;
 let relayServerUrl = '';
 let creditsPurchaseUrl = '';
+let clientVersion = '0.1.0';
+let clientLatestVersion = '';
+let clientMinimumVersion = '';
+let clientUpdateUrl = '';
+let clientUpdateNotes = '';
 let backendMode = 'direct';
 let backendLoggedIn = false;
 let loginForcedOpen = false;
@@ -1023,6 +1028,19 @@ async function fetchUiConfig() {
             relayServerUrl = data.server_url;
         }
         creditsPurchaseUrl = safeHttpUrl(data && data.credits_purchase_url);
+        if (typeof data.client_version === 'string' && data.client_version.trim()) {
+            clientVersion = data.client_version.trim();
+        }
+        if (typeof data.client_latest_version === 'string') {
+            clientLatestVersion = data.client_latest_version.trim();
+        }
+        if (typeof data.client_minimum_version === 'string') {
+            clientMinimumVersion = data.client_minimum_version.trim();
+        }
+        clientUpdateUrl = safeHttpUrl(data && data.client_update_url);
+        if (typeof data.client_update_notes === 'string') {
+            clientUpdateNotes = data.client_update_notes.trim();
+        }
         if (typeof data.mode === 'string') {
             backendMode = data.mode;
         }
@@ -4535,6 +4553,15 @@ async function handleSettingsSave(event) {
     }
     settings.keys = settings.keys || {};
 
+    if (mode === 'relay') {
+        const allowed = await ensureHostedVersionAllowed({ candidateMode: 'relay' });
+        if (!allowed) {
+            updateApiKeyFieldForProvider(provider);
+            updateSonioxRegionForProvider(provider);
+            return;
+        }
+    }
+
     const server = loadServerSettings();
     server.mode = mode;
     server.modeChosen = true;
@@ -4747,6 +4774,21 @@ if (logoutButton) {
 
 const modeChooserOverlay = document.getElementById('modeChooserOverlay');
 const modeChooserEl = document.getElementById('modeChooser');
+const clientUpdateOverlay = document.getElementById('clientUpdateOverlay');
+const clientUpdateDialog = document.getElementById('clientUpdateDialog');
+const clientUpdateTitle = document.getElementById('clientUpdateTitle');
+const clientUpdateBody = document.getElementById('clientUpdateBody');
+const clientUpdateCurrentLabel = document.getElementById('clientUpdateCurrentLabel');
+const clientUpdateLatestLabel = document.getElementById('clientUpdateLatestLabel');
+const clientUpdateMinimumLabel = document.getElementById('clientUpdateMinimumLabel');
+const clientUpdateCurrent = document.getElementById('clientUpdateCurrent');
+const clientUpdateLatest = document.getElementById('clientUpdateLatest');
+const clientUpdateMinimum = document.getElementById('clientUpdateMinimum');
+const clientUpdateNotesEl = document.getElementById('clientUpdateNotes');
+const clientUpdateNoUrl = document.getElementById('clientUpdateNoUrl');
+const clientUpdateDirectButton = document.getElementById('clientUpdateDirectButton');
+const clientUpdateLaterButton = document.getElementById('clientUpdateLaterButton');
+const clientUpdateButton = document.getElementById('clientUpdateButton');
 const loginOverlay = document.getElementById('loginOverlay');
 const loginPanel = document.getElementById('loginPanel');
 const loginForm = document.getElementById('loginForm');
@@ -4810,6 +4852,140 @@ function clearConnectionModeChoice() {
     saveServerSettings(s);
 }
 
+function versionParts(version) {
+    const raw = String(version || '').trim().replace(/^v/i, '');
+    if (!raw) return null;
+    const parts = raw.split(/[.+_-]/).map((part) => {
+        const match = part.match(/^\d+/);
+        return match ? Number(match[0]) : 0;
+    });
+    if (!parts.length || parts.every((part) => part === 0) && !/^0(?:[.+_-]0)*$/.test(raw)) {
+        return null;
+    }
+    while (parts.length < 3) parts.push(0);
+    return parts;
+}
+
+function compareVersions(a, b) {
+    const left = versionParts(a);
+    const right = versionParts(b);
+    if (!left || !right) return 0;
+    const len = Math.max(left.length, right.length);
+    for (let i = 0; i < len; i++) {
+        const diff = (left[i] || 0) - (right[i] || 0);
+        if (diff !== 0) return diff < 0 ? -1 : 1;
+    }
+    return 0;
+}
+
+function getClientUpdateState(mode = getConnectionMode()) {
+    if (!relayAvailable || mode !== 'relay') {
+        return { needed: false, forced: false };
+    }
+    const current = clientVersion || '0.1.0';
+    const latest = clientLatestVersion || '';
+    const minimum = clientMinimumVersion || '';
+    const belowMinimum = !!minimum && compareVersions(current, minimum) < 0;
+    const belowLatest = !!latest && compareVersions(current, latest) < 0;
+    return {
+        needed: belowMinimum || belowLatest,
+        forced: belowMinimum,
+        current,
+        latest: latest || minimum || '',
+        minimum,
+        updateUrl: clientUpdateUrl,
+        notes: clientUpdateNotes,
+    };
+}
+
+let clientUpdateResolve = null;
+
+function closeClientUpdateDialog(result) {
+    if (clientUpdateOverlay) clientUpdateOverlay.hidden = true;
+    if (clientUpdateDialog) clientUpdateDialog.hidden = true;
+    if (clientUpdateResolve) {
+        const resolve = clientUpdateResolve;
+        clientUpdateResolve = null;
+        resolve(result);
+    }
+}
+
+function showClientUpdateDialog(state) {
+    if (!clientUpdateDialog || !clientUpdateOverlay) {
+        if (state.forced) {
+            return Promise.resolve('direct');
+        }
+        return Promise.resolve('later');
+    }
+    if (clientUpdateResolve) {
+        closeClientUpdateDialog('later');
+    }
+    if (clientUpdateTitle) clientUpdateTitle.textContent = t(state.forced ? 'client_update_title_required' : 'client_update_title_optional');
+    if (clientUpdateBody) clientUpdateBody.textContent = t(state.forced ? 'client_update_body_required' : 'client_update_body_optional');
+    if (clientUpdateCurrentLabel) clientUpdateCurrentLabel.textContent = t('client_update_current');
+    if (clientUpdateLatestLabel) clientUpdateLatestLabel.textContent = t('client_update_latest');
+    if (clientUpdateMinimumLabel) clientUpdateMinimumLabel.textContent = t('client_update_minimum');
+    if (clientUpdateCurrent) clientUpdateCurrent.textContent = state.current || '—';
+    if (clientUpdateLatest) clientUpdateLatest.textContent = state.latest || '—';
+    if (clientUpdateMinimum) clientUpdateMinimum.textContent = state.minimum || '—';
+    if (clientUpdateNotesEl) {
+        clientUpdateNotesEl.textContent = state.notes || '';
+        clientUpdateNotesEl.hidden = !state.notes;
+    }
+    if (clientUpdateNoUrl) {
+        clientUpdateNoUrl.textContent = state.updateUrl ? '' : t('client_update_no_url');
+        clientUpdateNoUrl.hidden = !!state.updateUrl;
+    }
+    if (clientUpdateButton) {
+        clientUpdateButton.textContent = t('client_update_button');
+        clientUpdateButton.disabled = !state.updateUrl;
+        clientUpdateButton.onclick = () => {
+            if (state.updateUrl) {
+                window.open(state.updateUrl, '_blank', 'noopener,noreferrer');
+            }
+        };
+    }
+    if (clientUpdateLaterButton) {
+        clientUpdateLaterButton.textContent = t('client_update_later');
+        clientUpdateLaterButton.hidden = !!state.forced;
+        clientUpdateLaterButton.onclick = () => closeClientUpdateDialog('later');
+    }
+    if (clientUpdateDirectButton) {
+        clientUpdateDirectButton.textContent = t('client_update_direct');
+        clientUpdateDirectButton.hidden = !state.forced;
+        clientUpdateDirectButton.onclick = () => closeClientUpdateDialog('direct');
+    }
+    clientUpdateOverlay.hidden = false;
+    clientUpdateDialog.hidden = false;
+    return new Promise((resolve) => {
+        clientUpdateResolve = resolve;
+    });
+}
+
+function switchToDirectModeForUpdate() {
+    const s = loadServerSettings();
+    s.mode = 'direct';
+    s.modeChosen = true;
+    saveServerSettings(s);
+    setModeRadio('direct');
+    applyModeSectionsVisibility('direct');
+    updateAccountSection();
+}
+
+async function ensureHostedVersionAllowed({ candidateMode = null } = {}) {
+    const mode = candidateMode || getConnectionMode();
+    const state = getClientUpdateState(mode);
+    if (!state.needed) {
+        return true;
+    }
+    const action = await showClientUpdateDialog(state);
+    if (state.forced && action === 'direct') {
+        switchToDirectModeForUpdate();
+        return false;
+    }
+    return !state.forced;
+}
+
 async function returnToModeChooser() {
     if (lockManualControls || !relayAvailable) {
         return;
@@ -4819,6 +4995,7 @@ async function returnToModeChooser() {
     hideSettingsPanel();
     hideLogin();
     await openModeChooser();
+    await ensureHostedVersionAllowed();
     await syncProviderFromStorage();
     maybeForceOpenSettings();
     updateBalanceBarVisibility();
@@ -4840,6 +5017,7 @@ async function maybeRunFirstLaunchFlow() {
         return;
     }
     await openModeChooser();
+    await ensureHostedVersionAllowed();
 }
 
 // ---- Login overlay (VRChat profile proof) ----
@@ -5630,6 +5808,7 @@ document.addEventListener('DOMContentLoaded', () => {
     (async () => {
         await fetchUiConfig();
         await maybeRunFirstLaunchFlow();
+        await ensureHostedVersionAllowed();
         await syncProviderFromStorage();
         await fetchLlmRefineStatus();
         fetchApiKeyStatus();

@@ -198,6 +198,24 @@
         </div>
     </div>
 
+    <div class="confirm-overlay" id="clientUpdateOverlay" hidden></div>
+    <div class="client-update-dialog" id="clientUpdateDialog" role="dialog" aria-modal="true" aria-labelledby="clientUpdateTitle" hidden>
+        <h1 id="clientUpdateTitle">Update required</h1>
+        <p class="field-hint" id="clientUpdateBody"></p>
+        <div class="client-update-meta">
+            <div><span id="clientUpdateCurrentLabel">Current</span><strong id="clientUpdateCurrent">—</strong></div>
+            <div><span id="clientUpdateLatestLabel">Latest</span><strong id="clientUpdateLatest">—</strong></div>
+            <div><span id="clientUpdateMinimumLabel">Minimum</span><strong id="clientUpdateMinimum">—</strong></div>
+        </div>
+        <div class="client-update-notes" id="clientUpdateNotes" hidden></div>
+        <p class="field-hint field-hint-warn" id="clientUpdateNoUrl" hidden></p>
+        <div class="client-update-actions">
+            <button class="secondary-button" id="clientUpdateDirectButton" type="button">Switch to own key mode</button>
+            <button class="secondary-button" id="clientUpdateLaterButton" type="button">Later</button>
+            <button class="primary-button" id="clientUpdateButton" type="button">Update</button>
+        </div>
+    </div>
+
     <!-- First-launch connection-mode chooser (hosted vs own key) -->
     <div class="confirm-overlay" id="modeChooserOverlay" hidden></div>
     <div class="mode-chooser" id="modeChooser" role="dialog" aria-modal="true" aria-labelledby="modeChooserTitle" hidden>

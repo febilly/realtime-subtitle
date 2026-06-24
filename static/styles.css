@@ -1248,6 +1248,88 @@ body.dark-theme .mode-card:hover {
     opacity: 0.7;
 }
 
+.client-update-dialog {
+    position: fixed;
+    z-index: 10002;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(520px, calc(100vw - 48px));
+    box-sizing: border-box;
+    padding: 24px;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #1f2937;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+body.dark-theme .client-update-dialog {
+    background: #1e1e2e;
+    color: #e5e7eb;
+}
+
+.client-update-dialog h1 {
+    margin: 0 0 8px;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.client-update-meta {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin: 16px 0;
+}
+
+.client-update-meta div {
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 8px;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.02);
+}
+
+body.dark-theme .client-update-meta div {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.client-update-meta span {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    opacity: 0.65;
+}
+
+.client-update-meta strong {
+    display: block;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+}
+
+.client-update-notes {
+    max-height: 150px;
+    overflow: auto;
+    white-space: pre-wrap;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 12px;
+    background: rgba(0, 0, 0, 0.04);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+body.dark-theme .client-update-notes {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.client-update-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+}
+
 /* Login: VRChat challenge text box. */
 .challenge-box {
     display: flex;

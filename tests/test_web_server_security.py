@@ -220,6 +220,46 @@ class TestWebServerSecurity:
             ws._server_request.assert_awaited_once_with("POST", "/me/web-login-code", token="ss_token")
 
     @async_test
+    async def test_ui_config_exposes_client_version_policy(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import config
+            config.RELAY_AVAILABLE = True
+            config.SUBTITLE_SERVER_URL = "https://subtitle.example"
+            config.CLIENT_VERSION = "1.2.3"
+            config.TRANSLATION_PROVIDER = "soniox"
+            config.SONIOX_REGION = "us"
+            config.SONIOX_CUSTOM_URL = ""
+            config.ENABLE_SPEAKER_DIARIZATION = True
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            session = self.mock_session()
+            session.get_translation_target_lang.return_value = "en"
+            session.get_llm_refine_mode.return_value = "off"
+            ws = WebServer(session, self.mock_logger())
+            ws._server_request = AsyncMock(return_value=(200, {
+                "client_latest_version": "1.4.0",
+                "client_minimum_version": "1.1.0",
+                "client_update_url": "https://subtitle.example/download",
+                "client_update_notes": "Bug fixes",
+            }))
+
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+            response_data, status = await ws.ui_config_handler(AsyncMock())
+
+            assert status == 200
+            assert response_data["client_version"] == "1.2.3"
+            assert response_data["client_latest_version"] == "1.4.0"
+            assert response_data["client_minimum_version"] == "1.1.0"
+            assert response_data["client_update_url"] == "https://subtitle.example/download"
+            assert response_data["client_update_notes"] == "Bug fixes"
+
+    @async_test
     async def test_set_audio_source_invalid(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),
