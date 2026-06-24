@@ -148,6 +148,9 @@ let toastTimer = null;
 
 // ---- Subtitle-server relay (hosted mode) state ----
 const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
+// Optional client-update reminders throttle: at least this many ms between popups.
+const CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
+const CLIENT_UPDATE_REMINDER_KEY = 'clientUpdateReminderLastShown';
 let relayAvailable = false;
 let relayServerUrl = '';
 let creditsPurchaseUrl = '';
@@ -4978,7 +4981,23 @@ async function ensureHostedVersionAllowed({ candidateMode = null } = {}) {
     if (!state.needed) {
         return true;
     }
+    // Throttle optional (non-forced) update reminders so we don't nag on every page load.
+    if (!state.forced) {
+        let lastShown = 0;
+        try {
+            lastShown = parseInt(localStorage.getItem(CLIENT_UPDATE_REMINDER_KEY) || '0', 10) || 0;
+        } catch (_) { /* ignore */ }
+        const elapsed = Date.now() - lastShown;
+        if (lastShown && elapsed < CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS) {
+            return true;
+        }
+    }
     const action = await showClientUpdateDialog(state);
+    if (!state.forced) {
+        try {
+            localStorage.setItem(CLIENT_UPDATE_REMINDER_KEY, String(Date.now()));
+        } catch (_) { /* ignore */ }
+    }
     if (state.forced && action === 'direct') {
         switchToDirectModeForUpdate();
         return false;
