@@ -16,6 +16,7 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.SLEEP_SPEECH_GRACE_SECONDS = 0.5
     config.SLEEP_SPEECH_WINDOW_SECONDS = 0.75
     config.SLEEP_VAD_THRESHOLD = 0.2
+    config.ROLLOVER_VAD_THRESHOLD = 0.6
     config.SONIOX_USES_TEMP_API_KEY = False
     config.SONIOX_TEMP_KEY_URL = None
     config.RELAY_MODE = False

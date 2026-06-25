@@ -269,6 +269,16 @@ def _provider_sleep_env_names(suffix: str) -> tuple[str, str, str]:
     )
 
 
+def _provider_rollover_env_names(suffix: str) -> tuple[str, str, str]:
+    active_prefix = TRANSLATION_PROVIDER.upper()
+    fallback_prefix = "GEMINI" if active_prefix == "SONIOX" else "SONIOX"
+    return (
+        f"ROLLOVER_{suffix}",
+        f"{active_prefix}_ROLLOVER_{suffix}",
+        f"{fallback_prefix}_ROLLOVER_{suffix}",
+    )
+
+
 def _env_float_any(names: tuple[str, ...], default: float) -> float:
     for name in names:
         if os.environ.get(name) is not None:
@@ -304,6 +314,10 @@ SLEEP_VAD_THRESHOLD = min(
     1.0,
     max(0.0, _env_float_any(_provider_sleep_env_names("VAD_THRESHOLD"), 0.2)),
 )
+ROLLOVER_VAD_THRESHOLD = min(
+    1.0,
+    max(0.0, _env_float_any(_provider_rollover_env_names("VAD_THRESHOLD"), 0.8)),
+)
 
 # Backwards-compatible constant aliases for code/tests that still import the
 # provider-specific names.
@@ -312,11 +326,13 @@ SONIOX_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
 SONIOX_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
 SONIOX_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
 SONIOX_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
+SONIOX_ROLLOVER_VAD_THRESHOLD = ROLLOVER_VAD_THRESHOLD
 GEMINI_SLEEP_IDLE_SECONDS = SLEEP_IDLE_SECONDS
 GEMINI_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
 GEMINI_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
 GEMINI_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
 GEMINI_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
+GEMINI_ROLLOVER_VAD_THRESHOLD = ROLLOVER_VAD_THRESHOLD
 
 # Soniox API configuration
 SONIOX_WEBSOCKET_URL = _env_str("SONIOX_WEBSOCKET_URL", "wss://stt-rt.soniox.com/transcribe-websocket")

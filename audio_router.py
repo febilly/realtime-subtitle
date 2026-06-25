@@ -82,6 +82,7 @@ class TenVadSilenceDetector:
             del self._pending[:frame_bytes]
             audio_frame = np.frombuffer(frame, dtype=np.int16)
             probability, flag = self._vad.process(audio_frame)
+            # print(f"TEN VAD probability: {probability}")
             self.last_probability = float(probability)
             self.last_flag = int(flag)
             processed_any = True
@@ -367,6 +368,7 @@ class AudioSendRouter:
         sleep_pre_roll_seconds: float = 1.0,
         sleep_speech_grace_seconds: float = 0.5,
         sleep_speech_window_seconds: float = 0.75,
+        sleep_vad_threshold: float | None = None,
     ):
         self._max_buffered_chunks = max(1, int(max_buffered_chunks))
         self._buffered_chunks: deque[bytes] = deque()
@@ -400,6 +402,16 @@ class AudioSendRouter:
             sample_rate=sample_rate,
             silence_hold_seconds=silence_hold_seconds,
             vad_speech_threshold=vad_speech_threshold,
+        )
+
+        actual_sleep_vad_threshold = (
+            sleep_vad_threshold if sleep_vad_threshold is not None else vad_speech_threshold
+        )
+        self._sleep_silence_detector = self._build_silence_detector(
+            backend,
+            sample_rate=sample_rate,
+            silence_hold_seconds=silence_hold_seconds,
+            vad_speech_threshold=actual_sleep_vad_threshold,
         )
 
     @staticmethod
@@ -553,8 +565,9 @@ class AudioSendRouter:
         self._silence_detector.update(payload)
         wake_ready = False
         if self._sleep_gate is not None:
-            observed_seconds = float(getattr(self._silence_detector, "last_observed_seconds", 0.0) or 0.0)
-            speech_seconds = float(getattr(self._silence_detector, "last_speech_seconds", 0.0) or 0.0)
+            self._sleep_silence_detector.update(payload)
+            observed_seconds = float(getattr(self._sleep_silence_detector, "last_observed_seconds", 0.0) or 0.0)
+            speech_seconds = float(getattr(self._sleep_silence_detector, "last_speech_seconds", 0.0) or 0.0)
             wake_ready = self._sleep_gate.update(observed_seconds, speech_seconds)
 
         with self._lock:

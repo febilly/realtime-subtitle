@@ -22,6 +22,7 @@ from config import (
     SLEEP_SPEECH_GRACE_SECONDS,
     SLEEP_SPEECH_WINDOW_SECONDS,
     SLEEP_VAD_THRESHOLD,
+    ROLLOVER_VAD_THRESHOLD,
     USE_TWITCH_AUDIO_STREAM,
     MICROPHONE_DEVICE_ID,
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
@@ -90,7 +91,7 @@ STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS = 200
 STREAM_ROLLOVER_NEAR_LIMIT_RATIO = 0.8
 STREAM_ROLLOVER_SWITCH_PATIENCE_SECONDS = 25.0
 STREAM_ROLLOVER_FORCE_GUARD_SECONDS = 2.0
-STREAM_ROLLOVER_SILENCE_HOLD_SECONDS = 0.7
+STREAM_ROLLOVER_SILENCE_HOLD_SECONDS = 0.5
 STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT = 8
 SONIOX_INTERNAL_TOKEN_TEXTS = {"<end>", "<fin>"}
 
@@ -1896,11 +1897,12 @@ class SonioxSession:
             sample_rate=self.sample_rate,
             chunk_size=self.chunk_size,
             silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
-            vad_speech_threshold=SLEEP_VAD_THRESHOLD,
+            vad_speech_threshold=ROLLOVER_VAD_THRESHOLD,
             sleep_idle_seconds=sleep_idle_seconds,
             sleep_pre_roll_seconds=SLEEP_PRE_ROLL_SECONDS,
             sleep_speech_grace_seconds=SLEEP_SPEECH_GRACE_SECONDS,
             sleep_speech_window_seconds=SLEEP_SPEECH_WINDOW_SECONDS,
+            sleep_vad_threshold=SLEEP_VAD_THRESHOLD,
         )
 
         try:

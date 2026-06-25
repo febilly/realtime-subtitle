@@ -16,6 +16,7 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config.SLEEP_SPEECH_GRACE_SECONDS = 0.5
     config.SLEEP_SPEECH_WINDOW_SECONDS = 0.75
     config.SLEEP_VAD_THRESHOLD = 0.2
+    config.ROLLOVER_VAD_THRESHOLD = 0.6
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MICROPHONE_DEVICE_ID = ""
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False

@@ -258,3 +258,17 @@ def test_sleep_buffer_keeps_preroll_and_wake_audio(monkeypatch):
         speech_b,
         speech_a,
     ]
+
+
+def test_audio_router_dual_vad_thresholds():
+    router = AudioSendRouter(
+        max_buffered_chunks=10,
+        sample_rate=16000,
+        chunk_size=3840,
+        vad_speech_threshold=0.6,
+        sleep_vad_threshold=0.2,
+    )
+    if hasattr(router._silence_detector, "speech_threshold"):
+        assert router._silence_detector.speech_threshold == 0.6
+    if hasattr(router._sleep_silence_detector, "speech_threshold"):
+        assert router._sleep_silence_detector.speech_threshold == 0.2
