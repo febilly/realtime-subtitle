@@ -6063,9 +6063,21 @@ function sessionElapsedMs() {
     return total;
 }
 
+function formatSessionCost(cost, pricePerSecond) {
+    const p = Number(pricePerSecond);
+    if (!Number.isFinite(p) || p <= 0) {
+        return formatCredits(cost);
+    }
+    const roundedCost = Math.round(cost / p) * p;
+    const priceStr = p.toString();
+    const dotIdx = priceStr.indexOf('.');
+    const decimals = dotIdx >= 0 ? priceStr.length - dotIdx - 1 : 0;
+    return Number(roundedCost.toFixed(Math.max(decimals, 0))).toString();
+}
+
 function updateSessionCostDisplay() {
     const cost = (sessionElapsedMs() / 1000) * pricePerSecond;
-    setElText('sessionValue', formatCredits(cost));
+    setElText('sessionValue', formatSessionCost(cost, pricePerSecond));
 }
 
 function sessionCostResume() {
