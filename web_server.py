@@ -157,6 +157,10 @@ class WebServer:
                 is_visible = getattr(self.overlay_manager, "is_visible", False)
             await ws.send_str(json.dumps({"type": "overlay_visibility", "visible": is_visible}))
 
+            # 发送当前识别暂停状态给新连入的客户端
+            is_paused = getattr(self.session, "is_paused", False)
+            await ws.send_str(json.dumps({"type": "recognition_paused", "paused": is_paused}))
+
             manager = self.provider_manager
             if manager is not None:
                 if getattr(self.session, "_relay_session_active", False):
@@ -1065,6 +1069,12 @@ class WebServer:
         print("\n[Server] Received pause request...")
         paused = self.session.pause()
 
+        # 广播暂停状态给所有 WebSocket 客户端
+        await self.broadcast_to_clients({
+            "type": "recognition_paused",
+            "paused": True
+        })
+
         if paused:
             message = "Recognition paused"
         else:
@@ -1084,6 +1094,11 @@ class WebServer:
         get_api_key = self.get_api_key
 
         if not self.session.is_paused:
+            # 即使已经运行，也确保状态同步
+            await self.broadcast_to_clients({
+                "type": "recognition_paused",
+                "paused": False
+            })
             return web.json_response({"status": "ok", "message": "Recognition already running"})
 
         try:
@@ -1099,6 +1114,12 @@ class WebServer:
             translation=TRANSLATION_MODE,
             loop=loop
         )
+
+        # 广播恢复状态给所有 WebSocket 客户端
+        await self.broadcast_to_clients({
+            "type": "recognition_paused",
+            "paused": False
+        })
 
         if resumed:
             return web.json_response({"status": "ok", "message": "Recognition resumed"})

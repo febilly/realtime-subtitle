@@ -3141,7 +3141,16 @@ function connect() {
 }
 
 function handleMessage(data) {
-
+    if (data.type === 'recognition_paused') {
+        isPaused = !!data.paused;
+        updatePauseButtonUi();
+        if (isPaused) {
+            sessionCostPause();
+        } else {
+            sessionCostResume();
+        }
+        return;
+    }
     if (data.type === 'overlay_visibility') {
         overlayOpen = !!data.visible;
         updateOverlayButton();

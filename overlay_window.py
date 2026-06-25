@@ -1309,7 +1309,10 @@ class OverlayWindow(QWidget):
                 self.show()
             else:
                 self.hide()
-
+        elif mtype == "recognition_paused":
+            self.is_paused = bool(data.get("paused"))
+            self.btn_pause.setIconName("play" if self.is_paused else "pause")
+            self.btn_pause.setToolTip(tr("resume") if self.is_paused else tr("pause"))
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
