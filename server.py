@@ -702,25 +702,71 @@ def main():
             except Exception:
                 pass
 
-    def request_shutdown() -> None:
-        """退出整个应用（重置设置后由前端触发）。"""
-        print("\n👋 Reset requested, shutting down application...")
+    def graceful_shutdown() -> None:
+        """优雅关闭所有连接和进程，防止遗留孤儿进程或断开异常。"""
+        # 1. 停止当前 API 会话（优雅关闭 API 端的 WebSocket 连接并停止音频流）
+        session = getattr(web_server, "session", None)
+        if session is not None:
+            try:
+                session.stop()
+            except Exception as e:
+                print(f"⚠️  Error stopping session during shutdown: {e}")
+
+        # 2. 获取 aiohttp 服务器的主事件循环并清理异步任务
+        loop = getattr(provider_manager, "loop", None)
+        if loop and loop.is_running():
+            async def async_cleanup():
+                # 优雅关闭所有前端 WebSocket 连接
+                if web_server and hasattr(web_server, "websocket_clients"):
+                    clients = list(web_server.websocket_clients)
+                    for ws in clients:
+                        try:
+                            await ws.close(code=1001, message="Server shutting down")
+                        except Exception:
+                            pass
+                # 优雅关闭 IPC 服务端及连接
+                if ipc_server is not None:
+                    try:
+                        await ipc_server.stop()
+                    except Exception:
+                        pass
+
+            future = asyncio.run_coroutine_threadsafe(async_cleanup(), loop)
+            try:
+                future.result(timeout=2.0)
+            except Exception:
+                pass
+
+        # 3. 关闭原生字幕悬浮窗子进程
         close_overlay()
+
+        # 4. 退出置顶控制队列
+        try:
+            window_on_top_requests.put_nowait(None)
+        except Exception:
+            pass
+
+        # 5. 关闭日志文件
         try:
             logger.close_log_file()
         except Exception:
             pass
+
+        # 6. 进程退出
         os._exit(0)
+
+    def request_shutdown() -> None:
+        """退出整个应用（重置设置后由前端触发）。"""
+        print("\n👋 Reset requested, shutting down application...")
+        graceful_shutdown()
 
     web_server.set_shutdown_callback(request_shutdown)
 
     # 设置信号处理，优雅退出
     def signal_handler(sig, frame):
         print("\n👋 Received termination signal, shutting down server...")
-        close_overlay()
-        logger.close_log_file()
-        os._exit(0)
-    
+        graceful_shutdown()
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
@@ -825,15 +871,24 @@ def main():
             except Exception:
                 pass
 
-        def on_closed():
-            print("👋 Window closed, shutting down application...")
-            close_overlay()
+        def on_closing():
             try:
-                window_on_top_requests.put_nowait(None)
+                window.hide()
             except Exception:
                 pass
-            logger.close_log_file()
-            os._exit(0)
+
+            def background_shutdown():
+                print("👋 Window closing, shutting down application in background...")
+                graceful_shutdown()
+
+            threading.Thread(target=background_shutdown, daemon=True).start()
+            return False
+
+        window.events.closing += on_closing
+
+        def on_closed():
+            print("👋 Window closed, shutting down application...")
+            graceful_shutdown()
 
         window.events.closed += on_closed
 
