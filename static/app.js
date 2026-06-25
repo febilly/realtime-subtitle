@@ -1602,18 +1602,24 @@ function positionLangSelectMenu(picker, menu) {
     const gap = 6;
     const viewportPadding = 8;
     const menuWidth = Math.max(220, Math.round(rect.width));
+
+    menu.style.maxHeight = '';
+    const naturalHeight = menu.offsetHeight;
+
     const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
     const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
     const spaceAbove = rect.top - viewportPadding;
     const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
     const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const actualHeight = Math.min(menuHeight, naturalHeight);
+
     const left = Math.min(
         Math.max(viewportPadding, rect.left),
         Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
     );
     const top = openUp
-        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
-        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+        ? Math.max(viewportPadding, rect.top - gap - actualHeight)
+        : Math.min(window.innerHeight - viewportPadding - actualHeight, rect.bottom + gap);
 
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(top)}px`;
@@ -1649,8 +1655,8 @@ function openLangSelectMenu(picker) {
     if (trigger) {
         trigger.setAttribute('aria-expanded', 'true');
     }
-    positionLangSelectMenu(picker, menu);
     menu.hidden = false;
+    positionLangSelectMenu(picker, menu);
 
     const selectedOption = menu.querySelector('.lang-select-option.selected');
     if (selectedOption) {
@@ -1721,18 +1727,24 @@ function positionDropdownMenu(trigger, menu) {
     const gap = 6;
     const viewportPadding = 8;
     const menuWidth = Math.max(rect.width, 180);
+
+    menu.style.maxHeight = '';
+    const naturalHeight = menu.offsetHeight;
+
     const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
     const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
     const spaceAbove = rect.top - viewportPadding;
     const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
     const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const actualHeight = Math.min(menuHeight, naturalHeight);
+
     const left = Math.min(
         Math.max(viewportPadding, rect.left),
         Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
     );
     const top = openUp
-        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
-        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+        ? Math.max(viewportPadding, rect.top - gap - actualHeight)
+        : Math.min(window.innerHeight - viewportPadding - actualHeight, rect.bottom + gap);
 
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(top)}px`;
