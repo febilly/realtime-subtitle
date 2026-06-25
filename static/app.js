@@ -1,3 +1,158 @@
+// Hook to replace browser native tooltips with a custom instant tooltip
+(function() {
+    const originalSetAttribute = Element.prototype.setAttribute;
+    const originalGetAttribute = Element.prototype.getAttribute;
+    const originalRemoveAttribute = Element.prototype.removeAttribute;
+
+    // Convert initial elements with title attributes to data-custom-title
+    document.querySelectorAll('[title]').forEach(el => {
+        const titleVal = el.getAttribute('title');
+        if (titleVal) {
+            el.setAttribute('data-custom-title', titleVal);
+            el.removeAttribute('title');
+        }
+    });
+
+    let tooltipEl = null;
+    let activeTooltipTarget = null;
+
+    function createTooltip() {
+        tooltipEl = document.createElement('div');
+        tooltipEl.className = 'custom-tooltip';
+        document.body.appendChild(tooltipEl);
+    }
+
+    function updateTooltipText(text) {
+        if (!tooltipEl) createTooltip();
+        if (!text) {
+            hideTooltip();
+            return;
+        }
+        tooltipEl.textContent = text;
+        if (activeTooltipTarget) {
+            positionTooltip(activeTooltipTarget);
+        }
+    }
+
+    function showTooltip(target) {
+        const text = target.getAttribute('data-custom-title');
+        if (!text) return;
+        if (!tooltipEl) createTooltip();
+        tooltipEl.textContent = text;
+        tooltipEl.classList.add('visible');
+        positionTooltip(target);
+    }
+
+    function hideTooltip() {
+        if (tooltipEl) {
+            tooltipEl.classList.remove('visible');
+        }
+        activeTooltipTarget = null;
+    }
+
+    function positionTooltip(target) {
+        if (!tooltipEl) return;
+        const rect = target.getBoundingClientRect();
+        
+        // Calculate position: display on the left side of the button, vertically centered
+        const tooltipWidth = tooltipEl.offsetWidth;
+        const tooltipHeight = tooltipEl.offsetHeight;
+
+        let left = rect.left - tooltipWidth - 8;
+        if (left < 8) {
+            // Fallback: if it overflows the left side of the window, show it on the right side
+            left = rect.right + 8;
+        }
+
+        let top = rect.top + (rect.height - tooltipHeight) / 2;
+        // Clamp top position so it doesn't go offscreen
+        if (top < 8) top = 8;
+        if (top + tooltipHeight > window.innerHeight - 8) {
+            top = window.innerHeight - tooltipHeight - 8;
+        }
+
+        tooltipEl.style.left = left + 'px';
+        tooltipEl.style.top = top + 'px';
+    }
+
+    // Define HTMLElement.prototype.title getter/setter
+    Object.defineProperty(HTMLElement.prototype, 'title', {
+        get: function() {
+            return this.getAttribute('data-custom-title') || '';
+        },
+        set: function(val) {
+            if (val) {
+                this.setAttribute('data-custom-title', val);
+                originalRemoveAttribute.call(this, 'title');
+            } else {
+                this.removeAttribute('data-custom-title');
+                originalRemoveAttribute.call(this, 'title');
+            }
+            if (activeTooltipTarget === this) {
+                updateTooltipText(val);
+            }
+        }
+    });
+
+    // Override Element methods
+    Element.prototype.setAttribute = function(name, value) {
+        if (name && name.toLowerCase() === 'title') {
+            this.setAttribute('data-custom-title', value);
+            originalRemoveAttribute.call(this, 'title');
+            if (activeTooltipTarget === this) {
+                updateTooltipText(value);
+            }
+        } else {
+            originalSetAttribute.call(this, name, value);
+        }
+    };
+
+    Element.prototype.getAttribute = function(name) {
+        if (name && name.toLowerCase() === 'title') {
+            return this.getAttribute('data-custom-title') || '';
+        }
+        return originalGetAttribute.call(this, name);
+    };
+
+    Element.prototype.removeAttribute = function(name) {
+        if (name && name.toLowerCase() === 'title') {
+            this.removeAttribute('data-custom-title');
+            originalRemoveAttribute.call(this, 'title');
+            if (activeTooltipTarget === this) {
+                hideTooltip();
+            }
+        } else {
+            originalRemoveAttribute.call(this, name);
+        }
+    };
+
+    // Event listeners
+    document.addEventListener('mouseover', (e) => {
+        const target = e.target.closest('[data-custom-title]');
+        if (target) {
+            if (activeTooltipTarget === target) return;
+            activeTooltipTarget = target;
+            showTooltip(target);
+        } else {
+            if (activeTooltipTarget) {
+                hideTooltip();
+            }
+        }
+    }, { passive: true });
+
+    document.addEventListener('mouseout', (e) => {
+        if (activeTooltipTarget && !activeTooltipTarget.contains(e.relatedTarget)) {
+            hideTooltip();
+        }
+    }, { passive: true });
+
+    document.addEventListener('click', (e) => {
+        if (activeTooltipTarget && activeTooltipTarget.contains(e.target)) {
+            hideTooltip();
+        }
+    }, { passive: true });
+})();
+
 let ws;
 const subtitleContainer = document.getElementById('subtitleContainer');
 const themeToggle = document.getElementById('themeToggle');
@@ -661,6 +816,10 @@ function applyStaticUiText() {
 
     if (overlayButton) {
         overlayButton.title = overlayOpen ? t('overlay_close') : t('overlay_open');
+    }
+
+    if (settingsButton) {
+        settingsButton.title = t('settings');
     }
 
     if (subtitleContainer) {
@@ -2982,6 +3141,7 @@ function connect() {
 }
 
 function handleMessage(data) {
+
     if (data.type === 'overlay_visibility') {
         overlayOpen = !!data.visible;
         updateOverlayButton();

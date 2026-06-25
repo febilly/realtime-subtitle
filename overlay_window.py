@@ -13,6 +13,7 @@
   * 通过 WebSocket(`/ws`) 接收字幕，样式与网页版基本一致
 """
 
+import os
 import sys
 import json
 import argparse
@@ -21,7 +22,7 @@ import threading
 import urllib.request
 from html import escape as _html_escape
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QRect, QRectF, QSettings, QSize
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QRect, QRectF, QSettings, QSize, QEvent, QLocale
 from PySide6.QtGui import (
     QCursor,
     QPainter,
@@ -44,7 +45,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QHBoxLayout,
     QStyle,
+    QLabel,
+    QGraphicsOpacityEffect,
 )
+from PySide6.QtSvg import QSvgRenderer
 
 try:
     import websockets
@@ -104,90 +108,290 @@ class InstantToolTipStyle(QProxyStyle):
         return super().styleHint(hint, option, widget, returnData)
 
 
-def _line_icon(name: str, color: str = "#f3f4f6") -> QIcon:
-    """Draw a small Lucide-style line icon as a native Qt icon."""
-    pm = QPixmap(20, 20)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    pen = QPen(QColor(color), 1.8)
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    p.setBrush(Qt.NoBrush)
+_I18N_DATA = {
+    "zh": {
+        "font_dec": "减小字号",
+        "font_inc": "增大字号",
+        "alpha_dec": "背景更透明",
+        "alpha_inc": "背景更不透明",
+        "display_both": "当前：显示原文与译文 (点击切换为仅原文)",
+        "display_original": "当前：仅显示原文 (点击切换为仅译文)",
+        "display_translation": "当前：仅显示译文 (点击切换为显示全部)",
+        "passthrough_off": "穿透模式：关闭 (开启后除按钮外鼠标均可穿透)",
+        "passthrough_on": "穿透模式：开启 (关闭后鼠标无法穿透悬浮窗)",
+        "restart": "重启识别",
+        "restarting": "正在重启识别",
+        "restart_failed": "重启失败，点击重试",
+        "pause": "暂停识别",
+        "resume": "继续识别",
+        "close": "关闭悬浮窗"
+    },
+    "en": {
+        "font_dec": "Decrease font size",
+        "font_inc": "Increase font size",
+        "alpha_dec": "More transparent background",
+        "alpha_inc": "More opaque background",
+        "display_both": "Current: original + translation (click for original only)",
+        "display_original": "Current: original only (click for translation only)",
+        "display_translation": "Current: translation only (click for both)",
+        "passthrough_off": "Click-through mode: disabled (click to enable)",
+        "passthrough_on": "Click-through mode: enabled (click to disable)",
+        "restart": "Restart recognition",
+        "restarting": "Restarting recognition",
+        "restart_failed": "Restart failed, click to retry",
+        "pause": "Pause recognition",
+        "resume": "Resume recognition",
+        "close": "Close subtitle overlay window"
+    },
+    "ja": {
+        "font_dec": "フォントサイズを小さくする",
+        "font_inc": "フォントサイズを大きくする",
+        "alpha_dec": "背景の透明度を上げる",
+        "alpha_inc": "背景の不透明度を上げる",
+        "display_both": "現在：原文＋訳文 (クリックで原文のみ表示)",
+        "display_original": "現在：原文のみ (クリックで訳文のみ表示)",
+        "display_translation": "現在：訳文のみ (クリックで両方表示)",
+        "passthrough_off": "マウスクリック透過：無効 (クリックで有効化)",
+        "passthrough_on": "マウスクリック透過：有効 (クリックで無効化)",
+        "restart": "認識を再起動",
+        "restarting": "認識を再起動中",
+        "restart_failed": "再起動に失敗、クリックして再試行",
+        "pause": "認識を一時停止",
+        "resume": "認識を再開",
+        "close": "字幕オーバーレイウィンドウを閉じる"
+    },
+    "ko": {
+        "font_dec": "글꼴 크기 줄이기",
+        "font_inc": "글꼴 크기 늘리기",
+        "alpha_dec": "배경을 더 투명하게",
+        "alpha_inc": "배경을 더 불투명하게",
+        "display_both": "현재: 원문+번역문 (클릭 시 원문만 표시)",
+        "display_original": "현재: 원문만 표시 (클릭 시 번역문만 표시)",
+        "display_translation": "현재: 번역문만 표시 (클릭 시 둘 다 표시)",
+        "passthrough_off": "마우스 클릭 관통: 비활성화 (클릭 시 활성화)",
+        "passthrough_on": "마우스 클릭 관통: 활성화 (클릭 시 비활성화)",
+        "restart": "인식 재시작",
+        "restarting": "인식 재시작 중",
+        "restart_failed": "재시작 실패, 클릭하여 재시도",
+        "pause": "인식 일시정지",
+        "resume": "인식 재개",
+        "close": "자막 오버레이 창 닫기"
+    },
+    "ru": {
+        "font_dec": "Уменьшить размер шрифта",
+        "font_inc": "Увеличить размер шрифта",
+        "alpha_dec": "Сделать фон более прозрачным",
+        "alpha_inc": "Сделать фон менее прозрачным",
+        "display_both": "Сейчас: оригинал + перевод (нажмите для оригинала)",
+        "display_original": "Сейчас: только оригинал (нажмите для перевода)",
+        "display_translation": "Сейчас: только перевод (нажмите для всего)",
+        "passthrough_off": "Режим сквозного клика: отключен (нажмите для включения)",
+        "passthrough_on": "Режим сквозного клика: включен (нажмите для отключения)",
+        "restart": "Перезапустить распознавание",
+        "restarting": "Перезапуск распознавания...",
+        "restart_failed": "Сбой перезапуска, нажмите для повтора",
+        "pause": "Приостановить распознавание",
+        "resume": "Продолжить распознавание",
+        "close": "Закрыть окно оверлея субтитров"
+    },
+    "es": {
+        "font_dec": "Disminuir tamaño de fuente",
+        "font_inc": "Aumentar tamaño de fuente",
+        "alpha_dec": "Fondo más transparente",
+        "alpha_inc": "Fondo más opaco",
+        "display_both": "Actual: original + traducción (clic para solo original)",
+        "display_original": "Actual: solo original (clic para solo traducción)",
+        "display_translation": "Actual: solo traducción (clic para ambos)",
+        "passthrough_off": "Modo de paso del ratón: desactivado (clic para activar)",
+        "passthrough_on": "Modo de paso del ratón: activado (clic para desactivar)",
+        "restart": "Reiniciar reconocimiento",
+        "restarting": "Reiniciando reconocimiento",
+        "restart_failed": "Error al reiniciar, clic para reintentar",
+        "pause": "Pausar reconocimiento",
+        "resume": "Reanudar reconocimiento",
+        "close": "Cerrar ventana superpuesta de subtítulos"
+    },
+    "pt": {
+        "font_dec": "Diminuir tamanho da fonte",
+        "font_inc": "Aumentar tamanho da fonte",
+        "alpha_dec": "Fundo mais transparente",
+        "alpha_inc": "Fundo mais opaco",
+        "display_both": "Atual: original + tradução (clique para apenas original)",
+        "display_original": "Atual: apenas original (clique para apenas tradução)",
+        "display_translation": "Atual: apenas tradução (clique para ambos)",
+        "passthrough_off": "Modo de passagem do mouse: desativado (clique para ativar)",
+        "passthrough_on": "Modo de passagem do mouse: ativado (clique para desativar)",
+        "restart": "Reiniciar reconhecimento",
+        "restarting": "Reiniciando reconhecimento",
+        "restart_failed": "Falha ao reiniciar, clique para tentar novamente",
+        "pause": "Pausar reconhecimento",
+        "resume": "Retomar reconhecimento",
+        "close": "Fechar janela de sobreposição de legendas"
+    }
+}
 
-    if name in ("layers-minus", "layers-plus"):
-        p.save()
-        p.scale(20 / 24, 20 / 24)
-        layer = QPainterPath()
-        layer.moveTo(12.8, 2.2)
-        layer.cubicTo(12.3, 2.0, 11.7, 2.0, 11.2, 2.2)
-        layer.lineTo(2.6, 6.1)
-        layer.cubicTo(1.8, 6.5, 1.8, 7.5, 2.6, 7.9)
-        layer.lineTo(11.2, 11.8)
-        layer.cubicTo(11.7, 12.1, 12.3, 12.1, 12.8, 11.8)
-        layer.lineTo(21.4, 7.9)
-        layer.cubicTo(22.2, 7.5, 22.2, 6.5, 21.4, 6.1)
-        layer.closeSubpath()
-        p.drawPath(layer)
 
-        mid = QPainterPath()
-        mid.moveTo(2, 12)
-        mid.cubicTo(2.1, 12.4, 2.3, 12.7, 2.6, 12.9)
-        mid.lineTo(11.2, 16.8)
-        mid.cubicTo(11.5, 16.9, 11.8, 17, 12, 17)
-        p.drawPath(mid)
+def tr(key: str) -> str:
+    lang = QLocale.system().name().split('_')[0]
+    if lang not in _I18N_DATA:
+        lang = "en"
+    return _I18N_DATA[lang].get(key, _I18N_DATA["en"].get(key, key))
 
-        low = QPainterPath()
-        low.moveTo(2, 17)
-        low.cubicTo(2.1, 17.4, 2.3, 17.7, 2.6, 17.9)
-        low.lineTo(11.2, 21.8)
-        low.cubicTo(11.7, 22.1, 12.3, 22.1, 12.8, 21.8)
-        low.lineTo(15, 20.8)
-        p.drawPath(low)
 
-        if name == "layers-minus":
-            p.drawLine(16, 17, 22, 17)
-            fade = QPainterPath()
-            fade.moveTo(22, 12)
-            fade.cubicTo(21.9, 12.4, 21.7, 12.7, 21.4, 12.9)
-            fade.lineTo(21.2, 13)
-            p.drawPath(fade)
-        else:
-            p.drawLine(16, 17, 22, 17)
-            p.drawLine(19, 14, 19, 20)
-        p.restore()
-    elif name == "mouse-pointer-2":
-        path = QPainterPath()
-        path.moveTo(5, 3)
-        path.lineTo(15, 11)
-        path.lineTo(10.5, 12)
-        path.lineTo(13, 17)
-        path.lineTo(10.5, 18)
-        path.lineTo(8, 13)
-        path.lineTo(5, 16)
-        path.closeSubpath()
-        p.drawPath(path)
-    elif name == "rotate-cw":
-        p.drawArc(QRectF(4, 4, 12, 12), 40 * 16, 285 * 16)
-        p.drawLine(14.5, 4.5, 16.5, 4.5)
-        p.drawLine(16.5, 4.5, 16.5, 2.5)
-    elif name == "pause":
-        p.drawLine(7, 5, 7, 15)
-        p.drawLine(13, 5, 13, 15)
-    elif name == "play":
-        path = QPainterPath()
-        path.moveTo(7, 5)
-        path.lineTo(15, 10)
-        path.lineTo(7, 15)
-        path.closeSubpath()
-        p.drawPath(path)
-    elif name == "x":
-        p.drawLine(6, 6, 14, 14)
-        p.drawLine(14, 6, 6, 14)
+class OverlayToolTip(QLabel):
+    """Custom premium floating ToolTip for overlay window buttons with white background and black text."""
 
-    p.end()
-    return QIcon(pm)
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255, 255, 255, 0.98);
+                color: #111827;
+                border: 1px solid rgba(0, 0, 0, 0.15);
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-family: "Segoe UI", "Microsoft YaHei", "Yu Gothic", "Meiryo", "Malgun Gothic", "DengXian", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+                font-size: 14px;
+                font-weight: 500;
+            }
+        """)
+        self.setVisible(False)
+
+
+class ToolTipEventFilter(QObject):
+    """Event filter to intercept button hovers and show custom tooltip positioned above the button, horizontally centered."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.tooltip = None
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Enter:
+            tip_text = obj.toolTip()
+            if tip_text and self.parent_window:
+                if not self.tooltip:
+                    self.tooltip = OverlayToolTip(self.parent_window)
+                self.tooltip.setText(tip_text)
+                self.tooltip.adjustSize()
+
+                rect = obj.rect()
+                tooltip_w = self.tooltip.width()
+                tooltip_h = self.tooltip.height()
+
+                # Top center of the button in parent window coordinates
+                parent_top_center = obj.mapTo(self.parent_window, QPoint(rect.width() // 2, 0))
+
+                # Position the tooltip above the button, centered horizontally (6px gap)
+                x = parent_top_center.x() - tooltip_w // 2
+                y = parent_top_center.y() - tooltip_h - 6
+
+                # Handle boundary clamping within parent window
+                if x < 8:
+                    x = 8
+                elif x + tooltip_w > self.parent_window.width() - 8:
+                    x = self.parent_window.width() - tooltip_w - 8
+
+                if y < 8:
+                    # If it goes off the top of the window, place it below the button
+                    parent_bottom_center = obj.mapTo(self.parent_window, QPoint(rect.width() // 2, rect.height()))
+                    y = parent_bottom_center.y() + 6
+
+                self.tooltip.move(x, y)
+                self.tooltip.raise_()
+                self.tooltip.show()
+        elif event.type() in (QEvent.Leave, QEvent.MouseButtonPress, QEvent.Hide):
+            if self.tooltip:
+                self.tooltip.hide()
+        elif event.type() == QEvent.ToolTip:
+            # Block native tooltips from showing
+            return True
+
+        return super().eventFilter(obj, event)
+
+
+# Cache of SVG inner contents for each symbol ID
+_SVG_SYMBOLS = {}
+_RENDERER_CACHE = {}
+
+def _load_svg_symbols():
+    try:
+        import xml.etree.ElementTree as ET
+        # Resolve path to static/icons/lucide-sprite.svg
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        svg_path = os.path.join(base_dir, "static", "icons", "lucide-sprite.svg")
+        if not os.path.exists(svg_path):
+            if hasattr(sys, '_MEIPASS'):
+                svg_path = os.path.join(sys._MEIPASS, "static", "icons", "lucide-sprite.svg")
+        
+        if os.path.exists(svg_path):
+            tree = ET.parse(svg_path)
+            root = tree.getroot()
+            for elem in root.findall(".//{http://www.w3.org/2000/svg}symbol"):
+                sym_id = elem.get("id")
+                if sym_id:
+                    inner_xml = "".join(ET.tostring(child, encoding='utf-8').decode('utf-8') for child in elem)
+                    _SVG_SYMBOLS[sym_id] = inner_xml
+            if not _SVG_SYMBOLS:
+                for elem in root.findall(".//symbol"):
+                    sym_id = elem.get("id")
+                    if sym_id:
+                        inner_xml = "".join(ET.tostring(child, encoding='utf-8').decode('utf-8') for child in elem)
+                        _SVG_SYMBOLS[sym_id] = inner_xml
+    except Exception as e:
+        print(f"Error loading SVG symbols: {e}")
+
+_load_svg_symbols()
+
+def get_svg_renderer(name: str, color: str) -> QSvgRenderer:
+    key = (name, color)
+    if key in _RENDERER_CACHE:
+        return _RENDERER_CACHE[key]
+    
+    inner_xml = _SVG_SYMBOLS.get(name, "")
+    svg_xml = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    {inner_xml}
+    </svg>"""
+    renderer = QSvgRenderer(svg_xml.encode('utf-8'))
+    _RENDERER_CACHE[key] = renderer
+    return renderer
+
+
+class VectorButton(QPushButton):
+    """A button that draws vector graphics directly in paintEvent from local SVG sprite definitions."""
+
+    def __init__(self, text: str, tip: str, slot, icon_name: str = None, parent=None):
+        super().__init__(text, parent)
+        self.setToolTip(tip)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(28, 24)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.icon_name = icon_name
+        self.clicked.connect(slot)
+
+    def setIconName(self, name: str):
+        if self.icon_name != name:
+            self.icon_name = name
+            self.update()
+
+    def paintEvent(self, event):
+        # 1. Let the stylesheet draw the button background, borders, hover/pressed states
+        super().paintEvent(event)
+
+        # 2. If there is no icon, we are done
+        if not self.icon_name:
+            return
+
+        # 3. Draw the vector icon on top of the button background
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        color_str = "#bfdbfe" if "bfdbfe" in self.styleSheet() else "#f3f4f6"
+        renderer = get_svg_renderer(self.icon_name, color_str)
+        if renderer.isValid():
+            renderer.render(p, QRectF(6, 4, 16, 16))
+        
+        p.end()
 
 
 # ===========================================================================
@@ -682,6 +886,14 @@ class OverlayWindow(QWidget):
         self._resize_start_geo = None
         self._resize_start_mouse = None
 
+        self.tooltip_filter = ToolTipEventFilter(self)
+
+        # 缩放窗口时按 ~33fps 节流重渲染，让可见行数实时随高度变化（不必等下一帧字幕）。
+        self._resize_render_timer = QTimer(self)
+        self._resize_render_timer.setSingleShot(True)
+        self._resize_render_timer.setInterval(30)
+        self._resize_render_timer.timeout.connect(self._render)
+
         self._init_ui()
         self._restore_geometry()
         self._init_ws()
@@ -693,12 +905,6 @@ class OverlayWindow(QWidget):
         self._hover_timer.setInterval(50)
         self._hover_timer.timeout.connect(self._update_button_visibility)
         self._hover_timer.start()
-
-        # 缩放窗口时按 ~33fps 节流重渲染，让可见行数实时随高度变化（不必等下一帧字幕）。
-        self._resize_render_timer = QTimer(self)
-        self._resize_render_timer.setSingleShot(True)
-        self._resize_render_timer.setInterval(30)
-        self._resize_render_timer.timeout.connect(self._render)
 
     # --------------------------------------------------------------- UI ----
     def _init_ui(self):
@@ -732,21 +938,35 @@ class OverlayWindow(QWidget):
         bar_layout.setContentsMargins(0, 0, 0, 0)
         bar_layout.setSpacing(4)
 
-        self.btn_font_dec = self._make_button("A-", "减小字号", self._dec_font)
-        self.btn_font_inc = self._make_button("A+", "增大字号", self._inc_font)
-        self.btn_alpha_dec = self._make_button("", "背景更透明", self._dec_alpha, icon="layers-minus")
-        self.btn_alpha_inc = self._make_button("", "背景更不透明", self._inc_alpha, icon="layers-plus")
-        self.btn_display = self._make_button("O/T", "Toggle display: original + translation / original only / translation only", self._cycle_display)
-        self.btn_passthrough = self._make_button("", "Click-through mode: mouse passes through everywhere except these buttons", self._toggle_passthrough, icon="mouse-pointer-2")
-        self.btn_restart = self._make_button("", "重启识别", self._restart_recognition, icon="rotate-cw")
-        self.btn_pause = self._make_button("", "暂停/继续识别", self._toggle_pause, icon="pause")
-        self.btn_close = self._make_button("", "关闭悬浮窗", self.close, icon="x")
+        self.btn_font_dec = self._make_button("A-", tr("font_dec"), self._dec_font)
+        self.btn_font_inc = self._make_button("A+", tr("font_inc"), self._inc_font)
+        self.btn_alpha_dec = self._make_button("", tr("alpha_dec"), self._dec_alpha, icon="layers-minus")
+        self.btn_alpha_inc = self._make_button("", tr("alpha_inc"), self._inc_alpha, icon="layers-plus")
+        self.btn_display = self._make_button("O/T", "", self._cycle_display)
+        self.btn_passthrough = self._make_button("", "", self._toggle_passthrough, icon="mouse-pointer-2")
+        self.btn_restart = self._make_button("", tr("restart"), self._restart_recognition, icon="rotate-cw")
+        self.btn_pause = self._make_button("", tr("pause"), self._toggle_pause, icon="pause")
+        self.btn_close = self._make_button("", tr("close"), self.close, icon="x")
         for b in (self.btn_font_dec, self.btn_font_inc,
                   self.btn_alpha_dec, self.btn_alpha_inc,
                   self.btn_display, self.btn_passthrough,
                   self.btn_restart, self.btn_pause, self.btn_close):
             bar_layout.addWidget(b)
+        # Create opacity effects for all other buttons
+        self._other_buttons = (
+            self.btn_font_dec, self.btn_font_inc,
+            self.btn_alpha_dec, self.btn_alpha_inc,
+            self.btn_display, self.btn_restart,
+            self.btn_pause, self.btn_close
+        )
+        self._btn_opacity_effects = {}
+        for btn in self._other_buttons:
+            effect = QGraphicsOpacityEffect(btn)
+            btn.setGraphicsEffect(effect)
+            self._btn_opacity_effects[btn] = effect
+
         self._update_display_button()
+        self._update_passthrough_button()
 
         self.button_bar.adjustSize()
         self.button_bar.setVisible(False)
@@ -756,6 +976,7 @@ class OverlayWindow(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self._apply_windows_no_activate_style()
+        self._render()
 
     def _apply_windows_no_activate_style(self):
         """Keep clicks on the overlay from activating it on Windows fullscreen apps."""
@@ -784,16 +1005,9 @@ class OverlayWindow(QWidget):
     )
 
     def _make_button(self, text, tip, slot, icon=None):
-        b = QPushButton(text, self.button_bar)
-        b.setToolTip(tip)
-        b.setCursor(Qt.PointingHandCursor)
-        b.setFixedSize(28, 24)
-        b.setIconSize(QSize(18, 18))
-        if icon:
-            b.setIcon(_line_icon(icon))
-        b.setFocusPolicy(Qt.NoFocus)
+        b = VectorButton(text, tip, slot, icon, self.button_bar)
         b.setStyleSheet(self._BTN_QSS)
-        b.clicked.connect(slot)
+        b.installEventFilter(self.tooltip_filter)
         return b
 
     # ------------------------------------------------------------ geometry --
@@ -928,10 +1142,10 @@ class OverlayWindow(QWidget):
             if inside:
                 self._reposition_buttons()
                 self.button_bar.raise_()
-        # 穿透模式：鼠标悬在按钮条上 -> 关闭穿透（按钮可点）；其余位置 -> 穿透。
+        # 穿透模式：仅当鼠标停留在“鼠标穿透”按钮上时才关闭穿透（使其可点）；其他看不见的位置均可穿透
         if self._passthrough:
             over_buttons = (self.button_bar.isVisible()
-                            and self._button_bar_global_rect().contains(pos))
+                            and self._button_global_rect(self.btn_passthrough).contains(pos))
             self._set_click_through_state(not over_buttons)
 
     # ----------------------------------------------------------- 按钮动作 --
@@ -962,16 +1176,10 @@ class OverlayWindow(QWidget):
         self._step_alpha(-1)
 
     _DISPLAY_LABELS = {"both": "O/T", "original": "O", "translation": "T"}
-    _DISPLAY_TIPS = {
-        "both": "Current: original + translation (click for original only)",
-        "original": "Current: original only (click for translation only)",
-        "translation": "Current: translation only (click for original + translation)",
-    }
-
     def _update_display_button(self):
         mode = self.display_mode if self.display_mode in self._DISPLAY_LABELS else "both"
         self.btn_display.setText(self._DISPLAY_LABELS[mode])
-        self.btn_display.setToolTip(self._DISPLAY_TIPS[mode])
+        self.btn_display.setToolTip(tr(f"display_{mode}"))
 
     def _cycle_display(self):
         order = ["both", "original", "translation"]
@@ -986,6 +1194,11 @@ class OverlayWindow(QWidget):
     def _button_bar_global_rect(self) -> QRect:
         tl = self.button_bar.mapToGlobal(QPoint(0, 0))
         return QRect(tl, self.button_bar.size())
+
+    def _button_global_rect(self, btn) -> QRect:
+        """获取单个按钮的全局屏幕物理区域"""
+        tl = btn.mapToGlobal(QPoint(0, 0))
+        return QRect(tl, btn.size())
 
     def _set_click_through_state(self, enabled: bool):
         """按需切换鼠标穿透，仅在状态变化时调用系统 API。"""
@@ -1007,13 +1220,27 @@ class OverlayWindow(QWidget):
     def _update_passthrough_button(self):
         self.btn_passthrough.setStyleSheet(
             self._BTN_QSS_ACTIVE if self._passthrough else self._BTN_QSS)
+        self.btn_passthrough.setToolTip(tr("passthrough_on") if self._passthrough else tr("passthrough_off"))
+
+        # In passthrough mode, hide (opacity 0) and disable other buttons, keeping their layout position
+        if hasattr(self, "_btn_opacity_effects"):
+            for btn in self._other_buttons:
+                effect = self._btn_opacity_effects[btn]
+                if self._passthrough:
+                    effect.setOpacity(0.0)
+                    btn.setEnabled(False)
+                    btn.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                else:
+                    effect.setOpacity(1.0)
+                    btn.setEnabled(True)
+                    btn.setAttribute(Qt.WA_TransparentForMouseEvents, False)
 
     def _toggle_pause(self):
         target = "/resume" if self.is_paused else "/pause"
         # 乐观更新；网络请求放后台线程避免卡 UI
         self.is_paused = not self.is_paused
-        self.btn_pause.setIcon(_line_icon("play" if self.is_paused else "pause"))
-        self.btn_pause.setToolTip("继续识别" if self.is_paused else "暂停识别")
+        self.btn_pause.setIconName("play" if self.is_paused else "pause")
+        self.btn_pause.setToolTip(tr("resume") if self.is_paused else tr("pause"))
         threading.Thread(
             target=self._post, args=(target,), daemon=True
         ).start()
@@ -1023,9 +1250,9 @@ class OverlayWindow(QWidget):
             return
         self._restart_in_flight = True
         self.btn_restart.setEnabled(False)
-        self.btn_restart.setIcon(QIcon())
+        self.btn_restart.setIconName(None)
         self.btn_restart.setText("...")
-        self.btn_restart.setToolTip("正在重启识别")
+        self.btn_restart.setToolTip(tr("restarting"))
         threading.Thread(target=self._restart_worker, daemon=True).start()
 
     def _restart_worker(self):
@@ -1036,8 +1263,8 @@ class OverlayWindow(QWidget):
         self._restart_in_flight = False
         self.btn_restart.setEnabled(True)
         self.btn_restart.setText("")
-        self.btn_restart.setIcon(_line_icon("rotate-cw"))
-        self.btn_restart.setToolTip("重启识别" if ok else "重启失败，点击重试")
+        self.btn_restart.setIconName("rotate-cw")
+        self.btn_restart.setToolTip(tr("restart") if ok else tr("restart_failed"))
 
     def _post(self, path, payload=None):
         try:
@@ -1082,6 +1309,7 @@ class OverlayWindow(QWidget):
                 self.show()
             else:
                 self.hide()
+
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
