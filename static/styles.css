@@ -115,6 +115,7 @@ body.chroma-theme .subtitle-container {
     border-radius: 50%;
     background: rgba(0, 0, 0, 0.05);
     border: none;
+    color: #1f2937;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -123,6 +124,24 @@ body.chroma-theme .subtitle-container {
     transition: all 0.2s ease;
     user-select: none;
     flex-shrink: 0;
+}
+
+.control-icon {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+    flex-shrink: 0;
+}
+
+#furiganaIcon {
+    color: inherit;
+    font-weight: 700;
+    line-height: 1;
 }
 
 .control-button:hover {
@@ -158,16 +177,35 @@ body.dark-theme .lang-popover {
 
 body.dark-theme .control-button {
     background: rgba(255, 255, 255, 0.1);
+    color: #f3f4f6;
 }
 
 body.dark-theme .control-button:hover {
     background: rgba(255, 255, 255, 0.15);
 }
 
-/* “cc” 文字图标：暗色模式下用白字（emoji 图标自带颜色不受影响）。 */
-body.dark-theme #overlayIcon {
-    color: #ffffff;
-    font-weight: 700;
+#pauseButton {
+    color: #eab308;
+}
+
+#pauseButton.is-paused {
+    color: #22c55e;
+}
+
+#restartButton {
+    color: #2563eb;
+}
+
+body.dark-theme #pauseButton {
+    color: #facc15;
+}
+
+body.dark-theme #pauseButton.is-paused {
+    color: #4ade80;
+}
+
+body.dark-theme #restartButton {
+    color: #60a5fa;
 }
 
 .restart-button.restarting {

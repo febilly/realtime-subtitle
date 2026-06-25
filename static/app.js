@@ -27,6 +27,20 @@ const translationRefineIcon = document.getElementById('translationRefineIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+const ICON_SPRITE_URL = 'icons/lucide-sprite.svg';
+
+function setControlIcon(iconEl, iconName) {
+    if (!iconEl || !iconName) {
+        return;
+    }
+    const useEl = iconEl.querySelector('use');
+    if (!useEl) {
+        return;
+    }
+    const href = `${ICON_SPRITE_URL}#${iconName}`;
+    useEl.setAttribute('href', href);
+    useEl.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href);
+}
 
 const t = (key, vars) => {
     try {
@@ -54,7 +68,9 @@ function localizeBackendMessage(message) {
         'Pause is disabled by server config': 'backend_pause_disabled',
         'Resume is disabled by server config': 'backend_resume_disabled',
         'Audio source switching is disabled by server config': 'backend_audio_source_disabled',
+        'Microphone device switching is disabled by server config': 'backend_microphone_device_disabled',
         'OSC translation toggle is disabled by server config': 'backend_osc_disabled',
+        'Overlay control is disabled by server config': 'backend_overlay_disabled',
         'Segment mode switching is disabled': 'backend_segment_mode_disabled',
         'LLM refine toggle is disabled by server config': 'backend_llm_refine_disabled',
         'Furigana feature not available (pykakasi not installed)': 'backend_furigana_unavailable',
@@ -116,11 +132,22 @@ const providerDescription = document.getElementById('providerDescription');
 const apiKeyGetLink = document.getElementById('apiKeyGetLink');
 const sonioxRegionSection = document.getElementById('sonioxRegionSection');
 const sonioxRegionPickerHost = document.getElementById('sonioxRegionPicker');
+const microphoneDeviceSection = document.getElementById('microphoneDeviceSection');
+const microphoneDevicePickerHost = document.getElementById('microphoneDevicePicker');
+const microphoneDeviceHint = document.getElementById('microphoneDeviceHint');
+const runtimeControlsSection = document.getElementById('runtimeControlsSection');
+const autoRestartPickerHost = document.getElementById('autoRestartPicker');
+const segmentModeSettingField = document.getElementById('segmentModeSettingField');
+const segmentModePickerHost = document.getElementById('segmentModePicker');
 const toastEl = document.getElementById('toast');
 
 const SONIOX_REGIONS = ['us', 'eu', 'jp'];
 // Custom-select element (built lazily); mirrors the language picker styling.
 let sonioxRegionPickerEl = null;
+let microphoneDevicePickerEl = null;
+let autoRestartPickerEl = null;
+let segmentModePickerEl = null;
+let microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
 
 // Where users obtain an API key for each provider (shown as a link in Settings).
 const PROVIDER_KEY_URLS = {
@@ -364,8 +391,8 @@ function showToast(message, isError = false, options = {}) {
 }
 
 const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
-const LLM_REFINE_ICON = '🪄';
-const LLM_TRANSLATE_ICON = '🤖';
+const LLM_REFINE_ICON = 'wand-sparkles';
+const LLM_TRANSLATE_ICON = 'bot';
 const LLM_REFINE_MODE_STORAGE_KEY = 'llmRefineMode';
 const LLM_TRANSLATION_MODE_STORAGE_KEY = 'llmTranslationMode';
 let defaultLlmRefineMode = null;
@@ -546,8 +573,9 @@ if (!SEGMENT_MODES.includes(segmentMode)) {
 // 显示模式: 'both', 'original', 'translation'
 let displayMode = localStorage.getItem('displayMode') || 'both';
 
-// 自动重启识别开关（默认关闭）
-let autoRestartEnabled = localStorage.getItem('autoRestartEnabled') === 'true';
+// 自动重启识别开关（默认开启；已有保存值优先）
+const storedAutoRestartEnabled = localStorage.getItem('autoRestartEnabled');
+let autoRestartEnabled = storedAutoRestartEnabled === null ? true : storedAutoRestartEnabled === 'true';
 
 // OSC 翻译发送开关（默认关闭）
 let oscTranslationEnabled = false;
@@ -589,6 +617,7 @@ function getNextAudioSource(source) {
 // 初始化按钮文本
 updateSegmentModeButton();
 updateDisplayModeButton();
+updatePauseButtonUi();
 updateAudioSourceButton();
 updateFuriganaButton();
 updateOscTranslationButton();
@@ -627,7 +656,7 @@ function applyStaticUiText() {
     }
 
     if (pauseButton) {
-        pauseButton.title = isPaused ? t('resume') : t('pause_resume');
+        updatePauseButtonUi();
     }
 
     if (overlayButton) {
@@ -761,7 +790,7 @@ function updateTranslationRefineButton() {
 
     const isTranslate = isLlmTranslateMode();
 
-    translationRefineIcon.textContent = isTranslate ? LLM_TRANSLATE_ICON : LLM_REFINE_ICON;
+    setControlIcon(translationRefineIcon, isTranslate ? LLM_TRANSLATE_ICON : LLM_REFINE_ICON);
     translationRefineButton.title = t(getLlmRefineTitleKey());
 
     if (llmRefineMode !== 'off') {
@@ -777,9 +806,9 @@ function updateTranslationRefineButton() {
 // 主题切换功能（默认深色）
 const ALL_THEMES = ['dark', 'light', 'chroma'];
 const THEME_ICONS = {
-    dark: '🌙',
-    light: '☀️',
-    chroma: '🟩',
+    dark: 'moon',
+    light: 'sun',
+    chroma: 'sparkles',
 };
 let currentTheme = 'dark';
 let lastWindowOnTopState = null;
@@ -822,7 +851,7 @@ function applyTheme(theme) {
         document.body.classList.add('chroma-theme');
     }
 
-    themeIcon.textContent = THEME_ICONS[normalizedTheme];
+    setControlIcon(themeIcon, THEME_ICONS[normalizedTheme]);
     localStorage.setItem('theme', normalizedTheme);
     if (enableChromaTheme) {
         void syncWindowOnTopByTheme(normalizedTheme);
@@ -840,6 +869,16 @@ themeToggle.addEventListener('click', () => {
     const nextTheme = available[(actualIndex + 1) % available.length];
     applyTheme(nextTheme);
 });
+
+function updatePauseButtonUi() {
+    if (!pauseButton || !pauseIcon) {
+        return;
+    }
+    setControlIcon(pauseIcon, isPaused ? 'play' : 'pause');
+    pauseButton.title = isPaused ? t('resume') : t('pause');
+    pauseButton.classList.toggle('is-paused', isPaused);
+}
+
 // 更新分段模式按钮文本
 function updateSegmentModeButton() {
     if (!segmentModeButton) {
@@ -896,11 +935,11 @@ function updateBottomSafeAreaButton() {
     if (bottomSafeAreaEnabled) {
         bottomSafeAreaButton.classList.add('active');
         bottomSafeAreaButton.title = t('bottom_safe_area_on');
-        bottomSafeAreaIcon.textContent = '⬆️';
+        setControlIcon(bottomSafeAreaIcon, 'arrow-up-from-line');
     } else {
         bottomSafeAreaButton.classList.remove('active');
         bottomSafeAreaButton.title = t('bottom_safe_area_off');
-        bottomSafeAreaIcon.textContent = '⬇️';
+        setControlIcon(bottomSafeAreaIcon, 'arrow-down-to-line');
     }
 }
 
@@ -1089,6 +1128,7 @@ async function fetchUiConfig() {
             localStorage.setItem('segmentMode', segmentMode);
         }
         updateSegmentModeButton();
+        renderRuntimeSettingsPickers();
 
         if (data && typeof data.speaker_diarization_enabled === 'boolean') {
             speakerDiarizationEnabled = data.speaker_diarization_enabled;
@@ -1505,6 +1545,7 @@ function handleSegmentModeChanged(data) {
     segmentMode = data.mode;
     localStorage.setItem('segmentMode', data.mode);
     updateSegmentModeButton();
+    renderSegmentModePicker();
     enforceTranslateSegmentMode();
 }
 
@@ -1734,6 +1775,12 @@ function buildCustomSelect(options, { value = null, onChange = null, disabled = 
         label.textContent = labelFor(currentValue);
     };
 
+    const onScroll = (event) => {
+        if (menuEl && event && event.target && menuEl.contains(event.target)) {
+            return;
+        }
+        close();
+    };
     const close = () => {
         if (!menuEl) {
             return;
@@ -1745,7 +1792,7 @@ function buildCustomSelect(options, { value = null, onChange = null, disabled = 
         document.removeEventListener('mousedown', onDocMouseDown, true);
         document.removeEventListener('keydown', onKeyDown, true);
         window.removeEventListener('resize', reposition, true);
-        window.removeEventListener('scroll', close, true);
+        window.removeEventListener('scroll', onScroll, true);
     };
     const onDocMouseDown = (event) => {
         if (picker.contains(event.target) || (menuEl && menuEl.contains(event.target))) {
@@ -1798,7 +1845,7 @@ function buildCustomSelect(options, { value = null, onChange = null, disabled = 
         document.addEventListener('mousedown', onDocMouseDown, true);
         document.addEventListener('keydown', onKeyDown, true);
         window.addEventListener('resize', reposition, true);
-        window.addEventListener('scroll', close, true);
+        window.addEventListener('scroll', onScroll, true);
     };
 
     trigger.addEventListener('click', () => {
@@ -2192,18 +2239,18 @@ function updateAudioSourceButton() {
     audioSource = normalizeAudioSource(audioSource);
 
     if (audioSource === 'microphone') {
-        audioSourceIcon.textContent = '🎤';
+        setControlIcon(audioSourceIcon, 'mic');
         audioSourceButton.title = t('audio_to_mix');
         return;
     }
 
     if (audioSource === 'mix') {
-        audioSourceIcon.textContent = '🎛️';
+        setControlIcon(audioSourceIcon, 'blend');
         audioSourceButton.title = t('audio_to_system');
         return;
     }
 
-    audioSourceIcon.textContent = '🔊';
+    setControlIcon(audioSourceIcon, 'volume-2');
     audioSourceButton.title = t('audio_to_mic');
 }
 
@@ -2237,15 +2284,181 @@ async function fetchInitialAudioSource() {
     }
 }
 
+function microphoneDefaultLabel() {
+    const defaultName = microphoneDeviceData && microphoneDeviceData.default && microphoneDeviceData.default.name;
+    if (defaultName) {
+        return t('microphone_device_default', { name: defaultName });
+    }
+    return t('microphone_device_default_unknown');
+}
+
+function getSelectedMicrophoneDeviceId() {
+    if (microphoneDevicePickerEl && typeof microphoneDevicePickerEl.value === 'string') {
+        return microphoneDevicePickerEl.value;
+    }
+    return String((microphoneDeviceData && microphoneDeviceData.selected_id) || '');
+}
+
+function renderMicrophoneDevicePicker() {
+    if (!microphoneDevicePickerHost) {
+        return;
+    }
+    microphoneDevicePickerHost.innerHTML = '';
+    const devices = Array.isArray(microphoneDeviceData.devices) ? microphoneDeviceData.devices : [];
+    const options = [
+        { value: '', label: microphoneDefaultLabel() },
+        ...devices.filter((device) => !device.is_default).map((device) => ({
+            value: String(device.id || ''),
+            label: String(device.name || device.id || ''),
+        })).filter((option) => option.value && option.label),
+    ];
+    const selected = options.some((option) => option.value === microphoneDeviceData.selected_id)
+        ? microphoneDeviceData.selected_id
+        : '';
+    microphoneDevicePickerEl = buildCustomSelect(options, {
+        value: selected,
+        disabled: !microphoneDeviceData.available,
+    });
+    microphoneDevicePickerHost.appendChild(microphoneDevicePickerEl);
+    if (microphoneDeviceHint) {
+        microphoneDeviceHint.textContent = microphoneDeviceData.available
+            ? t('microphone_device_hint')
+            : t('microphone_device_unavailable');
+    }
+}
+
+async function fetchMicrophoneDevices() {
+    if (!microphoneDeviceSection) {
+        return;
+    }
+    try {
+        const response = await fetch('/microphones');
+        if (!response.ok) {
+            microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
+            renderMicrophoneDevicePicker();
+            return;
+        }
+        const data = await response.json();
+        microphoneDeviceData = {
+            available: !!(data && data.available),
+            default: (data && data.default) || null,
+            devices: Array.isArray(data && data.devices) ? data.devices : [],
+            selected_id: String((data && data.selected_id) || ''),
+        };
+        renderMicrophoneDevicePicker();
+    } catch (error) {
+        console.error('Failed to fetch microphone devices:', error);
+        microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
+        renderMicrophoneDevicePicker();
+    }
+}
+
+async function saveMicrophoneDeviceSelection() {
+    if (!microphoneDeviceSection || !microphoneDeviceData.available) {
+        return { ok: true };
+    }
+    try {
+        const response = await fetch('/microphone-device', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: getSelectedMicrophoneDeviceId() }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            return {
+                ok: false,
+                message: localizeBackendMessage(data && data.message) || `HTTP ${response.status}`,
+            };
+        }
+        microphoneDeviceData.selected_id = String((data && data.id) || getSelectedMicrophoneDeviceId() || '');
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error) };
+    }
+}
+
+function segmentModeLabel(mode) {
+    if (mode === 'translation') {
+        return t('segment_mode_translation');
+    }
+    if (mode === 'endpoint') {
+        return t('segment_mode_endpoint');
+    }
+    return t('segment_mode_punctuation');
+}
+
+function renderAutoRestartPicker() {
+    if (!autoRestartPickerHost) {
+        return;
+    }
+    autoRestartPickerHost.innerHTML = '';
+    autoRestartPickerEl = buildCustomSelect([
+        { value: 'true', label: t('auto_restart_enabled') },
+        { value: 'false', label: t('auto_restart_disabled') },
+    ], {
+        value: autoRestartEnabled ? 'true' : 'false',
+    });
+    autoRestartPickerHost.appendChild(autoRestartPickerEl);
+}
+
+function renderSegmentModePicker() {
+    if (segmentModeSettingField) {
+        segmentModeSettingField.hidden = !segmentModeSupported;
+    }
+    if (!segmentModePickerHost) {
+        return;
+    }
+    segmentModePickerHost.innerHTML = '';
+    if (!segmentModeSupported) {
+        segmentModePickerEl = null;
+        return;
+    }
+    const availableModes = getSegmentModes();
+    const selected = availableModes.includes(segmentMode) ? segmentMode : availableModes[0];
+    segmentModePickerEl = buildCustomSelect(availableModes.map((mode) => ({
+        value: mode,
+        label: segmentModeLabel(mode),
+    })), {
+        value: selected,
+    });
+    segmentModePickerHost.appendChild(segmentModePickerEl);
+}
+
+function renderRuntimeSettingsPickers() {
+    if (runtimeControlsSection) {
+        runtimeControlsSection.hidden = false;
+    }
+    renderAutoRestartPicker();
+    renderSegmentModePicker();
+}
+
+async function applyRuntimeControlSettings() {
+    if (autoRestartPickerEl && typeof autoRestartPickerEl.value === 'string') {
+        autoRestartEnabled = autoRestartPickerEl.value !== 'false';
+        localStorage.setItem('autoRestartEnabled', autoRestartEnabled ? 'true' : 'false');
+        updateAutoRestartButton();
+    }
+
+    const requestedSegmentMode = normalizeSegmentMode(segmentModePickerEl && segmentModePickerEl.value);
+    if (requestedSegmentMode && requestedSegmentMode !== segmentMode) {
+        const ok = await setSegmentMode(requestedSegmentMode);
+        if (!ok) {
+            return { ok: false, message: t('backend_segment_mode_disabled') };
+        }
+    }
+
+    return { ok: true };
+}
+
 async function setSegmentMode(mode) {
     if (lockManualControls) {
-        return;
+        return false;
     }
     if (!segmentModeSupported) {
-        return;
+        return false;
     }
     if (isLlmTranslateMode() && mode === 'translation') {
-        return;
+        return false;
     }
     try {
         const response = await fetch('/segment-mode', {
@@ -2255,20 +2468,29 @@ async function setSegmentMode(mode) {
         });
         if (!response.ok) {
             console.error('Failed to set segment mode');
+            return false;
         }
+        segmentMode = mode;
+        localStorage.setItem('segmentMode', mode);
+        updateSegmentModeButton();
+        renderSegmentModePicker();
+        return true;
     } catch (error) {
         console.error('Error setting segment mode:', error);
+        return false;
     }
 }
 
 // 分段模式切换
-segmentModeButton.addEventListener('click', () => {
-    const availableModes = getSegmentModes();
-    const currentIndex = availableModes.indexOf(segmentMode);
-    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % availableModes.length : 0;
-    const nextMode = availableModes[nextIndex];
-    void setSegmentMode(nextMode);
-});
+if (segmentModeButton) {
+    segmentModeButton.addEventListener('click', () => {
+        const availableModes = getSegmentModes();
+        const currentIndex = availableModes.indexOf(segmentMode);
+        const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % availableModes.length : 0;
+        const nextMode = availableModes[nextIndex];
+        void setSegmentMode(nextMode);
+    });
+}
 
 // 显示模式切换
 displayModeButton.addEventListener('click', () => {
@@ -2446,6 +2668,14 @@ async function restartRecognition({ auto = false, targetLang = null, translation
             throw new Error(`Restart failed with status ${response.status}`);
         }
 
+        const result = await response.json().catch(() => ({}));
+        if (!auto) {
+            isPaused = false;
+            updatePauseButtonUi();
+            if (result && result.paused === false) {
+                sessionCostResume();
+            }
+        }
         console.log(auto ? 'Auto restart: new recognition session requested.' : 'Recognition restarted successfully');
 
         await delay(1500);
@@ -2517,8 +2747,7 @@ pauseButton.addEventListener('click', async () => {
             const response = await fetch('/resume', { method: 'POST' });
             if (response.ok) {
                 isPaused = false;
-                pauseIcon.textContent = '⏸️';
-                pauseButton.title = t('pause');
+                updatePauseButtonUi();
                 console.log('Recognition resumed');
                 sessionCostResume();
             }
@@ -2527,8 +2756,7 @@ pauseButton.addEventListener('click', async () => {
             const response = await fetch('/pause', { method: 'POST' });
             if (response.ok) {
                 isPaused = true;
-                pauseIcon.textContent = '▶️';
-                pauseButton.title = t('resume');
+                updatePauseButtonUi();
                 console.log('Recognition paused');
                 sessionCostPause();
             }
@@ -2611,6 +2839,9 @@ async function refreshOverlayState() {
 
 if (overlayButton) {
     overlayButton.addEventListener('click', async () => {
+        if (lockManualControls) {
+            return;
+        }
         try {
             const response = await fetch('/overlay', {
                 method: 'POST',
@@ -4064,6 +4295,9 @@ function updateSettingsButtonVisibility() {
     if (settingsButton) {
         settingsButton.style.display = lockManualControls ? 'none' : '';
     }
+    if (overlayButton && lockManualControls) {
+        overlayButton.style.display = 'none';
+    }
 }
 
 function applySettingsI18n() {
@@ -4089,8 +4323,14 @@ function applySettingsI18n() {
     setText('providerSonioxLabel', 'provider_soniox');
     setText('providerGeminiLabel', 'provider_gemini');
     setText('sonioxRegionLabel', 'soniox_region');
+    setText('microphoneDeviceLabel', 'microphone_device');
+    setText('runtimeControlsLabel', 'recognition_controls');
+    setText('autoRestartSettingLabel', 'auto_restart_setting');
+    setText('segmentModeSettingLabel', 'segment_mode_setting');
     // Rebuild the region picker so its option labels follow the active language.
     renderSonioxRegionPicker(getSelectedSonioxRegion());
+    renderMicrophoneDevicePicker();
+    renderRuntimeSettingsPickers();
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
     if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
     if (settingsModeBackButton) settingsModeBackButton.textContent = t('mode_back_to_chooser');
@@ -4274,6 +4514,8 @@ function populateSettingsForm() {
     updateApiKeyFieldForProvider(provider);
     updateSonioxRegionForProvider(provider);
     applyModeSectionsVisibility(mode);
+    renderMicrophoneDevicePicker();
+    renderRuntimeSettingsPickers();
     updateAccountSection();
     if (settingsErrorEl) {
         settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
@@ -4382,6 +4624,7 @@ function openSettings({ forced = false } = {}) {
         void fetchRelayPricing();
         void fetchBalance();
     }
+    void fetchMicrophoneDevices();
     if (settingsOverlay) settingsOverlay.hidden = false;
     if (settingsPanel) settingsPanel.hidden = false;
     const hideClose = settingsForcedOpen ? 'none' : '';
@@ -4570,6 +4813,12 @@ async function handleSettingsSave(event) {
     server.modeChosen = true;
     saveServerSettings(server);
 
+    const runtimeResult = await applyRuntimeControlSettings();
+    if (!runtimeResult.ok) {
+        if (settingsErrorEl) settingsErrorEl.textContent = runtimeResult.message || t('backend_segment_mode_disabled');
+        return;
+    }
+
     if (mode === 'relay') {
         // Hosted mode: no provider key needed; sign-in supplies the token.
         if (!server.token) {
@@ -4580,6 +4829,12 @@ async function handleSettingsSave(event) {
         }
         if (settingsSaveButton) { settingsSaveButton.disabled = true; settingsSaveButton.textContent = t('saving'); }
         if (settingsErrorEl) settingsErrorEl.textContent = '';
+        const micResult = await saveMicrophoneDeviceSelection();
+        if (!micResult.ok) {
+            if (settingsSaveButton) { settingsSaveButton.disabled = false; settingsSaveButton.textContent = t('save'); }
+            if (settingsErrorEl) settingsErrorEl.textContent = micResult.message || t('validation_error');
+            return;
+        }
         saveProviderSettings(settings);
         const result = await pushSetup(provider, null, {
             silent: false, mode: 'relay', token: server.token, region,
@@ -4617,6 +4872,14 @@ async function handleSettingsSave(event) {
     if (settingsSaveButton) settingsSaveButton.disabled = true;
     if (settingsSaveButton) settingsSaveButton.textContent = t('saving');
     if (settingsErrorEl) settingsErrorEl.textContent = '';
+
+    const micResult = await saveMicrophoneDeviceSelection();
+    if (!micResult.ok) {
+        if (settingsSaveButton) settingsSaveButton.disabled = false;
+        if (settingsSaveButton) settingsSaveButton.textContent = t('save');
+        if (settingsErrorEl) settingsErrorEl.textContent = micResult.message || t('validation_error');
+        return;
+    }
 
     const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
     const result = await pushSetup(provider, apiKeyToPush, { silent: false, region, mode: 'direct' });
