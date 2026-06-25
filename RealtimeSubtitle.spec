@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('static', 'static')]
+datas = [('static', 'static'), ('ACKNOWLEDGMENTS.md', '.')]
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',
@@ -28,7 +28,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # 而 exclude_datas 只过滤数据文件，挡不住庞大的 Qt6*.dll。
 # 这里只声明实际用到的子模块，交给 PyInstaller 自带的 PySide6 hook 按需
 # 收集依赖（平台/样式/图像格式插件等），其余可选模块统一在 excludes 中排除。
-hiddenimports += ['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'shiboken6']
+hiddenimports += ['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtSvg', 'shiboken6']
 
 # 不需要的模块；排除后其对应的 Qt6*.dll / 插件不会被收集。
 # 重点：QtWebEngine* 必须排除，否则 webview.platforms.qt 会把整套
