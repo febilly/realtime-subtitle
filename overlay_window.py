@@ -1107,10 +1107,12 @@ class OverlayWindow(QWidget):
         if not lines:
             fs = self.font_size
             # 占位文案垂直居中：QTextEdit 默认顶对齐，按可用高度补一段上边距。
+            # 为了让 first block margin 正常生效，我们 prepend 一个 1px 的 spacer block。
             line_h = fs * 1.2
             usable_h = max(0, self.text.height())
-            top = max(0, int((usable_h - line_h) / 2))
+            top = max(0, int((usable_h - line_h) / 2) - 6)
             html = (
+                f'<div style="font-size:1px; line-height:1px;">&nbsp;</div>'
                 f'<div style="color:{PLACEHOLDER_COLOR}; font-size:{fs}px; '
                 f'font-family:{CJK_FONT_STACK}; '
                 f'text-align:center; margin-top:{top}px;">等待字幕…</div>'
