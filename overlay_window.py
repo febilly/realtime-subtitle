@@ -21,7 +21,7 @@ import threading
 import urllib.request
 from html import escape as _html_escape
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QRect, QRectF, QSettings
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QRect, QRectF, QSettings, QSize
 from PySide6.QtGui import (
     QCursor,
     QPainter,
@@ -29,16 +29,21 @@ from PySide6.QtGui import (
     QBrush,
     QFont,
     QFontMetrics,
+    QIcon,
+    QPainterPath,
+    QPen,
     QPixmap,
     QTextCursor,
     QTextDocument,
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QProxyStyle,
     QWidget,
     QTextEdit,
     QPushButton,
     QHBoxLayout,
+    QStyle,
 )
 
 try:
@@ -56,6 +61,7 @@ PLACEHOLDER_COLOR = "#9ca3af"  # 空状态 / 占位
 TAG_BG = "rgba(255,255,255,0.16)"
 TAG_FG = "#d1d5db"
 SPEAKER_COLOR = "#9ca3af"
+CJK_FONT_STACK = "'Noto Sans CJK SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI', sans-serif"
 
 RESIZE_MARGIN = 8              # 边缘缩放热区（像素）
 MIN_W, MIN_H = 220, 120
@@ -87,6 +93,101 @@ def _build_alpha_levels(n: int = 11) -> list[int]:
 ALPHA_LEVELS = _build_alpha_levels()
 # 默认沿用此前 ~150 的观感，取最接近的挡位（151）。
 DEFAULT_ALPHA = min(ALPHA_LEVELS, key=lambda a: abs(a - 150))
+
+
+class InstantToolTipStyle(QProxyStyle):
+    """Remove the default hover delay for overlay controls."""
+
+    def styleHint(self, hint, option=None, widget=None, returnData=None):
+        if hint == QStyle.SH_ToolTip_WakeUpDelay:
+            return 0
+        return super().styleHint(hint, option, widget, returnData)
+
+
+def _line_icon(name: str, color: str = "#f3f4f6") -> QIcon:
+    """Draw a small Lucide-style line icon as a native Qt icon."""
+    pm = QPixmap(20, 20)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    pen = QPen(QColor(color), 1.8)
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+
+    if name in ("layers-minus", "layers-plus"):
+        p.save()
+        p.scale(20 / 24, 20 / 24)
+        layer = QPainterPath()
+        layer.moveTo(12.8, 2.2)
+        layer.cubicTo(12.3, 2.0, 11.7, 2.0, 11.2, 2.2)
+        layer.lineTo(2.6, 6.1)
+        layer.cubicTo(1.8, 6.5, 1.8, 7.5, 2.6, 7.9)
+        layer.lineTo(11.2, 11.8)
+        layer.cubicTo(11.7, 12.1, 12.3, 12.1, 12.8, 11.8)
+        layer.lineTo(21.4, 7.9)
+        layer.cubicTo(22.2, 7.5, 22.2, 6.5, 21.4, 6.1)
+        layer.closeSubpath()
+        p.drawPath(layer)
+
+        mid = QPainterPath()
+        mid.moveTo(2, 12)
+        mid.cubicTo(2.1, 12.4, 2.3, 12.7, 2.6, 12.9)
+        mid.lineTo(11.2, 16.8)
+        mid.cubicTo(11.5, 16.9, 11.8, 17, 12, 17)
+        p.drawPath(mid)
+
+        low = QPainterPath()
+        low.moveTo(2, 17)
+        low.cubicTo(2.1, 17.4, 2.3, 17.7, 2.6, 17.9)
+        low.lineTo(11.2, 21.8)
+        low.cubicTo(11.7, 22.1, 12.3, 22.1, 12.8, 21.8)
+        low.lineTo(15, 20.8)
+        p.drawPath(low)
+
+        if name == "layers-minus":
+            p.drawLine(16, 17, 22, 17)
+            fade = QPainterPath()
+            fade.moveTo(22, 12)
+            fade.cubicTo(21.9, 12.4, 21.7, 12.7, 21.4, 12.9)
+            fade.lineTo(21.2, 13)
+            p.drawPath(fade)
+        else:
+            p.drawLine(16, 17, 22, 17)
+            p.drawLine(19, 14, 19, 20)
+        p.restore()
+    elif name == "mouse-pointer-2":
+        path = QPainterPath()
+        path.moveTo(5, 3)
+        path.lineTo(15, 11)
+        path.lineTo(10.5, 12)
+        path.lineTo(13, 17)
+        path.lineTo(10.5, 18)
+        path.lineTo(8, 13)
+        path.lineTo(5, 16)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif name == "rotate-cw":
+        p.drawArc(QRectF(4, 4, 12, 12), 40 * 16, 285 * 16)
+        p.drawLine(14.5, 4.5, 16.5, 4.5)
+        p.drawLine(16.5, 4.5, 16.5, 2.5)
+    elif name == "pause":
+        p.drawLine(7, 5, 7, 15)
+        p.drawLine(13, 5, 13, 15)
+    elif name == "play":
+        path = QPainterPath()
+        path.moveTo(7, 5)
+        path.lineTo(15, 10)
+        path.lineTo(7, 15)
+        path.closeSubpath()
+        p.drawPath(path)
+    elif name == "x":
+        p.drawLine(6, 6, 14, 14)
+        p.drawLine(14, 6, 6, 14)
+
+    p.end()
+    return QIcon(pm)
 
 
 # ===========================================================================
@@ -599,13 +700,13 @@ class OverlayWindow(QWidget):
 
         self.btn_font_dec = self._make_button("A-", "减小字号", self._dec_font)
         self.btn_font_inc = self._make_button("A+", "增大字号", self._inc_font)
-        self.btn_alpha_dec = self._make_button("░", "背景更透明", self._dec_alpha)
-        self.btn_alpha_inc = self._make_button("▓", "背景更不透明", self._inc_alpha)
+        self.btn_alpha_dec = self._make_button("", "背景更透明", self._dec_alpha, icon="layers-minus")
+        self.btn_alpha_inc = self._make_button("", "背景更不透明", self._inc_alpha, icon="layers-plus")
         self.btn_display = self._make_button("O/T", "Toggle display: original + translation / original only / translation only", self._cycle_display)
-        self.btn_passthrough = self._make_button("✋", "Click-through mode: mouse passes through everywhere except these buttons", self._toggle_passthrough)
-        self.btn_restart = self._make_button("↻", "重启识别", self._restart_recognition)
-        self.btn_pause = self._make_button("⏸", "暂停/继续识别", self._toggle_pause)
-        self.btn_close = self._make_button("✕", "关闭悬浮窗", self.close)
+        self.btn_passthrough = self._make_button("", "Click-through mode: mouse passes through everywhere except these buttons", self._toggle_passthrough, icon="mouse-pointer-2")
+        self.btn_restart = self._make_button("", "重启识别", self._restart_recognition, icon="rotate-cw")
+        self.btn_pause = self._make_button("", "暂停/继续识别", self._toggle_pause, icon="pause")
+        self.btn_close = self._make_button("", "关闭悬浮窗", self.close, icon="x")
         for b in (self.btn_font_dec, self.btn_font_inc,
                   self.btn_alpha_dec, self.btn_alpha_inc,
                   self.btn_display, self.btn_passthrough,
@@ -648,11 +749,14 @@ class OverlayWindow(QWidget):
         "QPushButton:pressed { background: rgba(96,165,250,0.70); }"
     )
 
-    def _make_button(self, text, tip, slot):
+    def _make_button(self, text, tip, slot, icon=None):
         b = QPushButton(text, self.button_bar)
         b.setToolTip(tip)
         b.setCursor(Qt.PointingHandCursor)
         b.setFixedSize(28, 24)
+        b.setIconSize(QSize(18, 18))
+        if icon:
+            b.setIcon(_line_icon(icon))
         b.setFocusPolicy(Qt.NoFocus)
         b.setStyleSheet(self._BTN_QSS)
         b.clicked.connect(slot)
@@ -874,7 +978,7 @@ class OverlayWindow(QWidget):
         target = "/resume" if self.is_paused else "/pause"
         # 乐观更新；网络请求放后台线程避免卡 UI
         self.is_paused = not self.is_paused
-        self.btn_pause.setText("▶" if self.is_paused else "⏸")
+        self.btn_pause.setIcon(_line_icon("play" if self.is_paused else "pause"))
         self.btn_pause.setToolTip("继续识别" if self.is_paused else "暂停识别")
         threading.Thread(
             target=self._post, args=(target,), daemon=True
@@ -885,6 +989,7 @@ class OverlayWindow(QWidget):
             return
         self._restart_in_flight = True
         self.btn_restart.setEnabled(False)
+        self.btn_restart.setIcon(QIcon())
         self.btn_restart.setText("...")
         self.btn_restart.setToolTip("正在重启识别")
         threading.Thread(target=self._restart_worker, daemon=True).start()
@@ -896,7 +1001,8 @@ class OverlayWindow(QWidget):
     def _on_restart_finished(self, ok: bool):
         self._restart_in_flight = False
         self.btn_restart.setEnabled(True)
-        self.btn_restart.setText("↻")
+        self.btn_restart.setText("")
+        self.btn_restart.setIcon(_line_icon("rotate-cw"))
         self.btn_restart.setToolTip("重启识别" if ok else "重启失败，点击重试")
 
     def _post(self, path):
@@ -961,6 +1067,7 @@ class OverlayWindow(QWidget):
             top = max(0, int((usable_h - line_h) / 2))
             html = (
                 f'<div style="color:{PLACEHOLDER_COLOR}; font-size:{fs}px; '
+                f'font-family:{CJK_FONT_STACK}; '
                 f'text-align:center; margin-top:{top}px;">等待字幕…</div>'
             )
         else:
@@ -1048,7 +1155,7 @@ class OverlayWindow(QWidget):
             spec = f"{tag_fs}-{_html_escape(str(lang)).upper()}"
             tag_html = f'<img src="{_TAG_SCHEME}{spec}" style="vertical-align:middle;">'
         style = (f"margin:0 0 {margin_bottom}px 0; line-height:110%; "
-                 f"font-size:{fs}px; color:{FINAL_COLOR};")
+                 f"font-size:{fs}px; color:{FINAL_COLOR}; font-family:{CJK_FONT_STACK};")
         return f'<div style="{style}">{tag_html}{"".join(spans)}</div>'
 
     # ------------------------------------------------------------- 关闭 ----
@@ -1071,6 +1178,7 @@ def main(argv=None):
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
     app = QApplication.instance() or QApplication(sys.argv)
+    app.setStyle(InstantToolTipStyle(app.style()))
     app.setQuitOnLastWindowClosed(True)
     win = OverlayWindow(args.url)
     win.show()
