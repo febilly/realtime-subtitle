@@ -31,7 +31,8 @@
 
     // Only these keys are shared across instances: API key / provider config
     // (providerSettings.v1), server address + login auth (subtitleServer.v1),
-    // and the LLM refine/translate mode. Everything else (theme,
+    // the LLM refine/translate mode, and the optional bundled CJK font toggle.
+    // Everything else (theme,
     // segment/display mode, audio source, auto-restart, …) stays per-instance.
     // Keep in sync with the constants in app.js.
     var ALLOWLIST = {
@@ -40,6 +41,7 @@
         'llmTranslationMode': true,
         'llmRefineMode': true,
         'llmRefineEnabled': true,
+        'useBundledCjkFont': true,
     };
 
     function isShared(key) {

@@ -72,6 +72,7 @@ class WebServer:
         self._ipc_polling_task = None
         # Lazy aiohttp client for proxying REST calls to the subtitle-server.
         self._http = None
+        self.use_bundled_cjk_fonts = False
 
     def set_window_on_top_callback(self, callback):
         self.window_on_top_callback = callback
@@ -160,6 +161,11 @@ class WebServer:
             # 发送当前识别暂停状态给新连入的客户端
             is_paused = getattr(self.session, "is_paused", False)
             await ws.send_str(json.dumps({"type": "recognition_paused", "paused": is_paused}))
+
+            await ws.send_str(json.dumps({
+                "type": "subtitle_font_preference",
+                "use_bundled_cjk_fonts": bool(self.use_bundled_cjk_fonts and self.check_custom_font_exists()),
+            }))
 
             manager = self.provider_manager
             if manager is not None:
@@ -270,6 +276,7 @@ class WebServer:
             "client_minimum_version": "",
             "client_update_url": "",
             "client_update_notes": "",
+            "custom_font_available": self.check_custom_font_exists(),
         }
 
         if config.RELAY_AVAILABLE:
@@ -1243,6 +1250,58 @@ class WebServer:
         except Exception as error:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
+    def get_custom_font_path(self) -> str | None:
+        import sys
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            return os.path.join(exe_dir, "NotoSansCJK-Regular.ttc")
+        else:
+            return os.path.join(os.getcwd(), "NotoSansCJK-Regular.ttc")
+
+    def check_custom_font_exists(self) -> bool:
+        font_path = self.get_custom_font_path()
+        return font_path is not None and os.path.exists(font_path)
+
+    async def custom_font_file_handler(self, request):
+        """Serve the custom font file if it exists, fallback to static version, or return 404."""
+        font_path = self.get_custom_font_path()
+        if font_path and os.path.exists(font_path):
+            return web.FileResponse(font_path)
+        
+        # Fallback to static folder version
+        static_font_path = get_resource_path(os.path.join('static', 'fonts', 'NotoSansCJK-Regular.ttc'))
+        if os.path.exists(static_font_path):
+            return web.FileResponse(static_font_path)
+        
+        return web.HTTPNotFound()
+
+    async def subtitle_font_get_handler(self, request):
+        """Return the current subtitle font preference for native overlay clients."""
+        return web.json_response({
+            "use_bundled_cjk_fonts": bool(self.use_bundled_cjk_fonts and self.check_custom_font_exists()),
+        })
+
+    async def subtitle_font_post_handler(self, request):
+        """Update subtitle font preference and broadcast it to connected windows."""
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        enabled = bool(payload.get("use_bundled_cjk_fonts"))
+        if enabled and not self.check_custom_font_exists():
+            enabled = False
+
+        self.use_bundled_cjk_fonts = enabled
+        await self.broadcast_to_clients({
+            "type": "subtitle_font_preference",
+            "use_bundled_cjk_fonts": enabled,
+        })
+        return web.json_response({"status": "ok", "use_bundled_cjk_fonts": enabled})
+
     async def overlay_get_handler(self, request):
         """查询原生字幕悬浮窗当前是否打开。"""
         manager = self.overlay_manager
@@ -1386,10 +1445,13 @@ class WebServer:
         app.router.add_get('/microphones', self.microphones_handler)
         app.router.add_get('/microphone-device', self.microphone_device_get_handler)
         app.router.add_post('/microphone-device', self.microphone_device_set_handler)
+        app.router.add_get('/subtitle-font', self.subtitle_font_get_handler)
+        app.router.add_post('/subtitle-font', self.subtitle_font_post_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
         app.router.add_get('/overlay', self.overlay_get_handler)
         app.router.add_post('/overlay', self.overlay_post_handler)
         app.router.add_post('/shutdown', self.shutdown_handler)
+        app.router.add_get('/fonts/NotoSansCJK-Regular.ttc', self.custom_font_file_handler)
         
         # 静态文件服务 - 放在最后以避免覆盖API路由
         # 将 static 目录下的文件映射到根路径

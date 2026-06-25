@@ -29,6 +29,7 @@ from PySide6.QtGui import (
     QColor,
     QBrush,
     QFont,
+    QFontDatabase,
     QFontMetrics,
     QIcon,
     QPainterPath,
@@ -65,7 +66,14 @@ PLACEHOLDER_COLOR = "#9ca3af"  # 空状态 / 占位
 TAG_BG = "rgba(255,255,255,0.16)"
 TAG_FG = "#d1d5db"
 SPEAKER_COLOR = "#9ca3af"
-CJK_FONT_STACK = "'Noto Sans CJK SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI', sans-serif"
+FONT_SC_FAMILY = "Noto Sans CJK SC"
+FONT_JP_FAMILY = "Noto Sans CJK JP"
+FONT_KR_FAMILY = "Noto Sans CJK KR"
+SYSTEM_FONT_STACK = "'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Yu Gothic', 'Meiryo', 'Malgun Gothic', sans-serif"
+BUNDLED_CJK_FONT_STACK = f"'{FONT_SC_FAMILY}', '{FONT_JP_FAMILY}', '{FONT_KR_FAMILY}', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI', sans-serif"
+BUNDLED_SC_FONT_STACK = f"'{FONT_SC_FAMILY}', '{FONT_JP_FAMILY}', '{FONT_KR_FAMILY}', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI', sans-serif"
+BUNDLED_JP_FONT_STACK = f"'{FONT_JP_FAMILY}', '{FONT_SC_FAMILY}', '{FONT_KR_FAMILY}', 'Yu Gothic', 'Meiryo', 'Segoe UI', sans-serif"
+BUNDLED_KR_FONT_STACK = f"'{FONT_KR_FAMILY}', '{FONT_SC_FAMILY}', '{FONT_JP_FAMILY}', 'Malgun Gothic', 'Segoe UI', sans-serif"
 
 RESIZE_MARGIN = 8              # 边缘缩放热区（像素）
 MIN_W, MIN_H = 220, 120
@@ -97,6 +105,40 @@ def _build_alpha_levels(n: int = 11) -> list[int]:
 ALPHA_LEVELS = _build_alpha_levels()
 # 默认沿用此前 ~150 的观感，取最接近的挡位（151）。
 DEFAULT_ALPHA = min(ALPHA_LEVELS, key=lambda a: abs(a - 150))
+
+
+def _resource_path(*parts: str) -> str:
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, *parts)
+
+
+def get_custom_font_path() -> str | None:
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        font_path = os.path.join(exe_dir, "NotoSansCJK-Regular.ttc")
+    else:
+        font_path = os.path.join(os.getcwd(), "NotoSansCJK-Regular.ttc")
+    if os.path.exists(font_path):
+        return font_path
+    
+    # Fallback to dev static folder font path
+    static_font_path = _resource_path("static", "fonts", "NotoSansCJK-Regular.ttc")
+    if os.path.exists(static_font_path):
+        return static_font_path
+    return None
+
+
+def custom_font_exists() -> bool:
+    return get_custom_font_path() is not None
+
+
+def load_bundled_fonts() -> None:
+    font_path = get_custom_font_path()
+    if not font_path:
+        return
+    font_id = QFontDatabase.addApplicationFont(font_path)
+    if font_id < 0:
+        print(f"⚠️  Failed to load CJK font: {font_path}")
 
 
 class InstantToolTipStyle(QProxyStyle):
@@ -493,6 +535,40 @@ class WsClient(threading.Thread):
 SENTENCE_PUNCT = "。．.!！?？…"
 
 
+def _normalize_lang_code(lang) -> str:
+    return str(lang or "").strip().lower().replace("_", "-")
+
+
+def _subtitle_font_lang(lang) -> str:
+    code = _normalize_lang_code(lang)
+    primary = code.split("-", 1)[0]
+    if primary in {"zh", "cmn", "yue", "lzh"}:
+        return "zh-Hans"
+    if primary == "ja":
+        return "ja"
+    if primary == "ko":
+        return "ko"
+    return ""
+
+
+def _lang_attr(lang) -> str:
+    font_lang = _subtitle_font_lang(lang)
+    return f' lang="{font_lang}"' if font_lang else ""
+
+
+def _font_stack_for_lang(lang, use_bundled_cjk_fonts: bool = False) -> str:
+    if not use_bundled_cjk_fonts or not custom_font_exists():
+        return SYSTEM_FONT_STACK
+    font_lang = _subtitle_font_lang(lang)
+    if font_lang == "ja":
+        return BUNDLED_JP_FONT_STACK
+    if font_lang == "ko":
+        return BUNDLED_KR_FONT_STACK
+    if font_lang:
+        return BUNDLED_SC_FONT_STACK
+    return BUNDLED_CJK_FONT_STACK
+
+
 def _ensure_speaker(spk):
     return "undefined" if spk is None else spk
 
@@ -877,6 +953,7 @@ class OverlayWindow(QWidget):
         # 显示模式：both（原文+译文）/ original（仅原文）/ translation（仅译文）
         self.display_mode = str(self.settings.value("display_mode", "both"))
         self.is_paused = False
+        self.use_bundled_cjk_fonts = False
         self._restart_in_flight = False
         self._passthrough = False
         self._click_through_on = False
@@ -1313,6 +1390,12 @@ class OverlayWindow(QWidget):
             self.is_paused = bool(data.get("paused"))
             self.btn_pause.setIconName("play" if self.is_paused else "pause")
             self.btn_pause.setToolTip(tr("resume") if self.is_paused else tr("pause"))
+        elif mtype == "subtitle_font_preference":
+            enabled = bool(data.get("use_bundled_cjk_fonts"))
+            if self.use_bundled_cjk_fonts != enabled:
+                self.use_bundled_cjk_fonts = enabled
+                self._last_html = None
+                self._render()
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
@@ -1345,7 +1428,7 @@ class OverlayWindow(QWidget):
             html = (
                 f'<div style="font-size:1px; line-height:1px;">&nbsp;</div>'
                 f'<div style="color:{PLACEHOLDER_COLOR}; font-size:{fs}px; '
-                f'font-family:{CJK_FONT_STACK}; '
+                f'font-family:{_font_stack_for_lang("", self.use_bundled_cjk_fonts)}; '
                 f'text-align:center; margin-top:{top}px;">等待字幕…</div>'
             )
         else:
@@ -1432,9 +1515,10 @@ class OverlayWindow(QWidget):
             # 圆角矩形语言标识：交给 SubtitleTextEdit.loadResource 画成内联图片。
             spec = f"{tag_fs}-{_html_escape(str(lang)).upper()}"
             tag_html = f'<img src="{_TAG_SCHEME}{spec}" style="vertical-align:middle;">'
+        font_stack = _font_stack_for_lang(lang, self.use_bundled_cjk_fonts)
         style = (f"margin:0 0 {margin_bottom}px 0; line-height:110%; "
-                 f"font-size:{fs}px; color:{FINAL_COLOR}; font-family:{CJK_FONT_STACK};")
-        return f'<div style="{style}">{tag_html}{"".join(spans)}</div>'
+                 f"font-size:{fs}px; color:{FINAL_COLOR}; font-family:{font_stack};")
+        return f'<div{_lang_attr(lang)} style="{style}">{tag_html}{"".join(spans)}</div>'
 
     # ------------------------------------------------------------- 关闭 ----
     def _save_geometry(self):
@@ -1457,6 +1541,7 @@ def main(argv=None):
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
     app = QApplication.instance() or QApplication(sys.argv)
+    load_bundled_fonts()
     app.setStyle(InstantToolTipStyle(app.style()))
     app.setQuitOnLastWindowClosed(False)
     win = OverlayWindow(args.url)

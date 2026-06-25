@@ -290,6 +290,7 @@ const sonioxRegionPickerHost = document.getElementById('sonioxRegionPicker');
 const microphoneDeviceSection = document.getElementById('microphoneDeviceSection');
 const microphoneDevicePickerHost = document.getElementById('microphoneDevicePicker');
 const microphoneDeviceHint = document.getElementById('microphoneDeviceHint');
+const bundledCjkFontPickerHost = document.getElementById('bundledCjkFontPicker');
 const runtimeControlsSection = document.getElementById('runtimeControlsSection');
 const autoRestartPickerHost = document.getElementById('autoRestartPicker');
 const segmentModeSettingField = document.getElementById('segmentModeSettingField');
@@ -302,6 +303,7 @@ let sonioxRegionPickerEl = null;
 let microphoneDevicePickerEl = null;
 let autoRestartPickerEl = null;
 let segmentModePickerEl = null;
+let bundledCjkFontPickerEl = null;
 let microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
 
 // Where users obtain an API key for each provider (shown as a link in Settings).
@@ -312,6 +314,7 @@ const PROVIDER_KEY_URLS = {
 
 const PROVIDER_SETTINGS_STORAGE_KEY = 'providerSettings.v1';
 const UI_TRANSLATION_MODE_STORAGE_KEY = 'uiTranslationMode';
+const BUNDLED_CJK_FONT_STORAGE_KEY = 'useBundledCjkFont';
 
 let backendBootId = '';
 let setupRequired = false;
@@ -326,6 +329,34 @@ let backendTargetLang2 = 'zh';
 let suppressTranslationDisplay = false;
 let pushedOverrideBootId = null;
 let settingsForcedOpen = false;
+let useBundledCjkFont = localStorage.getItem(BUNDLED_CJK_FONT_STORAGE_KEY) === 'true';
+let customFontAvailable = false;
+
+function applyBundledCjkFontPreference(enabled, { persist = false, sync = false } = {}) {
+    useBundledCjkFont = !!enabled;
+    document.body.classList.toggle('use-bundled-cjk-fonts', useBundledCjkFont);
+    renderBundledCjkFontPicker();
+    if (persist) {
+        localStorage.setItem(BUNDLED_CJK_FONT_STORAGE_KEY, useBundledCjkFont ? 'true' : 'false');
+    }
+    if (sync) {
+        void syncBundledCjkFontPreference(useBundledCjkFont);
+    }
+}
+
+async function syncBundledCjkFontPreference(enabled) {
+    try {
+        await fetch('/subtitle-font', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ use_bundled_cjk_fonts: !!enabled }),
+        });
+    } catch (error) {
+        console.warn('Failed to sync subtitle font preference:', error);
+    }
+}
+
+applyBundledCjkFontPreference(useBundledCjkFont, { sync: true });
 let toastTimer = null;
 
 // ---- Subtitle-server relay (hosted mode) state ----
@@ -1288,6 +1319,13 @@ async function fetchUiConfig() {
         }
         updateSegmentModeButton();
         renderRuntimeSettingsPickers();
+        if (data && typeof data.custom_font_available === 'boolean') {
+            customFontAvailable = data.custom_font_available;
+            if (!customFontAvailable) {
+                applyBundledCjkFontPreference(false, { persist: false, sync: false });
+            }
+        }
+        renderBundledCjkFontPicker();
 
         if (data && typeof data.speaker_diarization_enabled === 'boolean') {
             speakerDiarizationEnabled = data.speaker_diarization_enabled;
@@ -2572,6 +2610,42 @@ function renderAutoRestartPicker() {
     autoRestartPickerHost.appendChild(autoRestartPickerEl);
 }
 
+function renderBundledCjkFontPicker() {
+    if (!bundledCjkFontPickerHost) {
+        return;
+    }
+    bundledCjkFontPickerHost.innerHTML = '';
+    
+    const hintEl = document.getElementById('bundledCjkFontHint');
+    
+    if (!customFontAvailable) {
+        const statusSpan = document.createElement('span');
+        statusSpan.className = 'font-not-detected-status';
+        statusSpan.style.color = '#ef4444';
+        statusSpan.style.fontSize = '0.95em';
+        statusSpan.style.fontWeight = '500';
+        statusSpan.textContent = t('custom_font_not_detected') || 'Not detected';
+        bundledCjkFontPickerHost.appendChild(statusSpan);
+        
+        if (hintEl) {
+            hintEl.textContent = t('custom_font_missing_hint');
+        }
+        return;
+    }
+    
+    bundledCjkFontPickerEl = buildCustomSelect([
+        { value: 'true', label: t('bundled_cjk_font_enabled') },
+        { value: 'false', label: t('bundled_cjk_font_disabled') },
+    ], {
+        value: useBundledCjkFont ? 'true' : 'false',
+    });
+    bundledCjkFontPickerHost.appendChild(bundledCjkFontPickerEl);
+    
+    if (hintEl) {
+        hintEl.textContent = t('bundled_cjk_font_hint');
+    }
+}
+
 function renderSegmentModePicker() {
     if (segmentModeSettingField) {
         segmentModeSettingField.hidden = !segmentModeSupported;
@@ -3141,6 +3215,11 @@ function connect() {
 }
 
 function handleMessage(data) {
+    if (data.type === 'subtitle_font_preference') {
+        const enabled = !!data.use_bundled_cjk_fonts;
+        applyBundledCjkFontPreference(enabled, { persist: true });
+        return;
+    }
     if (data.type === 'recognition_paused') {
         isPaused = !!data.paused;
         updatePauseButtonUi();
@@ -3387,8 +3466,9 @@ function getLanguageTag(language) {
     return `<span class="language-tag">${language.toUpperCase()}</span>`;
 }
 
-function wrapSubtitleLineBody(innerHtml, dir) {
-    return `<span class="subtitle-line-body" dir="${dir || 'auto'}">${innerHtml}</span>`;
+function wrapSubtitleLineBody(innerHtml, dir, lang) {
+    const langAttr = lang ? ` lang="${lang}"` : '';
+    return `<span class="subtitle-line-body"${langAttr} dir="${dir || 'auto'}">${innerHtml}</span>`;
 }
 
 function assignSequenceIndex(token) {
@@ -4086,7 +4166,7 @@ function renderSubtitles() {
 
                     if (plainText.trim().length === 0) {
                         const lineContent = sentence.originalTokens.map(t => renderTokenSpan(t)).join('');
-                        sentenceParts.push(`<div class="subtitle-line original-line" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(lineContent, sentenceDir)}</div>`);
+                        sentenceParts.push(`<div class="subtitle-line original-line" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(lineContent, sentenceDir, sentence.originalLang)}</div>`);
                     } else {
                         const rubyHtml = furiganaCache.get(plainText);
 
@@ -4096,7 +4176,7 @@ function renderSubtitles() {
                                 classes.push('non-final');
                             }
                             const rubySpan = `<span class="${classes.join(' ')}">${rubyHtml}</span>`;
-                            sentenceParts.push(`<div class="subtitle-line original-line subtitle-line--furigana" dir="${sentenceDir}">${wrapSubtitleLineBody(`${langTag}${rubySpan}`, sentenceDir)}</div>`);
+                            sentenceParts.push(`<div class="subtitle-line original-line subtitle-line--furigana" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${wrapSubtitleLineBody(`${langTag}${rubySpan}`, sentenceDir, sentence.originalLang)}</div>`);
                         } else {
                             requestFurigana(plainText);
                             const previousHtml = renderedSentences.get(sentenceId);
@@ -4110,7 +4190,7 @@ function renderSubtitles() {
                     }
                 } else {
                     const lineContent = renderTokenSpansTrimmed(sentence.originalTokens);
-                    sentenceParts.push(`<div class="subtitle-line original-line" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(lineContent, sentenceDir)}</div>`);
+                    sentenceParts.push(`<div class="subtitle-line original-line" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${langTag}${wrapSubtitleLineBody(lineContent, sentenceDir, sentence.originalLang)}</div>`);
                 }
             }
 
@@ -4151,19 +4231,19 @@ function renderSubtitles() {
                         const html = showDiff
                             ? renderTranslationDiffHtml(baseTranslationNormalized, displayTranslation)
                             : escapeHtml(displayTranslation);
-                        sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text">${html}</span>`, translationDir)}</div>`);
+                        sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text" lang="${sentence.translationLang || ''}">${html}</span>`, translationDir, sentence.translationLang)}</div>`);
                     } else if (overrideTranslation) {
                         const html = escapeHtml(displayTranslation || '');
-                        sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text">${html}</span>`, translationDir)}</div>`);
+                        sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text" lang="${sentence.translationLang || ''}">${html}</span>`, translationDir, sentence.translationLang)}</div>`);
                     } else {
                         const lineContent = renderTokenSpansTrimmed(sentence.translationTokens, null, {
                             normalizeTranslationSpacing: true
                         });
-                        sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(lineContent, translationDir)}</div>`);
+                        sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(lineContent, translationDir, sentence.translationLang)}</div>`);
                     }
                 } else {
                     const placeholderText = '&nbsp;';
-                    sentenceParts.push(`<div class="subtitle-line" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text placeholder">${placeholderText}</span>`, translationDir)}</div>`);
+                    sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text placeholder" lang="${sentence.translationLang || ''}">${placeholderText}</span>`, translationDir, sentence.translationLang)}</div>`);
                 }
             }
 
@@ -4513,10 +4593,14 @@ function applySettingsI18n() {
     setText('runtimeControlsLabel', 'recognition_controls');
     setText('autoRestartSettingLabel', 'auto_restart_setting');
     setText('segmentModeSettingLabel', 'segment_mode_setting');
+    setText('appearanceLabel', 'appearance');
+    setText('bundledCjkFontLabel', 'bundled_cjk_font');
+    setText('bundledCjkFontHint', 'bundled_cjk_font_hint');
     // Rebuild the region picker so its option labels follow the active language.
     renderSonioxRegionPicker(getSelectedSonioxRegion());
     renderMicrophoneDevicePicker();
     renderRuntimeSettingsPickers();
+    renderBundledCjkFontPicker();
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
     if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
     if (settingsModeBackButton) settingsModeBackButton.textContent = t('mode_back_to_chooser');
@@ -4702,6 +4786,7 @@ function populateSettingsForm() {
     applyModeSectionsVisibility(mode);
     renderMicrophoneDevicePicker();
     renderRuntimeSettingsPickers();
+    renderBundledCjkFontPicker();
     updateAccountSection();
     if (settingsErrorEl) {
         settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
@@ -4975,6 +5060,11 @@ async function handleSettingsSave(event) {
     if (event) {
         event.preventDefault();
     }
+    const targetCjkFontValue = customFontAvailable && bundledCjkFontPickerEl ? (bundledCjkFontPickerEl.value === 'true') : false;
+    applyBundledCjkFontPreference(targetCjkFontValue, {
+        persist: true,
+        sync: true,
+    });
     const provider = getSelectedProvider();
     const region = getSelectedSonioxRegion();
     const mode = getSettingsMode();
