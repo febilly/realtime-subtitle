@@ -28,6 +28,7 @@ from config import (
 )
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
+from audio_capture import list_microphone_devices, normalize_microphone_device_id
 from llm_client import close_llm_http_session
 import local_store
 
@@ -1008,7 +1009,7 @@ class WebServer:
                     pass
 
             print("[Server] New session started successfully")
-            return web.json_response({"status": "ok", "message": "Recognition restarted"})
+            return web.json_response({"status": "ok", "message": "Recognition restarted", "paused": False})
         except Exception as e:
             print(f"[Server] Failed to restart: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -1125,6 +1126,63 @@ class WebServer:
         }
         return web.json_response(response, status=status_code)
 
+    def _microphone_payload(self) -> dict:
+        data = list_microphone_devices()
+        selected_id = ""
+        if hasattr(self.session, "get_microphone_device_id"):
+            selected_id = normalize_microphone_device_id(self.session.get_microphone_device_id())
+        data["selected_id"] = selected_id
+        return data
+
+    async def microphones_handler(self, request):
+        """List available microphone devices for the settings UI."""
+        payload = self._microphone_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    async def microphone_device_get_handler(self, request):
+        """Get the selected microphone device."""
+        payload = self._microphone_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    async def microphone_device_set_handler(self, request):
+        """Set the selected microphone device."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Microphone device switching is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        device_id = normalize_microphone_device_id(payload.get("id"))
+        if device_id:
+            devices = self._microphone_payload().get("devices") or []
+            known_ids = {str(device.get("id") or "") for device in devices if isinstance(device, dict)}
+            if known_ids and device_id not in known_ids:
+                return web.json_response({"status": "error", "message": "Unknown microphone device"}, status=400)
+
+        if not hasattr(self.session, "set_microphone_device_id"):
+            return web.json_response(
+                {"status": "error", "message": "Microphone device switching is unavailable"},
+                status=503,
+            )
+
+        success, message = self.session.set_microphone_device_id(device_id)
+        status_code = 200 if success else 400
+        return web.json_response({
+            "status": "ok" if success else "error",
+            "message": message,
+            "id": self.session.get_microphone_device_id(),
+        }, status=status_code)
+
     async def window_on_top_handler(self, request):
         """切换窗口始终置顶状态（仅 WebView 模式有效）"""
         try:
@@ -1162,6 +1220,12 @@ class WebServer:
 
         请求体：{"action": "toggle" | "open" | "close"}（缺省为 toggle）。
         """
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Overlay control is disabled by server config"},
+                status=403,
+            )
+
         manager = self.overlay_manager
         if manager is None:
             return web.json_response(
@@ -1270,6 +1334,9 @@ class WebServer:
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
+        app.router.add_get('/microphones', self.microphones_handler)
+        app.router.add_get('/microphone-device', self.microphone_device_get_handler)
+        app.router.add_post('/microphone-device', self.microphone_device_set_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
         app.router.add_get('/overlay', self.overlay_get_handler)
         app.router.add_post('/overlay', self.overlay_post_handler)

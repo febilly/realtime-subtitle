@@ -23,6 +23,7 @@ from config import (
     SLEEP_SPEECH_WINDOW_SECONDS,
     SLEEP_VAD_THRESHOLD,
     USE_TWITCH_AUDIO_STREAM,
+    MICROPHONE_DEVICE_ID,
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
@@ -192,6 +193,7 @@ class SonioxSession:
         self.sample_rate = 16000
         self.chunk_size = 3840
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
+        self.microphone_device_id = str(MICROPHONE_DEVICE_ID or "").strip()
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
         self._vrchat_self_muted = False
@@ -441,6 +443,32 @@ class SonioxSession:
         with self.audio_lock:
             return self.audio_source
 
+    def get_microphone_device_id(self) -> str:
+        with self.audio_lock:
+            return str(self.microphone_device_id or "")
+
+    def set_microphone_device_id(self, device_id: str) -> Tuple[bool, str]:
+        """Set the microphone device used by microphone and mixed capture."""
+        if USE_TWITCH_AUDIO_STREAM:
+            return False, "Twitch streaming mode is enabled; microphone device switching is disabled."
+
+        next_id = str(device_id or "").strip()
+        with self.audio_lock:
+            previous_id = self.microphone_device_id
+            self.microphone_device_id = next_id
+            streamer = self.audio_streamer
+
+        if streamer and hasattr(streamer, "set_microphone_device_id"):
+            changed = bool(streamer.set_microphone_device_id(next_id))
+            if changed:
+                print("🎙️  Microphone device switched")
+                return True, "Microphone device switched."
+            return True, "Microphone device already selected."
+
+        if next_id != previous_id:
+            print("🎙️  Microphone device saved (will apply on next session)")
+        return True, "Microphone device saved. The change will apply when a session is active."
+
     def set_audio_source(self, source: str) -> Tuple[bool, str]:
         """切换音频源。
 
@@ -499,6 +527,7 @@ class SonioxSession:
                 sample_rate=self.sample_rate,
                 chunk_size=self.chunk_size,
                 mute_mic_when_vrchat_muted=bool(MUTE_MIC_WHEN_VRCHAT_SELF_MUTED),
+                microphone_device_id=self.get_microphone_device_id(),
             )
             streamer.set_vrchat_mic_muted(self._vrchat_self_muted)
 

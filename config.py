@@ -489,6 +489,9 @@ USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 # - False: ignore VRChat MuteSelf state
 MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = _env_bool("MUTE_MIC_WHEN_VRCHAT_SELF_MUTED", True)
 
+# Optional microphone device ID. Empty means "current system default".
+MICROPHONE_DEVICE_ID = _env_str("MICROPHONE_DEVICE_ID", "").strip()
+
 # Mix audio weights (effective only when audio source is mix)
 # Convention:
 # - "self" = microphone
