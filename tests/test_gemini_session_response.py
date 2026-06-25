@@ -17,6 +17,7 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config.SLEEP_SPEECH_WINDOW_SECONDS = 0.75
     config.SLEEP_VAD_THRESHOLD = 0.2
     config.USE_TWITCH_AUDIO_STREAM = False
+    config.MICROPHONE_DEVICE_ID = ""
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
     config.TWITCH_CHANNEL = ""
     config.TWITCH_STREAM_QUALITY = "audio_only"
@@ -417,24 +418,30 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
     session._broadcast_preserve_existing_subtitles.assert_not_called()
 
 
-def test_fix_fullwidth_punctuation_between_cjk(monkeypatch):
+def test_fix_fullwidth_punctuation_after_cjk_ja(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
     import gemini_session as module
 
-    fix = module.fix_fullwidth_punctuation_between_cjk
+    fix = module.fix_fullwidth_punctuation_after_cjk_ja
 
-    # Half-width punctuation wedged between two CJK characters becomes full-width.
+    # Half-width punctuation preceded by CJK/JA character becomes full-width.
     assert fix("你好,世界。") == "你好，世界。"
     assert fix("好?真的!对") == "好？真的！对"
-    # Consecutive occurrences each convert (look-around does not consume neighbors).
+    # Consecutive occurrences each convert
     assert fix("中,中,中") == "中，中，中"
-    # At least one non-CJK neighbor leaves the punctuation untouched.
+    # Japanese Hiragana / Katakana
+    assert fix("ごめん,") == "ごめん，"
+    assert fix("ゲーム.") == "ゲーム。"
+    # At least one non-CJK/JA neighbor leaves the punctuation untouched (or if not preceded by CJK/JA).
     assert fix("价格3.14元") == "价格3.14元"
     assert fix("他说hello,world") == "他说hello,world"
     assert fix("A,B") == "A,B"
     assert fix("http://a.b/c 中") == "http://a.b/c 中"
-    # A full-width neighbor is not a CJK ideograph, so nothing changes.
-    assert fix("中,。") == "中,。"
+    # The following character is ignored, so "中,。" becomes "中，。" because ',' is preceded by '中'
+    assert fix("中,。") == "中，。"
+    # Boundary case using prev_char
+    assert fix(",世界", prev_char="中") == "，世界"
+    assert fix(",世界", prev_char="A") == ",世界"
     # No matching pattern / empty input.
     assert fix("没标点中文") == "没标点中文"
     assert fix("") == ""
@@ -446,7 +453,46 @@ def test_fix_fullwidth_punctuation_disabled_is_noop(monkeypatch):
     import gemini_session as module
 
     monkeypatch.setattr(module, "GEMINI_FULLWIDTH_PUNCT_FIX", False)
-    assert module.fix_fullwidth_punctuation_between_cjk("你好,世界") == "你好,世界"
+    assert module.fix_fullwidth_punctuation_after_cjk_ja("你好,世界") == "你好,世界"
+
+
+def test_boundary_punctuation_conversion_success_streaming(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+
+    # Chunk 1: Ends with CJK character "你好"
+    tokens = []
+    session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "你好", "languageCode": "zh"}}},
+        tokens,
+        0,
+        object(),
+    )
+    # Chunk 2: Starts with a half-width comma "," and followed by CJK "世界"
+    session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": ",世界", "languageCode": "zh"}}},
+        tokens,
+        1,
+        object(),
+    )
+
+    emitted_texts = []
+    for update in updates:
+        for t in update.get("final_tokens", []):
+            if t.get("text") and t.get("text") != "<end>":
+                emitted_texts.append(t["text"])
+
+    assert "你好" in emitted_texts
+    assert "，世界" in emitted_texts
 
 
 def test_strip_space_before_east_asian_punctuation(monkeypatch):
