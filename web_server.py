@@ -63,6 +63,7 @@ class WebServer:
         self.shutdown_callback = None
         # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
         self.overlay_manager = None
+        self.overlay_ws = None
         self.ipc_server = None
         # Provider-specific API key getter; injected by server.py.
         self.get_api_key = None
@@ -134,6 +135,12 @@ class WebServer:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         
+        # 识别是否是悬浮窗客户端
+        client_type = request.query.get("client")
+        if client_type == "overlay":
+            self.overlay_ws = ws
+            print("Overlay window client connected via WebSocket.")
+
         # 添加到客户端列表
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
@@ -143,6 +150,13 @@ class WebServer:
             if self.ipc_server is not None:
                 connected = len(self.ipc_server._clients) > 0
             await ws.send_str(json.dumps({"type": "ipc_status", "connected": connected}))
+            
+            # 发送当前悬浮窗显隐状态给新连入的客户端
+            is_visible = False
+            if self.overlay_manager is not None:
+                is_visible = getattr(self.overlay_manager, "is_visible", False)
+            await ws.send_str(json.dumps({"type": "overlay_visibility", "visible": is_visible}))
+
             manager = self.provider_manager
             if manager is not None:
                 if getattr(self.session, "_relay_session_active", False):
@@ -165,6 +179,10 @@ class WebServer:
         except Exception as e:
             print(f"WebSocket error: {e}")
         finally:
+            if client_type == "overlay":
+                if getattr(self, "overlay_ws", None) == ws:
+                    self.overlay_ws = None
+                    print("Overlay window client disconnected.")
             # 从客户端列表移除
             self.websocket_clients.discard(ws)
             print(f"Client disconnected. Total clients: {len(self.websocket_clients)}")
@@ -1212,7 +1230,7 @@ class WebServer:
         return web.json_response({
             "status": "ok",
             "available": True,
-            "open": bool(manager.is_open()),
+            "open": bool(manager.is_open() and manager.is_visible),
         })
 
     async def overlay_post_handler(self, request):
@@ -1240,14 +1258,24 @@ class WebServer:
 
         try:
             if action == "open":
-                is_open = manager.open()
+                is_visible = True
             elif action == "close":
-                manager.close()
-                is_open = False
+                is_visible = False
             else:  # toggle
-                is_open = manager.close() if manager.is_open() else manager.open()
-            return web.json_response({"status": "ok", "available": True, "open": bool(is_open)})
+                is_visible = not getattr(manager, "is_visible", False)
+
+            manager.is_visible = is_visible
+
+            # Ensure the process is alive (spawn it if it died or hasn't started)
+            if not manager.is_open():
+                manager.open(hidden=True)
+            
+            # Broadcast new visibility state to all websocket clients
+            await self.broadcast_to_clients({"type": "overlay_visibility", "visible": is_visible})
+
+            return web.json_response({"status": "ok", "available": True, "open": bool(is_visible)})
         except Exception as error:
+            self.logger.error(f"Failed to handle overlay request: {error}")
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
     async def shutdown_handler(self, request):

@@ -2982,6 +2982,11 @@ function connect() {
 }
 
 function handleMessage(data) {
+    if (data.type === 'overlay_visibility') {
+        overlayOpen = !!data.visible;
+        updateOverlayButton();
+        return;
+    }
     if (data.type === 'ipc_status') {
         const btn = document.getElementById('ipcStatusButton');
         if (btn) {

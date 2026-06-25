@@ -199,6 +199,37 @@ class WsBridge(QObject):
     status = Signal(bool)  # True=已连接
 
 
+def is_parent_alive():
+    import os
+    try:
+        ppid = os.getppid()
+        if ppid <= 1:
+            return False
+        if os.name == "nt":
+            import ctypes
+            # Open process handle
+            PROCESS_QUERY_INFORMATION = 0x0400
+            SYNCHRONIZE = 0x00100000
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, False, ppid)
+            if not handle:
+                return False
+            # Check if it has exited
+            exit_code = ctypes.c_ulong()
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+            STILL_ACTIVE = 259
+            is_active = (exit_code.value == STILL_ACTIVE)
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return is_active
+        else:
+            try:
+                os.kill(ppid, 0)
+                return True
+            except OSError:
+                return False
+    except Exception:
+        return True
+
+
 class WsClient(threading.Thread):
     def __init__(self, ws_url: str, bridge: WsBridge):
         super().__init__(daemon=True)
@@ -236,6 +267,9 @@ class WsClient(threading.Thread):
                 pass
             self.bridge.status.emit(False)
             if self._stop:
+                break
+            if not is_parent_alive():
+                QApplication.quit()
                 break
             await asyncio.sleep(1.5)
 
@@ -1005,10 +1039,15 @@ class OverlayWindow(QWidget):
         self.btn_restart.setIcon(_line_icon("rotate-cw"))
         self.btn_restart.setToolTip("重启识别" if ok else "重启失败，点击重试")
 
-    def _post(self, path):
+    def _post(self, path, payload=None):
         try:
+            data = b""
+            headers = {}
+            if payload is not None:
+                data = json.dumps(payload).encode("utf-8")
+                headers = {"Content-Type": "application/json"}
             req = urllib.request.Request(
-                self.server_url + path, data=b"", method="POST"
+                self.server_url + path, data=data, headers=headers, method="POST"
             )
             urllib.request.urlopen(req, timeout=8).read()
             return True
@@ -1019,7 +1058,7 @@ class OverlayWindow(QWidget):
     def _init_ws(self):
         scheme = "wss" if self.server_url.startswith("https") else "ws"
         host = self.server_url.split("://", 1)[-1]
-        ws_url = f"{scheme}://{host}/ws"
+        ws_url = f"{scheme}://{host}/ws?client=overlay"
         self.bridge = WsBridge()
         self.bridge.message.connect(self._on_message)
         self.ws_client = WsClient(ws_url, self.bridge)
@@ -1037,6 +1076,12 @@ class OverlayWindow(QWidget):
         elif mtype == "clear":
             self.model.clear(preserve_existing=bool(data.get("preserve_existing")))
             self._render()
+        elif mtype == "overlay_visibility":
+            visible = bool(data.get("visible"))
+            if visible:
+                self.show()
+            else:
+                self.hide()
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
@@ -1162,26 +1207,28 @@ class OverlayWindow(QWidget):
     def _save_geometry(self):
         self.settings.setValue("geometry", self.saveGeometry())
 
+    def _notify_closed_to_server(self):
+        self._post("/overlay", {"action": "close"})
+
     def closeEvent(self, event):
         self._save_geometry()
-        try:
-            self.ws_client.stop()
-        except Exception:
-            pass
-        super().closeEvent(event)
-        QApplication.quit()
+        event.ignore()
+        self.hide()
+        threading.Thread(target=self._notify_closed_to_server, daemon=True).start()
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Realtime subtitle native overlay")
     parser.add_argument("--url", required=True, help="服务器地址，如 http://127.0.0.1:8000")
+    parser.add_argument("--hidden", action="store_true", help="Start the window hidden")
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle(InstantToolTipStyle(app.style()))
-    app.setQuitOnLastWindowClosed(True)
+    app.setQuitOnLastWindowClosed(False)
     win = OverlayWindow(args.url)
-    win.show()
+    if not args.hidden:
+        win.show()
     return app.exec()
 
 
