@@ -28,6 +28,7 @@ from config import (
 )
 from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
+from audio_capture import list_microphone_devices, normalize_microphone_device_id
 from llm_client import close_llm_http_session
 import local_store
 
@@ -62,6 +63,7 @@ class WebServer:
         self.shutdown_callback = None
         # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
         self.overlay_manager = None
+        self.overlay_ws = None
         self.ipc_server = None
         # Provider-specific API key getter; injected by server.py.
         self.get_api_key = None
@@ -133,6 +135,12 @@ class WebServer:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         
+        # 识别是否是悬浮窗客户端
+        client_type = request.query.get("client")
+        if client_type == "overlay":
+            self.overlay_ws = ws
+            print("Overlay window client connected via WebSocket.")
+
         # 添加到客户端列表
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
@@ -142,6 +150,17 @@ class WebServer:
             if self.ipc_server is not None:
                 connected = len(self.ipc_server._clients) > 0
             await ws.send_str(json.dumps({"type": "ipc_status", "connected": connected}))
+            
+            # 发送当前悬浮窗显隐状态给新连入的客户端
+            is_visible = False
+            if self.overlay_manager is not None:
+                is_visible = getattr(self.overlay_manager, "is_visible", False)
+            await ws.send_str(json.dumps({"type": "overlay_visibility", "visible": is_visible}))
+
+            # 发送当前识别暂停状态给新连入的客户端
+            is_paused = getattr(self.session, "is_paused", False)
+            await ws.send_str(json.dumps({"type": "recognition_paused", "paused": is_paused}))
+
             manager = self.provider_manager
             if manager is not None:
                 if getattr(self.session, "_relay_session_active", False):
@@ -164,6 +183,10 @@ class WebServer:
         except Exception as e:
             print(f"WebSocket error: {e}")
         finally:
+            if client_type == "overlay":
+                if getattr(self, "overlay_ws", None) == ws:
+                    self.overlay_ws = None
+                    print("Overlay window client disconnected.")
             # 从客户端列表移除
             self.websocket_clients.discard(ws)
             print(f"Client disconnected. Total clients: {len(self.websocket_clients)}")
@@ -242,6 +265,11 @@ class WebServer:
             "relay_available": bool(config.RELAY_AVAILABLE),
             "server_url": config.SUBTITLE_SERVER_URL,
             "credits_purchase_url": "",
+            "client_version": config.CLIENT_VERSION,
+            "client_latest_version": "",
+            "client_minimum_version": "",
+            "client_update_url": "",
+            "client_update_notes": "",
         }
 
         if config.RELAY_AVAILABLE:
@@ -251,6 +279,20 @@ class WebServer:
             if status == 200 and isinstance(public_settings, dict):
                 payload["credits_purchase_url"] = str(
                     public_settings.get("credits_purchase_url") or ""
+                ).strip()
+                payload["client_latest_version"] = str(
+                    public_settings.get("client_latest_version") or ""
+                ).strip()
+                payload["client_minimum_version"] = str(
+                    public_settings.get("client_minimum_version") or ""
+                ).strip()
+                payload["client_update_url"] = str(
+                    public_settings.get("client_update_url")
+                    or public_settings.get("client_download_url")
+                    or ""
+                ).strip()
+                payload["client_update_notes"] = str(
+                    public_settings.get("client_update_notes") or ""
                 ).strip()
 
         if manager is not None:
@@ -989,7 +1031,7 @@ class WebServer:
                     pass
 
             print("[Server] New session started successfully")
-            return web.json_response({"status": "ok", "message": "Recognition restarted"})
+            return web.json_response({"status": "ok", "message": "Recognition restarted", "paused": False})
         except Exception as e:
             print(f"[Server] Failed to restart: {e}")
             return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -1027,6 +1069,12 @@ class WebServer:
         print("\n[Server] Received pause request...")
         paused = self.session.pause()
 
+        # 广播暂停状态给所有 WebSocket 客户端
+        await self.broadcast_to_clients({
+            "type": "recognition_paused",
+            "paused": True
+        })
+
         if paused:
             message = "Recognition paused"
         else:
@@ -1046,6 +1094,11 @@ class WebServer:
         get_api_key = self.get_api_key
 
         if not self.session.is_paused:
+            # 即使已经运行，也确保状态同步
+            await self.broadcast_to_clients({
+                "type": "recognition_paused",
+                "paused": False
+            })
             return web.json_response({"status": "ok", "message": "Recognition already running"})
 
         try:
@@ -1061,6 +1114,12 @@ class WebServer:
             translation=TRANSLATION_MODE,
             loop=loop
         )
+
+        # 广播恢复状态给所有 WebSocket 客户端
+        await self.broadcast_to_clients({
+            "type": "recognition_paused",
+            "paused": False
+        })
 
         if resumed:
             return web.json_response({"status": "ok", "message": "Recognition resumed"})
@@ -1106,6 +1165,63 @@ class WebServer:
         }
         return web.json_response(response, status=status_code)
 
+    def _microphone_payload(self) -> dict:
+        data = list_microphone_devices()
+        selected_id = ""
+        if hasattr(self.session, "get_microphone_device_id"):
+            selected_id = normalize_microphone_device_id(self.session.get_microphone_device_id())
+        data["selected_id"] = selected_id
+        return data
+
+    async def microphones_handler(self, request):
+        """List available microphone devices for the settings UI."""
+        payload = self._microphone_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    async def microphone_device_get_handler(self, request):
+        """Get the selected microphone device."""
+        payload = self._microphone_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    async def microphone_device_set_handler(self, request):
+        """Set the selected microphone device."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Microphone device switching is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        device_id = normalize_microphone_device_id(payload.get("id"))
+        if device_id:
+            devices = self._microphone_payload().get("devices") or []
+            known_ids = {str(device.get("id") or "") for device in devices if isinstance(device, dict)}
+            if known_ids and device_id not in known_ids:
+                return web.json_response({"status": "error", "message": "Unknown microphone device"}, status=400)
+
+        if not hasattr(self.session, "set_microphone_device_id"):
+            return web.json_response(
+                {"status": "error", "message": "Microphone device switching is unavailable"},
+                status=503,
+            )
+
+        success, message = self.session.set_microphone_device_id(device_id)
+        status_code = 200 if success else 400
+        return web.json_response({
+            "status": "ok" if success else "error",
+            "message": message,
+            "id": self.session.get_microphone_device_id(),
+        }, status=status_code)
+
     async def window_on_top_handler(self, request):
         """切换窗口始终置顶状态（仅 WebView 模式有效）"""
         try:
@@ -1135,7 +1251,7 @@ class WebServer:
         return web.json_response({
             "status": "ok",
             "available": True,
-            "open": bool(manager.is_open()),
+            "open": bool(manager.is_open() and manager.is_visible),
         })
 
     async def overlay_post_handler(self, request):
@@ -1143,6 +1259,12 @@ class WebServer:
 
         请求体：{"action": "toggle" | "open" | "close"}（缺省为 toggle）。
         """
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Overlay control is disabled by server config"},
+                status=403,
+            )
+
         manager = self.overlay_manager
         if manager is None:
             return web.json_response(
@@ -1157,14 +1279,24 @@ class WebServer:
 
         try:
             if action == "open":
-                is_open = manager.open()
+                is_visible = True
             elif action == "close":
-                manager.close()
-                is_open = False
+                is_visible = False
             else:  # toggle
-                is_open = manager.close() if manager.is_open() else manager.open()
-            return web.json_response({"status": "ok", "available": True, "open": bool(is_open)})
+                is_visible = not getattr(manager, "is_visible", False)
+
+            manager.is_visible = is_visible
+
+            # Ensure the process is alive (spawn it if it died or hasn't started)
+            if not manager.is_open():
+                manager.open(hidden=True)
+            
+            # Broadcast new visibility state to all websocket clients
+            await self.broadcast_to_clients({"type": "overlay_visibility", "visible": is_visible})
+
+            return web.json_response({"status": "ok", "available": True, "open": bool(is_visible)})
         except Exception as error:
+            self.logger.error(f"Failed to handle overlay request: {error}")
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
     async def shutdown_handler(self, request):
@@ -1251,6 +1383,9 @@ class WebServer:
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
+        app.router.add_get('/microphones', self.microphones_handler)
+        app.router.add_get('/microphone-device', self.microphone_device_get_handler)
+        app.router.add_post('/microphone-device', self.microphone_device_set_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
         app.router.add_get('/overlay', self.overlay_get_handler)
         app.router.add_post('/overlay', self.overlay_post_handler)

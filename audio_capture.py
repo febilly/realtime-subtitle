@@ -7,11 +7,11 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
-from config import MIX_OWN_VOLUME, MIX_OTHER_VOLUME
+from config import MICROPHONE_DEVICE_ID, MIX_OWN_VOLUME, MIX_OTHER_VOLUME
 
 try:
     import soundcard as sc
-except ImportError:
+except Exception:
     sc = None
 
 if sc is not None:
@@ -22,6 +22,78 @@ if sc is not None:
     )
 
 _warned_missing_soundcard = False
+
+
+def _microphone_name(device) -> str:
+    return str(getattr(device, "name", "") or "").strip()
+
+
+def _microphone_id(device) -> str:
+    return str(getattr(device, "id", "") or "").strip()
+
+
+def _normalize_microphone_name(name: str) -> str:
+    return " ".join(str(name or "").strip().casefold().split())
+
+
+def list_microphone_devices() -> dict:
+    """Return de-duplicated microphone devices for the settings UI."""
+    if sc is None:
+        return {
+            "available": False,
+            "default": None,
+            "devices": [],
+            "message": "soundcard is not installed",
+        }
+
+    try:
+        default = sc.default_microphone()
+    except Exception:
+        default = None
+
+    default_id = _microphone_id(default) if default is not None else ""
+    default_name = _microphone_name(default) if default is not None else ""
+
+    try:
+        microphones = list(sc.all_microphones(include_loopback=False))
+    except Exception as error:
+        return {
+            "available": False,
+            "default": {"id": default_id, "name": default_name} if default_name else None,
+            "devices": [],
+            "message": str(error),
+        }
+
+    seen: set[str] = set()
+    devices: list[dict] = []
+    for microphone in microphones:
+        name = _microphone_name(microphone)
+        device_id = _microphone_id(microphone)
+        if not name or not device_id:
+            continue
+        key = _normalize_microphone_name(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        devices.append({
+            "id": device_id,
+            "name": name,
+            "is_default": bool(default_id and device_id == default_id),
+        })
+
+    if default_id and all(device["id"] != default_id for device in devices):
+        devices.insert(0, {"id": default_id, "name": default_name, "is_default": True})
+
+    devices.sort(key=lambda item: (not item.get("is_default"), str(item.get("name", "")).casefold()))
+    return {
+        "available": True,
+        "default": {"id": default_id, "name": default_name} if default_name else None,
+        "devices": devices,
+    }
+
+
+def normalize_microphone_device_id(device_id: object) -> str:
+    return str(device_id or "").strip()
 
 
 def _convert_float32_to_int16(channel_data: np.ndarray) -> bytes:
@@ -41,6 +113,7 @@ class AudioStreamer:
         sample_rate: int = 16000,
         chunk_size: int = 3840,
         mute_mic_when_vrchat_muted: bool = True,
+        microphone_device_id: str = MICROPHONE_DEVICE_ID,
     ):
         self.ws = ws
         self.sample_rate = sample_rate
@@ -52,6 +125,7 @@ class AudioStreamer:
         self._source_lock = threading.Lock()
 
         self._current_source = initial_source
+        self._microphone_device_id = normalize_microphone_device_id(microphone_device_id)
         self._thread: Optional[threading.Thread] = None
         self.mix_mic_gain = float(MIX_OWN_VOLUME)
         self.mix_system_gain = float(MIX_OTHER_VOLUME)
@@ -106,6 +180,23 @@ class AudioStreamer:
         """获取当前音频源"""
         with self._source_lock:
             return self._current_source
+
+    def set_microphone_device_id(self, device_id: str) -> bool:
+        """Set the microphone device. Returns whether the active recorder should restart."""
+        next_id = normalize_microphone_device_id(device_id)
+        with self._source_lock:
+            if next_id == self._microphone_device_id:
+                return False
+            self._microphone_device_id = next_id
+            restart_needed = self._current_source in ("microphone", "mix")
+
+        if restart_needed:
+            self._source_changed_event.set()
+        return True
+
+    def get_microphone_device_id(self) -> str:
+        with self._source_lock:
+            return self._microphone_device_id
 
     def _run(self) -> None:
         """音频线程主循环"""
@@ -416,7 +507,22 @@ class AudioStreamer:
                 print(f"🔊 Capturing system audio from: {speaker.name}")
                 return loopback.recorder(samplerate=self.sample_rate, channels=1)
 
-            microphone = sc.default_microphone()
+            with self._source_lock:
+                microphone_device_id = self._microphone_device_id
+
+            if microphone_device_id:
+                try:
+                    microphone = sc.get_microphone(id=microphone_device_id, include_loopback=False)
+                except Exception as error:
+                    microphone = None
+                    print(f"⚠️  Selected microphone lookup failed: {error}")
+                if microphone is None:
+                    print(f"⚠️  Selected microphone is unavailable: {microphone_device_id}")
+            else:
+                microphone = None
+
+            if microphone is None:
+                microphone = sc.default_microphone()
             if microphone is None:
                 print("⚠️  No default microphone available")
                 return None

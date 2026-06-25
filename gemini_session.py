@@ -21,6 +21,7 @@ from config import (
     SLEEP_SPEECH_WINDOW_SECONDS,
     SLEEP_VAD_THRESHOLD,
     USE_TWITCH_AUDIO_STREAM,
+    MICROPHONE_DEVICE_ID,
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
@@ -86,9 +87,15 @@ EAST_ASIAN_TIGHT_SPACING_RE = re.compile(
 # Half-width ASCII punctuation -> full-width, applied only when wedged between
 # two CJK (Han) characters (see fix_fullwidth_punctuation_between_cjk).
 HALFWIDTH_TO_FULLWIDTH_PUNCT = {",": "，", ".": "。", "?": "？", "!": "！"}
-_CJK_IDEOGRAPH_CLASS = r"㐀-䶿一-鿿豈-﫿"
-FULLWIDTH_PUNCT_BETWEEN_CJK_RE = re.compile(
-    rf"(?<=[{_CJK_IDEOGRAPH_CLASS}])([,.?!])(?=[{_CJK_IDEOGRAPH_CLASS}])"
+_CJK_JA_CHAR_CLASS = (
+    r"㐀-䶿一-鿿豈-﫿" # CJK Ideographs (Han characters)
+    r"\u3040-\u309F"  # Hiragana
+    r"\u30A0-\u30FF"  # Katakana
+    r"\u31F0-\u31FF"  # Katakana phonetic extensions
+    r"\uFF66-\uFF9D"  # Halfwidth Katakana
+)
+FULLWIDTH_PUNCT_AFTER_CJK_JA_RE = re.compile(
+    rf"(?<=[{_CJK_JA_CHAR_CLASS}])([,.?!])"
 )
 # Gemini streams sentence-ending punctuation as its own chunk with a leading
 # space (e.g. "…ごめん" then " 。"), which renders as "…ごめん 。". A space directly
@@ -186,16 +193,24 @@ def normalize_east_asian_translation_spacing(text: str) -> str:
     return EAST_ASIAN_TIGHT_SPACING_RE.sub(r"\1\2", value)
 
 
-def fix_fullwidth_punctuation_between_cjk(text: str) -> str:
-    """Convert a half-width , . ? ! to its full-width form when it is sandwiched
-    directly between two CJK (Han) characters. No-op when the text has no such
-    pattern or when GEMINI_FULLWIDTH_PUNCT_FIX is disabled."""
+def fix_fullwidth_punctuation_after_cjk_ja(text: str, prev_char: Optional[str] = None) -> str:
+    """Convert a half-width , . ? ! to its full-width form when it is preceded
+    by a CJK (Han) or Japanese (Hiragana/Katakana) character. If prev_char is provided,
+    it is treated as the character preceding text (to handle chunk boundaries)."""
     value = "" if text is None else str(text)
     if not GEMINI_FULLWIDTH_PUNCT_FIX or not value:
         return value
-    return FULLWIDTH_PUNCT_BETWEEN_CJK_RE.sub(
-        lambda m: HALFWIDTH_TO_FULLWIDTH_PUNCT[m.group(1)], value
-    )
+
+    if prev_char:
+        combined = prev_char + value
+        fixed = FULLWIDTH_PUNCT_AFTER_CJK_JA_RE.sub(
+            lambda m: HALFWIDTH_TO_FULLWIDTH_PUNCT[m.group(1)], combined
+        )
+        return fixed[len(prev_char):]
+    else:
+        return FULLWIDTH_PUNCT_AFTER_CJK_JA_RE.sub(
+            lambda m: HALFWIDTH_TO_FULLWIDTH_PUNCT[m.group(1)], value
+        )
 
 
 def strip_space_before_east_asian_punctuation(text: str) -> str:
@@ -207,10 +222,10 @@ def strip_space_before_east_asian_punctuation(text: str) -> str:
     return SPACE_BEFORE_EAST_ASIAN_PUNCT_RE.sub("", value)
 
 
-def normalize_gemini_text(text: str) -> str:
+def normalize_gemini_text(text: str, prev_char: Optional[str] = None) -> str:
     """Apply all per-token cleanups to Gemini's returned source/translation text."""
     value = strip_space_before_east_asian_punctuation(text)
-    return fix_fullwidth_punctuation_between_cjk(value)
+    return fix_fullwidth_punctuation_after_cjk_ja(value, prev_char)
 
 
 class GeminiSession:
@@ -235,6 +250,7 @@ class GeminiSession:
         # Gemini Live API recommends ~100ms audio chunks (1600 samples @16kHz).
         self.chunk_size = 1600
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
+        self.microphone_device_id = str(MICROPHONE_DEVICE_ID or "").strip()
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
         self._vrchat_self_muted = False
@@ -264,6 +280,8 @@ class GeminiSession:
         self._ipc_lock = threading.Lock()
         self._ipc_ongoing_text = ""
         self._ipc_pending_final = ""
+        self._last_char_original = None
+        self._last_char_translation = None
 
     def update_ipc_message(self, text: str, ongoing: bool) -> None:
         safe_text = (text or "").strip()
@@ -308,6 +326,8 @@ class GeminiSession:
         self._refine_context_history.clear()
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         self._reset_osc_live_state()
+        self._last_char_original = None
+        self._last_char_translation = None
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
             try:
@@ -453,6 +473,32 @@ class GeminiSession:
         with self.audio_lock:
             return self.audio_source
 
+    def get_microphone_device_id(self) -> str:
+        with self.audio_lock:
+            return str(self.microphone_device_id or "")
+
+    def set_microphone_device_id(self, device_id: str) -> Tuple[bool, str]:
+        """Set the microphone device used by microphone and mixed capture."""
+        if USE_TWITCH_AUDIO_STREAM:
+            return False, "Twitch streaming mode is enabled; microphone device switching is disabled."
+
+        next_id = str(device_id or "").strip()
+        with self.audio_lock:
+            previous_id = self.microphone_device_id
+            self.microphone_device_id = next_id
+            streamer = self.audio_streamer
+
+        if streamer and hasattr(streamer, "set_microphone_device_id"):
+            changed = bool(streamer.set_microphone_device_id(next_id))
+            if changed:
+                print("🎙️  Microphone device switched")
+                return True, "Microphone device switched."
+            return True, "Microphone device already selected."
+
+        if next_id != previous_id:
+            print("🎙️  Microphone device saved (will apply on next session)")
+        return True, "Microphone device saved. The change will apply when a session is active."
+
     def set_audio_source(self, source: str) -> Tuple[bool, str]:
         """切换音频源。
 
@@ -511,6 +557,7 @@ class GeminiSession:
                 sample_rate=self.sample_rate,
                 chunk_size=self.chunk_size,
                 mute_mic_when_vrchat_muted=bool(MUTE_MIC_WHEN_VRCHAT_SELF_MUTED),
+                microphone_device_id=self.get_microphone_device_id(),
             )
             streamer.set_vrchat_mic_muted(self._vrchat_self_muted)
 
@@ -1540,9 +1587,13 @@ class GeminiSession:
                 self._last_input_language = language
             else:
                 language = self._last_input_language or None
+            raw_text = str(input_transcription["text"])
+            fixed_text = normalize_gemini_text(raw_text, self._last_char_original)
+            if fixed_text:
+                self._last_char_original = fixed_text[-1]
             out["tokens"].append(
                 _make_token(
-                    normalize_gemini_text(str(input_transcription["text"])),
+                    fixed_text,
                     "original",
                     language or None,
                     None,
@@ -1564,9 +1615,13 @@ class GeminiSession:
                 or output_transcription.get("language_code")
                 or ""
             ) or normalize_language_code(self.get_translation_target_lang()) or None
+            raw_text = str(output_transcription["text"])
+            fixed_text = normalize_gemini_text(raw_text, self._last_char_translation)
+            if fixed_text:
+                self._last_char_translation = fixed_text[-1]
             out["tokens"].append(
                 _make_token(
-                    normalize_gemini_text(str(output_transcription["text"])),
+                    fixed_text,
                     "translation",
                     language,
                     self._last_input_language or None,
@@ -1575,11 +1630,14 @@ class GeminiSession:
 
         if server_content.get("generationComplete") or server_content.get("generation_complete"):
             out["translation_complete"] = True
+            self._last_char_translation = None
 
         if server_content.get("turnComplete") or server_content.get("turn_complete"):
             out["endpoint_detected"] = True
             # Internal marker token consumed by segmentation, never displayed.
             out["tokens"].append(_make_token("<end>", "original", None, None))
+            self._last_char_original = None
+            self._last_char_translation = None
 
         # Translated audio chunks (modelTurn parts) are intentionally ignored:
         # this app renders subtitles only.

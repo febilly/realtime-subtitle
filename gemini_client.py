@@ -230,7 +230,9 @@ def connect_live(
     # authenticate with the account token as the Authorization bearer.
     import config as _config
     if _config.RELAY_MODE:
-        url = _config.relay_ws_url("gemini")
+        # Mirror the model the setup frame carries (models/<GEMINI_MODEL>) so the
+        # relay can authorize/meter the stream at the handshake.
+        url = _config.relay_ws_url("gemini", model=f"models/{GEMINI_MODEL}")
         connect_kwargs = {
             "max_size": None,
             "additional_headers": {"Authorization": f"Bearer {_config.RELAY_TOKEN}"},

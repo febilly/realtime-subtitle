@@ -152,10 +152,7 @@ The executable will be located at `dist/RealtimeSubtitle.exe`.
 
 ## Acknowledgements
 
-This project uses [kuromoji.js](https://github.com/takuyaa/kuromoji.js) for Japanese tokenization in the browser.
-kuromoji.js is licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
-
-This project uses [vrchat_oscquery](https://github.com/theepicsnail/vrchat_oscquery) for VRChat OSCQuery integration.
+This project stands on the shoulders of giants. A complete list of all third-party open-source libraries, dependencies, and their verified licenses can be found in the [ACKNOWLEDGMENTS.md](file:///c:/Users/hsxxs/Desktop/STT/soniox/realtime-subtitle/ACKNOWLEDGMENTS.md) file.
 
 ## Configuration Options
 

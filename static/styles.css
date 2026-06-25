@@ -115,6 +115,7 @@ body.chroma-theme .subtitle-container {
     border-radius: 50%;
     background: rgba(0, 0, 0, 0.05);
     border: none;
+    color: #1f2937;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -123,6 +124,24 @@ body.chroma-theme .subtitle-container {
     transition: all 0.2s ease;
     user-select: none;
     flex-shrink: 0;
+}
+
+.control-icon {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+    flex-shrink: 0;
+}
+
+#furiganaIcon {
+    color: inherit;
+    font-weight: 700;
+    line-height: 1;
 }
 
 .control-button:hover {
@@ -158,16 +177,35 @@ body.dark-theme .lang-popover {
 
 body.dark-theme .control-button {
     background: rgba(255, 255, 255, 0.1);
+    color: #f3f4f6;
 }
 
 body.dark-theme .control-button:hover {
     background: rgba(255, 255, 255, 0.15);
 }
 
-/* “cc” 文字图标：暗色模式下用白字（emoji 图标自带颜色不受影响）。 */
-body.dark-theme #overlayIcon {
-    color: #ffffff;
-    font-weight: 700;
+#pauseButton {
+    color: #eab308;
+}
+
+#pauseButton.is-paused {
+    color: #22c55e;
+}
+
+#restartButton {
+    color: #2563eb;
+}
+
+body.dark-theme #pauseButton {
+    color: #facc15;
+}
+
+body.dark-theme #pauseButton.is-paused {
+    color: #4ade80;
+}
+
+body.dark-theme #restartButton {
+    color: #60a5fa;
 }
 
 .restart-button.restarting {
@@ -702,8 +740,17 @@ body.dark-theme .form-field input::placeholder {
     display: none;
 }
 
+.field-hint-warn {
+    color: #b45309;
+    font-weight: 500;
+}
+
 body.dark-theme .field-hint {
     color: #9ca3af;
+}
+
+body.dark-theme .field-hint-warn {
+    color: #f59e0b;
 }
 
 .field-hint a {
@@ -1239,6 +1286,88 @@ body.dark-theme .mode-card:hover {
     opacity: 0.7;
 }
 
+.client-update-dialog {
+    position: fixed;
+    z-index: 10002;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(520px, calc(100vw - 48px));
+    box-sizing: border-box;
+    padding: 24px;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #1f2937;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+body.dark-theme .client-update-dialog {
+    background: #1e1e2e;
+    color: #e5e7eb;
+}
+
+.client-update-dialog h1 {
+    margin: 0 0 8px;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.client-update-meta {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin: 16px 0;
+}
+
+.client-update-meta div {
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 8px;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.02);
+}
+
+body.dark-theme .client-update-meta div {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.client-update-meta span {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 12px;
+    opacity: 0.65;
+}
+
+.client-update-meta strong {
+    display: block;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+}
+
+.client-update-notes {
+    max-height: 150px;
+    overflow: auto;
+    white-space: pre-wrap;
+    border-radius: 8px;
+    padding: 10px;
+    margin-bottom: 12px;
+    background: rgba(0, 0, 0, 0.04);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+body.dark-theme .client-update-notes {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.client-update-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+}
+
 /* Login: VRChat challenge text box. */
 .challenge-box {
     display: flex;
@@ -1404,3 +1533,43 @@ body.dark-theme .method-option.method-selected {
 [hidden] {
     display: none !important;
 }
+
+/* Custom Instant Tooltip */
+.custom-tooltip {
+    position: fixed;
+    z-index: 10000;
+    pointer-events: none;
+    background: rgba(15, 23, 42, 0.96); /* Dark background for light mode */
+    color: #ffffff; /* White text */
+    font-size: 14px; /* Adjusted to 14px for better proportions */
+    font-weight: 500;
+    font-family: "Segoe UI", "Microsoft YaHei", "Yu Gothic", "Meiryo", "Malgun Gothic", "DengXian", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    padding: 6px 12px;
+    border-radius: 6px;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    transition: opacity 0.05s ease-out;
+}
+
+/* Dark theme tooltip style */
+body.dark-theme .custom-tooltip {
+    background: rgba(255, 255, 255, 0.98); /* White background for dark mode */
+    color: #111827; /* Dark text */
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+/* Chroma theme tooltip style */
+body.chroma-theme .custom-tooltip {
+    background: rgba(15, 23, 42, 0.96);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #ffffff;
+}
+
+.custom-tooltip.visible {
+    opacity: 1;
+}
+

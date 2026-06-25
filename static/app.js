@@ -1,3 +1,158 @@
+// Hook to replace browser native tooltips with a custom instant tooltip
+(function() {
+    const originalSetAttribute = Element.prototype.setAttribute;
+    const originalGetAttribute = Element.prototype.getAttribute;
+    const originalRemoveAttribute = Element.prototype.removeAttribute;
+
+    // Convert initial elements with title attributes to data-custom-title
+    document.querySelectorAll('[title]').forEach(el => {
+        const titleVal = el.getAttribute('title');
+        if (titleVal) {
+            el.setAttribute('data-custom-title', titleVal);
+            el.removeAttribute('title');
+        }
+    });
+
+    let tooltipEl = null;
+    let activeTooltipTarget = null;
+
+    function createTooltip() {
+        tooltipEl = document.createElement('div');
+        tooltipEl.className = 'custom-tooltip';
+        document.body.appendChild(tooltipEl);
+    }
+
+    function updateTooltipText(text) {
+        if (!tooltipEl) createTooltip();
+        if (!text) {
+            hideTooltip();
+            return;
+        }
+        tooltipEl.textContent = text;
+        if (activeTooltipTarget) {
+            positionTooltip(activeTooltipTarget);
+        }
+    }
+
+    function showTooltip(target) {
+        const text = target.getAttribute('data-custom-title');
+        if (!text) return;
+        if (!tooltipEl) createTooltip();
+        tooltipEl.textContent = text;
+        tooltipEl.classList.add('visible');
+        positionTooltip(target);
+    }
+
+    function hideTooltip() {
+        if (tooltipEl) {
+            tooltipEl.classList.remove('visible');
+        }
+        activeTooltipTarget = null;
+    }
+
+    function positionTooltip(target) {
+        if (!tooltipEl) return;
+        const rect = target.getBoundingClientRect();
+        
+        // Calculate position: display on the left side of the button, vertically centered
+        const tooltipWidth = tooltipEl.offsetWidth;
+        const tooltipHeight = tooltipEl.offsetHeight;
+
+        let left = rect.left - tooltipWidth - 8;
+        if (left < 8) {
+            // Fallback: if it overflows the left side of the window, show it on the right side
+            left = rect.right + 8;
+        }
+
+        let top = rect.top + (rect.height - tooltipHeight) / 2;
+        // Clamp top position so it doesn't go offscreen
+        if (top < 8) top = 8;
+        if (top + tooltipHeight > window.innerHeight - 8) {
+            top = window.innerHeight - tooltipHeight - 8;
+        }
+
+        tooltipEl.style.left = left + 'px';
+        tooltipEl.style.top = top + 'px';
+    }
+
+    // Define HTMLElement.prototype.title getter/setter
+    Object.defineProperty(HTMLElement.prototype, 'title', {
+        get: function() {
+            return this.getAttribute('data-custom-title') || '';
+        },
+        set: function(val) {
+            if (val) {
+                this.setAttribute('data-custom-title', val);
+                originalRemoveAttribute.call(this, 'title');
+            } else {
+                this.removeAttribute('data-custom-title');
+                originalRemoveAttribute.call(this, 'title');
+            }
+            if (activeTooltipTarget === this) {
+                updateTooltipText(val);
+            }
+        }
+    });
+
+    // Override Element methods
+    Element.prototype.setAttribute = function(name, value) {
+        if (name && name.toLowerCase() === 'title') {
+            this.setAttribute('data-custom-title', value);
+            originalRemoveAttribute.call(this, 'title');
+            if (activeTooltipTarget === this) {
+                updateTooltipText(value);
+            }
+        } else {
+            originalSetAttribute.call(this, name, value);
+        }
+    };
+
+    Element.prototype.getAttribute = function(name) {
+        if (name && name.toLowerCase() === 'title') {
+            return this.getAttribute('data-custom-title') || '';
+        }
+        return originalGetAttribute.call(this, name);
+    };
+
+    Element.prototype.removeAttribute = function(name) {
+        if (name && name.toLowerCase() === 'title') {
+            this.removeAttribute('data-custom-title');
+            originalRemoveAttribute.call(this, 'title');
+            if (activeTooltipTarget === this) {
+                hideTooltip();
+            }
+        } else {
+            originalRemoveAttribute.call(this, name);
+        }
+    };
+
+    // Event listeners
+    document.addEventListener('mouseover', (e) => {
+        const target = e.target.closest('[data-custom-title]');
+        if (target) {
+            if (activeTooltipTarget === target) return;
+            activeTooltipTarget = target;
+            showTooltip(target);
+        } else {
+            if (activeTooltipTarget) {
+                hideTooltip();
+            }
+        }
+    }, { passive: true });
+
+    document.addEventListener('mouseout', (e) => {
+        if (activeTooltipTarget && !activeTooltipTarget.contains(e.relatedTarget)) {
+            hideTooltip();
+        }
+    }, { passive: true });
+
+    document.addEventListener('click', (e) => {
+        if (activeTooltipTarget && activeTooltipTarget.contains(e.target)) {
+            hideTooltip();
+        }
+    }, { passive: true });
+})();
+
 let ws;
 const subtitleContainer = document.getElementById('subtitleContainer');
 const themeToggle = document.getElementById('themeToggle');
@@ -27,6 +182,20 @@ const translationRefineIcon = document.getElementById('translationRefineIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+const ICON_SPRITE_URL = 'icons/lucide-sprite.svg';
+
+function setControlIcon(iconEl, iconName) {
+    if (!iconEl || !iconName) {
+        return;
+    }
+    const useEl = iconEl.querySelector('use');
+    if (!useEl) {
+        return;
+    }
+    const href = `${ICON_SPRITE_URL}#${iconName}`;
+    useEl.setAttribute('href', href);
+    useEl.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href);
+}
 
 const t = (key, vars) => {
     try {
@@ -54,7 +223,9 @@ function localizeBackendMessage(message) {
         'Pause is disabled by server config': 'backend_pause_disabled',
         'Resume is disabled by server config': 'backend_resume_disabled',
         'Audio source switching is disabled by server config': 'backend_audio_source_disabled',
+        'Microphone device switching is disabled by server config': 'backend_microphone_device_disabled',
         'OSC translation toggle is disabled by server config': 'backend_osc_disabled',
+        'Overlay control is disabled by server config': 'backend_overlay_disabled',
         'Segment mode switching is disabled': 'backend_segment_mode_disabled',
         'LLM refine toggle is disabled by server config': 'backend_llm_refine_disabled',
         'Furigana feature not available (pykakasi not installed)': 'backend_furigana_unavailable',
@@ -116,11 +287,22 @@ const providerDescription = document.getElementById('providerDescription');
 const apiKeyGetLink = document.getElementById('apiKeyGetLink');
 const sonioxRegionSection = document.getElementById('sonioxRegionSection');
 const sonioxRegionPickerHost = document.getElementById('sonioxRegionPicker');
+const microphoneDeviceSection = document.getElementById('microphoneDeviceSection');
+const microphoneDevicePickerHost = document.getElementById('microphoneDevicePicker');
+const microphoneDeviceHint = document.getElementById('microphoneDeviceHint');
+const runtimeControlsSection = document.getElementById('runtimeControlsSection');
+const autoRestartPickerHost = document.getElementById('autoRestartPicker');
+const segmentModeSettingField = document.getElementById('segmentModeSettingField');
+const segmentModePickerHost = document.getElementById('segmentModePicker');
 const toastEl = document.getElementById('toast');
 
 const SONIOX_REGIONS = ['us', 'eu', 'jp'];
 // Custom-select element (built lazily); mirrors the language picker styling.
 let sonioxRegionPickerEl = null;
+let microphoneDevicePickerEl = null;
+let autoRestartPickerEl = null;
+let segmentModePickerEl = null;
+let microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
 
 // Where users obtain an API key for each provider (shown as a link in Settings).
 const PROVIDER_KEY_URLS = {
@@ -148,9 +330,17 @@ let toastTimer = null;
 
 // ---- Subtitle-server relay (hosted mode) state ----
 const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
+// Optional client-update reminders throttle: at least this many ms between popups.
+const CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
+const CLIENT_UPDATE_REMINDER_KEY = 'clientUpdateReminderLastShown';
 let relayAvailable = false;
 let relayServerUrl = '';
 let creditsPurchaseUrl = '';
+let clientVersion = '0.1.0';
+let clientLatestVersion = '';
+let clientMinimumVersion = '';
+let clientUpdateUrl = '';
+let clientUpdateNotes = '';
 let backendMode = 'direct';
 let backendLoggedIn = false;
 let loginForcedOpen = false;
@@ -356,8 +546,8 @@ function showToast(message, isError = false, options = {}) {
 }
 
 const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
-const LLM_REFINE_ICON = '🪄';
-const LLM_TRANSLATE_ICON = '🤖';
+const LLM_REFINE_ICON = 'wand-sparkles';
+const LLM_TRANSLATE_ICON = 'bot';
 const LLM_REFINE_MODE_STORAGE_KEY = 'llmRefineMode';
 const LLM_TRANSLATION_MODE_STORAGE_KEY = 'llmTranslationMode';
 let defaultLlmRefineMode = null;
@@ -368,11 +558,8 @@ function normalizeSegmentMode(mode) {
 }
 
 // 译文自动修复开关（默认关闭）
-let llmRefineMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
-if (!LLM_REFINE_MODES.includes((llmRefineMode || '').toString().trim().toLowerCase())) {
-    llmRefineMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
-}
-if (!LLM_REFINE_MODES.includes(llmRefineMode)) {
+let llmRefineMode = getStoredLlmRefineMode();
+if (!llmRefineMode) {
     const legacy = localStorage.getItem('llmRefineEnabled');
     llmRefineMode = legacy === 'true' ? 'refine' : 'off';
 }
@@ -541,8 +728,9 @@ if (!SEGMENT_MODES.includes(segmentMode)) {
 // 显示模式: 'both', 'original', 'translation'
 let displayMode = localStorage.getItem('displayMode') || 'both';
 
-// 自动重启识别开关（默认关闭）
-let autoRestartEnabled = localStorage.getItem('autoRestartEnabled') === 'true';
+// 自动重启识别开关（默认开启；已有保存值优先）
+const storedAutoRestartEnabled = localStorage.getItem('autoRestartEnabled');
+let autoRestartEnabled = storedAutoRestartEnabled === null ? true : storedAutoRestartEnabled === 'true';
 
 // OSC 翻译发送开关（默认关闭）
 let oscTranslationEnabled = false;
@@ -584,6 +772,7 @@ function getNextAudioSource(source) {
 // 初始化按钮文本
 updateSegmentModeButton();
 updateDisplayModeButton();
+updatePauseButtonUi();
 updateAudioSourceButton();
 updateFuriganaButton();
 updateOscTranslationButton();
@@ -622,11 +811,15 @@ function applyStaticUiText() {
     }
 
     if (pauseButton) {
-        pauseButton.title = isPaused ? t('resume') : t('pause_resume');
+        updatePauseButtonUi();
     }
 
     if (overlayButton) {
         overlayButton.title = overlayOpen ? t('overlay_close') : t('overlay_open');
+    }
+
+    if (settingsButton) {
+        settingsButton.title = t('settings');
     }
 
     if (subtitleContainer) {
@@ -650,6 +843,17 @@ function normalizeLlmRefineMode(mode) {
         return value;
     }
     return 'off';
+}
+
+function getStoredLlmRefineMode() {
+    let rawStoredMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
+    if (!LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())) {
+        rawStoredMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
+    }
+    const normalized = normalizeLlmRefineMode(rawStoredMode);
+    return LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())
+        ? normalized
+        : null;
 }
 
 function isLlmTranslateMode() {
@@ -745,7 +949,7 @@ function updateTranslationRefineButton() {
 
     const isTranslate = isLlmTranslateMode();
 
-    translationRefineIcon.textContent = isTranslate ? LLM_TRANSLATE_ICON : LLM_REFINE_ICON;
+    setControlIcon(translationRefineIcon, isTranslate ? LLM_TRANSLATE_ICON : LLM_REFINE_ICON);
     translationRefineButton.title = t(getLlmRefineTitleKey());
 
     if (llmRefineMode !== 'off') {
@@ -761,9 +965,9 @@ function updateTranslationRefineButton() {
 // 主题切换功能（默认深色）
 const ALL_THEMES = ['dark', 'light', 'chroma'];
 const THEME_ICONS = {
-    dark: '🌙',
-    light: '☀️',
-    chroma: '🟩',
+    dark: 'moon',
+    light: 'sun',
+    chroma: 'sparkles',
 };
 let currentTheme = 'dark';
 let lastWindowOnTopState = null;
@@ -806,7 +1010,7 @@ function applyTheme(theme) {
         document.body.classList.add('chroma-theme');
     }
 
-    themeIcon.textContent = THEME_ICONS[normalizedTheme];
+    setControlIcon(themeIcon, THEME_ICONS[normalizedTheme]);
     localStorage.setItem('theme', normalizedTheme);
     if (enableChromaTheme) {
         void syncWindowOnTopByTheme(normalizedTheme);
@@ -824,6 +1028,16 @@ themeToggle.addEventListener('click', () => {
     const nextTheme = available[(actualIndex + 1) % available.length];
     applyTheme(nextTheme);
 });
+
+function updatePauseButtonUi() {
+    if (!pauseButton || !pauseIcon) {
+        return;
+    }
+    setControlIcon(pauseIcon, isPaused ? 'play' : 'pause');
+    pauseButton.title = isPaused ? t('resume') : t('pause');
+    pauseButton.classList.toggle('is-paused', isPaused);
+}
+
 // 更新分段模式按钮文本
 function updateSegmentModeButton() {
     if (!segmentModeButton) {
@@ -880,11 +1094,11 @@ function updateBottomSafeAreaButton() {
     if (bottomSafeAreaEnabled) {
         bottomSafeAreaButton.classList.add('active');
         bottomSafeAreaButton.title = t('bottom_safe_area_on');
-        bottomSafeAreaIcon.textContent = '⬆️';
+        setControlIcon(bottomSafeAreaIcon, 'arrow-up-from-line');
     } else {
         bottomSafeAreaButton.classList.remove('active');
         bottomSafeAreaButton.title = t('bottom_safe_area_off');
-        bottomSafeAreaIcon.textContent = '⬇️';
+        setControlIcon(bottomSafeAreaIcon, 'arrow-down-to-line');
     }
 }
 
@@ -1015,6 +1229,19 @@ async function fetchUiConfig() {
             relayServerUrl = data.server_url;
         }
         creditsPurchaseUrl = safeHttpUrl(data && data.credits_purchase_url);
+        if (typeof data.client_version === 'string' && data.client_version.trim()) {
+            clientVersion = data.client_version.trim();
+        }
+        if (typeof data.client_latest_version === 'string') {
+            clientLatestVersion = data.client_latest_version.trim();
+        }
+        if (typeof data.client_minimum_version === 'string') {
+            clientMinimumVersion = data.client_minimum_version.trim();
+        }
+        clientUpdateUrl = safeHttpUrl(data && data.client_update_url);
+        if (typeof data.client_update_notes === 'string') {
+            clientUpdateNotes = data.client_update_notes.trim();
+        }
         if (typeof data.mode === 'string') {
             backendMode = data.mode;
         }
@@ -1060,6 +1287,7 @@ async function fetchUiConfig() {
             localStorage.setItem('segmentMode', segmentMode);
         }
         updateSegmentModeButton();
+        renderRuntimeSettingsPickers();
 
         if (data && typeof data.speaker_diarization_enabled === 'boolean') {
             speakerDiarizationEnabled = data.speaker_diarization_enabled;
@@ -1127,21 +1355,20 @@ async function fetchLlmRefineStatus() {
 
         const preferredDefault = normalizeLlmRefineMode(defaultLlmRefineMode || serverMode);
 
-        let rawStoredMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
-        if (!LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())) {
-            rawStoredMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
-        }
-        const hasStoredMode = LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase());
-        const storedMode = hasStoredMode ? normalizeLlmRefineMode(rawStoredMode) : null;
+        const storedMode = getStoredLlmRefineMode();
+        const hasStoredMode = !!storedMode;
 
         if (lockManualControls) {
-            applyLlmRefineMode(preferredDefault);
+            applyLlmRefineMode(preferredDefault, { persist: false });
             return;
         }
 
         if (hasStoredMode && storedMode) {
             if (storedMode !== serverMode) {
-                void setLlmRefineMode(storedMode);
+                const appliedMode = await setLlmRefineMode(storedMode);
+                if (!appliedMode) {
+                    applyLlmRefineMode(serverMode, { persist: false });
+                }
             } else {
                 applyLlmRefineMode(storedMode);
             }
@@ -1149,7 +1376,10 @@ async function fetchLlmRefineStatus() {
         }
 
         if (preferredDefault !== serverMode) {
-            void setLlmRefineMode(preferredDefault);
+            const appliedMode = await setLlmRefineMode(preferredDefault);
+            if (!appliedMode) {
+                applyLlmRefineMode(serverMode, { persist: false });
+            }
         } else {
             applyLlmRefineMode(preferredDefault);
         }
@@ -1474,6 +1704,7 @@ function handleSegmentModeChanged(data) {
     segmentMode = data.mode;
     localStorage.setItem('segmentMode', data.mode);
     updateSegmentModeButton();
+    renderSegmentModePicker();
     enforceTranslateSegmentMode();
 }
 
@@ -1530,18 +1761,24 @@ function positionLangSelectMenu(picker, menu) {
     const gap = 6;
     const viewportPadding = 8;
     const menuWidth = Math.max(220, Math.round(rect.width));
+
+    menu.style.maxHeight = '';
+    const naturalHeight = menu.offsetHeight;
+
     const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
     const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
     const spaceAbove = rect.top - viewportPadding;
     const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
     const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const actualHeight = Math.min(menuHeight, naturalHeight);
+
     const left = Math.min(
         Math.max(viewportPadding, rect.left),
         Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
     );
     const top = openUp
-        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
-        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+        ? Math.max(viewportPadding, rect.top - gap - actualHeight)
+        : Math.min(window.innerHeight - viewportPadding - actualHeight, rect.bottom + gap);
 
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(top)}px`;
@@ -1577,8 +1814,8 @@ function openLangSelectMenu(picker) {
     if (trigger) {
         trigger.setAttribute('aria-expanded', 'true');
     }
-    positionLangSelectMenu(picker, menu);
     menu.hidden = false;
+    positionLangSelectMenu(picker, menu);
 
     const selectedOption = menu.querySelector('.lang-select-option.selected');
     if (selectedOption) {
@@ -1649,18 +1886,24 @@ function positionDropdownMenu(trigger, menu) {
     const gap = 6;
     const viewportPadding = 8;
     const menuWidth = Math.max(rect.width, 180);
+
+    menu.style.maxHeight = '';
+    const naturalHeight = menu.offsetHeight;
+
     const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
     const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
     const spaceAbove = rect.top - viewportPadding;
     const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
     const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
+    const actualHeight = Math.min(menuHeight, naturalHeight);
+
     const left = Math.min(
         Math.max(viewportPadding, rect.left),
         Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
     );
     const top = openUp
-        ? Math.max(viewportPadding, rect.top - gap - menuHeight)
-        : Math.min(window.innerHeight - viewportPadding - menuHeight, rect.bottom + gap);
+        ? Math.max(viewportPadding, rect.top - gap - actualHeight)
+        : Math.min(window.innerHeight - viewportPadding - actualHeight, rect.bottom + gap);
 
     menu.style.left = `${Math.round(left)}px`;
     menu.style.top = `${Math.round(top)}px`;
@@ -1703,6 +1946,12 @@ function buildCustomSelect(options, { value = null, onChange = null, disabled = 
         label.textContent = labelFor(currentValue);
     };
 
+    const onScroll = (event) => {
+        if (menuEl && event && event.target && menuEl.contains(event.target)) {
+            return;
+        }
+        close();
+    };
     const close = () => {
         if (!menuEl) {
             return;
@@ -1714,7 +1963,7 @@ function buildCustomSelect(options, { value = null, onChange = null, disabled = 
         document.removeEventListener('mousedown', onDocMouseDown, true);
         document.removeEventListener('keydown', onKeyDown, true);
         window.removeEventListener('resize', reposition, true);
-        window.removeEventListener('scroll', close, true);
+        window.removeEventListener('scroll', onScroll, true);
     };
     const onDocMouseDown = (event) => {
         if (picker.contains(event.target) || (menuEl && menuEl.contains(event.target))) {
@@ -1767,7 +2016,7 @@ function buildCustomSelect(options, { value = null, onChange = null, disabled = 
         document.addEventListener('mousedown', onDocMouseDown, true);
         document.addEventListener('keydown', onKeyDown, true);
         window.addEventListener('resize', reposition, true);
-        window.addEventListener('scroll', close, true);
+        window.addEventListener('scroll', onScroll, true);
     };
 
     trigger.addEventListener('click', () => {
@@ -2143,12 +2392,14 @@ async function setLlmRefineMode(mode) {
             const data = await response.json();
             const nextMode = normalizeLlmRefineMode(data && data.mode ? data.mode : mode);
             applyLlmRefineMode(nextMode);
+            return nextMode;
         } else {
             console.error('Failed to set LLM refine');
         }
     } catch (error) {
         console.error('Error setting LLM refine:', error);
     }
+    return null;
 }
 
 function updateAudioSourceButton() {
@@ -2159,18 +2410,18 @@ function updateAudioSourceButton() {
     audioSource = normalizeAudioSource(audioSource);
 
     if (audioSource === 'microphone') {
-        audioSourceIcon.textContent = '🎤';
+        setControlIcon(audioSourceIcon, 'mic');
         audioSourceButton.title = t('audio_to_mix');
         return;
     }
 
     if (audioSource === 'mix') {
-        audioSourceIcon.textContent = '🎛️';
+        setControlIcon(audioSourceIcon, 'blend');
         audioSourceButton.title = t('audio_to_system');
         return;
     }
 
-    audioSourceIcon.textContent = '🔊';
+    setControlIcon(audioSourceIcon, 'volume-2');
     audioSourceButton.title = t('audio_to_mic');
 }
 
@@ -2204,15 +2455,181 @@ async function fetchInitialAudioSource() {
     }
 }
 
+function microphoneDefaultLabel() {
+    const defaultName = microphoneDeviceData && microphoneDeviceData.default && microphoneDeviceData.default.name;
+    if (defaultName) {
+        return t('microphone_device_default', { name: defaultName });
+    }
+    return t('microphone_device_default_unknown');
+}
+
+function getSelectedMicrophoneDeviceId() {
+    if (microphoneDevicePickerEl && typeof microphoneDevicePickerEl.value === 'string') {
+        return microphoneDevicePickerEl.value;
+    }
+    return String((microphoneDeviceData && microphoneDeviceData.selected_id) || '');
+}
+
+function renderMicrophoneDevicePicker() {
+    if (!microphoneDevicePickerHost) {
+        return;
+    }
+    microphoneDevicePickerHost.innerHTML = '';
+    const devices = Array.isArray(microphoneDeviceData.devices) ? microphoneDeviceData.devices : [];
+    const options = [
+        { value: '', label: microphoneDefaultLabel() },
+        ...devices.filter((device) => !device.is_default).map((device) => ({
+            value: String(device.id || ''),
+            label: String(device.name || device.id || ''),
+        })).filter((option) => option.value && option.label),
+    ];
+    const selected = options.some((option) => option.value === microphoneDeviceData.selected_id)
+        ? microphoneDeviceData.selected_id
+        : '';
+    microphoneDevicePickerEl = buildCustomSelect(options, {
+        value: selected,
+        disabled: !microphoneDeviceData.available,
+    });
+    microphoneDevicePickerHost.appendChild(microphoneDevicePickerEl);
+    if (microphoneDeviceHint) {
+        microphoneDeviceHint.textContent = microphoneDeviceData.available
+            ? t('microphone_device_hint')
+            : t('microphone_device_unavailable');
+    }
+}
+
+async function fetchMicrophoneDevices() {
+    if (!microphoneDeviceSection) {
+        return;
+    }
+    try {
+        const response = await fetch('/microphones');
+        if (!response.ok) {
+            microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
+            renderMicrophoneDevicePicker();
+            return;
+        }
+        const data = await response.json();
+        microphoneDeviceData = {
+            available: !!(data && data.available),
+            default: (data && data.default) || null,
+            devices: Array.isArray(data && data.devices) ? data.devices : [],
+            selected_id: String((data && data.selected_id) || ''),
+        };
+        renderMicrophoneDevicePicker();
+    } catch (error) {
+        console.error('Failed to fetch microphone devices:', error);
+        microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
+        renderMicrophoneDevicePicker();
+    }
+}
+
+async function saveMicrophoneDeviceSelection() {
+    if (!microphoneDeviceSection || !microphoneDeviceData.available) {
+        return { ok: true };
+    }
+    try {
+        const response = await fetch('/microphone-device', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: getSelectedMicrophoneDeviceId() }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            return {
+                ok: false,
+                message: localizeBackendMessage(data && data.message) || `HTTP ${response.status}`,
+            };
+        }
+        microphoneDeviceData.selected_id = String((data && data.id) || getSelectedMicrophoneDeviceId() || '');
+        return { ok: true };
+    } catch (error) {
+        return { ok: false, message: String(error) };
+    }
+}
+
+function segmentModeLabel(mode) {
+    if (mode === 'translation') {
+        return t('segment_mode_translation');
+    }
+    if (mode === 'endpoint') {
+        return t('segment_mode_endpoint');
+    }
+    return t('segment_mode_punctuation');
+}
+
+function renderAutoRestartPicker() {
+    if (!autoRestartPickerHost) {
+        return;
+    }
+    autoRestartPickerHost.innerHTML = '';
+    autoRestartPickerEl = buildCustomSelect([
+        { value: 'true', label: t('auto_restart_enabled') },
+        { value: 'false', label: t('auto_restart_disabled') },
+    ], {
+        value: autoRestartEnabled ? 'true' : 'false',
+    });
+    autoRestartPickerHost.appendChild(autoRestartPickerEl);
+}
+
+function renderSegmentModePicker() {
+    if (segmentModeSettingField) {
+        segmentModeSettingField.hidden = !segmentModeSupported;
+    }
+    if (!segmentModePickerHost) {
+        return;
+    }
+    segmentModePickerHost.innerHTML = '';
+    if (!segmentModeSupported) {
+        segmentModePickerEl = null;
+        return;
+    }
+    const availableModes = getSegmentModes();
+    const selected = availableModes.includes(segmentMode) ? segmentMode : availableModes[0];
+    segmentModePickerEl = buildCustomSelect(availableModes.map((mode) => ({
+        value: mode,
+        label: segmentModeLabel(mode),
+    })), {
+        value: selected,
+    });
+    segmentModePickerHost.appendChild(segmentModePickerEl);
+}
+
+function renderRuntimeSettingsPickers() {
+    if (runtimeControlsSection) {
+        runtimeControlsSection.hidden = false;
+    }
+    renderAutoRestartPicker();
+    renderSegmentModePicker();
+}
+
+async function applyRuntimeControlSettings() {
+    if (autoRestartPickerEl && typeof autoRestartPickerEl.value === 'string') {
+        autoRestartEnabled = autoRestartPickerEl.value !== 'false';
+        localStorage.setItem('autoRestartEnabled', autoRestartEnabled ? 'true' : 'false');
+        updateAutoRestartButton();
+    }
+
+    const requestedSegmentMode = normalizeSegmentMode(segmentModePickerEl && segmentModePickerEl.value);
+    if (requestedSegmentMode && requestedSegmentMode !== segmentMode) {
+        const ok = await setSegmentMode(requestedSegmentMode);
+        if (!ok) {
+            return { ok: false, message: t('backend_segment_mode_disabled') };
+        }
+    }
+
+    return { ok: true };
+}
+
 async function setSegmentMode(mode) {
     if (lockManualControls) {
-        return;
+        return false;
     }
     if (!segmentModeSupported) {
-        return;
+        return false;
     }
     if (isLlmTranslateMode() && mode === 'translation') {
-        return;
+        return false;
     }
     try {
         const response = await fetch('/segment-mode', {
@@ -2222,20 +2639,29 @@ async function setSegmentMode(mode) {
         });
         if (!response.ok) {
             console.error('Failed to set segment mode');
+            return false;
         }
+        segmentMode = mode;
+        localStorage.setItem('segmentMode', mode);
+        updateSegmentModeButton();
+        renderSegmentModePicker();
+        return true;
     } catch (error) {
         console.error('Error setting segment mode:', error);
+        return false;
     }
 }
 
 // 分段模式切换
-segmentModeButton.addEventListener('click', () => {
-    const availableModes = getSegmentModes();
-    const currentIndex = availableModes.indexOf(segmentMode);
-    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % availableModes.length : 0;
-    const nextMode = availableModes[nextIndex];
-    void setSegmentMode(nextMode);
-});
+if (segmentModeButton) {
+    segmentModeButton.addEventListener('click', () => {
+        const availableModes = getSegmentModes();
+        const currentIndex = availableModes.indexOf(segmentMode);
+        const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % availableModes.length : 0;
+        const nextMode = availableModes[nextIndex];
+        void setSegmentMode(nextMode);
+    });
+}
 
 // 显示模式切换
 displayModeButton.addEventListener('click', () => {
@@ -2413,6 +2839,14 @@ async function restartRecognition({ auto = false, targetLang = null, translation
             throw new Error(`Restart failed with status ${response.status}`);
         }
 
+        const result = await response.json().catch(() => ({}));
+        if (!auto) {
+            isPaused = false;
+            updatePauseButtonUi();
+            if (result && result.paused === false) {
+                sessionCostResume();
+            }
+        }
         console.log(auto ? 'Auto restart: new recognition session requested.' : 'Recognition restarted successfully');
 
         await delay(1500);
@@ -2484,8 +2918,7 @@ pauseButton.addEventListener('click', async () => {
             const response = await fetch('/resume', { method: 'POST' });
             if (response.ok) {
                 isPaused = false;
-                pauseIcon.textContent = '⏸️';
-                pauseButton.title = t('pause');
+                updatePauseButtonUi();
                 console.log('Recognition resumed');
                 sessionCostResume();
             }
@@ -2494,8 +2927,7 @@ pauseButton.addEventListener('click', async () => {
             const response = await fetch('/pause', { method: 'POST' });
             if (response.ok) {
                 isPaused = true;
-                pauseIcon.textContent = '▶️';
-                pauseButton.title = t('resume');
+                updatePauseButtonUi();
                 console.log('Recognition paused');
                 sessionCostPause();
             }
@@ -2578,6 +3010,9 @@ async function refreshOverlayState() {
 
 if (overlayButton) {
     overlayButton.addEventListener('click', async () => {
+        if (lockManualControls) {
+            return;
+        }
         try {
             const response = await fetch('/overlay', {
                 method: 'POST',
@@ -2706,6 +3141,21 @@ function connect() {
 }
 
 function handleMessage(data) {
+    if (data.type === 'recognition_paused') {
+        isPaused = !!data.paused;
+        updatePauseButtonUi();
+        if (isPaused) {
+            sessionCostPause();
+        } else {
+            sessionCostResume();
+        }
+        return;
+    }
+    if (data.type === 'overlay_visibility') {
+        overlayOpen = !!data.visible;
+        updateOverlayButton();
+        return;
+    }
     if (data.type === 'ipc_status') {
         const btn = document.getElementById('ipcStatusButton');
         if (btn) {
@@ -4031,6 +4481,9 @@ function updateSettingsButtonVisibility() {
     if (settingsButton) {
         settingsButton.style.display = lockManualControls ? 'none' : '';
     }
+    if (overlayButton && lockManualControls) {
+        overlayButton.style.display = 'none';
+    }
 }
 
 function applySettingsI18n() {
@@ -4056,8 +4509,14 @@ function applySettingsI18n() {
     setText('providerSonioxLabel', 'provider_soniox');
     setText('providerGeminiLabel', 'provider_gemini');
     setText('sonioxRegionLabel', 'soniox_region');
+    setText('microphoneDeviceLabel', 'microphone_device');
+    setText('runtimeControlsLabel', 'recognition_controls');
+    setText('autoRestartSettingLabel', 'auto_restart_setting');
+    setText('segmentModeSettingLabel', 'segment_mode_setting');
     // Rebuild the region picker so its option labels follow the active language.
     renderSonioxRegionPicker(getSelectedSonioxRegion());
+    renderMicrophoneDevicePicker();
+    renderRuntimeSettingsPickers();
     if (settingsSaveButton) settingsSaveButton.textContent = t('save');
     if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
     if (settingsModeBackButton) settingsModeBackButton.textContent = t('mode_back_to_chooser');
@@ -4241,6 +4700,8 @@ function populateSettingsForm() {
     updateApiKeyFieldForProvider(provider);
     updateSonioxRegionForProvider(provider);
     applyModeSectionsVisibility(mode);
+    renderMicrophoneDevicePicker();
+    renderRuntimeSettingsPickers();
     updateAccountSection();
     if (settingsErrorEl) {
         settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
@@ -4349,6 +4810,7 @@ function openSettings({ forced = false } = {}) {
         void fetchRelayPricing();
         void fetchBalance();
     }
+    void fetchMicrophoneDevices();
     if (settingsOverlay) settingsOverlay.hidden = false;
     if (settingsPanel) settingsPanel.hidden = false;
     const hideClose = settingsForcedOpen ? 'none' : '';
@@ -4523,10 +4985,25 @@ async function handleSettingsSave(event) {
     }
     settings.keys = settings.keys || {};
 
+    if (mode === 'relay') {
+        const allowed = await ensureHostedVersionAllowed({ candidateMode: 'relay' });
+        if (!allowed) {
+            updateApiKeyFieldForProvider(provider);
+            updateSonioxRegionForProvider(provider);
+            return;
+        }
+    }
+
     const server = loadServerSettings();
     server.mode = mode;
     server.modeChosen = true;
     saveServerSettings(server);
+
+    const runtimeResult = await applyRuntimeControlSettings();
+    if (!runtimeResult.ok) {
+        if (settingsErrorEl) settingsErrorEl.textContent = runtimeResult.message || t('backend_segment_mode_disabled');
+        return;
+    }
 
     if (mode === 'relay') {
         // Hosted mode: no provider key needed; sign-in supplies the token.
@@ -4538,6 +5015,12 @@ async function handleSettingsSave(event) {
         }
         if (settingsSaveButton) { settingsSaveButton.disabled = true; settingsSaveButton.textContent = t('saving'); }
         if (settingsErrorEl) settingsErrorEl.textContent = '';
+        const micResult = await saveMicrophoneDeviceSelection();
+        if (!micResult.ok) {
+            if (settingsSaveButton) { settingsSaveButton.disabled = false; settingsSaveButton.textContent = t('save'); }
+            if (settingsErrorEl) settingsErrorEl.textContent = micResult.message || t('validation_error');
+            return;
+        }
         saveProviderSettings(settings);
         const result = await pushSetup(provider, null, {
             silent: false, mode: 'relay', token: server.token, region,
@@ -4575,6 +5058,14 @@ async function handleSettingsSave(event) {
     if (settingsSaveButton) settingsSaveButton.disabled = true;
     if (settingsSaveButton) settingsSaveButton.textContent = t('saving');
     if (settingsErrorEl) settingsErrorEl.textContent = '';
+
+    const micResult = await saveMicrophoneDeviceSelection();
+    if (!micResult.ok) {
+        if (settingsSaveButton) settingsSaveButton.disabled = false;
+        if (settingsSaveButton) settingsSaveButton.textContent = t('save');
+        if (settingsErrorEl) settingsErrorEl.textContent = micResult.message || t('validation_error');
+        return;
+    }
 
     const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
     const result = await pushSetup(provider, apiKeyToPush, { silent: false, region, mode: 'direct' });
@@ -4735,6 +5226,21 @@ if (logoutButton) {
 
 const modeChooserOverlay = document.getElementById('modeChooserOverlay');
 const modeChooserEl = document.getElementById('modeChooser');
+const clientUpdateOverlay = document.getElementById('clientUpdateOverlay');
+const clientUpdateDialog = document.getElementById('clientUpdateDialog');
+const clientUpdateTitle = document.getElementById('clientUpdateTitle');
+const clientUpdateBody = document.getElementById('clientUpdateBody');
+const clientUpdateCurrentLabel = document.getElementById('clientUpdateCurrentLabel');
+const clientUpdateLatestLabel = document.getElementById('clientUpdateLatestLabel');
+const clientUpdateMinimumLabel = document.getElementById('clientUpdateMinimumLabel');
+const clientUpdateCurrent = document.getElementById('clientUpdateCurrent');
+const clientUpdateLatest = document.getElementById('clientUpdateLatest');
+const clientUpdateMinimum = document.getElementById('clientUpdateMinimum');
+const clientUpdateNotesEl = document.getElementById('clientUpdateNotes');
+const clientUpdateNoUrl = document.getElementById('clientUpdateNoUrl');
+const clientUpdateDirectButton = document.getElementById('clientUpdateDirectButton');
+const clientUpdateLaterButton = document.getElementById('clientUpdateLaterButton');
+const clientUpdateButton = document.getElementById('clientUpdateButton');
 const loginOverlay = document.getElementById('loginOverlay');
 const loginPanel = document.getElementById('loginPanel');
 const loginForm = document.getElementById('loginForm');
@@ -4798,6 +5304,156 @@ function clearConnectionModeChoice() {
     saveServerSettings(s);
 }
 
+function versionParts(version) {
+    const raw = String(version || '').trim().replace(/^v/i, '');
+    if (!raw) return null;
+    const parts = raw.split(/[.+_-]/).map((part) => {
+        const match = part.match(/^\d+/);
+        return match ? Number(match[0]) : 0;
+    });
+    if (!parts.length || parts.every((part) => part === 0) && !/^0(?:[.+_-]0)*$/.test(raw)) {
+        return null;
+    }
+    while (parts.length < 3) parts.push(0);
+    return parts;
+}
+
+function compareVersions(a, b) {
+    const left = versionParts(a);
+    const right = versionParts(b);
+    if (!left || !right) return 0;
+    const len = Math.max(left.length, right.length);
+    for (let i = 0; i < len; i++) {
+        const diff = (left[i] || 0) - (right[i] || 0);
+        if (diff !== 0) return diff < 0 ? -1 : 1;
+    }
+    return 0;
+}
+
+function getClientUpdateState(mode = getConnectionMode()) {
+    if (!relayAvailable || mode !== 'relay') {
+        return { needed: false, forced: false };
+    }
+    const current = clientVersion || '0.1.0';
+    const latest = clientLatestVersion || '';
+    const minimum = clientMinimumVersion || '';
+    const belowMinimum = !!minimum && compareVersions(current, minimum) < 0;
+    const belowLatest = !!latest && compareVersions(current, latest) < 0;
+    return {
+        needed: belowMinimum || belowLatest,
+        forced: belowMinimum,
+        current,
+        latest: latest || minimum || '',
+        minimum,
+        updateUrl: clientUpdateUrl,
+        notes: clientUpdateNotes,
+    };
+}
+
+let clientUpdateResolve = null;
+
+function closeClientUpdateDialog(result) {
+    if (clientUpdateOverlay) clientUpdateOverlay.hidden = true;
+    if (clientUpdateDialog) clientUpdateDialog.hidden = true;
+    if (clientUpdateResolve) {
+        const resolve = clientUpdateResolve;
+        clientUpdateResolve = null;
+        resolve(result);
+    }
+}
+
+function showClientUpdateDialog(state) {
+    if (!clientUpdateDialog || !clientUpdateOverlay) {
+        if (state.forced) {
+            return Promise.resolve('direct');
+        }
+        return Promise.resolve('later');
+    }
+    if (clientUpdateResolve) {
+        closeClientUpdateDialog('later');
+    }
+    if (clientUpdateTitle) clientUpdateTitle.textContent = t(state.forced ? 'client_update_title_required' : 'client_update_title_optional');
+    if (clientUpdateBody) clientUpdateBody.textContent = t(state.forced ? 'client_update_body_required' : 'client_update_body_optional');
+    if (clientUpdateCurrentLabel) clientUpdateCurrentLabel.textContent = t('client_update_current');
+    if (clientUpdateLatestLabel) clientUpdateLatestLabel.textContent = t('client_update_latest');
+    if (clientUpdateMinimumLabel) clientUpdateMinimumLabel.textContent = t('client_update_minimum');
+    if (clientUpdateCurrent) clientUpdateCurrent.textContent = state.current || '—';
+    if (clientUpdateLatest) clientUpdateLatest.textContent = state.latest || '—';
+    if (clientUpdateMinimum) clientUpdateMinimum.textContent = state.minimum || '—';
+    if (clientUpdateNotesEl) {
+        clientUpdateNotesEl.textContent = state.notes || '';
+        clientUpdateNotesEl.hidden = !state.notes;
+    }
+    if (clientUpdateNoUrl) {
+        clientUpdateNoUrl.textContent = state.updateUrl ? '' : t('client_update_no_url');
+        clientUpdateNoUrl.hidden = !!state.updateUrl;
+    }
+    if (clientUpdateButton) {
+        clientUpdateButton.textContent = t('client_update_button');
+        clientUpdateButton.disabled = !state.updateUrl;
+        clientUpdateButton.onclick = () => {
+            if (state.updateUrl) {
+                window.open(state.updateUrl, '_blank', 'noopener,noreferrer');
+            }
+        };
+    }
+    if (clientUpdateLaterButton) {
+        clientUpdateLaterButton.textContent = t('client_update_later');
+        clientUpdateLaterButton.hidden = !!state.forced;
+        clientUpdateLaterButton.onclick = () => closeClientUpdateDialog('later');
+    }
+    if (clientUpdateDirectButton) {
+        clientUpdateDirectButton.textContent = t('client_update_direct');
+        clientUpdateDirectButton.hidden = !state.forced;
+        clientUpdateDirectButton.onclick = () => closeClientUpdateDialog('direct');
+    }
+    clientUpdateOverlay.hidden = false;
+    clientUpdateDialog.hidden = false;
+    return new Promise((resolve) => {
+        clientUpdateResolve = resolve;
+    });
+}
+
+function switchToDirectModeForUpdate() {
+    const s = loadServerSettings();
+    s.mode = 'direct';
+    s.modeChosen = true;
+    saveServerSettings(s);
+    setModeRadio('direct');
+    applyModeSectionsVisibility('direct');
+    updateAccountSection();
+}
+
+async function ensureHostedVersionAllowed({ candidateMode = null } = {}) {
+    const mode = candidateMode || getConnectionMode();
+    const state = getClientUpdateState(mode);
+    if (!state.needed) {
+        return true;
+    }
+    // Throttle optional (non-forced) update reminders so we don't nag on every page load.
+    if (!state.forced) {
+        let lastShown = 0;
+        try {
+            lastShown = parseInt(localStorage.getItem(CLIENT_UPDATE_REMINDER_KEY) || '0', 10) || 0;
+        } catch (_) { /* ignore */ }
+        const elapsed = Date.now() - lastShown;
+        if (lastShown && elapsed < CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS) {
+            return true;
+        }
+    }
+    const action = await showClientUpdateDialog(state);
+    if (!state.forced) {
+        try {
+            localStorage.setItem(CLIENT_UPDATE_REMINDER_KEY, String(Date.now()));
+        } catch (_) { /* ignore */ }
+    }
+    if (state.forced && action === 'direct') {
+        switchToDirectModeForUpdate();
+        return false;
+    }
+    return !state.forced;
+}
+
 async function returnToModeChooser() {
     if (lockManualControls || !relayAvailable) {
         return;
@@ -4807,6 +5463,7 @@ async function returnToModeChooser() {
     hideSettingsPanel();
     hideLogin();
     await openModeChooser();
+    await ensureHostedVersionAllowed();
     await syncProviderFromStorage();
     maybeForceOpenSettings();
     updateBalanceBarVisibility();
@@ -4828,6 +5485,7 @@ async function maybeRunFirstLaunchFlow() {
         return;
     }
     await openModeChooser();
+    await ensureHostedVersionAllowed();
 }
 
 // ---- Login overlay (VRChat profile proof) ----
@@ -4852,6 +5510,17 @@ function applyLoginI18n() {
     if (codeHint) codeHint.hidden = !relayServerUrl;
     // Re-render any visible method picker so its labels follow the language.
     if (loginMethods.length) renderLoginMethods();
+    renderLinkReuseHint(loginMethod);
+}
+
+// Show the "delete your old login link first" hint on the challenge step, but
+// only when link is the active method and the server flagged that this profile
+// still has a stale login link occupying one of its (full) link slots.
+function renderLinkReuseHint(method) {
+    const el = document.getElementById('loginLinkReuseHint');
+    if (!el) return;
+    const reuse = method === 'link' && loginProfile && loginProfile.recommended_link_reuse;
+    el.textContent = reuse ? t('login_link_reuse_hint') : '';
 }
 
 // Localized labels/hints per verification method, mirroring the web user UI.
@@ -5076,7 +5745,10 @@ async function resolveIdentity(raw) {
             loginMethods = ['bio'];
         }
     }
-    if (!loginMethods.includes(loginMethod)) loginMethod = loginMethods[0];
+    // Prefer the server's recommended method for this profile, if it's enabled.
+    const rec = profile && profile.recommended_method;
+    if (rec && loginMethods.includes(rec)) loginMethod = rec;
+    else if (!loginMethods.includes(loginMethod)) loginMethod = loginMethods[0];
     renderLoginProfile(profile);
     renderLoginMethods();
     renderBonusLadder(profile.trust_rank);
@@ -5106,7 +5778,9 @@ function renderLoginMethods() {
         radio.checked = (m === loginMethod);
         radio.addEventListener('change', () => { loginMethod = m; renderLoginMethods(); });
         const span = document.createElement('span');
-        span.textContent = t(LOGIN_METHOD_LABEL_KEYS[m] || LOGIN_METHOD_LABEL_KEYS.bio);
+        let label = t(LOGIN_METHOD_LABEL_KEYS[m] || LOGIN_METHOD_LABEL_KEYS.bio);
+        if (loginProfile && loginProfile.recommended_method === m) label += ' (' + t('login_method_recommended') + ')';
+        span.textContent = label;
         option.appendChild(radio);
         option.appendChild(span);
         loginMethodList.appendChild(option);
@@ -5135,6 +5809,7 @@ async function startVerify() {
         if (challengeText) challengeText.textContent = data.text || '';
         const challengeHint = document.getElementById('loginChallengeHint');
         if (challengeHint) challengeHint.textContent = t(LOGIN_METHOD_HINT_KEYS[method] || LOGIN_METHOD_HINT_KEYS.bio);
+        renderLinkReuseHint(method);
         setLoginStep('challenge');
         if (data.expires_at) startLoginCountdown(data.expires_at);
     } catch (e) {
@@ -5562,9 +6237,21 @@ function sessionElapsedMs() {
     return total;
 }
 
+function formatSessionCost(cost, pricePerSecond) {
+    const p = Number(pricePerSecond);
+    if (!Number.isFinite(p) || p <= 0) {
+        return formatCredits(cost);
+    }
+    const roundedCost = Math.round(cost / p) * p;
+    const priceStr = p.toString();
+    const dotIdx = priceStr.indexOf('.');
+    const decimals = dotIdx >= 0 ? priceStr.length - dotIdx - 1 : 0;
+    return Number(roundedCost.toFixed(Math.max(decimals, 0))).toString();
+}
+
 function updateSessionCostDisplay() {
     const cost = (sessionElapsedMs() / 1000) * pricePerSecond;
-    setElText('sessionValue', formatCredits(cost));
+    setElText('sessionValue', formatSessionCost(cost, pricePerSecond));
 }
 
 function sessionCostResume() {
@@ -5601,6 +6288,7 @@ document.addEventListener('DOMContentLoaded', () => {
     (async () => {
         await fetchUiConfig();
         await maybeRunFirstLaunchFlow();
+        await ensureHostedVersionAllowed();
         await syncProviderFromStorage();
         await fetchLlmRefineStatus();
         fetchApiKeyStatus();

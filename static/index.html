@@ -36,48 +36,58 @@
         </div>
 
         <div class="button-bar">
-            <button class="control-button" id="themeToggle" title="Toggle theme">
-                <span id="themeIcon">☀️</span>
+            <button class="control-button" id="pauseButton" title="Pause/Resume recognition">
+                <svg class="control-icon" id="pauseIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#pause"></use>
+                </svg>
             </button>
 
             <button class="control-button restart-button" id="restartButton" title="Restart recognition">
-                <span>🔄</span>
+                <svg class="control-icon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#rotate-cw"></use>
+                </svg>
             </button>
 
-            <button class="control-button" id="autoRestartButton" title="Auto restart recognition on disconnect">
-                <span id="autoRestartIcon">♻️</span>
-            </button>
-
-            <button class="control-button" id="pauseButton" title="Pause/Resume recognition">
-                <span id="pauseIcon">⏸️</span>
+            <button class="control-button" id="themeToggle" title="Toggle theme">
+                <svg class="control-icon" id="themeIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#sun"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="audioSourceButton" title="Switch audio source">
-                <span id="audioSourceIcon">🔊</span>
+                <svg class="control-icon" id="audioSourceIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#volume-2"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="overlayButton" title="Toggle subtitle overlay window">
-                <span id="overlayIcon">cc</span>
-            </button>
-
-            <button class="control-button" id="segmentModeButton" title="Toggle segmentation mode">
-                <span id="segmentModeText">✂️</span>
+                <svg class="control-icon" id="overlayIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#subtitles"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="displayModeButton" title="Toggle display mode">
-                <span id="displayModeText">👁️</span>
+                <svg class="control-icon" id="displayModeText" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#eye"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="translationLangButton" title="Translation language">
-                <span id="translationLangIcon">🌐</span>
+                <svg class="control-icon" id="translationLangIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#languages"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="translationRefineButton" title="Refine completed translations">
-                <span id="translationRefineIcon">🪄</span>
+                <svg class="control-icon" id="translationRefineIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#wand-sparkles"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="oscTranslationButton" title="Send translation to VRChat via OSC">
-                <span id="oscTranslationIcon">🛩️</span>
+                <svg class="control-icon" id="oscTranslationIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#send-horizontal"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="furiganaButton" title="Toggle furigana for Japanese">
@@ -85,14 +95,22 @@
             </button>
 
             <button class="control-button mobile-only" id="bottomSafeAreaButton" title="Toggle extra bottom space on mobile">
-                <span id="bottomSafeAreaIcon">⬇️</span>
+                <svg class="control-icon" id="bottomSafeAreaIcon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#arrow-down-to-line"></use>
+                </svg>
             </button>
 
             <button class="control-button" id="settingsButton" title="Settings">
-                <span>⚙️</span>
+                <svg class="control-icon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#settings"></use>
+                </svg>
             </button>
 
-            <button class="control-button" id="ipcStatusButton" title="Yakutan 已连接" style="display: none; cursor: default;">🔗</button>
+            <button class="control-button" id="ipcStatusButton" title="Yakutan 已连接" style="display: none; cursor: default;">
+                <svg class="control-icon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#link"></use>
+                </svg>
+            </button>
         </div>
     </div>
 
@@ -163,6 +181,14 @@
                 </div>
             </section>
 
+            <section class="auth-section" id="microphoneDeviceSection">
+                <div class="form-field">
+                    <span id="microphoneDeviceLabel">Microphone device</span>
+                    <div id="microphoneDevicePicker"></div>
+                </div>
+                <p class="field-hint" id="microphoneDeviceHint"></p>
+            </section>
+
             <section class="auth-section" id="apiKeySection">
                 <label class="form-field" for="apiKeyInput">
                     <span id="apiKeyLabel">API Key</span>
@@ -175,6 +201,18 @@
             </section>
 
             <p class="settings-error" id="settingsError" role="alert"></p>
+
+            <section class="auth-section" id="runtimeControlsSection">
+                <div class="settings-section-label" id="runtimeControlsLabel">Recognition controls</div>
+                <div class="form-field" id="autoRestartSettingField">
+                    <span id="autoRestartSettingLabel">Auto restart on disconnect</span>
+                    <div id="autoRestartPicker"></div>
+                </div>
+                <div class="form-field" id="segmentModeSettingField">
+                    <span id="segmentModeSettingLabel">Segmentation mode</span>
+                    <div id="segmentModePicker"></div>
+                </div>
+            </section>
 
             <div class="settings-actions">
                 <div class="settings-actions-left">
@@ -195,6 +233,24 @@
         <div class="confirm-actions">
             <button class="secondary-button" id="confirmCancelButton" type="button"></button>
             <button class="danger-button" id="confirmOkButton" type="button"></button>
+        </div>
+    </div>
+
+    <div class="confirm-overlay" id="clientUpdateOverlay" hidden></div>
+    <div class="client-update-dialog" id="clientUpdateDialog" role="dialog" aria-modal="true" aria-labelledby="clientUpdateTitle" hidden>
+        <h1 id="clientUpdateTitle">Update required</h1>
+        <p class="field-hint" id="clientUpdateBody"></p>
+        <div class="client-update-meta">
+            <div><span id="clientUpdateCurrentLabel">Current</span><strong id="clientUpdateCurrent">—</strong></div>
+            <div><span id="clientUpdateLatestLabel">Latest</span><strong id="clientUpdateLatest">—</strong></div>
+            <div><span id="clientUpdateMinimumLabel">Minimum</span><strong id="clientUpdateMinimum">—</strong></div>
+        </div>
+        <div class="client-update-notes" id="clientUpdateNotes" hidden></div>
+        <p class="field-hint field-hint-warn" id="clientUpdateNoUrl" hidden></p>
+        <div class="client-update-actions">
+            <button class="secondary-button" id="clientUpdateDirectButton" type="button">Switch to own key mode</button>
+            <button class="secondary-button" id="clientUpdateLaterButton" type="button">Later</button>
+            <button class="primary-button" id="clientUpdateButton" type="button">Update</button>
         </div>
     </div>
 
@@ -261,6 +317,7 @@
 
             <section class="auth-section" id="loginStepChallenge" hidden>
                 <p class="field-hint" id="loginChallengeHint"></p>
+                <p class="field-hint field-hint-warn" id="loginLinkReuseHint"></p>
                 <div class="challenge-box">
                     <code id="loginChallengeText"></code>
                     <button class="secondary-button" id="loginCopyButton" type="button">Copy</button>

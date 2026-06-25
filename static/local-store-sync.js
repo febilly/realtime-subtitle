@@ -30,12 +30,16 @@
     var nativeClear = ls.clear.bind(ls);
 
     // Only these keys are shared across instances: API key / provider config
-    // (providerSettings.v1) and server address + login auth (subtitleServer.v1).
-    // Everything else (theme, segment/display mode, audio source, auto-restart,
-    // …) stays per-instance. Keep in sync with the constants in app.js.
+    // (providerSettings.v1), server address + login auth (subtitleServer.v1),
+    // and the LLM refine/translate mode. Everything else (theme,
+    // segment/display mode, audio source, auto-restart, …) stays per-instance.
+    // Keep in sync with the constants in app.js.
     var ALLOWLIST = {
         'providerSettings.v1': true,
         'subtitleServer.v1': true,
+        'llmTranslationMode': true,
+        'llmRefineMode': true,
+        'llmRefineEnabled': true,
     };
 
     function isShared(key) {

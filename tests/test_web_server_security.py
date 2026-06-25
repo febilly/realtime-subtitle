@@ -23,6 +23,8 @@ class TestWebServerSecurity:
         session = MagicMock()
         session.get_audio_source.return_value = "system"
         session.set_audio_source.return_value = (True, "ok")
+        session.get_microphone_device_id.return_value = ""
+        session.set_microphone_device_id.return_value = (True, "ok")
         return session
 
     def mock_logger(self):
@@ -220,6 +222,46 @@ class TestWebServerSecurity:
             ws._server_request.assert_awaited_once_with("POST", "/me/web-login-code", token="ss_token")
 
     @async_test
+    async def test_ui_config_exposes_client_version_policy(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import config
+            config.RELAY_AVAILABLE = True
+            config.SUBTITLE_SERVER_URL = "https://subtitle.example"
+            config.CLIENT_VERSION = "1.2.3"
+            config.TRANSLATION_PROVIDER = "soniox"
+            config.SONIOX_REGION = "us"
+            config.SONIOX_CUSTOM_URL = ""
+            config.ENABLE_SPEAKER_DIARIZATION = True
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            session = self.mock_session()
+            session.get_translation_target_lang.return_value = "en"
+            session.get_llm_refine_mode.return_value = "off"
+            ws = WebServer(session, self.mock_logger())
+            ws._server_request = AsyncMock(return_value=(200, {
+                "client_latest_version": "1.4.0",
+                "client_minimum_version": "1.1.0",
+                "client_update_url": "https://subtitle.example/download",
+                "client_update_notes": "Bug fixes",
+            }))
+
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+            response_data, status = await ws.ui_config_handler(AsyncMock())
+
+            assert status == 200
+            assert response_data["client_version"] == "1.2.3"
+            assert response_data["client_latest_version"] == "1.4.0"
+            assert response_data["client_minimum_version"] == "1.1.0"
+            assert response_data["client_update_url"] == "https://subtitle.example/download"
+            assert response_data["client_update_notes"] == "Bug fixes"
+
+    @async_test
     async def test_set_audio_source_invalid(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),
@@ -255,3 +297,59 @@ class TestWebServerSecurity:
             assert response_data["status"] == "error"
             assert response_data["message"] == "Invalid audio source"
             m_session.set_audio_source.assert_not_called()
+
+    @async_test
+    async def test_overlay_rejected_when_locked(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = True
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            manager = MagicMock()
+            manager.open.return_value = True
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            ws.overlay_manager = manager
+
+            request = AsyncMock()
+            request.json.return_value = {"action": "toggle"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.overlay_post_handler(request)
+
+            assert status == 403
+            assert response_data["status"] == "error"
+            manager.open.assert_not_called()
+            ws_module.LOCK_MANUAL_CONTROLS = False
+
+    @async_test
+    async def test_microphone_device_rejected_when_locked(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = True
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            session = self.mock_session()
+            ws = WebServer(session, self.mock_logger())
+
+            request = AsyncMock()
+            request.json.return_value = {"id": "mic-1"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.microphone_device_set_handler(request)
+
+            assert status == 403
+            assert response_data["status"] == "error"
+            session.set_microphone_device_id.assert_not_called()
+            ws_module.LOCK_MANUAL_CONTROLS = False

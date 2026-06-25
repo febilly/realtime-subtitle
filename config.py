@@ -401,6 +401,7 @@ GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
 # the environment (.env) and is never editable from the UI.
 SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
+CLIENT_VERSION = _env_str("CLIENT_VERSION", "0.1.0").strip() or "0.1.0"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
 # the UI login flow / localStorage override take priority at runtime.
@@ -487,6 +488,9 @@ USE_TWITCH_AUDIO_STREAM = _env_bool("USE_TWITCH_AUDIO_STREAM", False)
 #   - mix mode: zero out mic component only; system component continues
 # - False: ignore VRChat MuteSelf state
 MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = _env_bool("MUTE_MIC_WHEN_VRCHAT_SELF_MUTED", True)
+
+# Optional microphone device ID. Empty means "current system default".
+MICROPHONE_DEVICE_ID = _env_str("MICROPHONE_DEVICE_ID", "").strip()
 
 # Mix audio weights (effective only when audio source is mix)
 # Convention:
@@ -840,13 +844,24 @@ def _http_to_ws(url: str) -> str:
     return url
 
 
-def relay_ws_url(provider: str | None = None) -> str:
-    """WebSocket relay endpoint for a provider on the configured server."""
+def relay_ws_url(provider: str | None = None, model: str | None = None) -> str:
+    """WebSocket relay endpoint for a provider on the configured server.
+
+    When ``model`` is given it is appended as a ``?model=`` query parameter so the
+    server can authenticate, authorize and meter the stream at the WebSocket
+    handshake (before the first frame). The model is still also sent in the first
+    frame, so older servers that read it from the body keep working.
+    """
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
     p = str(p).strip().lower()
     if p not in ("soniox", "gemini"):
         p = "soniox"
-    return f"{_http_to_ws(SUBTITLE_SERVER_URL)}/relay/{p}"
+    url = f"{_http_to_ws(SUBTITLE_SERVER_URL)}/relay/{p}"
+    if model:
+        from urllib.parse import quote
+
+        url += f"?model={quote(str(model), safe='')}"
+    return url
 
 
 def relay_rest_url(path: str = "") -> str:

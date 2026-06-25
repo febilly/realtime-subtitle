@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 mock_config = type(sys)("config")
 mock_config.IPC_ENABLED = True
 mock_config.IPC_HOST = "127.0.0.1"
-mock_config.IPC_PORT_RANGE = range(21000, 21010)
+mock_config.IPC_PORT_RANGE = range(24000, 24010)
 mock_config.IPC_DISCOVERY_FILE = os.path.join(tempfile.gettempdir(), "test_rt_discovery.json")
 mock_config.IPC_DISCOVERY_TIMEOUT = 30.0
 mock_config.IPC_CONNECT_TIMEOUT = 2.0

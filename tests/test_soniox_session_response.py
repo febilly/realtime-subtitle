@@ -20,8 +20,9 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.SONIOX_TEMP_KEY_URL = None
     config.RELAY_MODE = False
     config.RELAY_TOKEN = ""
-    config.relay_ws_url = lambda provider=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
+    config.relay_ws_url = lambda provider=None, model=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
     config.USE_TWITCH_AUDIO_STREAM = False
+    config.MICROPHONE_DEVICE_ID = ""
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
     config.TWITCH_CHANNEL = ""
     config.TWITCH_STREAM_QUALITY = "audio_only"
@@ -403,6 +404,41 @@ def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     assert session._stream_rollover_prepare_age(10.0) == 4.0
 
 
+def test_stream_rollover_disabled_in_relay_mode(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    module.config.RELAY_MODE = True
+    module.config.SONIOX_USES_TEMP_API_KEY = True
+    monkeypatch.setattr(module, "SONIOX_STREAM_DURATION_SECONDS", 30.0)
+
+    async def broadcast(_data):
+        return None
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+
+    assert session._stream_rollover_seconds() is None
+
+
+def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    module.config.RELAY_MODE = False
+    monkeypatch.setattr(module, "SONIOX_STREAM_DURATION_SECONDS", 30.0)
+
+    async def broadcast(_data):
+        return None
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+
+    module.config.SONIOX_USES_TEMP_API_KEY = False
+    assert session._stream_rollover_seconds() is None
+
+    module.config.SONIOX_USES_TEMP_API_KEY = True
+    assert session._stream_rollover_seconds() == 30.0
+
+
 def test_manual_finalize_fin_token_is_consumed_but_not_displayed(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
@@ -458,6 +494,7 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
 
+    module.config.SONIOX_USES_TEMP_API_KEY = True
     monkeypatch.setattr(module, "SONIOX_STREAM_DURATION_SECONDS", 30.0)
 
     async def broadcast(_data):
