@@ -710,7 +710,9 @@ class WebServer:
         if not token:
             return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
 
-        provider = config.TRANSLATION_PROVIDER
+        provider = request.query.get("provider", config.TRANSLATION_PROVIDER)
+        if provider not in ("soniox", "gemini"):
+            provider = config.TRANSLATION_PROVIDER
         model = self._active_relay_model(provider)
 
         # /billing/summary gives prepaid balance + subscription used/remaining +

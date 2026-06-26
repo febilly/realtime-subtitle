@@ -5268,6 +5268,10 @@ if (settingsForm) {
             const provider = getSelectedProvider();
             updateApiKeyFieldForProvider(provider);
             updateSonioxRegionForProvider(provider);
+            const server = loadServerSettings();
+            if (backendLoggedIn || !!server.token) {
+                void fetchBalance({ provider, force: true });
+            }
         });
     });
     settingsForm.querySelectorAll('input[name="connmode"]').forEach((radio) => {
@@ -5281,6 +5285,10 @@ if (settingsForm) {
             updateApiKeyFieldForProvider(provider);
             if (mode === 'relay') {
                 void fetchRelayPricing();
+                const server = loadServerSettings();
+                if (backendLoggedIn || !!server.token) {
+                    void fetchBalance({ provider, force: true });
+                }
             }
         });
     });
@@ -6196,10 +6204,11 @@ function stopBalancePolling() {
     }
 }
 
-async function fetchBalance() {
-    if (!balanceBarShouldShow()) return;
+async function fetchBalance({ provider = null, force = false } = {}) {
+    if (!force && !balanceBarShouldShow()) return;
     try {
-        const resp = await fetch('/account/balance');
+        const url = provider ? `/account/balance?provider=${encodeURIComponent(provider)}` : '/account/balance';
+        const resp = await fetch(url);
         if (!resp.ok) return;
         const data = await resp.json();
         pricePerSecond = Number(data.price_per_second) || 0;
