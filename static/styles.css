@@ -876,6 +876,43 @@ body.dark-theme .settings-actions {
     border-top-color: rgba(255, 255, 255, 0.10);
 }
 
+.settings-footer-scroll {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: #6b7280;
+    margin-top: 24px;
+    margin-bottom: 8px;
+}
+
+body.dark-theme .settings-footer-scroll {
+    color: #9ca3af;
+}
+
+.settings-footer-scroll a {
+    color: #3b82f6;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.settings-footer-scroll a:hover {
+    text-decoration: underline;
+}
+
+body.dark-theme .settings-footer-scroll a {
+    color: #60a5fa;
+}
+
+.settings-footer-divider {
+    color: rgba(0, 0, 0, 0.15);
+}
+
+body.dark-theme .settings-footer-divider {
+    color: rgba(255, 255, 255, 0.15);
+}
+
 .primary-button,
 .secondary-button {
     min-width: 76px;

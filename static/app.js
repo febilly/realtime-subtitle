@@ -4607,6 +4607,10 @@ function applySettingsI18n() {
     if (resetAllButton) resetAllButton.textContent = t('reset_all');
     if (settingsButton) settingsButton.title = t('settings');
     if (settingsCloseButton) settingsCloseButton.title = t('close');
+    const versionEl = document.getElementById('settingsVersion');
+    if (versionEl) {
+        versionEl.textContent = t('client_version', { version: clientVersion });
+    }
 }
 
 function getDesiredProvider() {
