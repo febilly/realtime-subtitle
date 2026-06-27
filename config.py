@@ -417,7 +417,7 @@ GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
 # the environment (.env) and is never editable from the UI.
 SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
-CLIENT_VERSION = "3.0.0"
+CLIENT_VERSION = "3.1.0"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
 # the UI login flow / localStorage override take priority at runtime.
