@@ -271,6 +271,7 @@ class WebServer:
             "relay_available": bool(config.RELAY_AVAILABLE),
             "server_url": config.SUBTITLE_SERVER_URL,
             "credits_purchase_url": "",
+            "first_redeem_bonus_credits": 0,
             "client_version": config.CLIENT_VERSION,
             "client_latest_version": "",
             "client_minimum_version": "",
@@ -287,6 +288,12 @@ class WebServer:
                 payload["credits_purchase_url"] = str(
                     public_settings.get("credits_purchase_url") or ""
                 ).strip()
+                try:
+                    payload["first_redeem_bonus_credits"] = max(
+                        0, float(public_settings.get("first_redeem_bonus_credits") or 0)
+                    )
+                except (TypeError, ValueError):
+                    payload["first_redeem_bonus_credits"] = 0
                 payload["client_latest_version"] = str(
                     public_settings.get("client_latest_version") or ""
                 ).strip()
@@ -686,12 +693,24 @@ class WebServer:
             "logged_in": bool(token),
             "display_name": None,
             "trust_rank": None,
+            "first_redeem_bonus_credits": 0,
+            "first_redeem_bonus_eligible": False,
         }
         if token and config.RELAY_AVAILABLE:
             status, data = await self._server_request("GET", "/me", token=token)
             if status == 200 and isinstance(data, dict):
                 payload["display_name"] = data.get("display_name")
                 payload["trust_rank"] = data.get("trust_rank")
+                try:
+                    payload["first_redeem_bonus_credits"] = max(
+                        0, float(data.get("first_redeem_bonus_credits") or 0)
+                    )
+                except (TypeError, ValueError):
+                    payload["first_redeem_bonus_credits"] = 0
+                payload["first_redeem_bonus_eligible"] = bool(
+                    data.get("first_redeem_bonus_eligible")
+                    and payload["first_redeem_bonus_credits"] > 0
+                )
             elif status in (401, 403):
                 payload["logged_in"] = False
         return web.json_response(payload)
@@ -744,6 +763,8 @@ class WebServer:
             "subscriptions": subscriptions,
             "price_per_second": float(price_per_second),
             "free": free,
+            "first_redeem_bonus_credits": summary.get("first_redeem_bonus_credits") or 0,
+            "first_redeem_bonus_eligible": bool(summary.get("first_redeem_bonus_eligible")),
         })
 
     async def account_pricing_handler(self, request):

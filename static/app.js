@@ -396,6 +396,8 @@ const CLIENT_UPDATE_REMINDER_KEY = 'clientUpdateReminderLastShown';
 let relayAvailable = false;
 let relayServerUrl = '';
 let creditsPurchaseUrl = '';
+let firstRedeemBonusCredits = 0;
+let firstRedeemBonusEligible = false;
 let clientVersion = '0.1.0';
 let clientLatestVersion = '';
 let clientMinimumVersion = '';
@@ -1301,6 +1303,8 @@ async function fetchUiConfig() {
             relayServerUrl = data.server_url;
         }
         creditsPurchaseUrl = safeHttpUrl(data && data.credits_purchase_url);
+        firstRedeemBonusCredits = Math.max(0, Number(data && data.first_redeem_bonus_credits) || 0);
+        firstRedeemBonusEligible = false;
         if (typeof data.client_version === 'string' && data.client_version.trim()) {
             clientVersion = data.client_version.trim();
         }
@@ -5033,6 +5037,7 @@ function updateAccountSection() {
     const identityHint = document.getElementById('accountIdentityHint');
     const purchaseHint = document.getElementById('purchaseCreditsHint');
     const purchaseLink = document.getElementById('purchaseCreditsLink');
+    const firstBonusHint = document.getElementById('firstRedeemBonusHint');
     if (serverHint) {
         serverHint.textContent = relayServerUrl ? t('account_server', { url: relayServerUrl }) : '';
     }
@@ -5055,6 +5060,15 @@ function updateAccountSection() {
             purchaseLink.removeAttribute('href');
             purchaseHint.hidden = true;
         }
+    }
+    if (firstBonusHint) {
+        const showFirstBonus = (backendLoggedIn || !!loadServerSettings().token)
+            && firstRedeemBonusEligible
+            && Number(firstRedeemBonusCredits) > 0;
+        firstBonusHint.textContent = showFirstBonus
+            ? t('account_first_redeem_bonus', { credits: formatCredits(firstRedeemBonusCredits) })
+            : '';
+        firstBonusHint.hidden = !showFirstBonus;
     }
     updateAccountBalance();
 }
@@ -6282,6 +6296,9 @@ async function handleRedeem() {
                 credits: formatCredits(data.granted_credits),
                 balance: formatCredits(data.new_balance),
             }));
+            firstRedeemBonusCredits = Math.max(0, Number(data.first_redeem_bonus_credits) || 0);
+            firstRedeemBonusEligible = false;
+            updateAccountSection();
             void fetchBalance();
         } else {
             showToast(localizeBackendMessage((data && (data.detail || data.message)) || t('connection_error_try_again')), true);
@@ -6411,7 +6428,10 @@ async function fetchBalance({ provider = null, force = false } = {}) {
         if (!resp.ok) return;
         const data = await resp.json();
         pricePerSecond = Number(data.price_per_second) || 0;
+        firstRedeemBonusCredits = Math.max(0, Number(data.first_redeem_bonus_credits) || firstRedeemBonusCredits || 0);
+        firstRedeemBonusEligible = !!data.first_redeem_bonus_eligible && firstRedeemBonusCredits > 0;
         renderBalance(data);
+        updateAccountSection();
     } catch (e) {
         // ignore transient errors
     }
