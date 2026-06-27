@@ -5824,6 +5824,7 @@ function applyLoginI18n() {
     // Re-render any visible method picker so its labels follow the language.
     if (loginMethods.length) renderLoginMethods();
     renderLinkReuseHint(loginMethod);
+    renderLinkReferralHint(loginMethod);
 }
 
 // Show the "delete your old login link first" hint on the challenge step, but
@@ -5834,6 +5835,18 @@ function renderLinkReuseHint(method) {
     if (!el) return;
     const reuse = method === 'link' && loginProfile && loginProfile.recommended_link_reuse;
     el.textContent = reuse ? t('login_link_reuse_hint') : '';
+}
+
+function renderLinkReferralHint(method) {
+    const el = document.getElementById('loginLinkReferralHint');
+    if (!el) return;
+    if (method === 'link') {
+        el.textContent = '💡 ' + t('login_link_referral_hint');
+        el.style.display = 'block';
+    } else {
+        el.textContent = '';
+        el.style.display = 'none';
+    }
 }
 
 // Localized labels/hints per verification method, mirroring the web user UI.
@@ -6123,6 +6136,7 @@ async function startVerify() {
         const challengeHint = document.getElementById('loginChallengeHint');
         if (challengeHint) challengeHint.textContent = t(LOGIN_METHOD_HINT_KEYS[method] || LOGIN_METHOD_HINT_KEYS.bio);
         renderLinkReuseHint(method);
+        renderLinkReferralHint(method);
         setLoginStep('challenge');
         if (data.expires_at) startLoginCountdown(data.expires_at);
     } catch (e) {
