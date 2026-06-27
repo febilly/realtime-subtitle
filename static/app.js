@@ -53,22 +53,38 @@
     function positionTooltip(target) {
         if (!tooltipEl) return;
         const rect = target.getBoundingClientRect();
-        
-        // Calculate position: display on the left side of the button, vertically centered
-        const tooltipWidth = tooltipEl.offsetWidth;
-        const tooltipHeight = tooltipEl.offsetHeight;
+        const margin = 8;
+        const gap = 8;
+        const maxTooltipWidth = 350;
 
-        let left = rect.left - tooltipWidth - 8;
-        if (left < 8) {
-            // Fallback: if it overflows the left side of the window, show it on the right side
-            left = rect.right + 8;
+        tooltipEl.style.left = '0px';
+        tooltipEl.style.top = '0px';
+        tooltipEl.style.maxWidth = '';
+
+        const leftSpace = Math.max(0, rect.left - margin - gap);
+        const rightSpace = Math.max(0, window.innerWidth - rect.right - margin - gap);
+        const placeLeft = leftSpace >= rightSpace;
+        const availableWidth = placeLeft ? leftSpace : rightSpace;
+        tooltipEl.style.maxWidth = Math.max(1, Math.min(maxTooltipWidth, availableWidth)) + 'px';
+
+        let left;
+        if (placeLeft) {
+            const tooltipWidth = tooltipEl.offsetWidth;
+            left = rect.left - tooltipWidth - gap;
+            if (left < margin) left = margin;
+        } else {
+            const tooltipWidth = tooltipEl.offsetWidth;
+            left = rect.right + gap;
+            if (left + tooltipWidth > window.innerWidth - margin) {
+                left = window.innerWidth - tooltipWidth - margin;
+            }
         }
 
+        const tooltipHeight = tooltipEl.offsetHeight;
         let top = rect.top + (rect.height - tooltipHeight) / 2;
-        // Clamp top position so it doesn't go offscreen
-        if (top < 8) top = 8;
-        if (top + tooltipHeight > window.innerHeight - 8) {
-            top = window.innerHeight - tooltipHeight - 8;
+        if (top < margin) top = margin;
+        if (top + tooltipHeight > window.innerHeight - margin) {
+            top = window.innerHeight - tooltipHeight - margin;
         }
 
         tooltipEl.style.left = left + 'px';
@@ -148,7 +164,20 @@
 
     document.addEventListener('click', (e) => {
         if (activeTooltipTarget && activeTooltipTarget.contains(e.target)) {
-            hideTooltip();
+            const target = activeTooltipTarget;
+            // Delay check to run after the click's DOM updates (e.g. changing title, disabling, or removing the button)
+            setTimeout(() => {
+                if (activeTooltipTarget === target) {
+                    const rect = target.getBoundingClientRect();
+                    const isVisible = rect.width > 0 && rect.height > 0 && document.body.contains(target);
+                    const text = target.getAttribute('data-custom-title');
+                    if (isVisible && text) {
+                        updateTooltipText(text);
+                    } else {
+                        hideTooltip();
+                    }
+                }
+            }, 0);
         }
     }, { passive: true });
 })();
@@ -846,7 +875,7 @@ function applyStaticUiText() {
     }
 
     if (overlayButton) {
-        overlayButton.title = overlayOpen ? t('overlay_close') : t('overlay_open');
+        updateOverlayButton();
     }
 
     if (settingsButton) {
@@ -1088,13 +1117,25 @@ function updateSegmentModeButton() {
 
 // 更新显示模式按钮文本
 function updateDisplayModeButton() {
-    if (displayMode === 'both') {
-        displayModeButton.title = t('display_both');
-    } else if (displayMode === 'original') {
-        displayModeButton.title = t('display_original');
-    } else {
-        displayModeButton.title = t('display_translation');
+    if (!displayModeButton) {
+        return;
     }
+
+    let nextKey, currentKey;
+    if (displayMode === 'both') {
+        nextKey = 'display_mode_original';
+        currentKey = 'display_mode_both';
+    } else if (displayMode === 'original') {
+        nextKey = 'display_mode_translation';
+        currentKey = 'display_mode_original';
+    } else {
+        nextKey = 'display_mode_both';
+        currentKey = 'display_mode_translation';
+    }
+
+    const currentName = t(currentKey);
+    const nextName = t(nextKey);
+    displayModeButton.title = t('display_mode_format', { current: currentName, next: nextName });
 }
 
 function updateOscTranslationButton() {
@@ -1824,28 +1865,178 @@ function positionLangSelectMenu(picker, menu) {
     menu.style.maxHeight = `${Math.round(menuHeight)}px`;
 }
 
+const starFilledSvg = `<svg class="star-icon filled" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="currentColor"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
+const starEmptySvg = `<svg class="star-icon empty" viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2" fill="none"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
+
+function getFavoriteLanguages() {
+    try {
+        const stored = localStorage.getItem('favoriteLanguages');
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+                return parsed.map(c => c.toLowerCase());
+            }
+        }
+    } catch (e) {
+        console.warn('Failed to parse favorite languages:', e);
+    }
+    // Seed with current target languages if not set
+    const defaultFavs = [];
+    const currentLangs = [
+        currentTranslationTargetLang,
+        backendTargetLang1,
+        backendTargetLang2
+    ].filter(Boolean).map(c => c.toLowerCase());
+
+    for (const lang of currentLangs) {
+        if (!defaultFavs.includes(lang)) {
+            defaultFavs.push(lang);
+        }
+    }
+    // Default seeds in ordered preference: 中 (Simplified), 英, 日, 韩
+    const standardSeeds = ['zh-hans', 'zh', 'en', 'ja', 'ko'];
+    for (const seed of standardSeeds) {
+        if (!defaultFavs.includes(seed)) {
+            const supported = SUPPORTED_TRANSLATION_LANGUAGES.some(l => l.code.toLowerCase() === seed);
+            if (supported) {
+                defaultFavs.push(seed);
+            }
+        }
+    }
+    return defaultFavs;
+}
+
+function saveFavoriteLanguages(favs) {
+    try {
+        localStorage.setItem('favoriteLanguages', JSON.stringify(favs));
+    } catch (e) {
+        console.warn('Failed to save favorite languages:', e);
+    }
+}
+
+function findLangSelectOption(menu, normalizedCode, section) {
+    if (!menu) {
+        return null;
+    }
+    const rows = menu.querySelectorAll('.lang-select-option[data-code]');
+    for (const row of rows) {
+        if ((row.dataset.code || '').toLowerCase() !== normalizedCode) {
+            continue;
+        }
+        if (section && row.dataset.section !== section) {
+            continue;
+        }
+        return row;
+    }
+    return null;
+}
+
+function toggleFavoriteLanguage(code, anchorRow = null) {
+    const normalized = code.toLowerCase();
+    let favs = getFavoriteLanguages();
+    const index = favs.indexOf(normalized);
+    let isFavNow = false;
+    if (index > -1) {
+        favs.splice(index, 1);
+    } else {
+        favs.push(normalized);
+        isFavNow = true;
+    }
+    saveFavoriteLanguages(favs);
+
+    if (langSelectMenuEl && !langSelectMenuEl.hidden && activeLangPickerEl) {
+        const anchorSection = anchorRow ? anchorRow.dataset.section : null;
+        const anchorTop = anchorRow ? anchorRow.getBoundingClientRect().top : null;
+
+        renderLangSelectMenuContent(activeLangPickerEl);
+
+        const updatedAnchor = findLangSelectOption(langSelectMenuEl, normalized, anchorSection);
+        if (updatedAnchor && anchorTop !== null) {
+            langSelectMenuEl.scrollTop += updatedAnchor.getBoundingClientRect().top - anchorTop;
+        }
+    }
+}
+
+function createOptionRow(lang, picker, section = 'all') {
+    const isSelected = lang.code === picker.value;
+    const favorited = getFavoriteLanguages().includes(lang.code.toLowerCase());
+
+    const option = document.createElement('div');
+    option.className = 'lang-select-option';
+    option.dataset.code = lang.code;
+    option.dataset.section = section;
+
+    const selectBtn = document.createElement('button');
+    selectBtn.type = 'button';
+    selectBtn.className = 'lang-select-option-btn';
+    if (isSelected) {
+        selectBtn.classList.add('selected');
+    }
+    selectBtn.setAttribute('role', 'option');
+    selectBtn.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+    selectBtn.textContent = `${lang.en} - ${lang.native}`;
+    selectBtn.addEventListener('click', () => {
+        setLangPickerValue(picker, lang.code);
+        closeLangSelectMenu();
+        picker.dispatchEvent(new Event('change'));
+    });
+
+    const favBtn = document.createElement('button');
+    favBtn.type = 'button';
+    favBtn.className = 'lang-favorite-btn';
+    favBtn.innerHTML = favorited ? starFilledSvg : starEmptySvg;
+    favBtn.title = favorited ? t('unfavorite') : t('favorite');
+    favBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        toggleFavoriteLanguage(lang.code, option);
+    });
+
+    option.appendChild(selectBtn);
+    option.appendChild(favBtn);
+    return option;
+}
+
+function renderLangSelectMenuContent(picker) {
+    const menu = ensureLangSelectMenu();
+    menu.innerHTML = '';
+
+    const favCodes = getFavoriteLanguages();
+    const favLangs = SUPPORTED_TRANSLATION_LANGUAGES.filter(lang => favCodes.includes(lang.code.toLowerCase()));
+
+    // 1. Favorites section (only show if there is at least one favorite)
+    if (favLangs.length > 0) {
+        const favHeader = document.createElement('div');
+        favHeader.className = 'lang-select-section-title';
+        favHeader.textContent = t('favorites_section_title');
+        menu.appendChild(favHeader);
+
+        for (const lang of favLangs) {
+            const option = createOptionRow(lang, picker, 'favorites');
+            menu.appendChild(option);
+        }
+
+        const divider = document.createElement('div');
+        divider.className = 'lang-select-divider';
+        menu.appendChild(divider);
+
+        const allHeader = document.createElement('div');
+        allHeader.className = 'lang-select-section-title';
+        allHeader.textContent = t('all_languages_section_title');
+        menu.appendChild(allHeader);
+    }
+
+    // 2. All languages section (always show)
+    for (const lang of SUPPORTED_TRANSLATION_LANGUAGES) {
+        const option = createOptionRow(lang, picker, 'all');
+        menu.appendChild(option);
+    }
+}
+
 function openLangSelectMenu(picker) {
     const menu = ensureLangSelectMenu();
     activeLangPickerEl = picker;
-    menu.innerHTML = '';
 
-    for (const lang of SUPPORTED_TRANSLATION_LANGUAGES) {
-        const option = document.createElement('button');
-        option.type = 'button';
-        option.className = 'lang-select-option';
-        option.dataset.code = lang.code;
-        option.setAttribute('role', 'option');
-        option.textContent = `${lang.en} - ${lang.native}`;
-        const isSelected = lang.code === picker.value;
-        option.classList.toggle('selected', isSelected);
-        option.setAttribute('aria-selected', isSelected ? 'true' : 'false');
-        option.addEventListener('click', () => {
-            setLangPickerValue(picker, lang.code);
-            closeLangSelectMenu();
-            picker.dispatchEvent(new Event('change'));
-        });
-        menu.appendChild(option);
-    }
+    renderLangSelectMenuContent(picker);
 
     picker.classList.add('open');
     const trigger = picker.querySelector('.lang-picker-button');
@@ -1855,7 +2046,7 @@ function openLangSelectMenu(picker) {
     menu.hidden = false;
     positionLangSelectMenu(picker, menu);
 
-    const selectedOption = menu.querySelector('.lang-select-option.selected');
+    const selectedOption = menu.querySelector('.lang-select-option-btn.selected');
     if (selectedOption) {
         selectedOption.scrollIntoView({ block: 'nearest' });
     }
@@ -2447,20 +2638,24 @@ function updateAudioSourceButton() {
 
     audioSource = normalizeAudioSource(audioSource);
 
+    let nextKey, currentKey;
     if (audioSource === 'microphone') {
         setControlIcon(audioSourceIcon, 'mic');
-        audioSourceButton.title = t('audio_to_mix');
-        return;
-    }
-
-    if (audioSource === 'mix') {
+        nextKey = 'audio_to_mix_val';
+        currentKey = 'audio_source_microphone';
+    } else if (audioSource === 'mix') {
         setControlIcon(audioSourceIcon, 'blend');
-        audioSourceButton.title = t('audio_to_system');
-        return;
+        nextKey = 'audio_to_system_val';
+        currentKey = 'audio_source_mix';
+    } else {
+        setControlIcon(audioSourceIcon, 'volume-2');
+        nextKey = 'audio_to_mic_val';
+        currentKey = 'audio_source_system';
     }
 
-    setControlIcon(audioSourceIcon, 'volume-2');
-    audioSourceButton.title = t('audio_to_mic');
+    const currentName = t(currentKey);
+    const nextName = t(nextKey);
+    audioSourceButton.title = t('audio_source_format', { current: currentName, next: nextName });
 }
 
 async function fetchInitialAudioSource() {
@@ -3059,8 +3254,8 @@ function updateOverlayButton() {
     if (!overlayButton) {
         return;
     }
-    // 仅更新提示文案，不切换 .active —— 按钮颜色不随悬浮窗开关变化。
     overlayButton.title = overlayOpen ? t('overlay_close') : t('overlay_open');
+    overlayButton.classList.toggle('active', overlayOpen);
 }
 
 async function refreshOverlayState() {

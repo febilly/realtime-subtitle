@@ -183,7 +183,7 @@ body.chroma-theme .subtitle-container {
 
 #furiganaIcon {
     color: inherit;
-    font-weight: 700;
+    font-weight: normal;
     line-height: 1;
 }
 
@@ -228,11 +228,11 @@ body.dark-theme .control-button:hover {
 }
 
 #pauseButton {
-    color: #eab308;
+    color: #1f2937;
 }
 
 #pauseButton.is-paused {
-    color: #22c55e;
+    color: #15803d;
 }
 
 #restartButton {
@@ -240,7 +240,7 @@ body.dark-theme .control-button:hover {
 }
 
 body.dark-theme #pauseButton {
-    color: #facc15;
+    color: #ffffff;
 }
 
 body.dark-theme #pauseButton.is-paused {
@@ -574,8 +574,8 @@ body.dark-theme ruby rt {
 }
 
 .control-button.ipc-connected {
-    color: #4caf50;
-    background: rgba(76, 175, 80, 0.15);
+    color: #15803d;
+    background: rgba(21, 128, 61, 0.15);
 }
 
 body.dark-theme .control-button.ipc-connected {
@@ -1180,7 +1180,8 @@ body.dark-theme .lang-select-menu {
     box-shadow: 0 16px 34px rgba(0, 0, 0, 0.36);
 }
 
-.lang-select-option {
+button.lang-select-option,
+.lang-select-option-btn {
     width: 100%;
     min-height: 30px;
     padding: 6px 8px;
@@ -1194,19 +1195,95 @@ body.dark-theme .lang-select-menu {
     text-align: left;
 }
 
-body.dark-theme .lang-select-option {
+body.dark-theme button.lang-select-option,
+body.dark-theme .lang-select-option-btn {
     color: #e5e7eb;
 }
 
-.lang-select-option:hover,
-.lang-select-option.selected {
+button.lang-select-option:hover,
+button.lang-select-option.selected,
+.lang-select-option-btn:hover,
+.lang-select-option-btn.selected {
     background: rgba(59, 130, 246, 0.14);
 }
 
-body.dark-theme .lang-select-option:hover,
-body.dark-theme .lang-select-option.selected {
+body.dark-theme button.lang-select-option:hover,
+body.dark-theme button.lang-select-option.selected,
+body.dark-theme .lang-select-option-btn:hover,
+body.dark-theme .lang-select-option-btn.selected {
     background: rgba(96, 165, 250, 0.22);
     color: #ffffff;
+}
+
+div.lang-select-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    border-radius: 6px;
+    padding: 2px 4px;
+    box-sizing: border-box;
+    gap: 4px;
+}
+
+.lang-favorite-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-radius: 4px;
+    color: #9ca3af;
+    padding: 0;
+    transition: all 0.2s ease;
+}
+
+.lang-favorite-btn:hover {
+    background: rgba(0, 0, 0, 0.05);
+    color: #eab308;
+}
+
+body.dark-theme .lang-favorite-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.lang-favorite-btn .star-icon {
+    transition: transform 0.1s ease;
+}
+
+.lang-favorite-btn:active .star-icon {
+    transform: scale(0.85);
+}
+
+.lang-favorite-btn .star-icon.filled {
+    color: #eab308;
+}
+
+.lang-select-section-title {
+    font-size: 10px;
+    font-weight: 700;
+    color: #6b7280;
+    text-transform: uppercase;
+    padding: 8px 8px 4px 8px;
+    letter-spacing: 0.05em;
+    user-select: none;
+}
+
+body.dark-theme .lang-select-section-title {
+    color: #9ca3af;
+}
+
+.lang-select-divider {
+    height: 1px;
+    background: rgba(0, 0, 0, 0.08);
+    margin: 6px 8px;
+}
+
+body.dark-theme .lang-select-divider {
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .lang-popover-actions {
@@ -1661,6 +1738,9 @@ body.dark-theme .method-option.method-selected {
     position: fixed;
     z-index: 10000;
     pointer-events: none;
+    box-sizing: border-box;
+    width: max-content;
+    max-width: min(350px, calc(100vw - 16px));
     background: rgba(15, 23, 42, 0.96); /* Dark background for light mode */
     color: #ffffff; /* White text */
     font-size: 14px; /* Adjusted to 14px for better proportions */
@@ -1668,9 +1748,10 @@ body.dark-theme .method-option.method-selected {
     font-family: "Segoe UI", "Microsoft YaHei", "Yu Gothic", "Meiryo", "Malgun Gothic", "DengXian", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
     padding: 6px 12px;
     border-radius: 6px;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: break-word;
+    line-height: 1.4;
     opacity: 0;
-    pointer-events: none;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     border: 1px solid rgba(255, 255, 255, 0.08);
     transition: opacity 0.05s ease-out;
