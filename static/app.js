@@ -1263,7 +1263,11 @@ async function fetchUiConfig() {
             currentTranslationTargetLang = defaultTranslationTargetLang;
         }
         if (data && typeof data.provider === 'string' && data.provider.trim()) {
+            const oldProvider = translationProvider;
             translationProvider = data.provider.trim().toLowerCase();
+            if (translationProvider !== oldProvider) {
+                sessionCostReset();
+            }
         }
         // Backend-driven language dropdown (provider-specific subset).
         if (data && Array.isArray(data.languages)) {
@@ -3116,9 +3120,6 @@ async function restartRecognition({ auto = false, targetLang = null, translation
         if (!auto) {
             isPaused = false;
             updatePauseButtonUi();
-            if (result && result.paused === false) {
-                sessionCostResume();
-            }
         }
         console.log(auto ? 'Auto restart: new recognition session requested.' : 'Recognition restarted successfully');
 
@@ -3193,7 +3194,6 @@ pauseButton.addEventListener('click', async () => {
                 isPaused = false;
                 updatePauseButtonUi();
                 console.log('Recognition resumed');
-                sessionCostResume();
             }
         } else {
             // 暂停识别
@@ -3424,8 +3424,6 @@ function handleMessage(data) {
         updatePauseButtonUi();
         if (isPaused) {
             sessionCostPause();
-        } else {
-            sessionCostResume();
         }
         return;
     }
@@ -5155,7 +5153,11 @@ async function pushSetup(provider, apiKey, { silent = false, region = null, mode
         if (!resp.ok) {
             return { ok: false, data };
         }
+        const oldProvider = translationProvider;
         translationProvider = data.provider || provider;
+        if (translationProvider !== oldProvider) {
+            sessionCostReset();
+        }
         backendBootId = data.boot_id || backendBootId;
         setupRequired = !!data.setup_required;
         if (typeof data.mode === 'string') {
@@ -6596,9 +6598,12 @@ function sessionCostPause() {
 }
 
 function sessionCostReset() {
-    const wasRunning = sessionRunSince != null;
     sessionAccumMs = 0;
-    sessionRunSince = wasRunning ? Date.now() : null;
+    sessionRunSince = null;
+    if (sessionCostTimer) {
+        clearInterval(sessionCostTimer);
+        sessionCostTimer = null;
+    }
     updateSessionCostDisplay();
 }
 
