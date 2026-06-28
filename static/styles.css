@@ -1711,18 +1711,18 @@ body.dark-theme .method-option.method-selected {
     gap: 8px;
 }
 
-.redeem-code-control {
+.embedded-paste-control {
     position: relative;
     flex: 1;
     min-width: 0;
     display: flex;
 }
 
-.redeem-code-control input {
+.embedded-paste-control input {
     padding-right: 48px;
 }
 
-.redeem-paste-button {
+.embedded-paste-button {
     position: absolute;
     top: 4px;
     right: 4px;
@@ -1742,24 +1742,24 @@ body.dark-theme .method-option.method-selected {
     transition: background 0.15s ease, color 0.15s ease;
 }
 
-.redeem-paste-button:hover,
-.redeem-paste-button:focus-visible {
+.embedded-paste-button:hover,
+.embedded-paste-button:focus-visible {
     background: rgba(0, 0, 0, 0.07);
     color: #111827;
     outline: none;
 }
 
-body.dark-theme .redeem-paste-button {
+body.dark-theme .embedded-paste-button {
     color: #9ca3af;
 }
 
-body.dark-theme .redeem-paste-button:hover,
-body.dark-theme .redeem-paste-button:focus-visible {
+body.dark-theme .embedded-paste-button:hover,
+body.dark-theme .embedded-paste-button:focus-visible {
     background: rgba(255, 255, 255, 0.12);
     color: #f3f4f6;
 }
 
-.redeem-paste-icon {
+.embedded-paste-icon {
     width: 18px;
     height: 18px;
     fill: none;

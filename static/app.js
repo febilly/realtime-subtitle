@@ -5833,7 +5833,12 @@ function applyLoginI18n() {
     setElText('loginInputHint', t('login_input_hint'));
     setElText('loginRemoveHint', t('login_remove_hint'));
     setElText('loginCopyButton', t('login_copy'));
-    setElText('loginPasteButton', t('login_paste'));
+    const loginPasteEl = document.getElementById('loginPasteButton');
+    if (loginPasteEl) {
+        const pasteLabel = t('login_paste');
+        loginPasteEl.setAttribute('aria-label', pasteLabel);
+        loginPasteEl.setAttribute('title', pasteLabel);
+    }
     setElText('loginModeBackButton', t('mode_back_to_chooser'));
     setElText('loginBackButton', t('login_back'));
     setElText('loginBonusLabel', t('login_bonus_label'));
