@@ -159,7 +159,14 @@
                 <label class="form-field" for="redeemInput">
                     <span id="redeemLabel">Redeem code</span>
                     <div class="redeem-row">
-                        <input id="redeemInput" type="text" autocomplete="off" spellcheck="false">
+                        <div class="redeem-code-control">
+                            <input id="redeemInput" type="text" autocomplete="off" spellcheck="false">
+                            <button class="redeem-paste-button" id="redeemPasteButton" type="button" aria-label="Paste" title="Paste">
+                                <svg class="redeem-paste-icon" aria-hidden="true">
+                                    <use href="icons/lucide-sprite.svg#clipboard-paste"></use>
+                                </svg>
+                            </button>
+                        </div>
                         <button class="secondary-button" id="redeemButton" type="button">Redeem</button>
                     </div>
                 </label>

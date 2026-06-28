@@ -4777,6 +4777,12 @@ function applySettingsI18n() {
     setText('accountLabel', 'account');
     setText('redeemLabel', 'account_redeem_label');
     setText('redeemButton', 'account_redeem');
+    const redeemPasteEl = document.getElementById('redeemPasteButton');
+    if (redeemPasteEl) {
+        const pasteLabel = t('login_paste');
+        redeemPasteEl.setAttribute('aria-label', pasteLabel);
+        redeemPasteEl.setAttribute('title', pasteLabel);
+    }
     setText('purchaseCreditsLink', 'account_purchase_credits');
     setText('copyInviteButton', 'account_invite_copy');
     setText('openUserWebButton', 'account_open_web');
@@ -5516,12 +5522,27 @@ if (settingsForm) {
 // Account actions (relay/hosted mode).
 const redeemButton = document.getElementById('redeemButton');
 const redeemInput = document.getElementById('redeemInput');
+const redeemPasteButton = document.getElementById('redeemPasteButton');
 const reLoginButton = document.getElementById('reLoginButton');
 const logoutButton = document.getElementById('logoutButton');
 const copyInviteButton = document.getElementById('copyInviteButton');
 const openUserWebButton = document.getElementById('openUserWebButton');
 if (redeemButton) {
     redeemButton.addEventListener('click', () => handleRedeem());
+}
+if (redeemPasteButton) {
+    redeemPasteButton.addEventListener('click', async (event) => {
+        event.preventDefault();
+        try {
+            const text = await navigator.clipboard.readText();
+            if (redeemInput) {
+                redeemInput.value = (text || '').trim();
+                redeemInput.focus();
+            }
+        } catch (e) {
+            // Clipboard read may be unavailable/denied; user can paste manually.
+        }
+    });
 }
 if (copyInviteButton) {
     copyInviteButton.addEventListener('click', () => handleCopyInvite());

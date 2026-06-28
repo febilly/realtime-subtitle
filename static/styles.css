@@ -1711,9 +1711,63 @@ body.dark-theme .method-option.method-selected {
     gap: 8px;
 }
 
-.redeem-row input {
+.redeem-code-control {
+    position: relative;
     flex: 1;
     min-width: 0;
+    display: flex;
+}
+
+.redeem-code-control input {
+    padding-right: 48px;
+}
+
+.redeem-paste-button {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: #6b7280;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.redeem-paste-button:hover,
+.redeem-paste-button:focus-visible {
+    background: rgba(0, 0, 0, 0.07);
+    color: #111827;
+    outline: none;
+}
+
+body.dark-theme .redeem-paste-button {
+    color: #9ca3af;
+}
+
+body.dark-theme .redeem-paste-button:hover,
+body.dark-theme .redeem-paste-button:focus-visible {
+    background: rgba(255, 255, 255, 0.12);
+    color: #f3f4f6;
+}
+
+.redeem-paste-icon {
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
 }
 
 .account-actions {
