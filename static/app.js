@@ -6076,6 +6076,7 @@ async function tryLoginCode(code) {
         return 'success';
     }
     if (resp.status === 404) return 'notcode'; // unknown code — maybe it's a display name
+    if (handleLoginServerGate(resp.status, data)) return 'error';
     if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
     return 'error';
 }
@@ -6088,6 +6089,7 @@ async function resolveIdentity(raw) {
     });
     const profile = await resp.json().catch(() => ({}));
     if (!resp.ok) {
+        if (handleLoginServerGate(resp.status, profile)) return;
         if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, profile);
         return;
     }
@@ -6156,6 +6158,7 @@ async function startVerify() {
         });
         const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
+            if (handleLoginServerGate(resp.status, data)) return;
             if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
             return;
         }
@@ -6225,6 +6228,7 @@ async function checkVerification() {
             resetLoginToInput();
             return;
         }
+        if (handleLoginServerGate(resp.status, data)) return;
         if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
     } catch (e) {
         if (loginErrorEl) loginErrorEl.textContent = String(e);
@@ -6234,6 +6238,13 @@ async function checkVerification() {
 }
 
 function mapVerifyError(status, data) {
+    if (data && data.code === 'vrc_api_busy') {
+        const seconds = Math.max(1, Number(data.retry_after_seconds || 1));
+        return t('login_vrc_busy', { seconds });
+    }
+    if (data && data.code === 'vrc_challenge_required') {
+        return t('login_vrc_challenge_required');
+    }
     if (status === 429) return t('login_rate_limited');
     if (status === 403) {
         const threshold = (loginRegistrationInfo && loginRegistrationInfo.registration_threshold) || '';
@@ -6241,6 +6252,28 @@ function mapVerifyError(status, data) {
     }
     const msg = data && (data.detail || data.message);
     return localizeBackendMessage(msg || t('connection_error_try_again'));
+}
+
+function openExternalUrl(url) {
+    if (!url) return;
+    try {
+        window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+        if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
+        showToast(url);
+    }
+}
+
+function handleLoginServerGate(status, data) {
+    if (!data || data.code !== 'vrc_challenge_required') return false;
+    if (loginErrorEl) loginErrorEl.textContent = t('login_vrc_challenge_opening');
+    const url = safeHttpUrl(data.challenge_url || '');
+    if (url) {
+        openExternalUrl(url);
+    } else if (loginErrorEl) {
+        loginErrorEl.textContent = mapVerifyError(status, data);
+    }
+    return true;
 }
 
 if (loginForm) {

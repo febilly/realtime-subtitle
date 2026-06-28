@@ -811,7 +811,22 @@ body.dark-theme .checkbox-field {
     min-height: 18px;
     color: #ef4444;
     font-size: 13px;
+    line-height: 1.45;
     margin: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+.settings-error:empty {
+    display: none;
+}
+
+#loginPanel .settings-form {
+    padding-bottom: 0;
+}
+
+#loginPanel .settings-error {
+    flex: 0 0 auto;
 }
 
 .field-hint {
