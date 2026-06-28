@@ -4861,7 +4861,11 @@ function getProviderDescriptionText(provider) {
         if (summary) {
             return `${t('provider_relay_desc_free')} (${summary})`;
         }
-        return t('provider_relay_desc', { price: formatRate(info.price_per_second) });
+        const pricePerSec = Number(info.price_per_second) || 0;
+        return t('provider_relay_desc', {
+            price: formatRate(pricePerSec),
+            minutePrice: formatRate(pricePerSec * 60)
+        });
     }
     return t(`provider_${provider}_desc`);
 }
