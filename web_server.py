@@ -578,31 +578,6 @@ class WebServer:
         manager = self.provider_manager
         return (manager.relay_token if manager else "") or ""
 
-    async def account_methods_handler(self, request):
-        """List the verification methods the server has enabled (bio/link/status)
-        plus whether VRChat verification is available at all."""
-        if not config.RELAY_AVAILABLE:
-            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
-        status, data = await self._server_request("GET", "/auth/methods")
-        return web.json_response(data, status=status)
-
-    async def account_resolve_handler(self, request):
-        """Resolve a VRChat user input to {vrc_user_id, display_name, trust_rank}
-        so the client can confirm the player before picking a method."""
-        if not self._is_loopback_request(request):
-            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
-        if not config.RELAY_AVAILABLE:
-            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
-        user_input = str((payload or {}).get("user_input") or "").strip()
-        if not user_input:
-            return web.json_response({"status": "error", "message": "Missing user_input"}, status=400)
-        status, data = await self._server_request("POST", "/auth/resolve", json_body={"user_input": user_input})
-        return web.json_response(data, status=status)
-
     async def account_login_code_handler(self, request):
         """Redeem a one-time login code generated on the user web page. On
         success, remember the token so /account/* works immediately."""
@@ -618,56 +593,6 @@ class WebServer:
         if not code:
             return web.json_response({"status": "error", "message": "Missing code"}, status=400)
         status, data = await self._server_request("POST", "/auth/login-code", json_body={"code": code})
-        if (
-            status == 200 and isinstance(data, dict)
-            and data.get("success") and data.get("api_key")
-            and self.provider_manager is not None
-        ):
-            self.provider_manager.relay_token = str(data["api_key"]).strip()
-            config.set_relay_token(self.provider_manager.relay_token)
-        return web.json_response(data, status=status)
-
-    async def account_verify_start_handler(self, request):
-        if not self._is_loopback_request(request):
-            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
-        if not config.RELAY_AVAILABLE:
-            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
-        user_input = str((payload or {}).get("user_input") or "").strip()
-        vrc_user_id = str((payload or {}).get("vrc_user_id") or "").strip()
-        if not user_input and not vrc_user_id:
-            return web.json_response({"status": "error", "message": "Missing user_input"}, status=400)
-        body = {}
-        if vrc_user_id:
-            body["vrc_user_id"] = vrc_user_id
-        if user_input:
-            body["user_input"] = user_input
-        method = str((payload or {}).get("method") or "").strip()
-        if method:
-            body["method"] = method
-        status, data = await self._server_request("POST", "/auth/verify/start", json_body=body)
-        return web.json_response(data, status=status)
-
-    async def account_verify_check_handler(self, request):
-        if not self._is_loopback_request(request):
-            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
-        if not config.RELAY_AVAILABLE:
-            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
-        try:
-            payload = await request.json()
-        except Exception:
-            payload = {}
-        challenge_id = str((payload or {}).get("challenge_id") or "").strip()
-        if not challenge_id:
-            return web.json_response({"status": "error", "message": "Missing challenge_id"}, status=400)
-        status, data = await self._server_request(
-            "POST", "/auth/verify/check", json_body={"challenge_id": challenge_id}
-        )
-        # On success, remember the token so /account/* works immediately. The
-        # frontend persists it (localStorage) and calls /setup to start a session.
         if (
             status == 200 and isinstance(data, dict)
             and data.get("success") and data.get("api_key")
@@ -1444,11 +1369,7 @@ class WebServer:
         app.router.add_post('/setup', self.setup_handler)
         app.router.add_post('/use-env', self.use_env_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
-        app.router.add_get('/account/methods', self.account_methods_handler)
-        app.router.add_post('/account/resolve', self.account_resolve_handler)
         app.router.add_post('/account/login-code', self.account_login_code_handler)
-        app.router.add_post('/account/verify/start', self.account_verify_start_handler)
-        app.router.add_post('/account/verify/check', self.account_verify_check_handler)
         app.router.add_get('/account/registration-info', self.account_registration_info_handler)
         app.router.add_get('/account/status', self.account_status_handler)
         app.router.add_get('/account/balance', self.account_balance_handler)

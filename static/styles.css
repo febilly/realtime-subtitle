@@ -1612,6 +1612,29 @@ body.dark-theme .challenge-box code {
     align-self: flex-start;
 }
 
+/* Login: web one-time-code action. */
+#loginStepInput .settings-section-label {
+    margin-bottom: 0;
+    font-weight: 700;
+}
+
+#loginStepInput .form-field > span,
+#loginBonusSection .settings-section-label {
+    font-weight: 700;
+}
+
+.login-code-action {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 4px 0 12px;
+}
+
+.login-code-action .field-hint {
+    margin: 0;
+}
+
 /* Login: trust-rank free-credit ladder. */
 .bonus-list {
     display: flex;

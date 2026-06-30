@@ -407,12 +407,8 @@ let backendMode = 'direct';
 let backendLoggedIn = false;
 let loginForcedOpen = false;
 let relayPricing = null; // { soniox: {price_per_second, free_*}, gemini: {...} }
-let loginChallengeId = '';
-let loginExpiryTimer = null;
 let loginRegistrationInfo = null; // { bonuses: [...], registration_threshold }
-let loginProfile = null;          // resolved VRChat profile { vrc_user_id, display_name, trust_rank }
-let loginMethods = [];            // verification methods the server enabled (bio/link/status)
-let loginMethod = 'bio';          // currently selected verification method
+let loginSubmitBusy = false;
 // Balance bar / this-session cost meter.
 let balancePollTimer = null;
 let sessionCostTimer = null;
@@ -5587,10 +5583,8 @@ const loginUserInput = document.getElementById('loginUserInput');
 const loginPrimaryButton = document.getElementById('loginPrimaryButton');
 const loginModeBackButton = document.getElementById('loginModeBackButton');
 const loginBackButton = document.getElementById('loginBackButton');
-const loginCopyButton = document.getElementById('loginCopyButton');
 const loginPasteButton = document.getElementById('loginPasteButton');
 const loginCodeLink = document.getElementById('loginCodeLink');
-const loginMethodList = document.getElementById('loginMethodList');
 const loginErrorEl = document.getElementById('loginError');
 const balanceBar = document.getElementById('balanceBar');
 const balanceActionItem = document.getElementById('balanceActionItem');
@@ -5826,13 +5820,11 @@ async function maybeRunFirstLaunchFlow() {
     await ensureHostedVersionAllowed();
 }
 
-// ---- Login overlay (VRChat profile proof) ----
+// ---- Login overlay (web-generated one-time code only) ----
 function applyLoginI18n() {
     setElText('loginTitle', t('login_title'));
-    setElText('loginUserInputLabel', t('login_user_input_label'));
-    setElText('loginInputHint', t('login_input_hint'));
-    setElText('loginRemoveHint', t('login_remove_hint'));
-    setElText('loginCopyButton', t('login_copy'));
+    setElText('loginUserInputLabel', t('login_code_input_label'));
+    setElText('loginInputHint', t('login_code_input_hint'));
     const loginPasteEl = document.getElementById('loginPasteButton');
     if (loginPasteEl) {
         const pasteLabel = t('login_paste');
@@ -5842,59 +5834,17 @@ function applyLoginI18n() {
     setElText('loginModeBackButton', t('mode_back_to_chooser'));
     setElText('loginBackButton', t('login_back'));
     setElText('loginBonusLabel', t('login_bonus_label'));
-    setElText('loginCodeHintText', t('login_code_hint_text'));
-    setElText('loginCodeLink', t('login_code_link'));
-    setElText('loginCodeHintSuffix', t('login_code_hint_suffix'));
-    setElText('loginConfirmHint', t('login_confirm_identity'));
-    setElText('loginMethodLabel', t('login_choose_method'));
+    setElText('loginCodeHintText', t('login_open_code_step'));
+    setElText('loginCodeLink', t('login_open_code_page'));
+    setElText('loginCodeHintSuffix', t('login_paste_code_step'));
     const serverHint = document.getElementById('loginServerHint');
     if (serverHint) serverHint.textContent = relayServerUrl ? t('login_server', { url: relayServerUrl }) : '';
     const codeHint = document.getElementById('loginCodeHint');
     if (codeHint) codeHint.hidden = !relayServerUrl;
-    // Re-render any visible method picker so its labels follow the language.
-    if (loginMethods.length) renderLoginMethods();
-    renderLinkReuseHint(loginMethod);
-    renderLinkReferralHint(loginMethod);
 }
-
-// Show the "delete your old login link first" hint on the challenge step, but
-// only when link is the active method and the server flagged that this profile
-// still has a stale login link occupying one of its (full) link slots.
-function renderLinkReuseHint(method) {
-    const el = document.getElementById('loginLinkReuseHint');
-    if (!el) return;
-    const reuse = method === 'link' && loginProfile && loginProfile.recommended_link_reuse;
-    el.textContent = reuse ? t('login_link_reuse_hint') : '';
-}
-
-function renderLinkReferralHint(method) {
-    const el = document.getElementById('loginLinkReferralHint');
-    if (!el) return;
-    if (method === 'link') {
-        el.textContent = '💡 ' + t('login_link_referral_hint');
-        el.style.display = 'block';
-    } else {
-        el.textContent = '';
-        el.style.display = 'none';
-    }
-}
-
-// Localized labels/hints per verification method, mirroring the web user UI.
-const LOGIN_METHOD_LABEL_KEYS = {
-    bio: 'login_method_bio',
-    link: 'login_method_link',
-    status: 'login_method_status',
-};
-const LOGIN_METHOD_HINT_KEYS = {
-    bio: 'login_challenge_hint',
-    link: 'login_challenge_hint_link',
-    status: 'login_challenge_hint_status',
-};
 
 function loginPrimaryLabel(step) {
-    if (step === 'challenge') return t('login_check');
-    if (step === 'method') return t('login_start');
-    return t('login_next');
+    return t('login_submit_code');
 }
 
 function setLoginStep(step) {
@@ -5904,47 +5854,36 @@ function setLoginStep(step) {
     if (inputStep) inputStep.hidden = (step !== 'input');
     if (methodStep) methodStep.hidden = (step !== 'method');
     if (challengeStep) challengeStep.hidden = (step !== 'challenge');
-    if (loginBackButton) loginBackButton.hidden = (step === 'input');
+    if (loginBackButton) loginBackButton.hidden = true;
     if (loginPrimaryButton) loginPrimaryButton.textContent = loginPrimaryLabel(step);
     loginForm && loginForm.setAttribute('data-step', step);
 }
 
-function setLoginBusy(busy) {
+function hasLoginCodeInput() {
+    return !!((loginUserInput && loginUserInput.value || '').trim());
+}
+
+function updateLoginSubmitState() {
     if (!loginPrimaryButton) return;
-    loginPrimaryButton.disabled = busy;
-    if (!busy) loginPrimaryButton.textContent = loginPrimaryLabel(loginForm && loginForm.getAttribute('data-step'));
-}
-
-function resetLoginToInput() {
-    stopLoginCountdown();
-    loginChallengeId = '';
-    loginProfile = null;
-    if (loginErrorEl) loginErrorEl.textContent = '';
-    setLoginStep('input');
-}
-
-function stopLoginCountdown() {
-    if (loginExpiryTimer) {
-        clearInterval(loginExpiryTimer);
-        loginExpiryTimer = null;
+    loginPrimaryButton.disabled = loginSubmitBusy || !hasLoginCodeInput();
+    if (!loginSubmitBusy) {
+        loginPrimaryButton.textContent = loginPrimaryLabel(loginForm && loginForm.getAttribute('data-step'));
     }
 }
 
-function startLoginCountdown(expiresAtIso) {
-    stopLoginCountdown();
-    const expiresAt = Date.parse(expiresAtIso);
-    const expiryHint = document.getElementById('loginExpiryHint');
-    const tick = () => {
-        const remaining = Math.max(0, Math.round((expiresAt - Date.now()) / 1000));
-        if (expiryHint) expiryHint.textContent = t('login_expiry', { seconds: remaining });
-        if (remaining <= 0) {
-            stopLoginCountdown();
-            if (loginErrorEl) loginErrorEl.textContent = t('login_expired');
-            resetLoginToInput();
-        }
-    };
-    tick();
-    loginExpiryTimer = setInterval(tick, 1000);
+function setLoginBusy(busy) {
+    loginSubmitBusy = !!busy;
+    if (loginSubmitBusy && loginPrimaryButton) {
+        loginPrimaryButton.disabled = true;
+        return;
+    }
+    updateLoginSubmitState();
+}
+
+function resetLoginToInput() {
+    if (loginErrorEl) loginErrorEl.textContent = '';
+    setLoginStep('input');
+    updateLoginSubmitState();
 }
 
 async function fetchRegistrationInfo() {
@@ -5956,7 +5895,7 @@ async function fetchRegistrationInfo() {
             return;
         }
         loginRegistrationInfo = await resp.json();
-        renderBonusLadder(null);
+        renderBonusLadder();
     } catch (e) {
         if (section) section.hidden = true;
     }
@@ -5966,7 +5905,7 @@ function rankLabel(rank) {
     return String(rank || '').replace(/_/g, ' ');
 }
 
-function renderBonusLadder(yourRank) {
+function renderBonusLadder() {
     const section = document.getElementById('loginBonusSection');
     const list = document.getElementById('loginBonusList');
     const thresholdHint = document.getElementById('loginThresholdHint');
@@ -5975,25 +5914,21 @@ function renderBonusLadder(yourRank) {
     const bonuses = (info && Array.isArray(info.bonuses)) ? info.bonuses : [];
     list.innerHTML = '';
     if (!bonuses.length) {
-        section.hidden = false;
         const p = document.createElement('div');
         p.className = 'bonus-row';
         p.textContent = t('login_bonus_none');
         list.appendChild(p);
     } else {
-        section.hidden = false;
         bonuses.forEach((b) => {
             const row = document.createElement('div');
-            const isYours = yourRank && String(b.trust_rank).toLowerCase() === String(yourRank).toLowerCase();
-            row.className = isYours ? 'bonus-row bonus-yours' : 'bonus-row';
-            const key = isYours ? 'login_bonus_yours' : 'login_bonus_row';
-            row.textContent = t(key, { rank: rankLabel(b.trust_rank), credits: b.grant_credits });
+            row.className = 'bonus-row';
+            row.textContent = t('login_bonus_row', { rank: rankLabel(b.trust_rank), credits: b.grant_credits });
             list.appendChild(row);
         });
     }
+    section.hidden = false;
     const freeNote = document.getElementById('loginFreeQuotaNote');
     if (freeNote) {
-        // Some models grant periodic free quota to some ranks beyond the sign-up bonus.
         freeNote.hidden = false;
         freeNote.textContent = t('login_free_quota_note');
     }
@@ -6015,6 +5950,7 @@ function openLogin({ forced = false } = {}) {
     applyLoginI18n();
     resetLoginToInput();
     if (loginUserInput) loginUserInput.value = '';
+    updateLoginSubmitState();
     void fetchRegistrationInfo();
     if (loginOverlay) loginOverlay.hidden = false;
     if (loginPanel) loginPanel.hidden = false;
@@ -6023,7 +5959,6 @@ function openLogin({ forced = false } = {}) {
 }
 
 function hideLogin() {
-    stopLoginCountdown();
     if (loginOverlay) loginOverlay.hidden = true;
     if (loginPanel) loginPanel.hidden = true;
     loginForcedOpen = false;
@@ -6034,29 +5969,18 @@ function closeLogin() {
     hideLogin();
 }
 
-/** A one-time login code is a 24-char URL-safe token (randomToken(18) on the
- *  server). Distinguish it from a VRChat user id / profile URL / display name so
- *  the same input box can accept either. */
-function looksLikeLoginCode(value) {
-    return /^[A-Za-z0-9_-]{20,40}$/.test(value) && !/^usr_/i.test(value);
-}
-
-// Step 1 "Next": redeem a one-time login code, or resolve a VRChat profile.
+// Redeem the one-time login code generated by the user web page.
 async function handleLoginInput() {
     const raw = (loginUserInput && loginUserInput.value || '').trim();
     if (!raw) {
-        if (loginErrorEl) loginErrorEl.textContent = t('login_user_input_label');
+        if (loginErrorEl) loginErrorEl.textContent = t('login_code_required');
+        updateLoginSubmitState();
         return;
     }
     setLoginBusy(true);
     if (loginErrorEl) loginErrorEl.textContent = '';
     try {
-        if (looksLikeLoginCode(raw)) {
-            const outcome = await tryLoginCode(raw);
-            // 'notcode' falls through to VRChat resolution (it may be a display name).
-            if (outcome !== 'notcode') return;
-        }
-        await resolveIdentity(raw);
+        await tryLoginCode(raw);
     } catch (e) {
         if (loginErrorEl) loginErrorEl.textContent = String(e);
     } finally {
@@ -6075,111 +5999,11 @@ async function tryLoginCode(code) {
         await onLoginSuccess(data);
         return 'success';
     }
-    if (resp.status === 404) return 'notcode'; // unknown code — maybe it's a display name
-    if (handleLoginServerGate(resp.status, data)) return 'error';
     if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
     return 'error';
 }
 
-async function resolveIdentity(raw) {
-    const resp = await fetch('/account/resolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_input: raw }),
-    });
-    const profile = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-        if (handleLoginServerGate(resp.status, profile)) return;
-        if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, profile);
-        return;
-    }
-    loginProfile = profile;
-    if (!loginMethods.length) {
-        try {
-            const mResp = await fetch('/account/methods');
-            const mData = await mResp.json().catch(() => ({}));
-            loginMethods = (mData && Array.isArray(mData.methods) && mData.methods.length) ? mData.methods : ['bio'];
-        } catch (e) {
-            loginMethods = ['bio'];
-        }
-    }
-    // Prefer the server's recommended method for this profile, if it's enabled.
-    const rec = profile && profile.recommended_method;
-    if (rec && loginMethods.includes(rec)) loginMethod = rec;
-    else if (!loginMethods.includes(loginMethod)) loginMethod = loginMethods[0];
-    renderLoginProfile(profile);
-    renderLoginMethods();
-    renderBonusLadder(profile.trust_rank);
-    setLoginStep('method');
-}
-
-function renderLoginProfile(p) {
-    setElText('loginProfileName', (p && p.display_name) || '');
-    setElText('loginProfileId', (p && p.vrc_user_id) || '');
-    setElText('loginProfileRank', rankLabel((p && p.trust_rank) || ''));
-}
-
-function renderLoginMethods() {
-    if (!loginMethodList) return;
-    loginMethodList.innerHTML = '';
-    const methodLabel = document.getElementById('loginMethodLabel');
-    // Hide the picker entirely when the server offers a single method.
-    if (methodLabel) methodLabel.hidden = (loginMethods.length <= 1);
-    if (loginMethods.length <= 1) return;
-    loginMethods.forEach((m) => {
-        const option = document.createElement('label');
-        option.className = 'method-option' + (m === loginMethod ? ' method-selected' : '');
-        const radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'loginMethod';
-        radio.value = m;
-        radio.checked = (m === loginMethod);
-        radio.addEventListener('change', () => { loginMethod = m; renderLoginMethods(); });
-        const span = document.createElement('span');
-        let label = t(LOGIN_METHOD_LABEL_KEYS[m] || LOGIN_METHOD_LABEL_KEYS.bio);
-        if (loginProfile && loginProfile.recommended_method === m) label += ' (' + t('login_method_recommended') + ')';
-        span.textContent = label;
-        option.appendChild(radio);
-        option.appendChild(span);
-        loginMethodList.appendChild(option);
-    });
-}
-
-// Step 2 "Start verification": request a challenge for the chosen method.
-async function startVerify() {
-    if (!loginProfile) { resetLoginToInput(); return; }
-    setLoginBusy(true);
-    if (loginErrorEl) loginErrorEl.textContent = '';
-    try {
-        const resp = await fetch('/account/verify/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ vrc_user_id: loginProfile.vrc_user_id, method: loginMethod }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-            if (handleLoginServerGate(resp.status, data)) return;
-            if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
-            return;
-        }
-        loginChallengeId = data.challenge_id || '';
-        const method = data.method || loginMethod;
-        const challengeText = document.getElementById('loginChallengeText');
-        if (challengeText) challengeText.textContent = data.text || '';
-        const challengeHint = document.getElementById('loginChallengeHint');
-        if (challengeHint) challengeHint.textContent = t(LOGIN_METHOD_HINT_KEYS[method] || LOGIN_METHOD_HINT_KEYS.bio);
-        renderLinkReuseHint(method);
-        renderLinkReferralHint(method);
-        setLoginStep('challenge');
-        if (data.expires_at) startLoginCountdown(data.expires_at);
-    } catch (e) {
-        if (loginErrorEl) loginErrorEl.textContent = String(e);
-    } finally {
-        setLoginBusy(false);
-    }
-}
-
-// Shared on successful sign-in (via verification or a one-time login code).
+// Shared on successful sign-in via a one-time login code.
 async function onLoginSuccess(data) {
     const server = loadServerSettings();
     server.mode = 'relay';
@@ -6188,7 +6012,6 @@ async function onLoginSuccess(data) {
     server.displayName = data.display_name || '';
     server.trustRank = data.trust_rank || '';
     saveServerSettings(server);
-    renderBonusLadder(data.trust_rank);
     // Persist provider override and start a relay session.
     const settings = loadProviderSettings();
     const provider = settings.providerOverride || translationProvider || 'soniox';
@@ -6200,56 +6023,8 @@ async function onLoginSuccess(data) {
     clearSubtitleState();
 }
 
-async function checkVerification() {
-    if (!loginChallengeId) {
-        resetLoginToInput();
-        return;
-    }
-    if (loginPrimaryButton) { loginPrimaryButton.disabled = true; loginPrimaryButton.textContent = t('login_checking'); }
-    if (loginErrorEl) loginErrorEl.textContent = '';
-    try {
-        const resp = await fetch('/account/verify/check', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ challenge_id: loginChallengeId }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (resp.ok && data && data.success && data.api_key) {
-            await onLoginSuccess(data);
-            return;
-        }
-        if (resp.ok) {
-            // success=false: the verification string was not found yet.
-            if (loginErrorEl) loginErrorEl.textContent = t('login_not_verified');
-            return;
-        }
-        if (resp.status === 410 || resp.status === 409) {
-            if (loginErrorEl) loginErrorEl.textContent = t('login_expired');
-            resetLoginToInput();
-            return;
-        }
-        if (handleLoginServerGate(resp.status, data)) return;
-        if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
-    } catch (e) {
-        if (loginErrorEl) loginErrorEl.textContent = String(e);
-    } finally {
-        if (loginPrimaryButton) { loginPrimaryButton.disabled = false; loginPrimaryButton.textContent = loginPrimaryLabel(loginForm && loginForm.getAttribute('data-step')); }
-    }
-}
-
 function mapVerifyError(status, data) {
-    if (data && data.code === 'vrc_api_busy') {
-        const seconds = Math.max(1, Number(data.retry_after_seconds || 1));
-        return t('login_vrc_busy', { seconds });
-    }
-    if (data && data.code === 'vrc_challenge_required') {
-        return t('login_vrc_challenge_required');
-    }
     if (status === 429) return t('login_rate_limited');
-    if (status === 403) {
-        const threshold = (loginRegistrationInfo && loginRegistrationInfo.registration_threshold) || '';
-        if (threshold) return t('login_threshold', { rank: rankLabel(threshold) });
-    }
     const msg = data && (data.detail || data.message);
     return localizeBackendMessage(msg || t('connection_error_try_again'));
 }
@@ -6264,51 +6039,27 @@ function openExternalUrl(url) {
     }
 }
 
-function handleLoginServerGate(status, data) {
-    if (!data || data.code !== 'vrc_challenge_required') return false;
-    if (loginErrorEl) loginErrorEl.textContent = t('login_vrc_challenge_opening');
-    const url = safeHttpUrl(data.challenge_url || '');
-    if (url) {
-        openExternalUrl(url);
-    } else if (loginErrorEl) {
-        loginErrorEl.textContent = mapVerifyError(status, data);
-    }
-    return true;
-}
-
 if (loginForm) {
     loginForm.addEventListener('submit', (event) => {
         event.preventDefault();
-        const step = loginForm.getAttribute('data-step');
-        if (step === 'challenge') {
-            void checkVerification();
-        } else if (step === 'method') {
-            void startVerify();
-        } else {
-            void handleLoginInput();
-        }
+        void handleLoginInput();
     });
 }
 if (loginBackButton) {
-    loginBackButton.addEventListener('click', () => {
-        const step = loginForm && loginForm.getAttribute('data-step');
-        if (step === 'challenge') {
-            // Back to method selection without discarding the resolved profile.
-            stopLoginCountdown();
-            loginChallengeId = '';
-            if (loginErrorEl) loginErrorEl.textContent = '';
-            setLoginStep('method');
-        } else {
-            resetLoginToInput();
-        }
-    });
+    loginBackButton.addEventListener('click', () => resetLoginToInput());
+}
+if (loginUserInput) {
+    loginUserInput.addEventListener('input', () => updateLoginSubmitState());
 }
 if (loginCodeLink) {
     loginCodeLink.addEventListener('click', (event) => {
         event.preventDefault();
         const base = (relayServerUrl || '').replace(/\/+$/, '');
-        if (!base) return;
-        const url = base + '/app/#/login-code';
+        if (!base) {
+            showToast(t('server_not_configured'), true);
+            return;
+        }
+        const url = base + '/app/#/login?next=' + encodeURIComponent('/login-code');
         // In the desktop webview, window.open hands the URL to the system browser
         // and returns null. Do NOT fall back to location.href — that would navigate
         // the app's own window. If opening is blocked, copy the URL instead.
@@ -6329,20 +6080,6 @@ if (loginCloseButton) {
 if (loginOverlay) {
     loginOverlay.addEventListener('click', () => closeLogin());
 }
-if (loginCopyButton) {
-    loginCopyButton.addEventListener('click', async () => {
-        const challengeText = document.getElementById('loginChallengeText');
-        const text = challengeText ? challengeText.textContent : '';
-        if (!text) return;
-        try {
-            await navigator.clipboard.writeText(text);
-            loginCopyButton.textContent = t('login_copied');
-            setTimeout(() => { loginCopyButton.textContent = t('login_copy'); }, 1500);
-        } catch (e) {
-            // Clipboard may be unavailable; selection fallback is the <code> user-select:all.
-        }
-    });
-}
 if (loginPasteButton) {
     loginPasteButton.addEventListener('click', async () => {
         try {
@@ -6350,6 +6087,7 @@ if (loginPasteButton) {
             if (loginUserInput) {
                 loginUserInput.value = (text || '').trim();
                 loginUserInput.focus();
+                updateLoginSubmitState();
             }
         } catch (e) {
             // Clipboard read may be unavailable/denied; user can paste manually.

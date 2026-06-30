@@ -294,7 +294,7 @@
         </div>
     </div>
 
-    <!-- Subtitle-server sign-in (VRChat profile proof) -->
+    <!-- Subtitle-server sign-in (web one-time code) -->
     <div class="settings-overlay" id="loginOverlay" hidden></div>
     <aside class="settings-panel" id="loginPanel" aria-label="Sign in" hidden>
         <form class="settings-form" id="loginForm">
@@ -304,16 +304,14 @@
             </div>
             <p class="field-hint" id="loginServerHint"></p>
 
-            <section class="auth-section" id="loginBonusSection" hidden>
-                <div class="settings-section-label" id="loginBonusLabel">Free credits by trust rank</div>
-                <div class="bonus-list" id="loginBonusList"></div>
-                <p class="field-hint" id="loginFreeQuotaNote" hidden></p>
-                <p class="field-hint" id="loginThresholdHint" hidden></p>
-            </section>
-
             <section class="auth-section" id="loginStepInput">
+                <div class="settings-section-label" id="loginCodeHintText"></div>
+                <div class="login-code-action" id="loginCodeHint">
+                    <button class="primary-button" id="loginCodeLink" type="button"></button>
+                    <p class="field-hint" id="loginCodeHintSuffix"></p>
+                </div>
                 <label class="form-field" for="loginUserInput">
-                    <span id="loginUserInputLabel">VRChat user ID / profile URL / name</span>
+                    <span id="loginUserInputLabel">One-time login code</span>
                     <div class="embedded-paste-control">
                         <input id="loginUserInput" type="text" autocomplete="off" spellcheck="false">
                         <button class="embedded-paste-button" id="loginPasteButton" type="button" aria-label="Paste" title="Paste">
@@ -324,34 +322,13 @@
                     </div>
                 </label>
                 <p class="field-hint" id="loginInputHint"></p>
-                <p class="field-hint" id="loginCodeHint">
-                    <span id="loginCodeHintText"></span>
-                    <a href="#" id="loginCodeLink" class="login-link"></a>
-                    <span id="loginCodeHintSuffix"></span>
-                </p>
             </section>
 
-            <section class="auth-section" id="loginStepMethod" hidden>
-                <div class="login-profile" id="loginProfileBox">
-                    <p class="field-hint" id="loginConfirmHint"></p>
-                    <div class="login-profile-name" id="loginProfileName"></div>
-                    <div class="login-profile-id" id="loginProfileId"></div>
-                    <div class="login-profile-rank"><span class="trust-badge" id="loginProfileRank"></span></div>
-                </div>
-                <div class="settings-section-label" id="loginMethodLabel">Choose verification method</div>
-                <div class="method-list" id="loginMethodList"></div>
-            </section>
-
-            <section class="auth-section" id="loginStepChallenge" hidden>
-                <p class="field-hint" id="loginChallengeHint"></p>
-                <p class="field-hint" id="loginLinkReferralHint" style="display: none; border: 1px solid rgba(129, 140, 248, 0.3); background: rgba(129, 140, 248, 0.08); padding: 10px; border-radius: 6px; font-size: 12px; line-height: 1.4; color: inherit; margin-top: 8px; margin-bottom: 8px;"></p>
-                <p class="field-hint field-hint-warn" id="loginLinkReuseHint"></p>
-                <div class="challenge-box">
-                    <code id="loginChallengeText"></code>
-                    <button class="secondary-button" id="loginCopyButton" type="button">Copy</button>
-                </div>
-                <p class="field-hint" id="loginExpiryHint"></p>
-                <p class="field-hint" id="loginRemoveHint"></p>
+            <section class="auth-section" id="loginBonusSection" hidden>
+                <div class="settings-section-label" id="loginBonusLabel">Free credits by trust rank</div>
+                <div class="bonus-list" id="loginBonusList"></div>
+                <p class="field-hint" id="loginFreeQuotaNote" hidden></p>
+                <p class="field-hint" id="loginThresholdHint" hidden></p>
             </section>
 
             <p class="settings-error" id="loginError" role="alert"></p>
@@ -362,7 +339,7 @@
                 </div>
                 <div class="settings-actions-right">
                     <button class="secondary-button" id="loginBackButton" type="button" hidden>Back</button>
-                    <button class="primary-button" id="loginPrimaryButton" type="submit">Start</button>
+                    <button class="primary-button" id="loginPrimaryButton" type="submit" disabled>Start</button>
                 </div>
             </div>
         </form>
