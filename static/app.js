@@ -5049,7 +5049,7 @@ function updateAccountSection() {
         const server = loadServerSettings();
         if (backendLoggedIn || server.token) {
             const name = server.displayName || '—';
-            const rank = server.trustRank || '—';
+            const rank = rankLabel(server.trustRank) || '—';
             identityHint.textContent = t('account_identity', { name, rank });
         } else {
             identityHint.textContent = t('account_not_signed_in');
@@ -5902,7 +5902,32 @@ async function fetchRegistrationInfo() {
 }
 
 function rankLabel(rank) {
-    return String(rank || '').replace(/_/g, ' ');
+    const key = String(rank || '').toLowerCase();
+    const labels = {
+        zh: {
+            visitor: '访客',
+            new_user: '新用户',
+            user: '用户',
+            known_user: '知名用户',
+            trusted_user: '受信用户',
+        },
+        en: {
+            visitor: 'Visitor',
+            new_user: 'New User',
+            user: 'User',
+            known_user: 'Known User',
+            trusted_user: 'Trusted User',
+        },
+        ja: {
+            visitor: 'Visitor',
+            new_user: 'New User',
+            user: 'User',
+            known_user: 'Known User',
+            trusted_user: 'Trusted User',
+        },
+    };
+    const lang = (window.I18N && window.I18N.lang) || 'en';
+    return (labels[lang] && labels[lang][key]) || labels.en[key] || String(rank || '').replace(/_/g, ' ');
 }
 
 function renderBonusLadder() {
