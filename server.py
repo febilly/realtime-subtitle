@@ -255,6 +255,8 @@ class ProviderManager:
         self.target_lang = config.TRANSLATION_TARGET_LANG
         self.target_lang_1 = config.normalize_language_code(config.TARGET_LANG_1) or "en"
         self.target_lang_2 = config.normalize_language_code(config.TARGET_LANG_2) or "zh"
+        self.audio_source = "twitch" if bool(getattr(config, "USE_TWITCH_AUDIO_STREAM", False)) else "system"
+        self.microphone_device_id = str(getattr(config, "MICROPHONE_DEVICE_ID", "") or "").strip()
 
         self.lock_manual_controls = bool(config.LOCK_MANUAL_CONTROLS)
         self.setup_required = False
@@ -359,6 +361,45 @@ class ProviderManager:
                 pass
             self._ipc_started = False
 
+    def _capture_audio_preferences(self, session=None) -> None:
+        """Remember runtime audio choices before replacing a session."""
+        if session is None and self.web_server is not None:
+            session = getattr(self.web_server, "session", None)
+        if session is None:
+            return
+
+        if hasattr(session, "get_audio_source"):
+            try:
+                source = str(session.get_audio_source() or "").strip().lower()
+                if source in ("system", "microphone", "mix", "twitch"):
+                    self.audio_source = source
+            except Exception:
+                pass
+
+        if hasattr(session, "get_microphone_device_id"):
+            try:
+                self.microphone_device_id = str(session.get_microphone_device_id() or "").strip()
+            except Exception:
+                pass
+
+    def _apply_audio_preferences(self, session) -> None:
+        """Apply remembered audio choices to a freshly-created session."""
+        if session is None:
+            return
+
+        if hasattr(session, "set_microphone_device_id"):
+            try:
+                session.set_microphone_device_id(self.microphone_device_id)
+            except Exception as error:
+                print(f"⚠️  Failed to restore microphone device selection: {error}")
+
+        source = str(self.audio_source or "").strip().lower()
+        if source in ("system", "microphone", "mix") and hasattr(session, "set_audio_source"):
+            try:
+                session.set_audio_source(source)
+            except Exception as error:
+                print(f"⚠️  Failed to restore audio source selection: {error}")
+
     # ----- hot switch -----
     async def apply_provider(
         self,
@@ -425,6 +466,7 @@ class ProviderManager:
 
         # Stop old session.
         old_session = self.web_server.session if self.web_server else None
+        self._capture_audio_preferences(old_session)
         if old_session is not None:
             try:
                 old_session.stop()
@@ -447,6 +489,7 @@ class ProviderManager:
             pass
         if self.translation_mode == "two_way" and hasattr(new_session, "set_target_langs"):
             new_session.set_target_langs(self.target_lang_1, self.target_lang_2)
+        self._apply_audio_preferences(new_session)
 
         if self.web_server is not None:
             self.web_server.session = new_session

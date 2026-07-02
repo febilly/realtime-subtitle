@@ -63,6 +63,35 @@ class TestWebServerSecurity:
             assert response_data["status"] == "ok"
             m_session.set_audio_source.assert_called_once_with("microphone")
 
+    @async_test
+    async def test_set_audio_source_updates_provider_manager_preference(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            m_session = self.mock_session()
+            m_session.get_audio_source.return_value = "microphone"
+            ws = WebServer(m_session, self.mock_logger())
+            ws.provider_manager = MagicMock()
+            ws.provider_manager.audio_source = "system"
+
+            request = AsyncMock()
+            request.json.return_value = {"source": "microphone"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.set_audio_source_handler(request)
+
+            assert status == 200
+            assert response_data["source"] == "microphone"
+            assert ws.provider_manager.audio_source == "microphone"
+
     def mock_manager(self):
         manager = MagicMock()
         manager.boot_id = "deadbeef"
@@ -353,3 +382,39 @@ class TestWebServerSecurity:
             assert response_data["status"] == "error"
             session.set_microphone_device_id.assert_not_called()
             ws_module.LOCK_MANUAL_CONTROLS = False
+
+    @async_test
+    async def test_microphone_device_updates_provider_manager_preference(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            session = self.mock_session()
+            session.get_microphone_device_id.return_value = "mic-1"
+            ws = WebServer(session, self.mock_logger())
+            ws.provider_manager = MagicMock()
+            ws.provider_manager.microphone_device_id = ""
+            ws._microphone_payload = lambda: {
+                "available": True,
+                "default": None,
+                "devices": [{"id": "mic-1", "name": "Mic 1", "is_default": False}],
+                "selected_id": "",
+            }
+
+            request = AsyncMock()
+            request.json.return_value = {"id": "mic-1"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.microphone_device_set_handler(request)
+
+            assert status == 200
+            assert response_data["id"] == "mic-1"
+            assert ws.provider_manager.microphone_device_id == "mic-1"
+            session.set_microphone_device_id.assert_called_once_with("mic-1")

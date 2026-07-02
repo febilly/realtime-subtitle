@@ -1158,6 +1158,11 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Invalid audio source"}, status=400)
 
         success, message = self.session.set_audio_source(source)
+        if success and self.provider_manager is not None:
+            try:
+                self.provider_manager.audio_source = self.session.get_audio_source()
+            except Exception:
+                self.provider_manager.audio_source = source
         status_code = 200 if success else 400
         response = {
             "status": "ok" if success else "error",
@@ -1216,6 +1221,13 @@ class WebServer:
             )
 
         success, message = self.session.set_microphone_device_id(device_id)
+        if success and self.provider_manager is not None:
+            try:
+                self.provider_manager.microphone_device_id = normalize_microphone_device_id(
+                    self.session.get_microphone_device_id()
+                )
+            except Exception:
+                self.provider_manager.microphone_device_id = device_id
         status_code = 200 if success else 400
         return web.json_response({
             "status": "ok" if success else "error",
