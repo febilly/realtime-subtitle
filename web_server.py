@@ -13,11 +13,8 @@ from config import (
     get_resource_path,
     LOCK_MANUAL_CONTROLS,
     ENABLE_CHROMA_THEME,
-    ENABLE_SPEAKER_DIARIZATION,
-    HIDE_SPEAKER_LABELS,
     LLM_REFINE_DEFAULT_MODE,
     TRANSLATION_MODE,
-    TRANSLATION_PROVIDER,
     get_capabilities,
     get_language_codes_ordered,
 )
@@ -263,7 +260,7 @@ class WebServer:
             "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
             "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
-            "hide_speaker_labels": bool(HIDE_SPEAKER_LABELS),
+            "hide_speaker_labels": bool(config.HIDE_SPEAKER_LABELS),
             "soniox_region": config.SONIOX_REGION,
             "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
             # Subtitle-server relay (hosted mode) availability. The server URL is
@@ -811,6 +808,55 @@ class WebServer:
         if not ok:
             return web.json_response({"status": "error", "message": message}, status=400)
         return web.json_response({"status": "ok", "mode": mode})
+
+    def _supports_speaker_labels(self) -> bool:
+        return config.TRANSLATION_PROVIDER == "soniox" and bool(config.ENABLE_SPEAKER_DIARIZATION)
+
+    async def speaker_labels_get_handler(self, request):
+        """获取字幕说话人标签显示状态（仅 Soniox 支持）。"""
+        supported = self._supports_speaker_labels()
+        hide_labels = bool(config.HIDE_SPEAKER_LABELS)
+        return web.json_response({
+            "status": "ok",
+            "supported": supported,
+            "enabled": bool(supported and not hide_labels),
+            "hide_speaker_labels": hide_labels,
+        })
+
+    async def speaker_labels_set_handler(self, request):
+        """设置字幕说话人标签显示状态（会广播给所有前端）。"""
+        if not self._supports_speaker_labels():
+            return web.json_response({"status": "error", "message": "Speaker labels not supported"}, status=404)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Speaker label switching is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if "hide_speaker_labels" in payload:
+            hide_labels = bool(payload.get("hide_speaker_labels"))
+        elif "enabled" in payload:
+            hide_labels = not bool(payload.get("enabled"))
+        else:
+            return web.json_response({"status": "error", "message": "Missing speaker labels field"}, status=400)
+
+        config.HIDE_SPEAKER_LABELS = hide_labels
+        data = {
+            "type": "speaker_labels_changed",
+            "enabled": not hide_labels,
+            "hide_speaker_labels": hide_labels,
+        }
+        await self.broadcast_to_clients(data)
+        response = dict(data)
+        response["status"] = "ok"
+        return web.json_response(response)
 
     async def llm_refine_get_handler(self, request):
         """获取 LLM 改进开关状态"""
@@ -1363,6 +1409,8 @@ class WebServer:
         app.router.add_get('/api/ipc_status', self.ipc_status_handler)
         app.router.add_get('/segment-mode', self.segment_mode_get_handler)
         app.router.add_post('/segment-mode', self.segment_mode_set_handler)
+        app.router.add_get('/speaker-labels', self.speaker_labels_get_handler)
+        app.router.add_post('/speaker-labels', self.speaker_labels_set_handler)
         app.router.add_get('/llm-refine', self.llm_refine_get_handler)
         app.router.add_post('/llm-refine', self.llm_refine_set_handler)
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由

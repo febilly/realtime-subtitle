@@ -256,6 +256,7 @@ function localizeBackendMessage(message) {
         'OSC translation toggle is disabled by server config': 'backend_osc_disabled',
         'Overlay control is disabled by server config': 'backend_overlay_disabled',
         'Segment mode switching is disabled': 'backend_segment_mode_disabled',
+        'Speaker label switching is disabled by server config': 'backend_speaker_labels_disabled',
         'LLM refine toggle is disabled by server config': 'backend_llm_refine_disabled',
         'Furigana feature not available (pykakasi not installed)': 'backend_furigana_unavailable',
     };
@@ -322,6 +323,8 @@ const microphoneDeviceHint = document.getElementById('microphoneDeviceHint');
 const bundledCjkFontPickerHost = document.getElementById('bundledCjkFontPicker');
 const runtimeControlsSection = document.getElementById('runtimeControlsSection');
 const autoRestartPickerHost = document.getElementById('autoRestartPicker');
+const speakerLabelsSettingField = document.getElementById('speakerLabelsSettingField');
+const speakerLabelsPickerHost = document.getElementById('speakerLabelsPicker');
 const segmentModeSettingField = document.getElementById('segmentModeSettingField');
 const segmentModePickerHost = document.getElementById('segmentModePicker');
 const toastEl = document.getElementById('toast');
@@ -331,6 +334,7 @@ const SONIOX_REGIONS = ['us', 'eu', 'jp'];
 let sonioxRegionPickerEl = null;
 let microphoneDevicePickerEl = null;
 let autoRestartPickerEl = null;
+let speakerLabelsPickerEl = null;
 let segmentModePickerEl = null;
 let bundledCjkFontPickerEl = null;
 let microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
@@ -1363,7 +1367,6 @@ async function fetchUiConfig() {
             localStorage.setItem('segmentMode', segmentMode);
         }
         updateSegmentModeButton();
-        renderRuntimeSettingsPickers();
         if (data && typeof data.custom_font_available === 'boolean') {
             customFontAvailable = data.custom_font_available;
             if (!customFontAvailable) {
@@ -1378,6 +1381,15 @@ async function fetchUiConfig() {
         if (data && typeof data.hide_speaker_labels === 'boolean') {
             hideSpeakerLabels = data.hide_speaker_labels;
         }
+        const storedHideSpeakerLabels = getStoredHideSpeakerLabelsSetting();
+        if (!lockManualControls && translationProvider === 'soniox' && storedHideSpeakerLabels !== null) {
+            hideSpeakerLabels = storedHideSpeakerLabels;
+            if (data && data.hide_speaker_labels !== storedHideSpeakerLabels) {
+                void setSpeakerLabelsHidden(storedHideSpeakerLabels);
+            }
+        }
+        applySpeakerLabelVisibility();
+        renderRuntimeSettingsPickers();
         if (data && typeof data.enable_chroma_theme === 'boolean') {
             const wasEnabled = enableChromaTheme;
             enableChromaTheme = data.enable_chroma_theme;
@@ -2809,6 +2821,39 @@ function renderAutoRestartPicker() {
     autoRestartPickerHost.appendChild(autoRestartPickerEl);
 }
 
+function getStoredHideSpeakerLabelsSetting() {
+    const settings = loadProviderSettings();
+    return typeof settings.hideSpeakerLabels === 'boolean' ? settings.hideSpeakerLabels : null;
+}
+
+function getDesiredHideSpeakerLabels() {
+    const stored = getStoredHideSpeakerLabelsSetting();
+    return stored === null ? !!hideSpeakerLabels : stored;
+}
+
+function renderSpeakerLabelsPicker() {
+    const provider = getSelectedProvider();
+    const supported = provider === 'soniox';
+    if (speakerLabelsSettingField) {
+        speakerLabelsSettingField.hidden = !supported;
+    }
+    if (!speakerLabelsPickerHost) {
+        return;
+    }
+    speakerLabelsPickerHost.innerHTML = '';
+    if (!supported) {
+        speakerLabelsPickerEl = null;
+        return;
+    }
+    speakerLabelsPickerEl = buildCustomSelect([
+        { value: 'show', label: t('speaker_labels_enabled') },
+        { value: 'hide', label: t('speaker_labels_disabled') },
+    ], {
+        value: getDesiredHideSpeakerLabels() ? 'hide' : 'show',
+    });
+    speakerLabelsPickerHost.appendChild(speakerLabelsPickerEl);
+}
+
 function renderBundledCjkFontPicker() {
     if (!bundledCjkFontPickerHost) {
         return;
@@ -2873,6 +2918,7 @@ function renderRuntimeSettingsPickers() {
         runtimeControlsSection.hidden = false;
     }
     renderAutoRestartPicker();
+    renderSpeakerLabelsPicker();
     renderSegmentModePicker();
 }
 
@@ -2881,6 +2927,16 @@ async function applyRuntimeControlSettings() {
         autoRestartEnabled = autoRestartPickerEl.value !== 'false';
         localStorage.setItem('autoRestartEnabled', autoRestartEnabled ? 'true' : 'false');
         updateAutoRestartButton();
+    }
+
+    if (speakerLabelsPickerEl && getSelectedProvider() === 'soniox') {
+        const requestedHideSpeakerLabels = speakerLabelsPickerEl.value === 'hide';
+        if (requestedHideSpeakerLabels !== hideSpeakerLabels) {
+            const ok = await setSpeakerLabelsHidden(requestedHideSpeakerLabels);
+            if (!ok) {
+                return { ok: false, message: t('backend_speaker_labels_disabled') };
+            }
+        }
     }
 
     const requestedSegmentMode = normalizeSegmentMode(segmentModePickerEl && segmentModePickerEl.value);
@@ -2892,6 +2948,36 @@ async function applyRuntimeControlSettings() {
     }
 
     return { ok: true };
+}
+
+async function setSpeakerLabelsHidden(hidden) {
+    if (lockManualControls) {
+        return false;
+    }
+    try {
+        const response = await fetch('/speaker-labels', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ hide_speaker_labels: !!hidden })
+        });
+        if (!response.ok) {
+            console.error('Failed to set speaker labels');
+            return false;
+        }
+        const data = await response.json().catch(() => ({}));
+        if (typeof data.hide_speaker_labels === 'boolean') {
+            hideSpeakerLabels = data.hide_speaker_labels;
+        } else {
+            hideSpeakerLabels = !!hidden;
+        }
+        applySpeakerLabelVisibility();
+        renderSpeakerLabelsPicker();
+        renderSubtitles();
+        return true;
+    } catch (error) {
+        console.error('Error setting speaker labels:', error);
+        return false;
+    }
 }
 
 async function setSegmentMode(mode) {
@@ -3454,6 +3540,17 @@ function handleMessage(data) {
     }
     if (data.type === 'segment_mode_changed') {
         handleSegmentModeChanged(data);
+        return;
+    }
+    if (data.type === 'speaker_labels_changed') {
+        if (typeof data.hide_speaker_labels === 'boolean') {
+            hideSpeakerLabels = data.hide_speaker_labels;
+        } else if (typeof data.enabled === 'boolean') {
+            hideSpeakerLabels = !data.enabled;
+        }
+        applySpeakerLabelVisibility();
+        renderSpeakerLabelsPicker();
+        renderSubtitles();
         return;
     }
     if (data.type === 'session_connected') {
@@ -4791,6 +4888,7 @@ function applySettingsI18n() {
     setText('microphoneDeviceLabel', 'microphone_device');
     setText('runtimeControlsLabel', 'recognition_controls');
     setText('autoRestartSettingLabel', 'auto_restart_setting');
+    setText('speakerLabelsSettingLabel', 'speaker_labels_setting');
     setText('segmentModeSettingLabel', 'segment_mode_setting');
     setText('appearanceLabel', 'appearance');
     setText('bundledCjkFontLabel', 'bundled_cjk_font');
@@ -5295,6 +5393,9 @@ async function handleSettingsSave(event) {
         settings.sonioxRegion = region;
     }
     settings.keys = settings.keys || {};
+    if (speakerLabelsPickerEl && provider === 'soniox') {
+        settings.hideSpeakerLabels = speakerLabelsPickerEl.value === 'hide';
+    }
 
     if (mode === 'relay') {
         const allowed = await ensureHostedVersionAllowed({ candidateMode: 'relay' });
@@ -5489,6 +5590,7 @@ if (settingsForm) {
             const provider = getSelectedProvider();
             updateApiKeyFieldForProvider(provider);
             updateSonioxRegionForProvider(provider);
+            renderRuntimeSettingsPickers();
             const server = loadServerSettings();
             if (backendLoggedIn || !!server.token) {
                 void fetchBalance({ provider, force: true });
