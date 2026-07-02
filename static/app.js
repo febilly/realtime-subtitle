@@ -5286,6 +5286,39 @@ async function pushSetup(provider, apiKey, { silent = false, region = null, mode
     }
 }
 
+function directSettingsNeedSetup({ provider, region, apiKeyToPush, previousKey }) {
+    const desiredKeySource = apiKeyToPush ? 'localstorage' : 'env';
+    const keyChanged = String(previousKey || '') !== String(apiKeyToPush || '');
+    const providerMismatch = provider !== translationProvider;
+    const modeMismatch = backendMode !== 'direct';
+    const regionMismatch = !backendSonioxCustomUrl
+        && provider === 'soniox'
+        && region
+        && normalizeSonioxRegion(region) !== backendSonioxRegion;
+    const keySourceMismatch = backendKeySource !== desiredKeySource;
+
+    return setupRequired
+        || providerMismatch
+        || modeMismatch
+        || regionMismatch
+        || keyChanged
+        || keySourceMismatch;
+}
+
+function relaySettingsNeedSetup({ provider, token }) {
+    const providerMismatch = provider !== translationProvider;
+    const modeMismatch = backendMode !== 'relay';
+    const needsLoginPush = !!token && !backendLoggedIn;
+
+    return setupRequired || providerMismatch || modeMismatch || needsLoginPush;
+}
+
+function finishHotSettingsSave() {
+    setupRequired = false;
+    hideSettingsPanel();
+    showToast(t('settings_saved'));
+}
+
 let confirmResolve = null;
 
 function closeConfirmDialog(result) {
@@ -5388,6 +5421,7 @@ async function handleSettingsSave(event) {
     const region = getSelectedSonioxRegion();
     const mode = getSettingsMode();
     const settings = loadProviderSettings();
+    const previousProviderKey = settings.keys && settings.keys[provider] ? String(settings.keys[provider]) : '';
     settings.providerOverride = provider;
     if (region) {
         settings.sonioxRegion = region;
@@ -5434,6 +5468,11 @@ async function handleSettingsSave(event) {
             return;
         }
         saveProviderSettings(settings);
+        if (!relaySettingsNeedSetup({ provider, token: server.token })) {
+            if (settingsSaveButton) { settingsSaveButton.disabled = false; settingsSaveButton.textContent = t('save'); }
+            finishHotSettingsSave();
+            return;
+        }
         const result = await pushSetup(provider, null, {
             silent: false, mode: 'relay', token: server.token, region,
         });
@@ -5480,6 +5519,12 @@ async function handleSettingsSave(event) {
     }
 
     const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
+    if (!directSettingsNeedSetup({ provider, region, apiKeyToPush, previousKey: previousProviderKey })) {
+        if (settingsSaveButton) settingsSaveButton.disabled = false;
+        if (settingsSaveButton) settingsSaveButton.textContent = t('save');
+        finishHotSettingsSave();
+        return;
+    }
     const result = await pushSetup(provider, apiKeyToPush, { silent: false, region, mode: 'direct' });
 
     if (settingsSaveButton) settingsSaveButton.disabled = false;
