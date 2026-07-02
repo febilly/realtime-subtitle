@@ -2195,7 +2195,15 @@ function buildCustomSelect(options, { value = null, onChange = null, disabled = 
         if (menuEl && event && event.target && menuEl.contains(event.target)) {
             return;
         }
-        close();
+        const target = event && event.target;
+        const scrollsPickerAncestor = target && typeof target.contains === 'function' && target.contains(picker);
+        const scrollsViewport = target === window
+            || target === document
+            || target === document.body
+            || target === document.documentElement;
+        if (scrollsPickerAncestor || scrollsViewport) {
+            reposition();
+        }
     };
     const close = () => {
         if (!menuEl) {
