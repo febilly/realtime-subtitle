@@ -415,11 +415,13 @@ let loginRegistrationInfo = null; // { bonuses: [...], registration_threshold }
 let loginSubmitBusy = false;
 // Balance bar / this-session cost meter.
 let balancePollTimer = null;
+let balancePollIntervalMs = 0; // cadence the poll timer is currently running at
 let sessionCostTimer = null;
 let sessionAccumMs = 0;
 let sessionRunSince = null;
 let pricePerSecond = 0;
-let lastBalanceData = null; // last /account/balance payload, for the account panel
+let lastBalanceData = null; // last /account/balance payload (raw), for the account panel
+let balanceBaseline = null; // balance payload the live in-flight estimate is subtracted from
 // Maps backend relay close-code tags to localized message keys.
 const RELAY_ERROR_KEYS = {
     billing_exhausted: 'relay_err_billing_exhausted',
@@ -5190,10 +5192,12 @@ function updateAccountBalance() {
     const poolsBox = document.getElementById('accountFreePools');
     const server = loadServerSettings();
     const signedIn = backendLoggedIn || !!server.token;
+    // Mirror the same live (estimate-adjusted) view the balance bar shows.
+    const view = currentBalanceView();
     if (balanceHint) {
-        if (signedIn && lastBalanceData && lastBalanceData.prepaid_balance != null) {
+        if (signedIn && view && view.prepaid_balance != null) {
             balanceHint.textContent = t('account_balance', {
-                balance: formatCredits(lastBalanceData.prepaid_balance),
+                balance: formatCredits(view.prepaid_balance),
             });
             balanceHint.hidden = false;
         } else {
@@ -5202,7 +5206,7 @@ function updateAccountBalance() {
         }
     }
     if (poolsBox) {
-        const pools = (signedIn && lastBalanceData && lastBalanceData.free) ? lastBalanceData.free.pools : null;
+        const pools = (signedIn && view && view.free) ? view.free.pools : null;
         renderFreePools(poolsBox, pools);
     }
 }
@@ -6403,11 +6407,38 @@ function updateBalanceBarVisibility() {
     }
 }
 
-function startBalancePolling() {
-    void fetchBalance();
-    if (!balancePollTimer) {
-        balancePollTimer = setInterval(fetchBalance, 45000);
+// Poll fast while a session is actively metering (the balance is being spent),
+// slow when idle (nothing is billed, so the balance is static and a low-frequency
+// refresh is enough). "Recognizing" == the session-cost meter is running.
+const BALANCE_POLL_ACTIVE_MS = 45 * 1000;      // recognizing: keep the balance fresh
+const BALANCE_POLL_IDLE_MS = 5 * 60 * 1000; // idle: refresh once every 5 minutes
+
+function balanceIsMetering() {
+    return sessionRunSince != null;
+}
+
+function desiredBalancePollMs() {
+    return balanceIsMetering() ? BALANCE_POLL_ACTIVE_MS : BALANCE_POLL_IDLE_MS;
+}
+
+function startBalancePolling({ immediate = true } = {}) {
+    if (immediate) void fetchBalance();
+    scheduleBalancePolling();
+}
+
+// (Re)arm the poll timer at the cadence appropriate for the current state.
+// Cheap no-op when the running timer is already at the desired cadence, so this
+// can be called freely on every session state change.
+function scheduleBalancePolling() {
+    if (!balanceBarShouldShow()) {
+        stopBalancePolling();
+        return;
     }
+    const desired = desiredBalancePollMs();
+    if (balancePollTimer && balancePollIntervalMs === desired) return;
+    if (balancePollTimer) clearInterval(balancePollTimer);
+    balancePollIntervalMs = desired;
+    balancePollTimer = setInterval(fetchBalance, desired);
 }
 
 function stopBalancePolling() {
@@ -6415,6 +6446,7 @@ function stopBalancePolling() {
         clearInterval(balancePollTimer);
         balancePollTimer = null;
     }
+    balancePollIntervalMs = 0;
 }
 
 async function fetchBalance({ provider = null, force = false } = {}) {
@@ -6506,20 +6538,108 @@ function isAccountExhausted(data) {
         && !hasUsableSubscription(data.subscriptions);
 }
 
+// Total spendable credits in a payload (prepaid + finite free pools). Used only
+// to decide whether a fresh fetch went up (top-up / quota rollover) or down
+// (server billed a finished session) relative to the current baseline.
+function balanceTotalRemaining(data) {
+    if (!data) return 0;
+    let total = Math.max(0, Number(data.prepaid_balance || 0));
+    const pools = data.free && Array.isArray(data.free.pools) ? data.free.pools : [];
+    for (const pool of pools) {
+        if (pool.unlimited) continue;
+        total += Math.max(0, Number(pool.remaining || 0));
+    }
+    return total;
+}
+
+// Estimated in-flight consumption of the current session, in credits, rounded to
+// a whole number of per-second ticks — the same value the "this session" meter
+// shows. This is the deduction we optimistically apply between server refreshes.
+// Only the deduction total is rounded, not the resulting balance.
+function estimatedSessionCost() {
+    const p = Number(pricePerSecond);
+    if (!Number.isFinite(p) || p <= 0) return 0;
+    const seconds = sessionElapsedMs() / 1000;
+    return Math.max(0, Math.round(seconds) * p);
+}
+
+// Apply the estimated in-flight deduction to a copy of a balance payload,
+// mirroring the server's charge order: free pools daily -> weekly -> monthly,
+// then prepaid. Subscriptions are never metered server-side, so they're left
+// untouched.
+function applyEstimatedDeduction(data, estCost) {
+    if (!data) return data;
+    let remaining = Math.max(0, Number(estCost) || 0);
+    const out = Object.assign({}, data);
+    if (data.free && Array.isArray(data.free.pools)) {
+        const pools = data.free.pools.map((pool) => Object.assign({}, pool));
+        for (const pool of pools) {
+            if (remaining <= 0) break;
+            if (pool.unlimited) {
+                // An unlimited pool absorbs the rest; nothing reaches prepaid.
+                remaining = 0;
+                break;
+            }
+            const avail = Math.max(0, Number(pool.remaining || 0));
+            const take = Math.min(avail, remaining);
+            if (take > 0) {
+                pool.remaining = avail - take;
+                remaining -= take;
+            }
+        }
+        out.free = Object.assign({}, data.free, { pools });
+    }
+    if (remaining > 0) {
+        const prepaid = Math.max(0, Number(data.prepaid_balance || 0));
+        out.prepaid_balance = Math.max(0, prepaid - remaining);
+    }
+    return out;
+}
+
+// The balance to display right now: the baseline (last authoritative fetch that
+// wasn't superseded by our own estimate) minus the live in-flight estimate.
+function currentBalanceView() {
+    const base = balanceBaseline || lastBalanceData;
+    if (!base) return null;
+    return applyEstimatedDeduction(base, estimatedSessionCost());
+}
+
 function renderBalance(data) {
     lastBalanceData = data;
+    // Re-baseline unless the server balance dropped while an estimate is live: a
+    // mid-session drop means the server just billed a finished session that our
+    // local estimate already accounts for, so keeping the old baseline (and
+    // trusting the estimate) avoids double-counting. Idle refreshes, top-ups and
+    // quota rollovers (balance flat or up) re-baseline.
+    if (!balanceBaseline
+        || estimatedSessionCost() <= 0
+        || balanceTotalRemaining(data) >= balanceTotalRemaining(balanceBaseline)) {
+        balanceBaseline = data;
+    }
+    renderBalanceView();
+}
+
+// Render the balance bar (and the account-panel mirror) from the current
+// estimated view. Called on every fetch and once per second while a session
+// runs, so the displayed balance and free/paid quotas tick down live.
+function renderBalanceView() {
+    updateSessionCostDisplay();
+    const view = currentBalanceView();
+    if (!view) return;
     setElText('balanceLabel', t('balance_label'));
-    setElText('balanceValue', formatCredits(data.prepaid_balance));
+    setElText('balanceValue', formatCredits(view.prepaid_balance));
     setElText('sessionLabel', t('balance_session'));
     if (balanceOpenSettingsButton) {
         balanceOpenSettingsButton.textContent = t('open_settings');
     }
     if (balanceActionItem) {
-        balanceActionItem.hidden = !isAccountExhausted(data);
+        // Base the "top up" prompt on the authoritative server state, not the
+        // optimistic estimate, so it only shows when actually exhausted.
+        balanceActionItem.hidden = !isAccountExhausted(lastBalanceData);
     }
 
     // Free quota: one item per configured pool (daily/weekly/monthly).
-    renderFreePools(document.getElementById('freePools'), data.free && data.free.pools);
+    renderFreePools(document.getElementById('freePools'), view.free && view.free.pools);
 
     // Mirror the balance into the account panel if it's open.
     updateAccountBalance();
@@ -6527,7 +6647,7 @@ function renderBalance(data) {
     // Subscription quota: show remaining for the first active plan, if any.
     const subItem = document.getElementById('subItem');
     if (subItem) {
-        const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
+        const subs = Array.isArray(view.subscriptions) ? view.subscriptions : [];
         if (subs.length) {
             const sub = subs[0];
             subItem.hidden = false;
@@ -6540,8 +6660,6 @@ function renderBalance(data) {
             subItem.hidden = true;
         }
     }
-
-    updateSessionCostDisplay();
 }
 
 function sessionElapsedMs() {
@@ -6575,9 +6693,12 @@ function sessionCostResume() {
         sessionRunSince = Date.now();
     }
     if (!sessionCostTimer) {
-        sessionCostTimer = setInterval(updateSessionCostDisplay, 1000);
+        // Tick the whole balance view (balance + free/paid quotas + this-session
+        // cost) every second so they draw down live between server refreshes.
+        sessionCostTimer = setInterval(renderBalanceView, 1000);
     }
-    updateSessionCostDisplay();
+    renderBalanceView();
+    scheduleBalancePolling(); // recognizing again -> fast cadence
 }
 
 function sessionCostPause() {
@@ -6589,7 +6710,8 @@ function sessionCostPause() {
         clearInterval(sessionCostTimer);
         sessionCostTimer = null;
     }
-    updateSessionCostDisplay();
+    renderBalanceView();
+    scheduleBalancePolling(); // no longer recognizing -> slow cadence
 }
 
 function sessionCostReset() {
@@ -6599,7 +6721,14 @@ function sessionCostReset() {
         clearInterval(sessionCostTimer);
         sessionCostTimer = null;
     }
-    updateSessionCostDisplay();
+    // A fresh session starts from zero, so drop the old session's estimate and
+    // re-anchor to the latest known balance. Pull a fresh figure too: the just
+    // finished session has now been billed server-side (and the provider/price
+    // may have changed), so the next fetch re-baselines to the real balance.
+    balanceBaseline = lastBalanceData;
+    renderBalanceView();
+    scheduleBalancePolling();
+    void fetchBalance();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
