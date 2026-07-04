@@ -6064,11 +6064,11 @@ function rankLabel(rank) {
     const key = String(rank || '').toLowerCase();
     const labels = {
         zh: {
-            visitor: '访客',
-            new_user: '新用户',
-            user: '用户',
-            known_user: '知名用户',
-            trusted_user: '受信用户',
+            visitor: '游客 (Visitor)',
+            new_user: '萌新 (New User)',
+            user: '玩家 (User)',
+            known_user: '长期玩家 (Known User)',
+            trusted_user: '资深玩家 (Trusted User)',
         },
         en: {
             visitor: 'Visitor',
