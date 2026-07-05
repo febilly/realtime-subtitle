@@ -5896,7 +5896,21 @@ function showClientUpdateDialog(state) {
     if (clientUpdateDirectButton) {
         clientUpdateDirectButton.textContent = t('client_update_direct');
         clientUpdateDirectButton.hidden = !state.forced;
-        clientUpdateDirectButton.onclick = () => closeClientUpdateDialog('direct');
+        clientUpdateDirectButton.onclick = async () => {
+            clientUpdateOverlay.hidden = true;
+            clientUpdateDialog.hidden = true;
+            const confirmed = await showConfirm(t('client_update_direct_confirm'), {
+                okLabel: t('client_update_direct_confirm_ok'),
+                cancelLabel: t('client_update_direct_confirm_cancel'),
+                danger: true,
+            });
+            if (confirmed) {
+                closeClientUpdateDialog('direct');
+                return;
+            }
+            clientUpdateOverlay.hidden = false;
+            clientUpdateDialog.hidden = false;
+        };
     }
     clientUpdateOverlay.hidden = false;
     clientUpdateDialog.hidden = false;
