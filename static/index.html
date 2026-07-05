@@ -122,21 +122,6 @@
                 <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
             </div>
 
-            <section class="auth-section" id="modeSection" hidden>
-                <div class="settings-section-label" id="modeLabel">Connection</div>
-                <fieldset class="segmented-control" id="modeFieldset" aria-label="Connection mode">
-                    <label class="segmented-option">
-                        <input type="radio" name="connmode" value="relay" id="modeRelay">
-                        <span id="modeRelayLabel">Hosted</span>
-                    </label>
-                    <label class="segmented-option">
-                        <input type="radio" name="connmode" value="direct" id="modeDirect">
-                        <span id="modeDirectLabel">Own key</span>
-                    </label>
-                </fieldset>
-                <p class="field-hint" id="modeDescription"></p>
-            </section>
-
             <div class="settings-section-label" id="providerLabel">API selection</div>
             <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
                 <label class="segmented-option">
@@ -235,6 +220,21 @@
                 <p class="field-hint" id="bundledCjkFontHint">Prefer Noto Sans CJK for Chinese, Japanese, and Korean subtitles.</p>
             </section>
 
+            <section class="auth-section" id="modeSection" hidden>
+                <div class="settings-section-label" id="modeLabel">Connection</div>
+                <fieldset class="segmented-control" id="modeFieldset" aria-label="Connection mode">
+                    <label class="segmented-option">
+                        <input type="radio" name="connmode" value="relay" id="modeRelay">
+                        <span id="modeRelayLabel">Hosted</span>
+                    </label>
+                    <label class="segmented-option">
+                        <input type="radio" name="connmode" value="direct" id="modeDirect">
+                        <span id="modeDirectLabel">Own key</span>
+                    </label>
+                </fieldset>
+                <p class="field-hint" id="modeDescription"></p>
+            </section>
+
             <div class="settings-footer-scroll">
                 <span id="settingsVersion"></span>
                 <span class="settings-footer-divider">|</span>
@@ -309,12 +309,12 @@
             <p class="field-hint" id="loginServerHint"></p>
 
             <section class="auth-section" id="loginStepInput">
-                <div class="settings-section-label" id="loginCodeHintText"></div>
                 <div class="login-code-action" id="loginCodeHint">
-                    <button class="primary-button" id="loginCodeLink" type="button"></button>
-                    <p class="field-hint" id="loginCodeHintSuffix"></p>
+                    <button class="primary-button login-hero-button" id="loginCodeLink" type="button"></button>
                 </div>
-                <label class="form-field" for="loginUserInput">
+                <p class="field-hint login-waiting-hint" id="loginWaitingHint" hidden></p>
+                <button class="link-button" id="loginManualToggle" type="button" hidden></button>
+                <label class="form-field" id="loginManualField" for="loginUserInput" hidden>
                     <span id="loginUserInputLabel">One-time login code</span>
                     <div class="embedded-paste-control">
                         <input id="loginUserInput" type="text" autocomplete="off" spellcheck="false">
@@ -325,13 +325,9 @@
                         </button>
                     </div>
                 </label>
-                <p class="field-hint" id="loginInputHint"></p>
             </section>
 
             <section class="auth-section" id="loginBonusSection" hidden>
-                <div class="settings-section-label" id="loginBonusLabel">Free credits by trust rank</div>
-                <div class="bonus-list" id="loginBonusList"></div>
-                <p class="field-hint" id="loginFreeQuotaNote" hidden></p>
                 <p class="field-hint" id="loginThresholdHint" hidden></p>
             </section>
 

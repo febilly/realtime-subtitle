@@ -1635,6 +1635,36 @@ body.dark-theme .challenge-box code {
     margin: 0;
 }
 
+/* Hosted-login primary call-to-action. */
+.login-hero-button {
+    width: 100%;
+    padding: 12px 16px;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.login-waiting-hint {
+    margin: 0 0 12px;
+    opacity: 0.85;
+}
+
+/* Small unobtrusive text button (e.g. "have a login code? enter it manually"). */
+.link-button {
+    display: inline-block;
+    margin: 2px 0 10px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--accent, #6ea8fe);
+    font-size: 13px;
+    cursor: pointer;
+    text-decoration: underline;
+}
+
+.link-button:hover {
+    opacity: 0.85;
+}
+
 /* Login: trust-rank free-credit ladder. */
 .bonus-list {
     display: flex;
