@@ -1582,6 +1582,22 @@ body.dark-theme .client-update-notes {
     margin-top: 16px;
 }
 
+.client-update-actions .client-update-direct-link {
+    align-self: center;
+    margin: 0 auto 0 0;
+    color: #6b7280;
+    text-decoration: none;
+}
+
+.client-update-actions .client-update-direct-link:hover {
+    opacity: 0.85;
+    text-decoration: none;
+}
+
+body.dark-theme .client-update-actions .client-update-direct-link {
+    color: #9ca3af;
+}
+
 /* Login: VRChat challenge text box. */
 .challenge-box {
     display: flex;
