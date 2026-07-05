@@ -5960,6 +5960,26 @@ async function returnToModeChooser() {
     updateBalanceBarVisibility();
 }
 
+// Escape hatch from the hosted-login panel: switch to own-key (direct) mode and
+// jump straight into Settings so the user can paste their own provider key.
+async function switchToOwnKeyMode() {
+    if (lockManualControls || !relayAvailable) {
+        return;
+    }
+    const s = loadServerSettings();
+    s.mode = 'direct';
+    s.modeChosen = true;
+    saveServerSettings(s);
+    pushedOverrideBootId = null;
+    hideLogin();
+    setModeRadio('direct');
+    applyModeSectionsVisibility('direct');
+    await syncProviderFromStorage();
+    updateAccountSection();
+    updateBalanceBarVisibility();
+    openSettings({ forced: true });
+}
+
 async function maybeRunFirstLaunchFlow() {
     if (lockManualControls) {
         return;
@@ -5975,27 +5995,30 @@ async function maybeRunFirstLaunchFlow() {
         saveServerSettings(s);
         return;
     }
-    await openModeChooser();
-    await ensureHostedVersionAllowed();
+    // Server address is built in: default to hosted mode and surface the login
+    // panel directly (it carries a small "use own key" escape hatch) instead of
+    // making the user pick a connection mode up front.
+    s.mode = 'relay';
+    s.modeChosen = true;
+    saveServerSettings(s);
+    await ensureHostedVersionAllowed({ candidateMode: 'relay' });
 }
 
 // ---- Login overlay (web-generated one-time code only) ----
 function applyLoginI18n() {
-    setElText('loginTitle', t('login_title'));
+    setElText('loginTitle', t('login_hosted_title'));
     setElText('loginUserInputLabel', t('login_code_input_label'));
-    setElText('loginInputHint', t('login_code_input_hint'));
     const loginPasteEl = document.getElementById('loginPasteButton');
     if (loginPasteEl) {
         const pasteLabel = t('login_paste');
         loginPasteEl.setAttribute('aria-label', pasteLabel);
         loginPasteEl.setAttribute('title', pasteLabel);
     }
-    setElText('loginModeBackButton', t('mode_back_to_chooser'));
+    setElText('loginModeBackButton', t('use_own_key_mode'));
     setElText('loginBackButton', t('login_back'));
-    setElText('loginBonusLabel', t('login_bonus_label'));
-    setElText('loginCodeHintText', t('login_open_code_step'));
-    setElText('loginCodeLink', t('login_open_code_page'));
-    setElText('loginCodeHintSuffix', t('login_paste_code_step'));
+    setElText('loginCodeLink', t('login_vrchat_button'));
+    setElText('loginManualToggle', t('login_manual_toggle'));
+    setElText('loginWaitingHint', t('login_waiting'));
     const serverHint = document.getElementById('loginServerHint');
     if (serverHint) serverHint.textContent = relayServerUrl ? t('login_server', { url: relayServerUrl }) : '';
     const codeHint = document.getElementById('loginCodeHint');
@@ -6024,6 +6047,7 @@ function hasLoginCodeInput() {
 
 function updateLoginSubmitState() {
     if (!loginPrimaryButton) return;
+    loginPrimaryButton.hidden = !loginManualShown;
     loginPrimaryButton.disabled = loginSubmitBusy || !hasLoginCodeInput();
     if (!loginSubmitBusy) {
         loginPrimaryButton.textContent = loginPrimaryLabel(loginForm && loginForm.getAttribute('data-step'));
@@ -6091,41 +6115,40 @@ function rankLabel(rank) {
 
 function renderBonusLadder() {
     const section = document.getElementById('loginBonusSection');
-    const list = document.getElementById('loginBonusList');
     const thresholdHint = document.getElementById('loginThresholdHint');
-    if (!section || !list) return;
+    if (!section || !thresholdHint) return;
     const info = loginRegistrationInfo;
-    const bonuses = (info && Array.isArray(info.bonuses)) ? info.bonuses : [];
-    list.innerHTML = '';
-    if (!bonuses.length) {
-        const p = document.createElement('div');
-        p.className = 'bonus-row';
-        p.textContent = t('login_bonus_none');
-        list.appendChild(p);
+    const threshold = info && info.registration_threshold;
+    if (threshold) {
+        thresholdHint.hidden = false;
+        thresholdHint.textContent = t('login_threshold', { rank: rankLabel(threshold) });
+        section.hidden = false;
     } else {
-        bonuses.forEach((b) => {
-            const row = document.createElement('div');
-            row.className = 'bonus-row';
-            row.textContent = t('login_bonus_row', { rank: rankLabel(b.trust_rank), credits: b.grant_credits });
-            list.appendChild(row);
-        });
+        thresholdHint.hidden = true;
+        thresholdHint.textContent = '';
+        section.hidden = true;
     }
-    section.hidden = false;
-    const freeNote = document.getElementById('loginFreeQuotaNote');
-    if (freeNote) {
-        freeNote.hidden = false;
-        freeNote.textContent = t('login_free_quota_note');
+}
+
+let loginManualShown = false;
+let loginPollTimer = null;
+let loginPollState = null;
+let loginPollDeadline = 0;
+
+function setLoginManualShown(show) {
+    loginManualShown = !!show;
+    const field = document.getElementById('loginManualField');
+    if (field) field.hidden = !loginManualShown;
+    if (loginManualShown) {
+        if (loginUserInput) loginUserInput.focus();
     }
-    if (thresholdHint) {
-        const threshold = info && info.registration_threshold;
-        if (threshold) {
-            thresholdHint.hidden = false;
-            thresholdHint.textContent = t('login_threshold', { rank: rankLabel(threshold) });
-        } else {
-            thresholdHint.hidden = true;
-            thresholdHint.textContent = '';
-        }
-    }
+    updateLoginSubmitState();
+}
+
+function setLoginWaiting(waiting) {
+    const hint = document.getElementById('loginWaitingHint');
+    if (hint) hint.hidden = !waiting;
+    if (loginCodeLink) loginCodeLink.disabled = !!waiting;
 }
 
 function openLogin({ forced = false } = {}) {
@@ -6134,18 +6157,104 @@ function openLogin({ forced = false } = {}) {
     applyLoginI18n();
     resetLoginToInput();
     if (loginUserInput) loginUserInput.value = '';
+    setLoginManualShown(false);
+    setLoginWaiting(false);
     updateLoginSubmitState();
     void fetchRegistrationInfo();
     if (loginOverlay) loginOverlay.hidden = false;
     if (loginPanel) loginPanel.hidden = false;
+    const manualToggle = document.getElementById('loginManualToggle');
+    if (manualToggle) manualToggle.hidden = false;
     if (loginCloseButton) loginCloseButton.style.display = loginForcedOpen ? 'none' : '';
-    if (loginModeBackButton) loginModeBackButton.hidden = !(loginForcedOpen && relayAvailable);
+    if (loginModeBackButton) loginModeBackButton.hidden = !relayAvailable;
 }
 
 function hideLogin() {
     if (loginOverlay) loginOverlay.hidden = true;
     if (loginPanel) loginPanel.hidden = true;
     loginForcedOpen = false;
+    stopLoginPolling();
+    setLoginWaiting(false);
+}
+
+function stopLoginPolling() {
+    if (loginPollTimer) {
+        clearTimeout(loginPollTimer);
+        loginPollTimer = null;
+    }
+    loginPollState = null;
+}
+
+// Primary hosted-login path: open the web verification page in the system
+// browser with a loopback callback, then poll our own backend until the web
+// page bounces the one-time code back — no manual copy/paste needed.
+async function startHostedLogin() {
+    const base = (relayServerUrl || '').replace(/\/+$/, '');
+    if (!base) {
+        showToast(t('server_not_configured'), true);
+        return;
+    }
+    if (loginErrorEl) loginErrorEl.textContent = '';
+    let state = '';
+    try {
+        const resp = await fetch('/account/login-begin', { method: 'POST' });
+        const data = await resp.json().catch(() => ({}));
+        state = data && data.state;
+    } catch (e) {
+        // ignore — fall back to opening without a callback (manual paste)
+    }
+    const origin = window.location.origin;
+    let url = base + '/app/#/login?next=' + encodeURIComponent('/login-code');
+    if (state) {
+        const cb = origin + '/account/login-callback';
+        url += '&client_callback=' + encodeURIComponent(cb) + '&state=' + encodeURIComponent(state);
+    }
+    try {
+        window.open(url, '_blank', 'noopener,noreferrer');
+    } catch (e) {
+        if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
+        showToast(url);
+    }
+    if (state) {
+        loginPollState = state;
+        loginPollDeadline = Date.now() + 5 * 60 * 1000;
+        setLoginWaiting(true);
+        scheduleLoginPoll();
+    }
+}
+
+function scheduleLoginPoll() {
+    if (loginPollTimer) clearTimeout(loginPollTimer);
+    loginPollTimer = setTimeout(() => { void pollLoginCallback(); }, 1500);
+}
+
+async function pollLoginCallback() {
+    const state = loginPollState;
+    if (!state) return;
+    if (Date.now() > loginPollDeadline) {
+        stopLoginPolling();
+        setLoginWaiting(false);
+        return;
+    }
+    try {
+        const resp = await fetch('/account/login-poll?state=' + encodeURIComponent(state));
+        const data = await resp.json().catch(() => ({}));
+        if (data && data.status === 'done' && data.api_key) {
+            stopLoginPolling();
+            setLoginWaiting(false);
+            await onLoginSuccess(data);
+            return;
+        }
+        if (data && data.status === 'error') {
+            stopLoginPolling();
+            setLoginWaiting(false);
+            if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
+            return;
+        }
+    } catch (e) {
+        // transient — keep polling
+    }
+    if (loginPollState === state) scheduleLoginPoll();
 }
 
 function closeLogin() {
@@ -6238,25 +6347,15 @@ if (loginUserInput) {
 if (loginCodeLink) {
     loginCodeLink.addEventListener('click', (event) => {
         event.preventDefault();
-        const base = (relayServerUrl || '').replace(/\/+$/, '');
-        if (!base) {
-            showToast(t('server_not_configured'), true);
-            return;
-        }
-        const url = base + '/app/#/login?next=' + encodeURIComponent('/login-code');
-        // In the desktop webview, window.open hands the URL to the system browser
-        // and returns null. Do NOT fall back to location.href — that would navigate
-        // the app's own window. If opening is blocked, copy the URL instead.
-        try {
-            window.open(url, '_blank', 'noopener,noreferrer');
-        } catch (e) {
-            if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
-            showToast(url);
-        }
+        void startHostedLogin();
     });
 }
+const loginManualToggle = document.getElementById('loginManualToggle');
+if (loginManualToggle) {
+    loginManualToggle.addEventListener('click', () => setLoginManualShown(!loginManualShown));
+}
 if (loginModeBackButton) {
-    loginModeBackButton.addEventListener('click', () => returnToModeChooser());
+    loginModeBackButton.addEventListener('click', () => switchToOwnKeyMode());
 }
 if (loginCloseButton) {
     loginCloseButton.addEventListener('click', () => closeLogin());

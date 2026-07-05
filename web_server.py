@@ -4,6 +4,8 @@ Web服务器模块 - 处理HTTP和WebSocket连接
 import json
 import asyncio
 import os
+import secrets
+import time
 import aiohttp
 from aiohttp import web
 from aiohttp import WSMsgType
@@ -70,6 +72,11 @@ class WebServer:
         # Lazy aiohttp client for proxying REST calls to the subtitle-server.
         self._http = None
         self.use_bundled_cjk_fonts = False
+        # Pending hosted-login handshakes keyed by a one-time state nonce. Each
+        # entry: {"status": "pending"|"done"|"error", "result": {...}, "ts": float}.
+        # The web page bounces the login code back to /account/login-callback and
+        # the frontend polls /account/login-poll to complete sign-in.
+        self._login_states = {}
 
     def set_window_on_top_callback(self, callback):
         self.window_on_top_callback = callback
@@ -598,6 +605,121 @@ class WebServer:
             self.provider_manager.relay_token = str(data["api_key"]).strip()
             config.set_relay_token(self.provider_manager.relay_token)
         return web.json_response(data, status=status)
+
+    def _prune_login_states(self):
+        """Drop login handshakes older than 10 minutes."""
+        cutoff = time.monotonic() - 600
+        stale = [k for k, v in self._login_states.items() if v.get("ts", 0) < cutoff]
+        for k in stale:
+            self._login_states.pop(k, None)
+
+    async def account_login_begin_handler(self, request):
+        """Start a hosted-login handshake: mint a one-time state nonce that the
+        web page must echo back via /account/login-callback. Prevents an
+        arbitrary web page from injecting an unsolicited login code."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        self._prune_login_states()
+        state = secrets.token_urlsafe(24)
+        self._login_states[state] = {"status": "pending", "result": None, "ts": time.monotonic()}
+        return web.json_response({"state": state})
+
+    async def account_login_callback_handler(self, request):
+        """Landing point the web page redirects the browser to after VRChat
+        verification. Exchanges the one-time login code and stashes the result
+        for the polling frontend, then shows a friendly close-me page."""
+        if not self._is_loopback_request(request):
+            return web.Response(text="localhost only", status=403)
+        self._prune_login_states()
+        state = str(request.query.get("state") or "").strip()
+        code = str(request.query.get("code") or "").strip()
+        entry = self._login_states.get(state)
+        lang = "zh" if str(request.headers.get("Accept-Language", "")).lower().startswith("zh") else "en"
+        if not entry or entry.get("status") == "done":
+            return web.Response(text=self._login_callback_page(lang, False), content_type="text/html")
+        if not code:
+            entry["status"] = "error"
+            entry["result"] = {"message": "Missing code"}
+            entry["ts"] = time.monotonic()
+            return web.Response(text=self._login_callback_page(lang, False), content_type="text/html")
+        status, data = await self._server_request("POST", "/auth/login-code", json_body={"code": code})
+        if (
+            status == 200 and isinstance(data, dict)
+            and data.get("success") and data.get("api_key")
+        ):
+            if self.provider_manager is not None:
+                self.provider_manager.relay_token = str(data["api_key"]).strip()
+                config.set_relay_token(self.provider_manager.relay_token)
+            entry["status"] = "done"
+            entry["result"] = {
+                "api_key": data.get("api_key"),
+                "display_name": data.get("display_name"),
+                "trust_rank": data.get("trust_rank"),
+            }
+            entry["ts"] = time.monotonic()
+            return web.Response(
+                text=self._login_callback_page(lang, True, self._dashboard_url()),
+                content_type="text/html",
+            )
+        entry["status"] = "error"
+        entry["result"] = data if isinstance(data, dict) else {"message": "Login failed"}
+        entry["ts"] = time.monotonic()
+        return web.Response(text=self._login_callback_page(lang, False), content_type="text/html")
+
+    async def account_login_poll_handler(self, request):
+        """Frontend polls this after opening the web page; returns the handshake
+        result once the browser has bounced the login code back."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        state = str(request.query.get("state") or "").strip()
+        entry = self._login_states.get(state)
+        if not entry:
+            return web.json_response({"status": "unknown"})
+        if entry.get("status") == "done":
+            result = entry.get("result") or {}
+            self._login_states.pop(state, None)
+            return web.json_response({"status": "done", **result})
+        if entry.get("status") == "error":
+            result = entry.get("result") or {}
+            self._login_states.pop(state, None)
+            return web.json_response({"status": "error", **result})
+        return web.json_response({"status": "pending"})
+
+    @staticmethod
+    def _dashboard_url():
+        base = str(config.SUBTITLE_SERVER_URL or "").rstrip("/")
+        return (base + "/app/#/") if base else ""
+
+    @staticmethod
+    def _login_callback_page(lang, ok, dashboard_url=""):
+        if lang == "zh":
+            title = "登录成功" if ok else "登录未完成"
+            body = "已完成登录，请返回应用。可以关闭此页面。" if ok else "登录未能完成，请返回应用重试。"
+            dash = "进入用户管理页"
+        else:
+            title = "Signed in" if ok else "Sign-in incomplete"
+            body = "You're signed in. Return to the app; you can close this page." if ok else "Sign-in did not complete. Return to the app and try again."
+            dash = "Open account dashboard"
+        button = ""
+        if ok and dashboard_url:
+            button = (
+                f"<a href=\"{dashboard_url}\" "
+                "style=\"display:inline-block;margin-top:1.25rem;padding:.5rem 1rem;"
+                "border:1px solid #3a3f4b;border-radius:8px;color:#e8eaed;"
+                f"text-decoration:none;font-size:.9rem\">{dash}</a>"
+            )
+        return (
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            f"<title>{title}</title></head>"
+            "<body style=\"font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;"
+            "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;"
+            "background:#0f1115;color:#e8eaed;text-align:center\">"
+            f"<div><h1 style=\"font-size:1.25rem;margin:0 0 .5rem\">{title}</h1>"
+            f"<p style=\"opacity:.75;margin:0\">{body}</p>{button}</div></body></html>"
+        )
 
     async def account_registration_info_handler(self, request):
         if not config.RELAY_AVAILABLE:
@@ -1430,6 +1552,9 @@ class WebServer:
         app.router.add_post('/use-env', self.use_env_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
         app.router.add_post('/account/login-code', self.account_login_code_handler)
+        app.router.add_post('/account/login-begin', self.account_login_begin_handler)
+        app.router.add_get('/account/login-callback', self.account_login_callback_handler)
+        app.router.add_get('/account/login-poll', self.account_login_poll_handler)
         app.router.add_get('/account/registration-info', self.account_registration_info_handler)
         app.router.add_get('/account/status', self.account_status_handler)
         app.router.add_get('/account/balance', self.account_balance_handler)
