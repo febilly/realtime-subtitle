@@ -946,6 +946,10 @@ class OverlayWindow(QWidget):
         super().__init__()
         self.server_url = server_url.rstrip("/")
         self.model = SubtitleModel()
+        # LLM 译文更新（改进 / 混合 / 准确）：按 sentence_id 覆盖 STT 译文。
+        # 悬浮窗只展示最终译文，不做网页版的绿色（已改进）/灰色（临时译文）标注。
+        self._refined_by_sid: dict[str, str] = {}
+        self._refined_lang_by_sid: dict[str, str] = {}
         self.settings = QSettings("RealtimeSubtitle", "Overlay")
 
         self.font_size = int(self.settings.value("font_size", 20))
@@ -1377,8 +1381,17 @@ class OverlayWindow(QWidget):
         if mtype == "update":
             self.model.apply_update(data)
             self._render()
+        elif mtype == "refine_result":
+            self._apply_refine_result(data)
         elif mtype == "clear":
-            self.model.clear(preserve_existing=bool(data.get("preserve_existing")))
+            preserve = bool(data.get("preserve_existing"))
+            self.model.clear(preserve_existing=preserve)
+            # 完整清空（重启且不保留）时，旧句子的译文覆盖已失效——丢弃以免占用内存；
+            # 保留模式下句子及其 sentence_id 仍在，覆盖需一并保留。
+            if not preserve:
+                self._refined_by_sid.clear()
+                self._refined_lang_by_sid.clear()
+            self._last_html = None
             self._render()
         elif mtype == "overlay_visibility":
             visible = bool(data.get("visible"))
@@ -1396,6 +1409,56 @@ class OverlayWindow(QWidget):
                 self.use_bundled_cjk_fonts = enabled
                 self._last_html = None
                 self._render()
+
+    def _apply_refine_result(self, data: dict):
+        """应用一条 LLM 译文更新，按 sentence_id 覆盖对应句子的 STT 译文。
+
+        no_change=True 表示 LLM 认为原译文已够好，保持不变；否则用 refined_translation
+        覆盖。准确模式下 STT 无内置译文，这里的覆盖即该句唯一的译文来源。
+        """
+        sid = data.get("sentence_id")
+        if not sid:
+            return
+        sid = str(sid)
+        if data.get("no_change"):
+            return
+        refined = (data.get("refined_translation") or "").strip()
+        if not refined:
+            return
+        self._refined_by_sid[sid] = refined
+        target_lang = (data.get("target_lang") or "").strip()
+        if target_lang:
+            self._refined_lang_by_sid[sid] = target_lang
+        self._trim_refine_maps()
+        # 覆盖变化必然改变 HTML；清掉缓存强制重渲染。
+        self._last_html = None
+        self._render()
+
+    def _trim_refine_maps(self, cap: int = 200):
+        for m in (self._refined_by_sid, self._refined_lang_by_sid):
+            while len(m) > cap:
+                m.pop(next(iter(m)))  # dict 保序：淘汰最旧的一条
+
+    @staticmethod
+    def _sentence_sid(sentence: dict):
+        for key in ("translation", "original"):
+            for tk in sentence.get(key) or []:
+                sid = tk.get("llm_sentence_id")
+                if sid:
+                    return str(sid)
+        return None
+
+    def _sentence_translation_override(self, sentence: dict):
+        """若该句有 LLM 译文更新，返回 (text, lang)，否则 None。"""
+        sid = self._sentence_sid(sentence)
+        if not sid:
+            return None
+        text = self._refined_by_sid.get(sid)
+        if not text:
+            return None
+        # 改进 / 混合：沿用 STT 译文行的语言标签；准确模式无 STT 译文，退回 LLM 目标语言。
+        lang = sentence.get("translation_lang") or self._refined_lang_by_sid.get(sid)
+        return text, lang
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
@@ -1485,11 +1548,18 @@ class OverlayWindow(QWidget):
                 group = []
                 orig = sentence["original"] if show_orig else []
                 trans = sentence["translation"] if show_trans else []
+                # LLM 译文更新优先于 STT 内置译文；准确模式下 trans 为空，靠它补出译文行。
+                override = self._sentence_translation_override(sentence) if show_trans else None
+                has_trans = bool(trans) or override is not None
                 if orig:
-                    mb = pair_mb if trans else sent_mb
+                    mb = pair_mb if has_trans else sent_mb
                     group.append(self._line_html(
                         orig, sentence["original_lang"], fs, mb, tag_fs))
-                if trans:
+                if override is not None:
+                    text, lang = override
+                    group.append(self._line_html(
+                        [{"text": text, "is_final": True}], lang, fs, sent_mb, tag_fs))
+                elif trans:
                     group.append(self._line_html(
                         trans, sentence["translation_lang"], fs, sent_mb, tag_fs))
                 group = [line for line in group if line]

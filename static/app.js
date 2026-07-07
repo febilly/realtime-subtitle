@@ -327,6 +327,10 @@ const speakerLabelsSettingField = document.getElementById('speakerLabelsSettingF
 const speakerLabelsPickerHost = document.getElementById('speakerLabelsPicker');
 const segmentModeSettingField = document.getElementById('segmentModeSettingField');
 const segmentModePickerHost = document.getElementById('segmentModePicker');
+const translationModeSection = document.getElementById('translationModeSection');
+const translationModeSettingField = document.getElementById('translationModeSettingField');
+const translationModePickerHost = document.getElementById('translationModePicker');
+const translationModeHintEl = document.getElementById('translationModeHint');
 const toastEl = document.getElementById('toast');
 
 const SONIOX_REGIONS = ['us', 'eu', 'jp'];
@@ -336,6 +340,7 @@ let microphoneDevicePickerEl = null;
 let autoRestartPickerEl = null;
 let speakerLabelsPickerEl = null;
 let segmentModePickerEl = null;
+let translationModePickerEl = null;
 let bundledCjkFontPickerEl = null;
 let microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
 
@@ -420,6 +425,9 @@ let sessionCostTimer = null;
 let sessionAccumMs = 0;
 let sessionRunSince = null;
 let pricePerSecond = 0;
+// STT billing factor for soniox 准确 mode (built-in translation off), delivered by
+// the server via /ui-config. 1 = no discount; applied to the live cost estimate.
+let sonioxNoTranslationFactor = 1;
 let lastBalanceData = null; // last /account/balance payload (raw), for the account panel
 let balanceBaseline = null; // balance payload the live in-flight estimate is subtracted from
 // Maps backend relay close-code tags to localized message keys.
@@ -532,6 +540,12 @@ function hasExplicitConnectionMode(settings) {
     if (settings.modeChosen === true) {
         return true;
     }
+    // A saved direct/own-key mode is also an explicit choice. Older settings may
+    // not have modeChosen yet; do not reinterpret them as hosted mode just
+    // because a subtitle-server URL is configured.
+    if (settings.mode === 'direct') {
+        return true;
+    }
     // Backwards-compatible migration for users who already completed hosted
     // login before this flag existed.
     return settings.mode === 'relay' && !!settings.token;
@@ -630,12 +644,59 @@ if (!llmRefineMode) {
 let llmRefineEnabled = llmRefineMode !== 'off';
 let llmTranslateHideAfterSequence = llmRefineMode === 'translate' ? 0 : null;
 
+// Unified 翻译模式 (fast/accurate/hybrid/refine). This is the single control in
+// Settings; it drives llmRefineMode for display and is pushed to the backend via
+// /translation-mode (which owns soniox-translation suppression + billing factor).
+const TRANSLATION_UI_MODE_STORAGE_KEY = 'translationUiMode';
+const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid', 'refine'];
+const TRANSLATION_UI_MODE_TO_LLM = { fast: 'off', accurate: 'translate', hybrid: 'translate', refine: 'refine' };
+let refineModeAvailable = false; // whether 改进 is offered (backend-advertised)
+let translationModeSynced = false; // pushed the stored mode to the backend once
+function getStoredTranslationUiMode() {
+    try {
+        const raw = localStorage.getItem(TRANSLATION_UI_MODE_STORAGE_KEY);
+        if (raw && TRANSLATION_UI_MODES.includes(raw)) return raw;
+    } catch (e) { /* ignore */ }
+    if (llmRefineMode === 'refine') return 'refine';
+    if (llmRefineMode === 'translate') return 'hybrid';
+    // Default 翻译模式 with no stored preference: 混合 (hybrid). Downgraded to
+    // 'fast' by the caller when LLM/translate isn't available for the active mode.
+    return 'hybrid';
+}
+let translationUiMode = getStoredTranslationUiMode();
+// 混合 mode: token-sequence threshold at/after which STT translations are shown
+// muted (gray) as provisional, awaiting their LLM replacement. Sentences from
+// before switching into 混合 are never grayed (no LLM result is coming for them).
+// null = not in 混合. See setTranslationUiMode / clearSubtitleState.
+let hybridInterimAfterSequence = translationUiMode === 'hybrid' ? 0 : null;
+// Per-request hosted LLM cost reported by the relay, accumulated for this session.
+let sessionLlmCost = 0;
+let sessionHadLlmCost = false;
+
 // 存储后端改进结果
 const backendRefinedResults = new Map();
 const backendRefinedResultsBySentenceId = new Map();
 // LLM 直译模式下覆盖 Soniox 译文
 const llmTranslationOverrides = new Map();
 const llmTranslationOverridesBySentenceId = new Map();
+// 准确 mode: language of the LLM translation per sentence (from refine_result),
+// used to tag the synthesized translation line (no translation tokens exist).
+const llmTranslationLangBySentenceId = new Map();
+// 准确 mode speculative preview: sentences already complete in the not-yet-final
+// text are translated ahead of finalization (backend spec_translation frames).
+// Keyed by exact sentence text so revised interim readings simply miss the
+// cache; entries survive flip-flops, letting a reverted reading hit instantly.
+const specTranslations = new Map(); // source text -> { text, lang }
+const specPendingSources = new Map(); // source text -> target lang (in flight)
+const SPEC_MAP_MAX = 80;
+function trimSpecMaps() {
+    while (specTranslations.size > SPEC_MAP_MAX) {
+        specTranslations.delete(specTranslations.keys().next().value);
+    }
+    while (specPendingSources.size > SPEC_MAP_MAX) {
+        specPendingSources.delete(specPendingSources.keys().next().value);
+    }
+}
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -998,12 +1059,17 @@ function getSegmentModes() {
 }
 
 function updateTranslationRefineButton() {
+    // The main-UI LLM toggle has been replaced by the Settings "Translation mode"
+    // control, so the button is always hidden now.
+    if (translationRefineButton) {
+        translationRefineButton.style.display = 'none';
+    }
+    return;
+    // eslint-disable-next-line no-unreachable
     if (!translationRefineButton || !translationRefineIcon) {
         return;
     }
 
-    // 没有配置 LLM key/base_url 时，隐藏开关。
-    // 注意：不要覆盖用户保存的开关偏好（localStorage），否则会导致每次都需要手动重新打开。
     if (!llmRefineAvailable || lockManualControls) {
         translationRefineButton.style.display = 'none';
         return;
@@ -1257,6 +1323,31 @@ async function fetchUiConfig() {
         }
         llmRefineShowDiff = !!data.llm_refine_show_diff;
         llmRefineShowDeletions = !!data.llm_refine_show_deletions;
+        refineModeAvailable = !!data.refine_mode_available;
+        if (data && Number.isFinite(Number(data.soniox_no_translation_factor)) && Number(data.soniox_no_translation_factor) > 0) {
+            sonioxNoTranslationFactor = Math.min(1, Number(data.soniox_no_translation_factor));
+        }
+        // 翻译模式: localStorage is the source of truth, but downgrade a stored
+        // mode not offered here (e.g. 改进 in relay mode, or any when LLM is off).
+        if (!llmRefineAvailable || !availableTranslationModes().includes(translationUiMode)) {
+            if (!llmRefineAvailable) translationUiMode = 'fast';
+            else if (!availableTranslationModes().includes(translationUiMode)) translationUiMode = 'fast';
+        }
+        renderTranslationModePicker();
+        // Backend restarted (new boot id): its in-memory translation mode reset
+        // to the default, so the stored mode must be re-pushed.
+        if (typeof data.boot_id === 'string' && backendBootId && data.boot_id !== backendBootId) {
+            translationModeSynced = false;
+        }
+        // Push the stored mode to the backend session once per backend boot.
+        // restartIfNeeded: the boot stream opens before this push lands, so 准确
+        // needs a reopen to actually run soniox with translation disabled (and
+        // bill at the reduced factor); needs_restart is false when nothing
+        // changed, so ordinary page reloads never trigger a restart here.
+        if (llmRefineAvailable && !translationModeSynced) {
+            translationModeSynced = true;
+            void setTranslationUiMode(translationUiMode, { restartIfNeeded: true });
+        }
         if (data && typeof data.llm_refine_default_mode === 'string') {
             defaultLlmRefineMode = normalizeLlmRefineMode(data.llm_refine_default_mode);
         }
@@ -1431,6 +1522,14 @@ async function fetchLlmRefineStatus() {
         llmTranslateHideAfterSequence = null;
         updateTranslationRefineButton();
         enforceTranslateSegmentMode();
+        return;
+    }
+
+    // The unified 翻译模式 sync (fetchUiConfig -> setTranslationUiMode) owns
+    // pushing the stored mode now; a second push through the legacy /llm-refine
+    // endpoint would race it. Keep this endpoint only for locked (env-driven)
+    // setups where the unified sync is skipped.
+    if (!lockManualControls) {
         return;
     }
 
@@ -1743,6 +1842,13 @@ function getDisplayTranslationForSentence(sentence, source, originalTranslation)
 }
 
 function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
+    // 混合 (hybrid) must show the STT API's built-in translation immediately and
+    // then let the LLM result replace it, so it must NOT be hidden here. Only
+    // 准确 (accurate) — which runs the STT API with its translation disabled, so
+    // there's normally nothing to show — suppresses any stray built-in tokens.
+    if (translationUiMode !== 'accurate') {
+        return false;
+    }
     if (!isLlmTranslateMode()) {
         return false;
     }
@@ -1752,7 +1858,14 @@ function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
     if (hasRefined) {
         return false;
     }
-    if (llmTranslateHideAfterSequence === null) {
+    return sentenceHasTranslationTokenAtOrAfter(sentence, llmTranslateHideAfterSequence);
+}
+
+// True when any of the sentence's translation tokens carries a sequence index
+// at or after `threshold`, i.e. it was produced after a mode switch marked at
+// that sequence. `threshold === null` means "no marker", so nothing matches.
+function sentenceHasTranslationTokenAtOrAfter(sentence, threshold) {
+    if (threshold === null || threshold === undefined) {
         return false;
     }
     if (!sentence || !Array.isArray(sentence.translationTokens)) {
@@ -1760,7 +1873,7 @@ function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
     }
     return sentence.translationTokens.some((token) => {
         const seq = token && typeof token._sequenceIndex === 'number' ? token._sequenceIndex : null;
-        return seq !== null && seq >= llmTranslateHideAfterSequence;
+        return seq !== null && seq >= threshold;
     });
 }
 
@@ -1772,22 +1885,33 @@ function handleBackendRefineResult(data) {
     const originalTranslation = (data.original_translation || '').toString().trim();
     const refinedTranslation = (data.refined_translation || '').toString().trim();
     const sentenceId = data.sentence_id ? String(data.sentence_id).trim() : '';
+    const targetLang = (data.target_lang || '').toString().trim().toLowerCase();
     const noChange = !!data.no_change;
 
-    if (!source || !originalTranslation) {
+    // original_translation is empty in 准确 (accurate) mode — soniox's built-in
+    // translation is disabled — so only the source is required here.
+    if (!source) {
         return;
     }
+    // The sentence is finalized now; its speculative-pending marker (if any)
+    // is obsolete — the synthesized line takes over from here.
+    specPendingSources.delete(source);
 
     if (!noChange && refinedTranslation) {
-        const key = `${source}||${originalTranslation}`;
-        backendRefinedResults.set(key, refinedTranslation);
+        if (originalTranslation) {
+            const key = `${source}||${originalTranslation}`;
+            backendRefinedResults.set(key, refinedTranslation);
+            if (isLlmTranslateMode()) {
+                llmTranslationOverrides.set(key, refinedTranslation);
+            }
+        }
         if (sentenceId) {
             backendRefinedResultsBySentenceId.set(sentenceId, refinedTranslation);
-        }
-        if (isLlmTranslateMode()) {
-            llmTranslationOverrides.set(key, refinedTranslation);
-            if (sentenceId) {
+            if (isLlmTranslateMode()) {
                 llmTranslationOverridesBySentenceId.set(sentenceId, refinedTranslation);
+                if (targetLang) {
+                    llmTranslationLangBySentenceId.set(sentenceId, targetLang);
+                }
             }
         }
     }
@@ -2900,6 +3024,126 @@ function renderBundledCjkFontPicker() {
     }
 }
 
+function translationModeLabel(mode) {
+    return t('translation_mode_' + mode) || mode;
+}
+
+function availableTranslationModes() {
+    const modes = ['fast', 'accurate', 'hybrid'];
+    if (refineModeAvailable) modes.push('refine');
+    return modes;
+}
+
+function translationModeCostHint(mode) {
+    // 快速(fast) uses no LLM, so no hint. Every other mode (准确/混合/改进) calls
+    // the LLM and shows the same note.
+    if (mode === 'fast') return '';
+    return t('translation_cost_llm');
+}
+
+function updateTranslationModeHint() {
+    if (!translationModeHintEl) return;
+    // Preview the currently-highlighted (possibly unsaved) dropdown option so the
+    // hint tracks the selection; fall back to the applied mode before the picker
+    // is built.
+    const mode = (translationModePickerEl && typeof translationModePickerEl.value === 'string')
+        ? translationModePickerEl.value
+        : translationUiMode;
+    const hint = translationModeCostHint(mode);
+    if (hint) {
+        translationModeHintEl.textContent = hint;
+        translationModeHintEl.hidden = false;
+    } else {
+        translationModeHintEl.textContent = '';
+        translationModeHintEl.hidden = true;
+    }
+}
+
+function renderTranslationModePicker() {
+    const shown = llmRefineAvailable && !lockManualControls;
+    // The mode field now lives in its own section (above 账户); hide the whole
+    // section when unavailable so it doesn't leave an empty flex gap.
+    if (translationModeSection) {
+        translationModeSection.hidden = !shown;
+    }
+    if (translationModeSettingField) {
+        translationModeSettingField.hidden = !shown;
+    }
+    if (!translationModePickerHost) return;
+    translationModePickerHost.innerHTML = '';
+    if (!shown) {
+        translationModePickerEl = null;
+        if (translationModeHintEl) translationModeHintEl.hidden = true;
+        return;
+    }
+    const modes = availableTranslationModes();
+    let selected = translationUiMode;
+    if (!modes.includes(selected)) selected = 'fast';
+    translationModePickerEl = buildCustomSelect(modes.map((mode) => ({
+        value: mode,
+        label: translationModeLabel(mode),
+    })), {
+        value: selected,
+        // Don't apply on change — like every other setting, 翻译模式 is applied
+        // only when the user clicks 保存 (applyRuntimeControlSettings). Here we
+        // just preview the cost hint for the highlighted option.
+        onChange: () => { updateTranslationModeHint(); },
+    });
+    translationModePickerHost.appendChild(translationModePickerEl);
+    updateTranslationModeHint();
+}
+
+// Record the token-sequence boundary when 混合 mode is entered so only STT
+// translations arriving afterwards are shown as provisional (gray). Switching
+// away clears the marker. Called on both the forward apply and the error rollback.
+function noteHybridInterimBoundary(mode, previous) {
+    if (mode === 'hybrid') {
+        if (previous !== 'hybrid') {
+            hybridInterimAfterSequence = tokenSequenceCounter + 1;
+        }
+    } else {
+        hybridInterimAfterSequence = null;
+    }
+}
+
+async function setTranslationUiMode(mode, options = {}) {
+    const normalized = TRANSLATION_UI_MODES.includes(mode) ? mode : 'fast';
+    const previous = translationUiMode;
+    translationUiMode = normalized;
+    noteHybridInterimBoundary(normalized, previous);
+    try { localStorage.setItem(TRANSLATION_UI_MODE_STORAGE_KEY, normalized); } catch (e) { /* ignore */ }
+    // Keep local display state (llmRefineMode) in sync without hitting the legacy
+    // /llm-refine endpoint.
+    applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[normalized], { persist: true });
+    updateTranslationModeHint();
+    if (options.silent) return true;
+    try {
+        const resp = await fetch('/translation-mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: normalized }),
+        });
+        if (!resp.ok) {
+            throw new Error(`translation-mode returned ${resp.status}`);
+        }
+        const data = await resp.json().catch(() => ({}));
+        if (data && data.needs_restart && options.restartIfNeeded) {
+            // Reopen the stream so soniox translation on/off takes effect.
+            void restartRecognition({ auto: true });
+        }
+        return true;
+    } catch (e) {
+        console.warn('Failed to set translation mode:', e);
+        // Roll back so the UI doesn't claim a mode the backend never applied.
+        translationUiMode = previous;
+        noteHybridInterimBoundary(previous, normalized);
+        try { localStorage.setItem(TRANSLATION_UI_MODE_STORAGE_KEY, previous); } catch (err) { /* ignore */ }
+        applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[previous], { persist: true });
+        renderTranslationModePicker();
+        return false;
+    }
+}
+
 function renderSegmentModePicker() {
     if (segmentModeSettingField) {
         segmentModeSettingField.hidden = !segmentModeSupported;
@@ -2954,6 +3198,19 @@ async function applyRuntimeControlSettings() {
         const ok = await setSegmentMode(requestedSegmentMode);
         if (!ok) {
             return { ok: false, message: t('backend_segment_mode_disabled') };
+        }
+    }
+
+    // 翻译模式: applied here on Save (not on dropdown change). setTranslationUiMode
+    // persists + pushes to the backend, and reopens the stream when soniox's
+    // built-in translation on/off changed (准确 toggled).
+    if (translationModePickerEl && typeof translationModePickerEl.value === 'string') {
+        const requestedMode = translationModePickerEl.value;
+        if (TRANSLATION_UI_MODES.includes(requestedMode) && requestedMode !== translationUiMode) {
+            const ok = await setTranslationUiMode(requestedMode, { restartIfNeeded: true });
+            if (!ok) {
+                return { ok: false, message: t('validation_error') };
+            }
         }
     }
 
@@ -3544,8 +3801,52 @@ function handleMessage(data) {
         }
         return;
     }
+    if (data.type === 'spec_translation_pending') {
+        const src = (data.source || '').toString().trim();
+        if (src) {
+            specPendingSources.set(src, ((data.target_lang || '') + '').trim().toLowerCase());
+            trimSpecMaps();
+            renderSubtitles();
+        }
+        return;
+    }
+    if (data.type === 'spec_translation') {
+        const src = (data.source || '').toString().trim();
+        const text = (data.translation || '').toString().trim();
+        if (src) {
+            specPendingSources.delete(src);
+        }
+        if (src && text) {
+            specTranslations.set(src, { text, lang: ((data.target_lang || '') + '').trim().toLowerCase() });
+            trimSpecMaps();
+        }
+        renderSubtitles();
+        return;
+    }
     if (data.type === 'refine_result') {
         handleBackendRefineResult(data);
+        return;
+    }
+    if (data.type === 'llm_cost') {
+        const credits = Number(data.credits);
+        if (Number.isFinite(credits) && credits > 0) {
+            sessionLlmCost += credits;
+            sessionHadLlmCost = true;
+            renderBalanceView();
+        }
+        return;
+    }
+    if (data.type === 'translation_mode_fallback') {
+        // Prepaid exhausted: the backend session dropped to fast mode. Push
+        // 'fast' through the normal path so localStorage AND the backend
+        // manager stay in sync (a later session rebuild must not resurrect the
+        // old mode); the session-side set is idempotent.
+        void setTranslationUiMode('fast', { restartIfNeeded: false });
+        renderTranslationModePicker();
+        showToast(t('translation_mode_fallback_toast'), true);
+        if (data.needs_restart) {
+            void restartRecognition({ auto: true });
+        }
         return;
     }
     if (data.type === 'segment_mode_changed') {
@@ -3618,6 +3919,24 @@ function handleMessage(data) {
         if (data.preserve_existing) {
             console.log('Finalizing pending subtitles before restart...');
             finalizeCurrentNonFinalTokens();
+            // The stream is reopening (e.g. 翻译模式 switched to 准确). Built-in
+            // translations hidden awaiting an LLM replacement may never get one
+            // (the old stream's LLM calls die with it) — reveal them instead of
+            // leaving a permanently empty translation line. Their override still
+            // applies if the LLM result does arrive late. The next assigned
+            // sequence index is exactly tokenSequenceCounter, so this reveals
+            // everything already displayed and hides anything newer.
+            if (llmTranslateHideAfterSequence !== null) {
+                llmTranslateHideAfterSequence = tokenSequenceCounter;
+                renderSubtitles();
+            }
+            // Same reasoning for 混合: STT translations already shown as provisional
+            // (gray) won't get their LLM replacement from the dying stream — reveal
+            // them as normal text and only gray translations from the new stream.
+            if (hybridInterimAfterSequence !== null) {
+                hybridInterimAfterSequence = tokenSequenceCounter;
+                renderSubtitles();
+            }
         } else {
             // 清空所有数据
             console.log('Clearing all subtitles...');
@@ -3764,6 +4083,35 @@ function getLangDir(langCode) {
 function getLanguageTag(language) {
     if (!language) return '';
     return `<span class="language-tag">${language.toUpperCase()}</span>`;
+}
+
+// Mirrors the backend's sentence-ending set / _split_into_sentence_lines so
+// the 准确-mode speculative preview keys match the backend's cache keys.
+const SENTENCE_ENDING_CHARS = new Set(['。', '！', '？', '.', '!', '?', '︒', '︕', '︖', '…']);
+
+function endsWithSentenceEnding(text) {
+    const value = (text || '').trim();
+    return !!value && SENTENCE_ENDING_CHARS.has(value[value.length - 1]);
+}
+
+// "甲。乙丙！丁" -> ["甲。", "乙丙！", "丁"]; a run of ending punctuation stays
+// attached to its sentence; the trailing partial (if any) is the last segment.
+function splitIntoSentenceSegments(text) {
+    const value = text || '';
+    if (!value) return [];
+    const lines = [];
+    let start = 0;
+    for (let i = 0; i < value.length; i++) {
+        if (SENTENCE_ENDING_CHARS.has(value[i])
+            && (i + 1 >= value.length || !SENTENCE_ENDING_CHARS.has(value[i + 1]))) {
+            lines.push(value.slice(start, i + 1));
+            start = i + 1;
+        }
+    }
+    if (start < value.length) {
+        lines.push(value.slice(start));
+    }
+    return lines.map((s) => s.trim()).filter(Boolean);
 }
 
 function wrapSubtitleLineBody(innerHtml, dir, lang) {
@@ -4033,12 +4381,17 @@ function clearSubtitleState() {
     backendRefinedResultsBySentenceId.clear();
     llmTranslationOverrides.clear();
     llmTranslationOverridesBySentenceId.clear();
+    llmTranslationLangBySentenceId.clear();
+    specTranslations.clear();
+    specPendingSources.clear();
 
     if (isLlmTranslateMode()) {
         llmTranslateHideAfterSequence = tokenSequenceCounter;
     } else {
         llmTranslateHideAfterSequence = null;
     }
+    // Fresh session: any 混合 STT translation from here on is provisional.
+    hybridInterimAfterSequence = translationUiMode === 'hybrid' ? tokenSequenceCounter : null;
 }
 
 function renderTokenSpan(token, useRubyHtml = null) {
@@ -4536,14 +4889,83 @@ function renderSubtitles() {
                         const html = escapeHtml(displayTranslation || '');
                         sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text" lang="${sentence.translationLang || ''}">${html}</span>`, translationDir, sentence.translationLang)}</div>`);
                     } else {
+                        // Raw Soniox translation with no LLM result yet.
+                        // 混合 only applies its provisional treatment to sentences
+                        // produced after switching into the mode; pre-existing ones
+                        // get no LLM result, so they render as normal final text.
+                        const afterHybridBoundary = translationUiMode === 'hybrid'
+                            && sentenceHasTranslationTokenAtOrAfter(sentence, hybridInterimAfterSequence);
+
+                        // 混合 mode should surface STT/Soniox's provisional
+                        // translation as soon as it arrives, including the first
+                        // finalized chunk of a sentence. The LLM result still
+                        // replaces it later via overrideTranslation above.
                         const lineContent = renderTokenSpansTrimmed(sentence.translationTokens, null, {
                             normalizeTranslationSpacing: true
                         });
-                        sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(lineContent, translationDir, sentence.translationLang)}</div>`);
+                        const lineClass = afterHybridBoundary
+                            ? 'subtitle-line subtitle-line--stt-interim'
+                            : 'subtitle-line';
+                        sentenceParts.push(`<div class="${lineClass}" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(lineContent, translationDir, sentence.translationLang)}</div>`);
                     }
                 } else {
                     const placeholderText = '&nbsp;';
                     sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text placeholder" lang="${sentence.translationLang || ''}">${placeholderText}</span>`, translationDir, sentence.translationLang)}</div>`);
+                }
+            } else if (showTranslation && translationUiMode === 'accurate' && isLlmTranslateMode()) {
+                // 准确 mode: soniox translation is disabled so there are no
+                // translation tokens; synthesize the translation line from the
+                // LLM result once it arrives (matched by sentence id).
+                const sentenceLlmId = getLlmSentenceId(sentence);
+                const overrideTranslation = sentenceLlmId
+                    ? (llmTranslationOverridesBySentenceId.get(sentenceLlmId) || '').trim()
+                    : '';
+                const srcText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
+                if (overrideTranslation && overrideTranslation !== srcText) {
+                    const lang = llmTranslationLangBySentenceId.get(sentenceLlmId) || currentTranslationTargetLang || '';
+                    const translationDir = getLangDir(lang);
+                    const langTag = getLanguageTag(lang);
+                    sentenceParts.push(`<div class="subtitle-line" lang="${lang}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text" lang="${lang}">${escapeHtml(overrideTranslation)}</span>`, translationDir, lang)}</div>`);
+                } else if (!overrideTranslation && srcText) {
+                    // LLM translation in progress or speculatively done for
+                    // this sentence: show the result — or a placeholder while
+                    // the call runs — until the finalized line replaces it.
+                    const parts = [];
+                    let pending = false;
+                    let lang = '';
+                    // Whole-sentence key first: the finalize-path pending
+                    // marker uses the full source (which may lack ending
+                    // punctuation when the sentence was endpoint-split).
+                    const whole = specTranslations.get(srcText);
+                    if (whole) {
+                        parts.push(whole.text);
+                        lang = whole.lang;
+                    } else if (specPendingSources.has(srcText)) {
+                        pending = true;
+                        lang = specPendingSources.get(srcText) || '';
+                    } else {
+                        // Per-segment speculative results from the non-final text.
+                        for (const seg of splitIntoSentenceSegments(srcText)) {
+                            if (!endsWithSentenceEnding(seg)) continue; // partial tail
+                            const hit = specTranslations.get(seg);
+                            if (hit) {
+                                parts.push(hit.text);
+                                if (!lang) lang = hit.lang;
+                            } else if (specPendingSources.has(seg)) {
+                                pending = true;
+                                if (!lang) lang = specPendingSources.get(seg) || '';
+                            }
+                        }
+                    }
+                    if (parts.length || pending) {
+                        lang = lang || currentTranslationTargetLang || '';
+                        const translationDir = getLangDir(lang);
+                        const langTag = getLanguageTag(lang);
+                        const body = parts.length
+                            ? `<span class="subtitle-text non-final" lang="${lang}">${escapeHtml(parts.join(''))}</span>`
+                            : `<span class="subtitle-text placeholder" lang="${lang}">&nbsp;</span>`;
+                        sentenceParts.push(`<div class="subtitle-line" lang="${lang}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(body, translationDir, lang)}</div>`);
+                    }
                 }
             }
 
@@ -4900,6 +5322,7 @@ function applySettingsI18n() {
     setText('autoRestartSettingLabel', 'auto_restart_setting');
     setText('speakerLabelsSettingLabel', 'speaker_labels_setting');
     setText('segmentModeSettingLabel', 'segment_mode_setting');
+    setText('translationModeSettingLabel', 'translation_mode_setting');
     setText('appearanceLabel', 'appearance');
     setText('bundledCjkFontLabel', 'bundled_cjk_font');
     setText('bundledCjkFontHint', 'bundled_cjk_font_hint');
@@ -5218,6 +5641,9 @@ function openSettings({ forced = false } = {}) {
     settingsForcedOpen = !!forced;
     applySettingsI18n();
     populateSettingsForm();
+    // Rebuild the 翻译模式 picker from the applied mode so an unsaved selection
+    // from a previously cancelled panel doesn't linger.
+    renderTranslationModePicker();
     if (relayAvailable && getConnectionMode() === 'relay') {
         void fetchRelayPricing();
         void fetchBalance();
@@ -5570,6 +5996,9 @@ async function syncProviderFromStorage() {
     if (mode === 'relay') {
         const server = loadServerSettings();
         const token = server.token || '';
+        if (!token) {
+            return;
+        }
         const modeMismatch = backendMode !== 'relay';
         const needTokenPush = token && !backendLoggedIn;
         if (!providerMismatch && !modeMismatch && !needTokenPush) {
@@ -6669,8 +7098,23 @@ function balanceTotalRemaining(data) {
 // a whole number of per-second ticks — the same value the "this session" meter
 // shows. This is the deduction we optimistically apply between server refreshes.
 // Only the deduction total is rounded, not the resulting balance.
+// Server bills soniox 准确 mode (built-in translation off) at a reduced STT rate;
+// mirror that factor so the live estimate matches. Only soniox+accurate; gemini
+// keeps its built-in translation on, and all other modes bill at the full rate.
+function sttRateMultiplier() {
+    if (translationProvider === 'soniox' && translationUiMode === 'accurate') {
+        const f = Number(sonioxNoTranslationFactor);
+        if (Number.isFinite(f) && f > 0) return f;
+    }
+    return 1;
+}
+
+function effectivePricePerSecond() {
+    return Number(pricePerSecond) * sttRateMultiplier();
+}
+
 function estimatedSessionCost() {
-    const p = Number(pricePerSecond);
+    const p = effectivePricePerSecond();
     if (!Number.isFinite(p) || p <= 0) return 0;
     const seconds = sessionElapsedMs() / 1000;
     return Math.max(0, Math.round(seconds) * p);
@@ -6714,7 +7158,13 @@ function applyEstimatedDeduction(data, estCost) {
 function currentBalanceView() {
     const base = balanceBaseline || lastBalanceData;
     if (!base) return null;
-    return applyEstimatedDeduction(base, estimatedSessionCost());
+    const view = applyEstimatedDeduction(base, estimatedSessionCost());
+    // Hosted LLM spend is prepaid-only; deduct it after the STT free->prepaid split.
+    if (view && sessionLlmCost > 0) {
+        const prepaid = Math.max(0, Number(view.prepaid_balance || 0));
+        view.prepaid_balance = Math.max(0, prepaid - sessionLlmCost);
+    }
+    return view;
 }
 
 function renderBalance(data) {
@@ -6796,8 +7246,23 @@ function formatSessionCost(cost, pricePerSecond) {
 }
 
 function updateSessionCostDisplay() {
-    const cost = (sessionElapsedMs() / 1000) * pricePerSecond;
-    setElText('sessionValue', formatSessionCost(cost, pricePerSecond));
+    const effRate = effectivePricePerSecond();
+    const sttCost = (sessionElapsedMs() / 1000) * effRate;
+    if (sessionHadLlmCost || sessionLlmCost > 0) {
+        // Hosted LLM spend this session -> break the cost down as
+        // "<total> (<stt> + LLM <llm>)". The STT figure keeps its existing
+        // rounding; the total is that rounded STT figure plus the LLM cost,
+        // shown to 2 decimals.
+        const sttStr = formatSessionCost(sttCost, effRate);
+        const sttRounded = Number(sttStr);
+        const llmCost = Math.max(0, sessionLlmCost);
+        const total = (Number.isFinite(sttRounded) ? sttRounded : 0) + llmCost;
+        const totalStr = (Math.round(total * 100) / 100).toFixed(2);
+        const llmStr = (Math.round(llmCost * 100) / 100).toFixed(2);
+        setElText('sessionValue', `${totalStr} (${sttStr} + LLM ${llmStr})`);
+    } else {
+        setElText('sessionValue', formatSessionCost(sttCost, effRate));
+    }
 }
 
 function sessionCostResume() {
@@ -6830,6 +7295,8 @@ function sessionCostPause() {
 function sessionCostReset() {
     sessionAccumMs = 0;
     sessionRunSince = null;
+    sessionLlmCost = 0;
+    sessionHadLlmCost = false;
     if (sessionCostTimer) {
         clearInterval(sessionCostTimer);
         sessionCostTimer = null;

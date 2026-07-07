@@ -469,6 +469,26 @@ body.dark-theme .llm-diff-ins {
     background: rgba(34, 197, 94, 0.28);
 }
 
+/* 混合 mode: STT's provisional translation, shown muted (gray) until the LLM
+   result replaces it. Readability is prioritized over how gray it looks. */
+.subtitle-line--stt-interim .subtitle-text,
+.subtitle-line--stt-interim .subtitle-text.non-final {
+    color: #6b7280;
+    -webkit-text-fill-color: #6b7280;
+}
+
+body.dark-theme .subtitle-line--stt-interim .subtitle-text,
+body.dark-theme .subtitle-line--stt-interim .subtitle-text.non-final {
+    color: #9ca3af;
+    -webkit-text-fill-color: #9ca3af;
+}
+
+body.chroma-theme .subtitle-line--stt-interim .subtitle-text,
+body.chroma-theme .subtitle-line--stt-interim .subtitle-text.non-final {
+    color: #9ca3af;
+    -webkit-text-fill-color: #9ca3af;
+}
+
 body.dark-theme .language-tag {
     background: #374151;
     color: #9ca3af;

@@ -135,12 +135,15 @@
             </fieldset>
             <p class="field-hint" id="providerDescription"></p>
 
+            <section class="auth-section" id="translationModeSection" hidden>
+                <div class="form-field" id="translationModeSettingField" hidden>
+                    <span id="translationModeSettingLabel">Translation mode</span>
+                    <div id="translationModePicker"></div>
+                </div>
+                <p class="field-hint" id="translationModeHint" hidden></p>
+            </section>
+
             <section class="auth-section" id="accountSection" hidden>
-                <div class="settings-section-label" id="accountLabel">Account</div>
-                <p class="field-hint" id="accountServerHint"></p>
-                <p class="field-hint" id="accountIdentityHint"></p>
-                <p class="field-hint" id="accountBalanceHint"></p>
-                <div class="account-free-pools" id="accountFreePools"></div>
                 <label class="form-field" for="redeemInput">
                     <span id="redeemLabel">Redeem code</span>
                     <div class="redeem-row">
@@ -159,6 +162,11 @@
                     <a id="purchaseCreditsLink" href="#" target="_blank" rel="noopener noreferrer">Click here to get more Credits</a>
                 </p>
                 <p class="field-hint" id="firstRedeemBonusHint" hidden></p>
+                <div class="settings-section-label" id="accountLabel">Account</div>
+                <p class="field-hint" id="accountServerHint"></p>
+                <p class="field-hint" id="accountIdentityHint"></p>
+                <p class="field-hint" id="accountBalanceHint"></p>
+                <div class="account-free-pools" id="accountFreePools"></div>
                 <div class="account-actions">
                     <button class="secondary-button" id="copyInviteButton" type="button">Copy invite link</button>
                     <button class="secondary-button" id="openUserWebButton" type="button">Open user web</button>
