@@ -53,6 +53,7 @@ from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
+from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,18 @@ STREAM_ROLLOVER_FORCE_GUARD_SECONDS = 2.0
 STREAM_ROLLOVER_SILENCE_HOLD_SECONDS = 0.5
 STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT = 8
 SONIOX_INTERNAL_TOKEN_TEXTS = {"<end>", "<fin>"}
+
+# 准确 (accurate) mode speculative translation: a sentence that is already
+# complete in the not-yet-final text is sent to the LLM ahead of finalization,
+# so the translation is ready (and shown as a preview) seconds earlier.
+# Interim text rarely changes, so the first candidate fires IMMEDIATELY (zero
+# added latency); the cooldown applies AFTER a fire — a revised reading that
+# appears during the cooldown fires only once it expires and the reading is
+# still present, so flip-flopping interim results can't spam requests. Results
+# are cached so finalization reuses them without a second billed call.
+SPEC_TRANSLATE_COOLDOWN_SECONDS = 1.0
+SPEC_TRANSLATE_CACHE_MAX = 64
+SPEC_TRANSLATE_MAX_INFLIGHT = 3
 
 
 class _RealtimeSilenceSender:
@@ -217,6 +230,19 @@ class SonioxSession:
             default_mode = "refine" if bool(LLM_REFINE_DEFAULT_ENABLED) else "off"
         self._llm_refine_mode = default_mode
         self._osc_send_text_mode = str(OSC_SEND_TEXT_MODE or "smart").strip().lower()
+        # 准确 (accurate) mode: soniox runs STT-only and the LLM does the
+        # translation, so its built-in translation is suppressed.
+        self._suppress_soniox_translation = False
+        # Speculative translation state (see SPEC_TRANSLATE_* constants):
+        # monotonic time of the last fire (post-fire cooldown), in-flight
+        # text -> concurrent Future, and a small LRU text -> result.
+        self._spec_last_fired_at = 0.0
+        self._spec_inflight: dict[str, object] = {}
+        self._spec_cache: dict[str, str] = {}
+        # Hosted (relay) LLM transport: LLM calls ride the STT relay socket.
+        self._hosted_llm = HostedLlmTransport()
+        self._hosted_llm.on_credits = self._on_hosted_llm_credits
+        self._hosted_llm.on_disabled = self._on_hosted_llm_disabled
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -278,6 +304,9 @@ class SonioxSession:
         self._llm_sentence_counter = 0
         self._refine_context_history.clear()
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
+        self._spec_last_fired_at = 0.0
+        self._spec_inflight.clear()
+        self._spec_cache.clear()
         self._reset_osc_live_state()
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
@@ -612,12 +641,20 @@ class SonioxSession:
         translation_status = token.get("translation_status", "original")
 
         if speaker not in self._sentence_buffers:
+            # Assign the sentence id when the buffer opens, not at finalization:
+            # in interleaved punctuation mode the outgoing token copies are
+            # minified before finalization runs, and the frontend needs the id
+            # on those copies to match refine_result to the sentence (准确 mode
+            # has no translation text to fall back on).
+            self._llm_sentence_counter += 1
             self._sentence_buffers[speaker] = {
                 "original_tokens": [],
                 "translation_tokens": [],
+                "sentence_id": f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}",
             }
 
         buffer = self._sentence_buffers[speaker]
+        token["llm_sentence_id"] = buffer["sentence_id"]
 
         if translation_status == "translation":
             buffer["translation_tokens"].append(token)
@@ -710,6 +747,20 @@ class SonioxSession:
 
         return False
 
+    def _source_drives_segmentation(self, source_tokens: list[dict]) -> bool:
+        """Whether the source text itself drives segmentation / finalization.
+
+        True when there is no soniox translation to wait for:
+        - 准确 (accurate) mode: soniox's built-in translation is disabled and the
+          LLM translates from the source, so segmentation/finalization must key
+          off the source instead of translation tokens (which never arrive).
+        - or the speech is already in the target language (built-in translation
+          empty), the pre-existing source-as-output case.
+        """
+        if self._suppress_soniox_translation:
+            return True
+        return self._can_use_source_as_translation(source_tokens)
+
     def _select_osc_text(self, translation_text: str, source_text: str, source_tokens: list[dict]) -> str:
         mode = str(self._osc_send_text_mode or "smart").strip().lower()
         translation_value = normalize_east_asian_translation_spacing((translation_text or "").strip())
@@ -793,6 +844,114 @@ class SonioxSession:
             if speaker not in active_speakers:
                 self._osc_live_last_text_by_speaker.pop(speaker, None)
 
+    def _maybe_speculative_translate(self, non_final_tokens: list[dict]) -> None:
+        """准确 mode: fire the LLM for sentences already complete in the
+        not-yet-final text so the translation is ready (cached + previewed)
+        before soniox finalizes the tokens. Runs on the recv thread."""
+        if not self._suppress_soniox_translation:
+            return
+        if self._llm_refine_mode != "translate":
+            return
+        if not is_llm_refine_available() or not self.loop:
+            return
+
+        non_final_by_speaker: dict[str, list[dict]] = {}
+        for token in non_final_tokens or []:
+            text = token.get("text")
+            if text is None or self._is_internal_soniox_token(text):
+                continue
+            if token.get("translation_status") == "translation":
+                continue
+            speaker = str(token.get("speaker", "?"))
+            non_final_by_speaker.setdefault(speaker, []).append(token)
+
+        now = time.monotonic()
+        for speaker, tail in non_final_by_speaker.items():
+            buffer = self._sentence_buffers.get(speaker) or {}
+            tokens = list(buffer.get("original_tokens") or []) + tail
+            # Already in the target language: finalize won't translate either.
+            if self._can_use_source_as_translation(tokens):
+                continue
+            combined = self._join_token_texts(tokens)
+            if not combined:
+                continue
+            target = (
+                self._osc_translation_language_for_comparison(tokens)
+                or normalize_language_code(self.get_translation_target_lang())
+            )
+            for segment in self._split_into_sentence_lines(combined):
+                if not self._is_sentence_ending_punctuation(segment):
+                    continue  # trailing partial: not a sentence yet
+                key = segment.strip()
+                if not key or key in self._spec_cache or key in self._spec_inflight:
+                    continue
+                # Post-fire cooldown: the first candidate fires instantly; a
+                # revised reading appearing within the cooldown fires on a
+                # later tick, once the cooldown expired and it is still present
+                # (the wait doubles as its stability check).
+                if (now - self._spec_last_fired_at) < SPEC_TRANSLATE_COOLDOWN_SECONDS:
+                    continue
+                if len(self._spec_inflight) >= SPEC_TRANSLATE_MAX_INFLIGHT:
+                    continue
+                self._spec_last_fired_at = now
+                future = asyncio.run_coroutine_threadsafe(
+                    self._spec_translate(key, target), self.loop
+                )
+                if not future.done():
+                    self._spec_inflight[key] = future
+
+    async def _spec_translate(self, text: str, target_lang: str) -> None:
+        """One speculative LLM translation; broadcasts pending + result so the
+        frontend can show a placeholder immediately and backfill it."""
+        try:
+            await self.broadcast_callback({
+                "type": "spec_translation_pending",
+                "source": text,
+                "target_lang": target_lang,
+            })
+            result = await self._perform_translate(
+                text, self._get_dynamic_context_items(), target_lang=target_lang
+            )
+            translated = ""
+            if isinstance(result, dict) and result.get("status") == "ok":
+                translated = (result.get("translation") or "").strip()
+            if translated:
+                self._spec_cache_put(text, translated)
+                await self.broadcast_callback({
+                    "type": "spec_translation",
+                    "source": text,
+                    "translation": translated,
+                    "target_lang": target_lang,
+                })
+        except Exception as error:
+            print(f"Speculative translate error: {error}")
+        finally:
+            self._spec_inflight.pop(text, None)
+
+    def _spec_cache_put(self, key: str, value: str) -> None:
+        cache = self._spec_cache
+        cache.pop(key, None)
+        cache[key] = value
+        while len(cache) > SPEC_TRANSLATE_CACHE_MAX:
+            cache.pop(next(iter(cache)))
+
+    async def _spec_take_for(self, source: str) -> str:
+        """Speculative result for this exact source text, awaiting an in-flight
+        call so finalization never issues a duplicate (double-billed) request."""
+        key = (source or "").strip()
+        if not key:
+            return ""
+        future = self._spec_inflight.get(key)
+        if future is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.wrap_future(future),
+                    timeout=float(config.llm_timeout_seconds()) * 3 + 5,
+                )
+            except Exception:
+                pass
+        return self._spec_cache.get(key) or ""
+
     def _is_sentence_ending_punctuation(self, text: str) -> bool:
         """检测是否为句末标点"""
         value = (text or "").strip()
@@ -833,15 +992,19 @@ class SonioxSession:
         if not original_tokens:
             return False
 
-        if not translation_tokens and not self._can_use_source_as_translation(original_tokens):
+        if not translation_tokens and not self._source_drives_segmentation(original_tokens):
             return False
 
         self._sentence_buffers.pop(speaker, None)
         self._pending_endpoint_speakers.discard(speaker)
         self._reset_osc_live_state(speaker)
 
-        self._llm_sentence_counter += 1
-        sentence_id = f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
+        # The id was assigned when the buffer opened (_process_token_for_sentence);
+        # allocate one here only for legacy buffers without it.
+        sentence_id = buffer.get("sentence_id")
+        if not sentence_id:
+            self._llm_sentence_counter += 1
+            sentence_id = f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
         for token in original_tokens + translation_tokens:
             if isinstance(token, dict):
                 token["llm_sentence_id"] = sentence_id
@@ -872,16 +1035,39 @@ class SonioxSession:
 
         fallback_to_source = not translation and self._can_use_source_as_translation(original_tokens)
         display_translation = translation if translation else (source if fallback_to_source else "")
-        if not display_translation:
+
+        mode = self.get_llm_refine_mode()
+        llm_can_run = is_llm_refine_available() and mode != "off"
+        # refine improves an existing translation; translate (hybrid/accurate)
+        # can work from the source alone, so it runs even with no built-in
+        # translation (准确 mode, where soniox translation is disabled).
+        if mode == "refine" and not translation:
+            llm_can_run = False
+        # Source already in the target language: nothing to translate — skip the
+        # LLM call (saves credits, avoids echoing the same text as a translation).
+        if mode == "translate" and fallback_to_source:
+            llm_can_run = False
+        will_llm_translate = llm_can_run and mode == "translate"
+
+        # In accurate mode there is no built-in translation to show, so only bail
+        # when nothing at all will be produced.
+        if not display_translation and not will_llm_translate:
             return
 
         context_items = self._get_dynamic_context_items()
 
+        # Per-utterance target: the two-way partner of the detected source, or
+        # the session target otherwise. Drives both the LLM prompt and the
+        # language tag on the frontend's synthesized translation line.
+        utterance_target_lang = (
+            self._osc_translation_language_for_comparison(original_tokens)
+            or normalize_language_code(self.get_translation_target_lang())
+        )
+
         refined_translation = display_translation
         no_change = True
 
-        mode = self.get_llm_refine_mode()
-        if is_llm_refine_available() and mode != "off" and translation:
+        if llm_can_run:
             try:
                 if mode == "refine":
                     result = await self._perform_refine(source, translation, context_items)
@@ -889,14 +1075,28 @@ class SonioxSession:
                         refined_translation = result.get("refined_translation") or translation
                         no_change = False
                 elif mode == "translate":
-                    result = await self._perform_translate(source, context_items)
-                    if result.get("status") == "ok":
-                        translated = (result.get("translation") or "").strip()
-                        if translated:
-                            refined_translation = translated
-                        else:
-                            refined_translation = translation
+                    # A speculative call may already have translated this exact
+                    # sentence from the non-final text; reuse it (awaiting an
+                    # in-flight one) instead of paying for a second request.
+                    speculative = await self._spec_take_for(source)
+                    if speculative:
+                        refined_translation = speculative
                         no_change = False
+                    else:
+                        # 准确 mode: no speculative result to show — put the
+                        # translation-line placeholder up right away while this
+                        # finalize-path LLM call runs (refine_result clears it).
+                        if self._suppress_soniox_translation:
+                            await self.broadcast_callback({
+                                "type": "spec_translation_pending",
+                                "source": source,
+                                "target_lang": utterance_target_lang,
+                            })
+                        result = await self._perform_translate(source, context_items, target_lang=utterance_target_lang)
+                        if result.get("status") == "ok":
+                            translated = (result.get("translation") or "").strip()
+                            refined_translation = translated if translated else translation
+                            no_change = False
             except Exception as error:
                 if mode == "translate":
                     refined_translation = translation
@@ -910,6 +1110,9 @@ class SonioxSession:
             "original_translation": display_translation,
             "refined_translation": refined_translation if not no_change else None,
             "no_change": no_change,
+            # 准确 mode has no translation tokens carrying a language; tell the
+            # frontend which language the synthesized translation line is in.
+            "target_lang": utterance_target_lang,
         })
 
         if self.get_osc_translation_enabled():
@@ -921,7 +1124,7 @@ class SonioxSession:
                 print(f"OSC send failed: {error}")
 
         self._refine_context_history.append({"source": source, "translation": refined_translation})
-        max_history = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+        max_history = max(1, int(self._context_bounds()[1]))
         if len(self._refine_context_history) > max_history:
             self._refine_context_history = self._refine_context_history[-max_history:]
 
@@ -931,8 +1134,9 @@ class SonioxSession:
         if not history:
             return []
 
-        min_count = max(1, int(LLM_REFINE_CONTEXT_MIN_COUNT))
-        max_count = max(min_count, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+        bound_min, bound_max = self._context_bounds()
+        min_count = max(1, int(bound_min))
+        max_count = max(min_count, int(bound_max))
 
         if len(history) < min_count:
             return history
@@ -949,6 +1153,108 @@ class SonioxSession:
             self._llm_context_cycle_count = current + 1
 
         return items
+
+    def _context_bounds(self) -> tuple[int, int]:
+        """Effective (min, max) context item counts (server-delivered in relay mode)."""
+        return config.llm_context_bounds()
+
+    def _hosted_llm_send(self, text: str) -> None:
+        """Send a text frame on the current active relay stream (LLM multiplex)."""
+        ws = self.ws
+        if ws is not None:
+            ws.send(text)
+
+    def _on_hosted_llm_credits(self, credits: float) -> None:
+        """Relay reported credits for a hosted LLM request; forward to the UI so
+        it can fold the cost into the running session total."""
+        if not self.loop:
+            return
+        try:
+            self.loop.create_task(self.broadcast_callback({"type": "llm_cost", "credits": float(credits)}))
+        except Exception:
+            pass
+
+    def _on_hosted_llm_disabled(self, reason: str) -> None:
+        """Prepaid exhausted: drop to fast mode and tell the UI to lock there.
+        `needs_restart` is set when soniox translation must be re-enabled."""
+        self._llm_refine_mode = "off"
+        needs_restart = self._suppress_soniox_translation
+        self._suppress_soniox_translation = False
+        if not self.loop:
+            return
+        try:
+            self.loop.create_task(self.broadcast_callback({
+                "type": "translation_mode_fallback",
+                "reason": str(reason or ""),
+                "needs_restart": bool(needs_restart),
+            }))
+        except Exception:
+            pass
+
+    async def _llm_chat(self, system_prompt: str, user_prompt: str, *, temperature: float, max_tokens: int) -> str:
+        """One chat completion — via the relay in hosted mode, or a local key in
+        own-key mode. Raises HostedLlmError / LlmError on failure."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        if config.llm_is_hosted():
+            self._hosted_llm.configure(self.loop, self._hosted_llm_send)
+            return await self._hosted_llm.chat(
+                messages,
+                temperature=float(temperature),
+                max_tokens=int(config.llm_max_output_tokens()),
+                timeout_seconds=config.llm_timeout_seconds(),
+            )
+        llm_config = LlmConfig(
+            base_url=(LLM_BASE_URL or "").strip(),
+            api_key=get_llm_api_key(),
+            model=(LLM_MODEL or "").strip(),
+            extra_headers=LLM_REQUEST_HEADERS or None,
+            extra_json=LLM_REQUEST_JSON or None,
+        )
+        return await chat_completion(
+            llm_config,
+            messages,
+            temperature=float(temperature),
+            max_tokens=int(max_tokens),
+            timeout_seconds=config.llm_timeout_seconds(),
+        )
+
+    def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
+        """Apply the unified 翻译模式 (fast/accurate/hybrid/refine).
+
+        Maps onto the internal LLM mode + soniox-translation suppression. Returns
+        (ok, normalized_mode, needs_restart) — needs_restart is True when the
+        soniox stream must be reopened because its translation on/off changed.
+        """
+        normalized = str(mode or "").strip().lower()
+        mapping = {
+            "fast": ("off", False),
+            "accurate": ("translate", True),
+            "hybrid": ("translate", False),
+            "refine": ("refine", False),
+        }
+        if normalized not in mapping:
+            return False, f"Invalid translation mode: {mode}", False
+        llm_mode, suppress = mapping[normalized]
+        prev_suppress = self._suppress_soniox_translation
+        self._llm_refine_mode = llm_mode
+        self._suppress_soniox_translation = bool(suppress)
+        # Re-selecting an LLM mode clears any prepaid-exhausted lock from before.
+        if llm_mode != "off":
+            self._hosted_llm.reset()
+        needs_restart = bool(suppress) != bool(prev_suppress)
+        return True, normalized, needs_restart
+
+    def get_translation_mode(self) -> str:
+        if self._suppress_soniox_translation:
+            return "accurate"
+        if self._llm_refine_mode == "refine":
+            return "refine"
+        if self._llm_refine_mode == "translate":
+            return "hybrid"
+        return "fast"
 
     async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:
         """执行 LLM 翻译改进"""
@@ -1003,7 +1309,7 @@ class SonioxSession:
         suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
 
         prompt = (
-            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
+            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
             "Role: Strict Translation QA. Strategy: Surgical corrections for accuracy violations only.\n\n"
             "## 1. IGNORE (Allow 'Ugly' but Accurate)\n"
             "Output <answer>{NO_CHANGE_MARKER}</answer> if the meaning is correct, even if:\n"
@@ -1034,28 +1340,18 @@ class SonioxSession:
             f"{suffix_block}"
         )
 
-        config = LlmConfig(
-            base_url=(LLM_BASE_URL or "").strip(),
-            api_key=get_llm_api_key(),
-            model=(LLM_MODEL or "").strip(),
-            extra_headers=LLM_REQUEST_HEADERS or None,
-            extra_json=LLM_REQUEST_JSON or None,
-        )
-
         for attempt in range(MAX_REFINE_ATTEMPTS):
             try:
-                content = await chat_completion(
-                    config,
-                    messages=[
-                        {"role": "system", "content": "You are a precise translation reviewer."},
-                        {"role": "user", "content": prompt},
-                    ],
+                content = await self._llm_chat(
+                    "You are a precise translation reviewer.",
+                    prompt,
                     temperature=float(LLM_TEMPERATURE),
                     max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                    timeout_seconds=60.0,
                 )
             except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, LlmError):
+                if isinstance(exc, HostedLlmDisabled):
+                    return {"status": "error", "message": "llm_disabled", "no_change": True}
+                if isinstance(exc, (LlmError, HostedLlmError)):
                     return {"status": "error", "message": str(exc), "no_change": True}
                 return {"status": "error", "message": "LLM request failed", "no_change": True}
 
@@ -1095,8 +1391,9 @@ class SonioxSession:
 
         return {"status": "ok", "no_change": True}
 
-    async def _perform_translate(self, source: str, context_items: list) -> dict:
-        """执行 LLM 直接翻译"""
+    async def _perform_translate(self, source: str, context_items: list, target_lang: str | None = None) -> dict:
+        """执行 LLM 直接翻译。`target_lang` overrides the session target — used for
+        two-way, where each utterance translates into its partner language."""
         PLACEHOLDER_ANSWER = "...translated text..."
         MAX_TRANSLATE_ATTEMPTS = 3
 
@@ -1106,7 +1403,7 @@ class SonioxSession:
 
         target_lang_value = ""
         try:
-            tl = self.get_translation_target_lang()
+            tl = target_lang if (isinstance(target_lang, str) and target_lang.strip()) else self.get_translation_target_lang()
             if isinstance(tl, str) and tl.strip():
                 target_lang_value = tl.strip().lower()[:16]
         except Exception:
@@ -1145,7 +1442,7 @@ class SonioxSession:
         suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
 
         prompt = (
-            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
+            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
             "You are a professional real-time translator. Translate the source text into the target language.\n"
             "\n"
             "Rules:\n"
@@ -1162,28 +1459,18 @@ class SonioxSession:
             f"{suffix_block}"
         )
 
-        config = LlmConfig(
-            base_url=(LLM_BASE_URL or "").strip(),
-            api_key=get_llm_api_key(),
-            model=(LLM_MODEL or "").strip(),
-            extra_headers=LLM_REQUEST_HEADERS or None,
-            extra_json=LLM_REQUEST_JSON or None,
-        )
-
         for attempt in range(MAX_TRANSLATE_ATTEMPTS):
             try:
-                content = await chat_completion(
-                    config,
-                    messages=[
-                        {"role": "system", "content": "You are a precise real-time translator."},
-                        {"role": "user", "content": prompt},
-                    ],
+                content = await self._llm_chat(
+                    "You are a precise real-time translator.",
+                    prompt,
                     temperature=float(LLM_TEMPERATURE),
                     max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                    timeout_seconds=60.0,
                 )
             except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, LlmError):
+                if isinstance(exc, HostedLlmDisabled):
+                    return {"status": "error", "message": "llm_disabled"}
+                if isinstance(exc, (LlmError, HostedLlmError)):
                     return {"status": "error", "message": str(exc)}
                 return {"status": "error", "message": "LLM request failed"}
 
@@ -1342,10 +1629,13 @@ class SonioxSession:
         *,
         warming: bool = False,
     ) -> _SonioxStreamState:
+        # 准确 (accurate) mode: disable soniox's built-in translation — the LLM
+        # does the translating — so it bills at the reduced no-translation factor.
+        effective_translation = "none" if self._suppress_soniox_translation else translation
         stream_config = get_config(
             api_key,
             audio_format,
-            translation,
+            effective_translation,
             translation_target_lang=translation_target_lang,
             target_lang_1=self.target_lang_1,
             target_lang_2=self.target_lang_2,
@@ -1359,7 +1649,11 @@ class SonioxSession:
             # injects its own upstream key, so the body key is blanked and the
             # account token is sent as the Authorization bearer.
             stream_config["api_key"] = ""
-            relay_url = config.relay_ws_url("soniox", model=stream_config.get("model"))
+            relay_url = config.relay_ws_url(
+                "soniox",
+                model=stream_config.get("model"),
+                translation="none" if self._suppress_soniox_translation else None,
+            )
             print(f"Connecting to relay Soniox ({label}{purpose}): {relay_url}")
             ws = sync_connect(
                 relay_url,
@@ -1601,7 +1895,7 @@ class SonioxSession:
             # segment on punctuation in the original tokens too (gated by
             # _can_use_source_as_translation so we never cut before a real
             # translation arrives).
-            source_as_output = self._can_use_source_as_translation(new_final_tokens)
+            source_as_output = self._source_drives_segmentation(new_final_tokens)
             last_real_speaker = None
             for token in new_final_tokens:
                 text = token.get("text")
@@ -1666,6 +1960,7 @@ class SonioxSession:
                     self._pending_endpoint_speakers.add(speaker_value)
 
         self._maybe_send_live_osc_translation(non_final_tokens)
+        self._maybe_speculative_translate(non_final_tokens)
 
         if (new_final_tokens or endpoint_detected) and not interleaved_punctuation:
             if self._segment_mode == "translation":
@@ -1678,7 +1973,7 @@ class SonioxSession:
                 # Same-language speech produces no translation tokens; fall back
                 # to sentence-ending punctuation in the source (used as output)
                 # so it still segments instead of growing without bound.
-                if not translation_hit and self._can_use_source_as_translation(new_final_tokens):
+                if not translation_hit and self._source_drives_segmentation(new_final_tokens):
                     translation_hit = any(
                         t.get("text")
                         and not self._is_internal_soniox_token(t)
@@ -1818,6 +2113,9 @@ class SonioxSession:
                 res = json.loads(message)
             except Exception as error:
                 print(f"⚠️  Failed to parse Soniox finalization response: {error}")
+                continue
+
+            if isinstance(res, dict) and self._hosted_llm.handle_frame(res):
                 continue
 
             sent_count, should_end, _reason = self._process_soniox_response(
@@ -2227,6 +2525,9 @@ class SonioxSession:
                     res = json.loads(message)
                 except Exception as error:
                     print(f"⚠️  Failed to parse Soniox response: {error}")
+                    continue
+
+                if isinstance(res, dict) and self._hosted_llm.handle_frame(res):
                     continue
 
                 active_stream.sent_count, should_end, reason = self._process_soniox_response(

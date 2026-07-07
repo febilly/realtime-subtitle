@@ -21,7 +21,7 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.SONIOX_TEMP_KEY_URL = None
     config.RELAY_MODE = False
     config.RELAY_TOKEN = ""
-    config.relay_ws_url = lambda provider=None, model=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
+    config.relay_ws_url = lambda provider=None, model=None, translation=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MICROPHONE_DEVICE_ID = ""
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
@@ -30,6 +30,10 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.FFMPEG_PATH = "ffmpeg"
     config.DEFAULT_SEGMENT_MODE = "punctuation"
     config.is_llm_refine_available = lambda: False
+    config.llm_is_hosted = lambda: False
+    config.llm_context_bounds = lambda: (1, 1)
+    config.llm_timeout_seconds = lambda: 60.0
+    config.llm_max_output_tokens = lambda: 128
     config.LLM_REFINE_CONTEXT_MIN_COUNT = 1
     config.LLM_REFINE_CONTEXT_MAX_COUNT = 1
     config.LLM_PROMPT_SUFFIX = ""
@@ -46,6 +50,7 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.LLM_REFINE_DEFAULT_MODE = "off"
     config.TARGET_LANG_1 = "en"
     config.TARGET_LANG_2 = "zh"
+    config.describe_target_language = lambda lang: lang
     monkeypatch.setitem(sys.modules, "config", config)
 
     soniox_client = ModuleType("soniox_client")
@@ -318,6 +323,252 @@ def test_cross_language_source_punctuation_does_not_segment_in_punctuation_mode(
     # punctuation must not segment yet.
     _feed_original(session, "こんにちは。", "ja")
     assert not _separator_in_updates(updates)
+
+
+def test_accurate_mode_cross_language_source_segments_in_punctuation_mode(monkeypatch):
+    """Regression: in 准确 (accurate) mode soniox's built-in translation is off, so
+    no translation token ever arrives. Finalization must key off the source, or a
+    cross-language sentence (which normally waits for a translation) never
+    triggers the LLM translate at all."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "en"  # source ja != target en
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    # Accurate mode: soniox translation suppressed, LLM translates from source.
+    session._suppress_soniox_translation = True
+    session._llm_refine_mode = "translate"
+
+    _feed_original(session, "こんにちは。", "ja")
+    assert _separator_in_updates(updates)
+
+
+def test_accurate_mode_cross_language_source_segments_in_translation_mode(monkeypatch):
+    """Same as above but in translation segment mode: the source-punctuation
+    fallback must fire in accurate mode even though the source is cross-language."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "en"
+    session.loop = object()
+    session._segment_mode = "translation"
+    session._suppress_soniox_translation = True
+    session._llm_refine_mode = "translate"
+
+    _feed_original(session, "こんにちは。", "ja")
+    assert _separator_in_updates(updates)
+
+
+def test_outgoing_final_tokens_carry_llm_sentence_id_in_punctuation_mode(monkeypatch):
+    """Regression: in interleaved punctuation mode the outgoing token copies are
+    minified before finalization runs, so the sentence id must be assigned when
+    the buffer opens — otherwise the frontend can never match refine_result to
+    its sentence (准确 mode has no translation text to fall back on)."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    _feed_original(session, "hello world.", "en")
+
+    final_tokens = [
+        t for u in updates for t in u.get("final_tokens", [])
+        if not t.get("is_separator")
+    ]
+    assert final_tokens, "expected outgoing final tokens"
+    assert all(t.get("llm_sentence_id") for t in final_tokens), final_tokens
+
+
+def _feed_non_final(session, text, language):
+    return session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": text,
+                    "is_final": False,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": language,
+                }
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def test_accurate_mode_speculative_translation_fires_instantly_and_reuses_cache(monkeypatch):
+    """准确 mode speculative translation: a sentence complete in the non-final
+    text fires the LLM immediately (interim text rarely changes, so no upfront
+    delay), broadcasts a pending marker + the result, and finalization reuses
+    the cached result without a second (double-billed) LLM call."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._suppress_soniox_translation = True
+    session._llm_refine_mode = "translate"
+
+    llm_calls = []
+
+    async def fake_llm_chat(*args, **kwargs):
+        llm_calls.append(args)
+        return "你好。"
+
+    session._llm_chat = fake_llm_chat
+
+    # A complete sentence in the non-final text fires on the very first tick.
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
+    _feed_non_final(session, "Hello there.", "en")
+    pending = [u for u in updates if u.get("type") == "spec_translation_pending"]
+    spec = [u for u in updates if u.get("type") == "spec_translation"]
+    assert pending and pending[0]["source"] == "Hello there."
+    assert spec and spec[0]["source"] == "Hello there."
+    assert spec[0]["translation"] == "你好。"
+    assert len(llm_calls) == 1
+
+    # Re-seeing the same sentence must not re-fire (cache dedup).
+    monkeypatch.setattr(module.time, "monotonic", lambda: 200.0)
+    _feed_non_final(session, "Hello there.", "en")
+    assert len(llm_calls) == 1
+
+    # The tokens finalize with the same text -> finalization must reuse the
+    # cached speculative result instead of issuing a second LLM call.
+    _feed_original(session, "Hello there.", "en")
+    refined = [u for u in updates if u.get("type") == "refine_result"]
+    assert refined and refined[-1]["refined_translation"] == "你好。"
+    assert len(llm_calls) == 1
+
+
+def test_accurate_mode_finalize_broadcasts_pending_placeholder(monkeypatch):
+    """准确 mode: a finalize-path LLM call (no speculative cache hit) must
+    broadcast a pending marker BEFORE the call so the UI shows the ZH
+    placeholder immediately, not only for speculative (non-final) runs."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._suppress_soniox_translation = True
+    session._llm_refine_mode = "translate"
+
+    async def fake_llm_chat(*args, **kwargs):
+        return "你好。"
+
+    session._llm_chat = fake_llm_chat
+
+    # Final tokens arrive directly (no speculative run happened).
+    _feed_original(session, "Hello there.", "en")
+
+    types = [u.get("type") for u in updates]
+    assert "spec_translation_pending" in types
+    assert "refine_result" in types
+    assert types.index("spec_translation_pending") < types.index("refine_result")
+    pending = [u for u in updates if u.get("type") == "spec_translation_pending"]
+    assert pending[0]["source"] == "Hello there."
+    assert pending[0]["target_lang"] == "zh"
+
+
+def test_accurate_mode_speculative_cooldown_limits_flip_flop_requests(monkeypatch):
+    """The cooldown sits AFTER a fire: a revised reading appearing within the
+    cooldown must wait for it to expire (and still be present) before firing,
+    so flip-flopping interim results cannot spam LLM requests."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._suppress_soniox_translation = True
+    session._llm_refine_mode = "translate"
+
+    llm_calls = []
+
+    async def fake_llm_chat(*args, **kwargs):
+        llm_calls.append(args)
+        return "你好。"
+
+    session._llm_chat = fake_llm_chat
+
+    # First reading fires instantly and starts the cooldown.
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
+    _feed_non_final(session, "Hello there.", "en")
+    assert len(llm_calls) == 1
+
+    # Revised readings within the cooldown do NOT fire.
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.2)
+    _feed_non_final(session, "Hello dear.", "en")
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.4)
+    _feed_non_final(session, "Hello deer.", "en")
+    assert len(llm_calls) == 1
+
+    # After the cooldown expires, the reading still present fires.
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0 + module.SPEC_TRANSLATE_COOLDOWN_SECONDS + 0.1)
+    _feed_non_final(session, "Hello deer.", "en")
+    assert len(llm_calls) == 2
 
 
 def test_same_language_source_punctuation_segments_in_translation_mode(monkeypatch):

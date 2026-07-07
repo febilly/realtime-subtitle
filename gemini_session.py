@@ -13,6 +13,7 @@ from typing import Any, Optional, Tuple
 
 from websockets import ConnectionClosed, ConnectionClosedOK
 
+import config
 from config import (
     GEMINI_STREAM_DURATION_SECONDS,
     SLEEP_IDLE_SECONDS,
@@ -53,6 +54,7 @@ import gemini_client
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
+from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +259,12 @@ class GeminiSession:
         self._vrchat_self_muted = False
         self.osc_translation_enabled = False
         self._sentence_buffers: dict[str, dict] = {}
+        # Speakers whose translation for the current sentence already ended (with
+        # sentence-ending punctuation) but whose source hasn't caught up yet. The
+        # line break is deferred until the source is also sentence-complete, so
+        # Gemini's slightly-late trailing source tokens don't spill onto the next
+        # line. Flushed unconditionally on a turnComplete <end>.
+        self._pending_translation_finalization: set[str] = set()
         self._last_input_language = ""
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
@@ -268,6 +276,12 @@ class GeminiSession:
             default_mode = "refine" if bool(LLM_REFINE_DEFAULT_ENABLED) else "off"
         self._llm_refine_mode = default_mode
         self._osc_send_text_mode = str(OSC_SEND_TEXT_MODE or "smart").strip().lower()
+        # Gemini always translates, so accurate == hybrid here (no suppression);
+        # the flag exists only for symmetry with the soniox session.
+        self._suppress_soniox_translation = False
+        self._hosted_llm = HostedLlmTransport()
+        self._hosted_llm.on_credits = self._on_hosted_llm_credits
+        self._hosted_llm.on_disabled = self._on_hosted_llm_disabled
 
         try:
             from config import TRANSLATION_TARGET_LANG
@@ -321,6 +335,7 @@ class GeminiSession:
         self.translation = translation
         self.loop = loop
         self._sentence_buffers.clear()
+        self._pending_translation_finalization.clear()
         self._last_input_language = ""
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
@@ -464,6 +479,7 @@ class GeminiSession:
             self.stop_event = None
             osc_manager.clear_history()
             self._sentence_buffers.clear()
+            self._pending_translation_finalization.clear()
             self._reset_osc_live_state()
             with self._ipc_lock:
                 self._ipc_ongoing_text = ""
@@ -851,6 +867,15 @@ class GeminiSession:
             lines.append(value[start:])
         return [segment for segment in (line.strip() for line in lines) if segment]
 
+    def _buffer_source_is_sentence_complete(self, speaker: str) -> bool:
+        """Whether the speaker's buffered source text ends on sentence-ending
+        punctuation (i.e. Gemini has streamed the whole source sentence)."""
+        buffer = self._sentence_buffers.get(speaker)
+        if not buffer:
+            return False
+        text = self._join_token_texts(buffer.get("original_tokens") or [])
+        return bool(text) and self._is_sentence_ending_punctuation(text)
+
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""
         buffer = self._sentence_buffers.get(speaker)
@@ -950,7 +975,7 @@ class GeminiSession:
                 print(f"OSC send failed: {error}")
 
         self._refine_context_history.append({"source": source, "translation": refined_translation})
-        max_history = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+        max_history = max(1, int(self._context_bounds()[1]))
         if len(self._refine_context_history) > max_history:
             self._refine_context_history = self._refine_context_history[-max_history:]
 
@@ -960,8 +985,9 @@ class GeminiSession:
         if not history:
             return []
 
-        min_count = max(1, int(LLM_REFINE_CONTEXT_MIN_COUNT))
-        max_count = max(min_count, int(LLM_REFINE_CONTEXT_MAX_COUNT))
+        bound_min, bound_max = self._context_bounds()
+        min_count = max(1, int(bound_min))
+        max_count = max(min_count, int(bound_max))
 
         if len(history) < min_count:
             return history
@@ -978,6 +1004,87 @@ class GeminiSession:
             self._llm_context_cycle_count = current + 1
 
         return items
+
+    def _context_bounds(self) -> tuple[int, int]:
+        return config.llm_context_bounds()
+
+    def _hosted_llm_send(self, text: str) -> None:
+        ws = self.ws
+        if ws is not None:
+            ws.send(text)
+
+    def _on_hosted_llm_credits(self, credits: float) -> None:
+        if not self.loop:
+            return
+        try:
+            self.loop.create_task(self.broadcast_callback({"type": "llm_cost", "credits": float(credits)}))
+        except Exception:
+            pass
+
+    def _on_hosted_llm_disabled(self, reason: str) -> None:
+        self._llm_refine_mode = "off"
+        self._suppress_soniox_translation = False
+        if not self.loop:
+            return
+        try:
+            self.loop.create_task(self.broadcast_callback({
+                "type": "translation_mode_fallback",
+                "reason": str(reason or ""),
+                "needs_restart": False,
+            }))
+        except Exception:
+            pass
+
+    async def _llm_chat(self, system_prompt: str, user_prompt: str, *, temperature: float, max_tokens: int) -> str:
+        """One chat completion — via the relay in hosted mode, or a local key in
+        own-key mode. Raises HostedLlmError / LlmError on failure."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        if config.llm_is_hosted():
+            self._hosted_llm.configure(self.loop, self._hosted_llm_send)
+            return await self._hosted_llm.chat(
+                messages,
+                temperature=float(temperature),
+                max_tokens=int(config.llm_max_output_tokens()),
+                timeout_seconds=config.llm_timeout_seconds(),
+            )
+        llm_config = LlmConfig(
+            base_url=(LLM_BASE_URL or "").strip(),
+            api_key=get_llm_api_key(),
+            model=(LLM_MODEL or "").strip(),
+            extra_headers=LLM_REQUEST_HEADERS or None,
+            extra_json=LLM_REQUEST_JSON or None,
+        )
+        return await chat_completion(
+            llm_config,
+            messages,
+            temperature=float(temperature),
+            max_tokens=int(max_tokens),
+            timeout_seconds=config.llm_timeout_seconds(),
+        )
+
+    def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
+        """Apply the unified 翻译模式. Gemini always translates, so accurate and
+        hybrid behave the same (LLM on, built-in translation on); no restart is
+        ever needed here."""
+        normalized = str(mode or "").strip().lower()
+        mapping = {"fast": "off", "accurate": "translate", "hybrid": "translate", "refine": "refine"}
+        if normalized not in mapping:
+            return False, f"Invalid translation mode: {mode}", False
+        self._llm_refine_mode = mapping[normalized]
+        self._suppress_soniox_translation = False
+        if mapping[normalized] != "off":
+            self._hosted_llm.reset()
+        return True, normalized, False
+
+    def get_translation_mode(self) -> str:
+        if self._llm_refine_mode == "refine":
+            return "refine"
+        if self._llm_refine_mode == "translate":
+            return "hybrid"
+        return "fast"
 
     async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:
         """执行 LLM 翻译改进"""
@@ -1032,7 +1139,7 @@ class GeminiSession:
         suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
 
         prompt = (
-            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
+            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
             "Role: Strict Translation QA. Strategy: Surgical corrections for accuracy violations only.\n\n"
             "## 1. IGNORE (Allow 'Ugly' but Accurate)\n"
             "Output <answer>{NO_CHANGE_MARKER}</answer> if the meaning is correct, even if:\n"
@@ -1063,28 +1170,18 @@ class GeminiSession:
             f"{suffix_block}"
         )
 
-        config = LlmConfig(
-            base_url=(LLM_BASE_URL or "").strip(),
-            api_key=get_llm_api_key(),
-            model=(LLM_MODEL or "").strip(),
-            extra_headers=LLM_REQUEST_HEADERS or None,
-            extra_json=LLM_REQUEST_JSON or None,
-        )
-
         for attempt in range(MAX_REFINE_ATTEMPTS):
             try:
-                content = await chat_completion(
-                    config,
-                    messages=[
-                        {"role": "system", "content": "You are a precise translation reviewer."},
-                        {"role": "user", "content": prompt},
-                    ],
+                content = await self._llm_chat(
+                    "You are a precise translation reviewer.",
+                    prompt,
                     temperature=float(LLM_TEMPERATURE),
                     max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                    timeout_seconds=60.0,
                 )
             except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, LlmError):
+                if isinstance(exc, HostedLlmDisabled):
+                    return {"status": "error", "message": "llm_disabled", "no_change": True}
+                if isinstance(exc, (LlmError, HostedLlmError)):
                     return {"status": "error", "message": str(exc), "no_change": True}
                 return {"status": "error", "message": "LLM request failed", "no_change": True}
 
@@ -1174,7 +1271,7 @@ class GeminiSession:
         suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
 
         prompt = (
-            f"Target language (ISO 639-1): {target_lang_value or 'unknown'}\n\n"
+            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
             "You are a professional real-time translator. Translate the source text into the target language.\n"
             "\n"
             "Rules:\n"
@@ -1191,28 +1288,18 @@ class GeminiSession:
             f"{suffix_block}"
         )
 
-        config = LlmConfig(
-            base_url=(LLM_BASE_URL or "").strip(),
-            api_key=get_llm_api_key(),
-            model=(LLM_MODEL or "").strip(),
-            extra_headers=LLM_REQUEST_HEADERS or None,
-            extra_json=LLM_REQUEST_JSON or None,
-        )
-
         for attempt in range(MAX_TRANSLATE_ATTEMPTS):
             try:
-                content = await chat_completion(
-                    config,
-                    messages=[
-                        {"role": "system", "content": "You are a precise real-time translator."},
-                        {"role": "user", "content": prompt},
-                    ],
+                content = await self._llm_chat(
+                    "You are a precise real-time translator.",
+                    prompt,
                     temperature=float(LLM_TEMPERATURE),
                     max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                    timeout_seconds=60.0,
                 )
             except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, LlmError):
+                if isinstance(exc, HostedLlmDisabled):
+                    return {"status": "error", "message": "llm_disabled"}
+                if isinstance(exc, (LlmError, HostedLlmError)):
                     return {"status": "error", "message": str(exc)}
                 return {"status": "error", "message": "LLM request failed"}
 
@@ -1697,35 +1784,50 @@ class GeminiSession:
             # original tokens too (gated by _can_use_source_as_translation so we
             # never cut before a real translation arrives).
             source_as_output = self._can_use_source_as_translation(new_final_tokens)
-            punctuation_hit = any(
-                t.get("text") == "<end>"
-                for t in new_final_tokens
-            ) or any(
+            # A turnComplete <end> is a hard turn boundary: always flush.
+            hard_end = any(t.get("text") == "<end>" for t in new_final_tokens)
+            # The output (translation, or the source when it doubles as output)
+            # reached a sentence end in this batch.
+            output_sentence_done = any(
                 t.get("text")
                 and not self._is_internal_token(t)
                 and (t.get("translation_status") == "translation" or source_as_output)
                 and self._is_sentence_ending_punctuation(t.get("text", ""))
                 for t in new_final_tokens
             )
-            if punctuation_hit:
-                speaker_value = None
+            speaker_value = None
+            for token in reversed(new_final_tokens):
+                if token.get("translation_status") == "translation" and token.get("text"):
+                    spk = token.get("speaker")
+                    if spk is not None and spk != "":
+                        speaker_value = str(spk)
+                        break
+            if speaker_value is None:
                 for token in reversed(new_final_tokens):
-                    if token.get("translation_status") == "translation" and token.get("text"):
+                    if token.get("text") and not self._is_internal_token(token):
                         spk = token.get("speaker")
                         if spk is not None and spk != "":
                             speaker_value = str(spk)
                             break
-                if speaker_value is None:
-                    for token in reversed(new_final_tokens):
-                        if token.get("text") and not self._is_internal_token(token):
-                            spk = token.get("speaker")
-                            if spk is not None and spk != "":
-                                speaker_value = str(spk)
-                                break
-                if speaker_value is None and self._sentence_buffers:
-                    speaker_value = next(iter(self._sentence_buffers.keys()))
-                if speaker_value and self._trigger_sentence_finalization(speaker_value):
-                    separator_tokens.append(self._make_separator_token("punctuation"))
+            if speaker_value is None and self._sentence_buffers:
+                speaker_value = next(iter(self._sentence_buffers.keys()))
+
+            if speaker_value:
+                # Remember an output-side sentence completion so we can cut once
+                # the SOURCE catches up.
+                if output_sentence_done:
+                    self._pending_translation_finalization.add(speaker_value)
+                # Defer the line break until the source is also sentence-complete:
+                # Gemini frequently streams the last source tokens a beat after the
+                # translation, and cutting on the translation alone would spill
+                # those trailing source characters onto the next line (and feed the
+                # LLM a truncated source). A turnComplete <end> flushes regardless.
+                pending = speaker_value in self._pending_translation_finalization
+                should_finalize = hard_end or (pending and self._buffer_source_is_sentence_complete(speaker_value))
+                if should_finalize:
+                    self._pending_translation_finalization.discard(speaker_value)
+                    if self._trigger_sentence_finalization(speaker_value):
+                        separator_tokens.append(self._make_separator_token("punctuation"))
 
         if new_final_tokens:
             for token in new_final_tokens:
@@ -1820,6 +1922,9 @@ class GeminiSession:
                 res = json.loads(message)
             except Exception as error:
                 print(f"⚠️  Failed to parse Gemini finalization response: {error}")
+                continue
+
+            if isinstance(res, dict) and self._hosted_llm.handle_frame(res):
                 continue
 
             sent_count, should_end, _reason = self._process_stream_response(
@@ -2229,6 +2334,9 @@ class GeminiSession:
                     res = json.loads(message)
                 except Exception as error:
                     print(f"⚠️  Failed to parse Gemini response: {error}")
+                    continue
+
+                if isinstance(res, dict) and self._hosted_llm.handle_frame(res):
                     continue
 
                 active_stream.sent_count, should_end, reason = self._process_stream_response(

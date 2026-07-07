@@ -24,6 +24,11 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config.TWITCH_STREAM_QUALITY = "audio_only"
     config.FFMPEG_PATH = "ffmpeg"
     config.is_llm_refine_available = lambda: False
+    config.llm_is_hosted = lambda: False
+    config.llm_context_bounds = lambda: (1, 1)
+    config.llm_timeout_seconds = lambda: 60.0
+    config.llm_max_output_tokens = lambda: 128
+    config.RELAY_MODE = False
     config.LLM_REFINE_CONTEXT_MIN_COUNT = 1
     config.LLM_REFINE_CONTEXT_MAX_COUNT = 1
     config.LLM_PROMPT_SUFFIX = ""
@@ -42,6 +47,7 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config.TARGET_LANG_1 = "en"
     config.TARGET_LANG_2 = "zh"
     config.TRANSLATION_TARGET_LANG = "zh"
+    config.describe_target_language = lambda lang: lang
     monkeypatch.setitem(sys.modules, "config", config)
 
     gemini_client = ModuleType("gemini_client")
@@ -588,6 +594,60 @@ def test_same_language_source_punctuation_triggers_segmentation(monkeypatch):
         object(),
     )
     assert _separator_in_updates(updates)
+
+
+def test_translation_ahead_of_source_keeps_full_source_together(monkeypatch):
+    """Regression: Gemini often emits the sentence's final source tokens a beat
+    after the translation. The line break must wait for the source to reach its
+    own sentence end, otherwise the trailing source characters spill onto the
+    next line (and the LLM gets a truncated source)."""
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+
+    def _refine_sources():
+        return [u.get("source") for u in updates if u.get("type") == "refine_result"]
+
+    # 1) Partial source + partial translation (no sentence end yet).
+    session._process_stream_response(
+        {"serverContent": {
+            "inputTranscription": {"text": "これを作りまし", "languageCode": "ja"},
+            "outputTranscription": {"text": "制作这个"},
+        }},
+        [], 0, object(),
+    )
+    assert not _separator_in_updates(updates)
+
+    # 2) Translation reaches its sentence end BEFORE the source does. The cut must
+    #    be deferred — no separator, no finalized sentence yet.
+    session._process_stream_response(
+        {"serverContent": {"outputTranscription": {"text": "吧。"}}},
+        [], 0, object(),
+    )
+    assert not _separator_in_updates(updates), "cut fired before the source was complete"
+    assert _refine_sources() == []
+
+    # 3) The trailing source tokens arrive and complete the sentence -> now cut,
+    #    and the finalized source must contain the WHOLE sentence.
+    session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "ょう。", "languageCode": "ja"}}},
+        [], 0, object(),
+    )
+    assert _separator_in_updates(updates)
+    sources = _refine_sources()
+    assert sources, "sentence was never finalized"
+    assert sources[-1].endswith("。")
+    assert "作りまし" in sources[-1] and sources[-1].endswith("ょう。"), sources[-1]
 
 
 def test_cross_language_source_punctuation_does_not_segment(monkeypatch):

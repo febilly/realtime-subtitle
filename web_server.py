@@ -251,6 +251,10 @@ class WebServer:
         provider = config.TRANSLATION_PROVIDER
         manager = self.provider_manager
         capabilities = get_capabilities(provider)
+        # In hosted mode the LLM tuning (availability, context window, timeout) is
+        # delivered by the server; refresh it so the fields below reflect it.
+        if config.RELAY_MODE:
+            await self._refresh_hosted_llm_config()
         payload = {
             "provider": provider,
             "providers": ["soniox", "gemini"],
@@ -262,10 +266,17 @@ class WebServer:
             "llm_refine_available": bool(is_llm_refine_available()),
             "llm_refine_mode": self.session.get_llm_refine_mode(),
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
-            "llm_refine_context_min_count": int(LLM_REFINE_CONTEXT_MIN_COUNT),
-            "llm_refine_context_max_count": int(LLM_REFINE_CONTEXT_MAX_COUNT),
+            "llm_refine_context_min_count": int(config.llm_context_bounds()[0]),
+            "llm_refine_context_max_count": int(config.llm_context_bounds()[1]),
             "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
             "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
+            # Unified 翻译模式 (fast/accurate/hybrid/refine). 改进(refine) is available
+            # in both hosted and own-key modes now (it routes LLM calls the same way).
+            "translation_ui_mode": (self.session.get_translation_mode() if hasattr(self.session, "get_translation_mode") else "fast"),
+            "refine_mode_available": bool(is_llm_refine_available()),
+            # Server-delivered STT billing factor for soniox 准确 mode (built-in
+            # translation off); the client mirrors it in its live cost estimate.
+            "soniox_no_translation_factor": float(config.HOSTED_SONIOX_NO_TRANSLATION_FACTOR),
             "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
             "hide_speaker_labels": bool(config.HIDE_SPEAKER_LABELS),
             "soniox_region": config.SONIOX_REGION,
@@ -1023,6 +1034,52 @@ class WebServer:
             "enabled": self.session.get_llm_refine_enabled(),
         })
 
+    async def _refresh_hosted_llm_config(self, force: bool = False) -> None:
+        """Fetch the server-delivered hosted LLM tuning (relay mode) and cache it
+        into `config` so the session and /ui-config reflect it. Cached ~60s per
+        token to avoid refetching on every UI poll."""
+        if not config.RELAY_AVAILABLE or not config.RELAY_MODE:
+            return
+        token = self._relay_token()
+        if not token:
+            return
+        if (not force
+                and getattr(self, "_hosted_llm_cfg_token", None) == token
+                and getattr(self, "_hosted_llm_cfg_ts", 0.0) > (time.time() - 60)):
+            return
+        status, data = await self._server_request("GET", "/billing/llm-config", token=token, timeout=5)
+        if status == 200 and isinstance(data, dict):
+            config.set_hosted_llm_config(data)
+            self._hosted_llm_cfg_token = token
+            self._hosted_llm_cfg_ts = time.time()
+
+    async def translation_mode_set_handler(self, request):
+        """Set the unified 翻译模式 (fast/accurate/hybrid/refine)."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "forbidden"}, status=403)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response({"status": "error", "message": "locked"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        mode = str((payload or {}).get("mode") or "").strip().lower()
+        if not hasattr(self.session, "set_translation_mode"):
+            return web.json_response({"status": "error", "message": "unsupported"}, status=400)
+        ok, message, needs_restart = self.session.set_translation_mode(mode)
+        if not ok:
+            return web.json_response({"status": "error", "message": message}, status=400)
+        # Remember on the manager so apply_provider (session rebuilds on
+        # provider/key/mode switches) re-applies it — otherwise 准确 is silently
+        # lost and soniox reopens with translation ON at the full billing rate.
+        if self.provider_manager is not None:
+            self.provider_manager.ui_translation_mode = message
+        return web.json_response({
+            "status": "ok",
+            "mode": self.session.get_translation_mode(),
+            "needs_restart": bool(needs_restart),
+        })
+
     async def restart_handler(self, request):
         """重启识别端点（也用于运行时切换翻译模式 / 双向语言对）"""
         is_auto = False
@@ -1547,6 +1604,7 @@ class WebServer:
         app.router.add_post('/speaker-labels', self.speaker_labels_set_handler)
         app.router.add_get('/llm-refine', self.llm_refine_get_handler)
         app.router.add_post('/llm-refine', self.llm_refine_set_handler)
+        app.router.add_post('/translation-mode', self.translation_mode_set_handler)
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
         app.router.add_post('/setup', self.setup_handler)
         app.router.add_post('/use-env', self.use_env_handler)

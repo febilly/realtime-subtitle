@@ -1,10 +1,19 @@
 import asyncio
+import sys
+import importlib.util
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from server import ProviderManager
+
+
+def _get_real_config():
+    spec = importlib.util.spec_from_file_location("config", "config.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class FakeSession:
@@ -52,9 +61,17 @@ class FakeSession:
         self.target_langs = (lang_1, lang_2)
         return True, "ok"
 
+    def set_translation_mode(self, mode):
+        self.translation_mode_ui = mode
+        # 准确 must be applied BEFORE start() so the stream opens with soniox
+        # translation already disabled (correct billing factor).
+        self.translation_mode_set_before_start = not self.started
+        return True, mode, False
+
 
 @pytest.mark.asyncio
 async def test_provider_switch_preserves_audio_source_and_microphone_device(monkeypatch):
+    monkeypatch.setitem(sys.modules, "config", _get_real_config())
     logger = MagicMock()
     ipc_server = MagicMock()
     osc_manager = MagicMock()
@@ -83,3 +100,33 @@ async def test_provider_switch_preserves_audio_source_and_microphone_device(monk
     assert new_session.get_microphone_device_id() == "mic-123"
     assert manager.audio_source == "microphone"
     assert manager.microphone_device_id == "mic-123"
+
+
+@pytest.mark.asyncio
+async def test_provider_switch_reapplies_ui_translation_mode(monkeypatch):
+    """Regression: apply_provider builds a fresh session object; the unified
+    翻译模式 must be re-applied to it before start(), otherwise 准确 is silently
+    lost and the new soniox stream opens with translation ON (billed at the
+    full rate, stray translation tokens)."""
+    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    logger = MagicMock()
+    manager = ProviderManager(logger, MagicMock(), MagicMock(), AsyncMock())
+    manager.loop = asyncio.get_running_loop()
+    manager.ui_translation_mode = "accurate"
+
+    old_session = FakeSession(logger, manager.broadcast_callback)
+    manager.web_server = SimpleNamespace(session=old_session, get_api_key=None)
+
+    fake_session_module = SimpleNamespace(ipc_server=None)
+    monkeypatch.setattr(
+        manager,
+        "_provider_modules",
+        lambda provider: (fake_session_module, FakeSession, lambda: "env-key"),
+    )
+
+    result = await manager.apply_provider("soniox", api_key="runtime-key")
+
+    new_session = manager.web_server.session
+    assert result["started"] is True
+    assert new_session.translation_mode_ui == "accurate"
+    assert new_session.translation_mode_set_before_start is True

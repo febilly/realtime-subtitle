@@ -252,6 +252,12 @@ class ProviderManager:
 
         self.provider = config.TRANSLATION_PROVIDER
         self.translation_mode = config.TRANSLATION_MODE
+        # Unified 翻译模式 (fast/accurate/hybrid/refine) as last set from the UI.
+        # None = never set; sessions keep their env-driven default. Must survive
+        # apply_provider rebuilds — a fresh session otherwise silently reverts to
+        # the default (准确 lost => soniox reopens with translation ON and bills
+        # at the full rate).
+        self.ui_translation_mode = None
         self.target_lang = config.TRANSLATION_TARGET_LANG
         self.target_lang_1 = config.normalize_language_code(config.TARGET_LANG_1) or "en"
         self.target_lang_2 = config.normalize_language_code(config.TARGET_LANG_2) or "zh"
@@ -489,6 +495,14 @@ class ProviderManager:
             pass
         if self.translation_mode == "two_way" and hasattr(new_session, "set_target_langs"):
             new_session.set_target_langs(self.target_lang_1, self.target_lang_2)
+        # Re-apply the unified 翻译模式 BEFORE start so 准确 opens the stream with
+        # soniox translation already disabled (correct billing factor, no
+        # translation tokens) instead of needing another restart.
+        if self.ui_translation_mode and hasattr(new_session, "set_translation_mode"):
+            try:
+                new_session.set_translation_mode(self.ui_translation_mode)
+            except Exception as e:
+                print(f"⚠️  Failed to re-apply translation mode: {e}")
         self._apply_audio_preferences(new_session)
 
         if self.web_server is not None:
