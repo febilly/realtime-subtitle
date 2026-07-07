@@ -54,6 +54,7 @@ from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
+import llm_refine
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,7 @@ class SonioxSession:
         self._spec_last_fired_at = 0.0
         self._spec_inflight: dict[str, object] = {}
         self._spec_cache: dict[str, str] = {}
+        self._interim_translation_speakers: set[str] = set()
         # Hosted (relay) LLM transport: LLM calls ride the STT relay socket.
         self._hosted_llm = HostedLlmTransport()
         self._hosted_llm.on_credits = self._on_hosted_llm_credits
@@ -307,6 +309,7 @@ class SonioxSession:
         self._spec_last_fired_at = 0.0
         self._spec_inflight.clear()
         self._spec_cache.clear()
+        self._interim_translation_speakers.clear()
         self._reset_osc_live_state()
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
@@ -625,6 +628,8 @@ class SonioxSession:
         llm_sentence_id = token.get("llm_sentence_id")
         if llm_sentence_id:
             value["llm_sentence_id"] = str(llm_sentence_id)
+        if token.get("had_interim_translation"):
+            value["had_interim_translation"] = True
         if is_final is None:
             value["is_final"] = bool(token.get("is_final", False))
         else:
@@ -651,15 +656,58 @@ class SonioxSession:
                 "original_tokens": [],
                 "translation_tokens": [],
                 "sentence_id": f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}",
+                "had_interim_translation": speaker in self._interim_translation_speakers,
             }
 
         buffer = self._sentence_buffers[speaker]
         token["llm_sentence_id"] = buffer["sentence_id"]
+        if buffer.get("had_interim_translation"):
+            token["had_interim_translation"] = True
 
         if translation_status == "translation":
             buffer["translation_tokens"].append(token)
         else:
             buffer["original_tokens"].append(token)
+
+    def _mark_interim_translation_seen(self, non_final_tokens: list[dict]) -> None:
+        for token in non_final_tokens or []:
+            text = token.get("text")
+            if text is None or self._is_internal_soniox_token(text):
+                continue
+            if token.get("translation_status") != "translation":
+                continue
+            token["had_interim_translation"] = True
+            speaker = str(token.get("speaker", "?"))
+            self._interim_translation_speakers.add(speaker)
+            buffer = self._sentence_buffers.get(speaker)
+            if buffer is not None:
+                buffer["had_interim_translation"] = True
+                for existing in (buffer.get("original_tokens") or []) + (buffer.get("translation_tokens") or []):
+                    if isinstance(existing, dict):
+                        existing["had_interim_translation"] = True
+
+    def _mark_displayed_final_translation_seen(self, final_tokens: list[dict]) -> None:
+        for token in final_tokens or []:
+            self._mark_displayed_final_translation_token_seen(token)
+
+    def _mark_displayed_final_translation_token_seen(self, token: dict) -> None:
+        if not isinstance(token, dict):
+            return
+        text = token.get("text")
+        if text is None or self._is_internal_soniox_token(text):
+            return
+        if token.get("translation_status") != "translation":
+            return
+        speaker = str(token.get("speaker", "?"))
+        buffer = self._sentence_buffers.get(speaker)
+        if buffer is None:
+            return
+        token["had_interim_translation"] = True
+        self._interim_translation_speakers.add(speaker)
+        buffer["had_interim_translation"] = True
+        for existing in (buffer.get("original_tokens") or []) + (buffer.get("translation_tokens") or []):
+            if isinstance(existing, dict):
+                existing["had_interim_translation"] = True
 
     def _join_token_texts(self, tokens: list[dict]) -> str:
         return "".join(
@@ -958,7 +1006,54 @@ class SonioxSession:
         if not value:
             return False
         ending_chars = ("。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…")
-        return value.endswith(ending_chars)
+        for index in range(len(value) - 1, -1, -1):
+            if value[index] in ending_chars:
+                return self._is_sentence_ender_at(value, index)
+            if not value[index].isspace():
+                return False
+        return False
+
+    def _is_sentence_ender_at(self, value: str, index: int) -> bool:
+        ch = value[index]
+        if ch == ".":
+            prev_ch = value[index - 1] if index > 0 else ""
+            next_ch = value[index + 1] if index + 1 < len(value) else ""
+            if prev_ch.isdigit() and next_ch.isdigit():
+                return False
+        return ch in {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
+
+    def _token_text_is_sentence_ending(
+        self,
+        tokens: list[dict],
+        index: int,
+        *,
+        source_as_output: bool = False,
+    ) -> bool:
+        token = tokens[index]
+        text = str(token.get("text") or "")
+        if not self._is_sentence_ending_punctuation(text):
+            return False
+        stripped = text.rstrip()
+        if not stripped.endswith("."):
+            return True
+        prev_ch = stripped[-2] if len(stripped) >= 2 else ""
+        if not prev_ch.isdigit():
+            return True
+        is_translation = token.get("translation_status") == "translation"
+        speaker = token.get("speaker")
+        for next_token in tokens[index + 1:]:
+            if self._is_internal_soniox_token(next_token):
+                continue
+            if next_token.get("speaker") != speaker:
+                continue
+            next_is_translation = next_token.get("translation_status") == "translation"
+            if next_is_translation != is_translation and not (source_as_output and not is_translation):
+                continue
+            next_text = str(next_token.get("text") or "")
+            if not next_text:
+                continue
+            return not (not text[-1].isspace() and not next_text[0].isspace() and next_text[0].isdigit())
+        return True
 
     def _split_into_sentence_lines(self, text: str) -> list[str]:
         """Split in-progress text into per-sentence lines for the OSC preview,
@@ -973,12 +1068,47 @@ class SonioxSession:
         start = 0
         length = len(value)
         for i, ch in enumerate(value):
-            if ch in ender_set and (i + 1 >= length or value[i + 1] not in ender_set):
+            if (
+                ch in ender_set
+                and self._is_sentence_ender_at(value, i)
+                and (i + 1 >= length or value[i + 1] not in ender_set)
+            ):
                 lines.append(value[start:i + 1])
                 start = i + 1
         if start < length:
             lines.append(value[start:])
         return [segment for segment in (line.strip() for line in lines) if segment]
+
+    def _finalize_superseded_speakers(
+        self,
+        current_speaker: str,
+        outgoing_final_tokens: list,
+        finalized_speakers: set,
+    ) -> None:
+        """A different speaker just started talking, so the previous speaker's
+        sentence is over. Close out every OTHER speaker's still-open buffer now
+        (interleaved punctuation mode): this triggers the LLM refine/translate
+        instead of leaving that sentence stuck as a provisional (gray) line
+        until its own punctuation/endpoint eventually shows up.
+
+        If the previous speaker's translation hasn't streamed in yet the finalize
+        is deferred via _pending_endpoint_speakers, so the pending-speaker pass
+        finalizes it as soon as the translation arrives.
+        """
+        if not current_speaker:
+            return
+        for other in list(self._sentence_buffers.keys()):
+            if other == current_speaker or other in finalized_speakers:
+                continue
+            if self._trigger_sentence_finalization(other):
+                finalized_speakers.add(other)
+                outgoing_final_tokens.append(
+                    self._minify_token(self._make_separator_token("speaker_change"))
+                )
+            else:
+                # Translation not ready yet: defer so it finalizes once the
+                # translation tokens arrive (see the pending-speaker pass).
+                self._pending_endpoint_speakers.add(other)
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""
@@ -988,6 +1118,7 @@ class SonioxSession:
 
         original_tokens = buffer.get("original_tokens") or []
         translation_tokens = buffer.get("translation_tokens") or []
+        had_interim_translation = bool(buffer.get("had_interim_translation"))
 
         if not original_tokens:
             return False
@@ -996,6 +1127,7 @@ class SonioxSession:
             return False
 
         self._sentence_buffers.pop(speaker, None)
+        self._interim_translation_speakers.discard(str(speaker))
         self._pending_endpoint_speakers.discard(speaker)
         self._reset_osc_live_state(speaker)
 
@@ -1013,12 +1145,26 @@ class SonioxSession:
             return False
 
         asyncio.run_coroutine_threadsafe(
-            self._finalize_sentence_async(speaker, original_tokens, translation_tokens, sentence_id),
+            self._finalize_sentence_async(
+                speaker,
+                original_tokens,
+                translation_tokens,
+                sentence_id,
+                had_interim_translation=had_interim_translation,
+            ),
             self.loop,
         )
         return True
 
-    async def _finalize_sentence_async(self, speaker: str, original_tokens: list, translation_tokens: list, sentence_id: str | None = None):
+    async def _finalize_sentence_async(
+        self,
+        speaker: str,
+        original_tokens: list,
+        translation_tokens: list,
+        sentence_id: str | None = None,
+        *,
+        had_interim_translation: bool = False,
+    ):
         """异步执行 LLM 改进与 OSC 发送"""
         source = self._join_token_texts(original_tokens)
         translation = self._join_token_texts(translation_tokens)
@@ -1075,28 +1221,34 @@ class SonioxSession:
                         refined_translation = result.get("refined_translation") or translation
                         no_change = False
                 elif mode == "translate":
-                    # A speculative call may already have translated this exact
-                    # sentence from the non-final text; reuse it (awaiting an
-                    # in-flight one) instead of paying for a second request.
-                    speculative = await self._spec_take_for(source)
-                    if speculative:
-                        refined_translation = speculative
-                        no_change = False
-                    else:
-                        # 准确 mode: no speculative result to show — put the
-                        # translation-line placeholder up right away while this
-                        # finalize-path LLM call runs (refine_result clears it).
-                        if self._suppress_soniox_translation:
-                            await self.broadcast_callback({
-                                "type": "spec_translation_pending",
-                                "source": source,
-                                "target_lang": utterance_target_lang,
-                            })
-                        result = await self._perform_translate(source, context_items, target_lang=utterance_target_lang)
-                        if result.get("status") == "ok":
-                            translated = (result.get("translation") or "").strip()
-                            refined_translation = translated if translated else translation
+                    if had_interim_translation and translation:
+                        result = await self._perform_refine(source, translation, context_items)
+                        if result.get("status") == "ok" and not result.get("no_change"):
+                            refined_translation = result.get("refined_translation") or translation
                             no_change = False
+                    else:
+                        # A speculative call may already have translated this exact
+                        # sentence from the non-final text; reuse it (awaiting an
+                        # in-flight one) instead of paying for a second request.
+                        speculative = await self._spec_take_for(source)
+                        if speculative:
+                            refined_translation = speculative
+                            no_change = False
+                        else:
+                            # 准确 mode: no speculative result to show — put the
+                            # translation-line placeholder up right away while this
+                            # finalize-path LLM call runs (refine_result clears it).
+                            if self._suppress_soniox_translation:
+                                await self.broadcast_callback({
+                                    "type": "spec_translation_pending",
+                                    "source": source,
+                                    "target_lang": utterance_target_lang,
+                                })
+                            result = await self._perform_translate(source, context_items, target_lang=utterance_target_lang)
+                            if result.get("status") == "ok":
+                                translated = (result.get("translation") or "").strip()
+                                refined_translation = translated if translated else translation
+                                no_change = False
             except Exception as error:
                 if mode == "translate":
                     refined_translation = translation
@@ -1257,244 +1409,25 @@ class SonioxSession:
         return "fast"
 
     async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:
-        """执行 LLM 翻译改进"""
-        NO_CHANGE_MARKER = "__NO_CHANGE__"
-        PLACEHOLDER_ANSWER = "...corrected translation..."
-        DEFAULT_SEVERITY = "low"
-        MAX_REFINE_ATTEMPTS = 3
-
-        source = (source or "").strip()
-        translation = (translation or "").strip()
-        if not source or not translation:
-            return {"status": "error", "no_change": True}
-
-        target_lang_value = ""
-        try:
-            tl = self.get_translation_target_lang()
-            if isinstance(tl, str) and tl.strip():
-                target_lang_value = tl.strip().lower()[:16]
-        except Exception:
-            target_lang_value = ""
-
-        normalized_context: list[dict[str, str]] = []
-        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
-            max_items = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
-            for item in context_items[-max_items:]:
-                if not isinstance(item, dict):
-                    continue
-                ctx_source = item.get("source")
-                ctx_translation = item.get("translation")
-                if not isinstance(ctx_source, str) or not isinstance(ctx_translation, str):
-                    continue
-                ctx_source = ctx_source.strip()
-                ctx_translation = ctx_translation.strip()
-                if not ctx_source or not ctx_translation:
-                    continue
-                if len(ctx_source) > 5000 or len(ctx_translation) > 5000:
-                    continue
-                normalized_context.append({"source": ctx_source, "translation": ctx_translation})
-
-        context_block = ""
-        if normalized_context:
-            lines = [
-                "Context (for coherence only; do NOT quote it; do NOT merge or rewrite it into the current translation; "
-                "even if the source/translation is short, do NOT output the context; use it only to resolve pronouns, references, and coherence):",
-            ]
-            for idx, item in enumerate(normalized_context, start=1):
-                lines.append(f"{idx}. Source: {item['source']}")
-                lines.append(f"   Translation: {item['translation']}")
-            context_block = "\n".join(lines) + "\n\n"
-
-        prompt_suffix = (LLM_PROMPT_SUFFIX or "").strip()
-        suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
-
-        prompt = (
-            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
-            "Role: Strict Translation QA. Strategy: Surgical corrections for accuracy violations only.\n\n"
-            "## 1. IGNORE (Allow 'Ugly' but Accurate)\n"
-            "Output <answer>{NO_CHANGE_MARKER}</answer> if the meaning is correct, even if:\n"
-            " - Grammar is broken/pidgin but understandable (e.g., 'Me want buy').\n"
-            " - Style/Tone is unnatural.\n"
-            " - Input has extra spaces (streaming artifacts) or loose punctuation.\n\n"
-            "## 2. MUST FIX (Accuracy Violations)\n"
-            "You MUST correct the translation if:\n"
-            " - MISTRANSLATION: Factual errors, wrong numbers/names, or opposite meaning.\n"
-            " - HALLUCINATION: Information added that is NOT in the source.\n"
-            " - LOGIC REVERSAL: Subject/Object flipped (e.g., 'Dog bites man' vs 'Man bites dog').\n"
-            " - CONFUSING SYNTAX: Word order is so wrong that it causes misunderstanding.\n\n"
-            "## 3. EDITING RULE: MINIMAL EDITS\n"
-            "If you fix, apply SURGICAL edits only. Change the minimum number of words necessary to restore accuracy. DO NOT rewrite the whole sentence to improve flow.\n\n"
-            "## 4. When in doubt, PREFER NO CHANGE.\n\n"
-            "## Output Format\n"
-            f" - NO CHANGE: <answer>{NO_CHANGE_MARKER}</answer>\n"
-            f" - Correction: <answer>{PLACEHOLDER_ANSWER}</answer>\n"
-            "   - Severity (only when Correction): <severity>low|medium|high|critical</severity>\n\n"
-            "Do NOT explain. Do NOT add preamble.\n\n"
-            f"{context_block}"
-            "Source:\n```\n"
-            f"{source}\n"
-            "```\n\n"
-            "Draft translation:\n```\n"
-            f"{translation}\n"
-            "```\n"
-            f"{suffix_block}"
+        """执行 LLM 翻译改进（共享逻辑见 llm_refine.perform_refine）。"""
+        return await llm_refine.perform_refine(
+            self._llm_chat,
+            source,
+            translation,
+            context_items,
+            target_lang=self.get_translation_target_lang(),
         )
-
-        for attempt in range(MAX_REFINE_ATTEMPTS):
-            try:
-                content = await self._llm_chat(
-                    "You are a precise translation reviewer.",
-                    prompt,
-                    temperature=float(LLM_TEMPERATURE),
-                    max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                )
-            except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, HostedLlmDisabled):
-                    return {"status": "error", "message": "llm_disabled", "no_change": True}
-                if isinstance(exc, (LlmError, HostedLlmError)):
-                    return {"status": "error", "message": str(exc), "no_change": True}
-                return {"status": "error", "message": "LLM request failed", "no_change": True}
-
-            raw_content = str(content or "").strip()
-            refined = extract_answer_tag(raw_content).strip()
-            severity = DEFAULT_SEVERITY
-            severity_match = re.findall(r"<severity>(.*?)</severity>", raw_content or "", flags=re.IGNORECASE | re.DOTALL)
-            if severity_match:
-                severity = str(severity_match[-1]).strip().lower()
-            if severity not in ("low", "medium", "high", "critical"):
-                severity = DEFAULT_SEVERITY
-
-            # print(f"severity={severity}, draft='{translation}', refined='{refined}'")
-
-            if not refined:
-                if attempt < MAX_REFINE_ATTEMPTS - 1:
-                    continue
-                return {"status": "ok", "no_change": True}
-
-            if refined.startswith("```"):
-                refined = re.sub(r"^```[^\n]*\n", "", refined)
-                refined = re.sub(r"\n```$", "", refined.strip())
-            refined = refined.strip("`").strip()
-
-            if refined == PLACEHOLDER_ANSWER:
-                if attempt < MAX_REFINE_ATTEMPTS - 1:
-                    continue
-                return {"status": "ok", "no_change": True}
-
-            if refined == NO_CHANGE_MARKER:
-                return {"status": "ok", "no_change": True}
-
-            if severity not in ("high", "critical"):
-                return {"status": "ok", "no_change": True}
-
-            return {"status": "ok", "no_change": False, "refined_translation": refined}
-
-        return {"status": "ok", "no_change": True}
 
     async def _perform_translate(self, source: str, context_items: list, target_lang: str | None = None) -> dict:
         """执行 LLM 直接翻译。`target_lang` overrides the session target — used for
         two-way, where each utterance translates into its partner language."""
-        PLACEHOLDER_ANSWER = "...translated text..."
-        MAX_TRANSLATE_ATTEMPTS = 3
-
-        source = (source or "").strip()
-        if not source:
-            return {"status": "error", "message": "empty source"}
-
-        target_lang_value = ""
-        try:
-            tl = target_lang if (isinstance(target_lang, str) and target_lang.strip()) else self.get_translation_target_lang()
-            if isinstance(tl, str) and tl.strip():
-                target_lang_value = tl.strip().lower()[:16]
-        except Exception:
-            target_lang_value = ""
-
-        normalized_context: list[dict[str, str]] = []
-        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
-            max_items = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
-            for item in context_items[-max_items:]:
-                if not isinstance(item, dict):
-                    continue
-                ctx_source = item.get("source")
-                ctx_translation = item.get("translation")
-                if not isinstance(ctx_source, str) or not isinstance(ctx_translation, str):
-                    continue
-                ctx_source = ctx_source.strip()
-                ctx_translation = ctx_translation.strip()
-                if not ctx_source or not ctx_translation:
-                    continue
-                if len(ctx_source) > 5000 or len(ctx_translation) > 5000:
-                    continue
-                normalized_context.append({"source": ctx_source, "translation": ctx_translation})
-
-        context_block = ""
-        if normalized_context:
-            lines = [
-                "Context (for coherence only; do NOT quote it; do NOT merge or rewrite it into the current translation; "
-                "even if the source is short, do NOT output the context; use it only to resolve pronouns, references, and coherence):",
-            ]
-            for idx, item in enumerate(normalized_context, start=1):
-                lines.append(f"{idx}. Source: {item['source']}")
-                lines.append(f"   Translation: {item['translation']}")
-            context_block = "\n".join(lines) + "\n\n"
-
-        prompt_suffix = (LLM_PROMPT_SUFFIX or "").strip()
-        suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
-
-        prompt = (
-            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
-            "You are a professional real-time translator. Translate the source text into the target language.\n"
-            "\n"
-            "Rules:\n"
-            "1. Output ONLY the translation; no explanations or extra text.\n"
-            "2. Preserve the original meaning, named entities, numbers, and tone.\n"
-            "3. If the source is a question, keep it a question in the translation (preserve question intent and punctuation such as '?' where appropriate).\n"
-            "4. Do NOT add or omit information.\n\n"
-            "Output ONLY the translation wrapped exactly as:\n"
-            f"<answer>{PLACEHOLDER_ANSWER}</answer>\n\n"
-            f"{context_block}"
-            "Source:\n```\n"
-            f"{source}\n"
-            "```\n"
-            f"{suffix_block}"
+        return await llm_refine.perform_translate(
+            self._llm_chat,
+            source,
+            context_items,
+            target_lang=target_lang if (isinstance(target_lang, str) and target_lang.strip())
+            else self.get_translation_target_lang(),
         )
-
-        for attempt in range(MAX_TRANSLATE_ATTEMPTS):
-            try:
-                content = await self._llm_chat(
-                    "You are a precise real-time translator.",
-                    prompt,
-                    temperature=float(LLM_TEMPERATURE),
-                    max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                )
-            except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, HostedLlmDisabled):
-                    return {"status": "error", "message": "llm_disabled"}
-                if isinstance(exc, (LlmError, HostedLlmError)):
-                    return {"status": "error", "message": str(exc)}
-                return {"status": "error", "message": "LLM request failed"}
-
-            raw_content = str(content or "").strip()
-            translated = extract_answer_tag(raw_content).strip()
-
-            if not translated:
-                if attempt < MAX_TRANSLATE_ATTEMPTS - 1:
-                    continue
-                return {"status": "error", "message": "empty translation"}
-
-            if translated.startswith("```"):
-                translated = re.sub(r"^```[^\n]*\n", "", translated)
-                translated = re.sub(r"\n```$", "", translated.strip())
-            translated = translated.strip("`").strip()
-
-            if translated == PLACEHOLDER_ANSWER:
-                if attempt < MAX_TRANSLATE_ATTEMPTS - 1:
-                    continue
-                return {"status": "error", "message": "placeholder translation"}
-
-            return {"status": "ok", "translation": translated}
-
-        return {"status": "error", "message": "translation failed"}
 
     def set_segment_mode(self, mode: str) -> tuple[bool, str]:
         """设置断句模式并广播给所有前端"""
@@ -1882,6 +1815,8 @@ class SonioxSession:
         # walk the tokens in order, building the outgoing stream and finalizing /
         # inserting a separator exactly when we cross an ending punctuation.
         interleaved_punctuation = (self._segment_mode == "punctuation")
+        last_real_speaker = None
+        finalized_speakers: set[str] = set()
 
         if new_final_tokens and not interleaved_punctuation:
             for token in new_final_tokens:
@@ -1896,8 +1831,7 @@ class SonioxSession:
             # _can_use_source_as_translation so we never cut before a real
             # translation arrives).
             source_as_output = self._source_drives_segmentation(new_final_tokens)
-            last_real_speaker = None
-            for token in new_final_tokens:
+            for index, token in enumerate(new_final_tokens):
                 text = token.get("text")
                 if text is None:
                     continue
@@ -1920,21 +1854,41 @@ class SonioxSession:
                     if pending_speaker in self._pending_endpoint_speakers:
                         self._pending_endpoint_speakers.discard(pending_speaker)
                         if self._trigger_sentence_finalization(pending_speaker):
+                            finalized_speakers.add(pending_speaker)
                             outgoing_final_tokens.append(
                                 self._minify_token(self._make_separator_token("endpoint"))
                             )
 
-                self._process_token_for_sentence(token)
-                if not is_internal:
-                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
-                    spk = token.get("speaker")
-                    if spk is not None and spk != "":
-                        last_real_speaker = str(spk)
-                is_boundary = (text == "<end>") or (
+                has_sentence_punctuation = (
                     not is_internal
-                    and (is_translation or source_as_output)
-                    and self._is_sentence_ending_punctuation(text)
+                    and self._token_text_is_sentence_ending(
+                        new_final_tokens,
+                        index,
+                        source_as_output=source_as_output,
+                    )
                 )
+                is_boundary = (text == "<end>") or has_sentence_punctuation
+                defer_source_punctuation = (
+                    has_sentence_punctuation
+                    and not is_translation
+                    and not source_as_output
+                )
+                self._process_token_for_sentence(token)
+                if is_translation and not is_boundary:
+                    self._mark_displayed_final_translation_token_seen(token)
+                if not is_internal:
+                    spk = token.get("speaker")
+                    token_speaker = str(spk) if (spk is not None and spk != "") else None
+                    # A new speaker's token means the previous speaker is done:
+                    # finalize their still-open sentence (triggers the LLM) before
+                    # this speaker's token joins the outgoing stream.
+                    if token_speaker and token_speaker != last_real_speaker:
+                        self._finalize_superseded_speakers(
+                            token_speaker, outgoing_final_tokens, finalized_speakers
+                        )
+                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
+                    if token_speaker:
+                        last_real_speaker = token_speaker
                 if not is_boundary:
                     continue
                 spk = token.get("speaker")
@@ -1943,20 +1897,50 @@ class SonioxSession:
                     speaker_value = next(iter(self._sentence_buffers.keys()))
                 if not speaker_value:
                     continue
+                if defer_source_punctuation:
+                    self._pending_endpoint_speakers.add(speaker_value)
+                    continue
                 if self._trigger_sentence_finalization(speaker_value):
+                    finalized_speakers.add(speaker_value)
                     outgoing_final_tokens.append(
                         self._minify_token(self._make_separator_token("punctuation"))
                     )
-                elif text == "<end>":
-                    # Endpoint detected, but the translation for this sentence
-                    # has not been finalized yet (Soniox streams translation
-                    # tokens in after <end>). Defer the line break: mark the
-                    # speaker pending so it is finalized once the translation
-                    # arrives (via a later boundary) or, at the latest, when the
-                    # next sentence's first original token is seen. This stops
-                    # the next sentence's translation from running onto this one
-                    # when the utterance was split by a pause rather than a
-                    # sentence-ending period.
+                elif text == "<end>" or has_sentence_punctuation:
+                    # The source/endpoint says the sentence ended, but the
+                    # translation may not have arrived yet. Defer the line break:
+                    # finalize as soon as this batch (or a later batch) has a
+                    # translation, or at the latest before the next source
+                    # sentence starts.
+                    self._pending_endpoint_speakers.add(speaker_value)
+
+            for pending_speaker in list(self._pending_endpoint_speakers):
+                if pending_speaker in finalized_speakers:
+                    continue
+                buffer = self._sentence_buffers.get(pending_speaker)
+                if not buffer:
+                    self._pending_endpoint_speakers.discard(pending_speaker)
+                    continue
+                translation_tokens = buffer.get("translation_tokens") or []
+                original_tokens = buffer.get("original_tokens") or []
+                if not translation_tokens and not self._source_drives_segmentation(original_tokens):
+                    continue
+                self._pending_endpoint_speakers.discard(pending_speaker)
+                if self._trigger_sentence_finalization(pending_speaker):
+                    finalized_speakers.add(pending_speaker)
+                    outgoing_final_tokens.append(
+                        self._minify_token(self._make_separator_token("punctuation"))
+                    )
+
+        if interleaved_punctuation and endpoint_detected:
+            speaker_value = last_real_speaker
+            if speaker_value is None and len(self._sentence_buffers) == 1:
+                speaker_value = next(iter(self._sentence_buffers.keys()))
+            if speaker_value and speaker_value not in finalized_speakers:
+                if self._trigger_sentence_finalization(speaker_value):
+                    outgoing_final_tokens.append(
+                        self._minify_token(self._make_separator_token("endpoint"))
+                    )
+                else:
                     self._pending_endpoint_speakers.add(speaker_value)
 
         self._maybe_send_live_osc_translation(non_final_tokens)
@@ -1978,8 +1962,12 @@ class SonioxSession:
                         t.get("text")
                         and not self._is_internal_soniox_token(t)
                         and t.get("translation_status") != "translation"
-                        and self._is_sentence_ending_punctuation(t.get("text", ""))
-                        for t in new_final_tokens
+                        and self._token_text_is_sentence_ending(
+                            new_final_tokens,
+                            index,
+                            source_as_output=True,
+                        )
+                        for index, t in enumerate(new_final_tokens)
                     )
                 if translation_hit:
                     speaker_value = None
@@ -2021,6 +2009,9 @@ class SonioxSession:
 
             # punctuation mode is handled by the interleaved pass above so the
             # separator lands at the period's position within the batch.
+
+        self._mark_interim_translation_seen(non_final_tokens)
+        self._mark_displayed_final_translation_seen(new_final_tokens)
 
         if new_final_tokens and not interleaved_punctuation:
             for token in new_final_tokens:

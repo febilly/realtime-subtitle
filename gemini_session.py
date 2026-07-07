@@ -55,6 +55,7 @@ from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
+import llm_refine
 
 logger = logging.getLogger(__name__)
 
@@ -845,7 +846,54 @@ class GeminiSession:
         if not value:
             return False
         ending_chars = ("。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…")
-        return value.endswith(ending_chars)
+        for index in range(len(value) - 1, -1, -1):
+            if value[index] in ending_chars:
+                return self._is_sentence_ender_at(value, index)
+            if not value[index].isspace():
+                return False
+        return False
+
+    def _is_sentence_ender_at(self, value: str, index: int) -> bool:
+        ch = value[index]
+        if ch == ".":
+            prev_ch = value[index - 1] if index > 0 else ""
+            next_ch = value[index + 1] if index + 1 < len(value) else ""
+            if prev_ch.isdigit() and next_ch.isdigit():
+                return False
+        return ch in {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
+
+    def _token_text_is_sentence_ending(
+        self,
+        tokens: list[dict],
+        index: int,
+        *,
+        source_as_output: bool = False,
+    ) -> bool:
+        token = tokens[index]
+        text = str(token.get("text") or "")
+        if not self._is_sentence_ending_punctuation(text):
+            return False
+        stripped = text.rstrip()
+        if not stripped.endswith("."):
+            return True
+        prev_ch = stripped[-2] if len(stripped) >= 2 else ""
+        if not prev_ch.isdigit():
+            return True
+        is_translation = token.get("translation_status") == "translation"
+        speaker = token.get("speaker")
+        for next_token in tokens[index + 1:]:
+            if self._is_internal_token(next_token):
+                continue
+            if next_token.get("speaker") != speaker:
+                continue
+            next_is_translation = next_token.get("translation_status") == "translation"
+            if next_is_translation != is_translation and not (source_as_output and not is_translation):
+                continue
+            next_text = str(next_token.get("text") or "")
+            if not next_text:
+                continue
+            return not (not text[-1].isspace() and not next_text[0].isspace() and next_text[0].isdigit())
+        return True
 
     def _split_into_sentence_lines(self, text: str) -> list[str]:
         """Split in-progress text into per-sentence lines for the OSC preview,
@@ -860,7 +908,11 @@ class GeminiSession:
         start = 0
         length = len(value)
         for i, ch in enumerate(value):
-            if ch in ender_set and (i + 1 >= length or value[i + 1] not in ender_set):
+            if (
+                ch in ender_set
+                and self._is_sentence_ender_at(value, i)
+                and (i + 1 >= length or value[i + 1] not in ender_set)
+            ):
                 lines.append(value[start:i + 1])
                 start = i + 1
         if start < length:
@@ -1087,243 +1139,23 @@ class GeminiSession:
         return "fast"
 
     async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:
-        """执行 LLM 翻译改进"""
-        NO_CHANGE_MARKER = "__NO_CHANGE__"
-        PLACEHOLDER_ANSWER = "...corrected translation..."
-        DEFAULT_SEVERITY = "low"
-        MAX_REFINE_ATTEMPTS = 3
-
-        source = (source or "").strip()
-        translation = (translation or "").strip()
-        if not source or not translation:
-            return {"status": "error", "no_change": True}
-
-        target_lang_value = ""
-        try:
-            tl = self.get_translation_target_lang()
-            if isinstance(tl, str) and tl.strip():
-                target_lang_value = tl.strip().lower()[:16]
-        except Exception:
-            target_lang_value = ""
-
-        normalized_context: list[dict[str, str]] = []
-        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
-            max_items = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
-            for item in context_items[-max_items:]:
-                if not isinstance(item, dict):
-                    continue
-                ctx_source = item.get("source")
-                ctx_translation = item.get("translation")
-                if not isinstance(ctx_source, str) or not isinstance(ctx_translation, str):
-                    continue
-                ctx_source = ctx_source.strip()
-                ctx_translation = ctx_translation.strip()
-                if not ctx_source or not ctx_translation:
-                    continue
-                if len(ctx_source) > 5000 or len(ctx_translation) > 5000:
-                    continue
-                normalized_context.append({"source": ctx_source, "translation": ctx_translation})
-
-        context_block = ""
-        if normalized_context:
-            lines = [
-                "Context (for coherence only; do NOT quote it; do NOT merge or rewrite it into the current translation; "
-                "even if the source/translation is short, do NOT output the context; use it only to resolve pronouns, references, and coherence):",
-            ]
-            for idx, item in enumerate(normalized_context, start=1):
-                lines.append(f"{idx}. Source: {item['source']}")
-                lines.append(f"   Translation: {item['translation']}")
-            context_block = "\n".join(lines) + "\n\n"
-
-        prompt_suffix = (LLM_PROMPT_SUFFIX or "").strip()
-        suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
-
-        prompt = (
-            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
-            "Role: Strict Translation QA. Strategy: Surgical corrections for accuracy violations only.\n\n"
-            "## 1. IGNORE (Allow 'Ugly' but Accurate)\n"
-            "Output <answer>{NO_CHANGE_MARKER}</answer> if the meaning is correct, even if:\n"
-            " - Grammar is broken/pidgin but understandable (e.g., 'Me want buy').\n"
-            " - Style/Tone is unnatural.\n"
-            " - Input has extra spaces (streaming artifacts) or loose punctuation.\n\n"
-            "## 2. MUST FIX (Accuracy Violations)\n"
-            "You MUST correct the translation if:\n"
-            " - MISTRANSLATION: Factual errors, wrong numbers/names, or opposite meaning.\n"
-            " - HALLUCINATION: Information added that is NOT in the source.\n"
-            " - LOGIC REVERSAL: Subject/Object flipped (e.g., 'Dog bites man' vs 'Man bites dog').\n"
-            " - CONFUSING SYNTAX: Word order is so wrong that it causes misunderstanding.\n\n"
-            "## 3. EDITING RULE: MINIMAL EDITS\n"
-            "If you fix, apply SURGICAL edits only. Change the minimum number of words necessary to restore accuracy. DO NOT rewrite the whole sentence to improve flow.\n\n"
-            "## 4. When in doubt, PREFER NO CHANGE.\n\n"
-            "## Output Format\n"
-            f" - NO CHANGE: <answer>{NO_CHANGE_MARKER}</answer>\n"
-            f" - Correction: <answer>{PLACEHOLDER_ANSWER}</answer>\n"
-            "   - Severity (only when Correction): <severity>low|medium|high|critical</severity>\n\n"
-            "Do NOT explain. Do NOT add preamble.\n\n"
-            f"{context_block}"
-            "Source:\n```\n"
-            f"{source}\n"
-            "```\n\n"
-            "Draft translation:\n```\n"
-            f"{translation}\n"
-            "```\n"
-            f"{suffix_block}"
+        """执行 LLM 翻译改进（共享逻辑见 llm_refine.perform_refine）。"""
+        return await llm_refine.perform_refine(
+            self._llm_chat,
+            source,
+            translation,
+            context_items,
+            target_lang=self.get_translation_target_lang(),
         )
-
-        for attempt in range(MAX_REFINE_ATTEMPTS):
-            try:
-                content = await self._llm_chat(
-                    "You are a precise translation reviewer.",
-                    prompt,
-                    temperature=float(LLM_TEMPERATURE),
-                    max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                )
-            except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, HostedLlmDisabled):
-                    return {"status": "error", "message": "llm_disabled", "no_change": True}
-                if isinstance(exc, (LlmError, HostedLlmError)):
-                    return {"status": "error", "message": str(exc), "no_change": True}
-                return {"status": "error", "message": "LLM request failed", "no_change": True}
-
-            raw_content = str(content or "").strip()
-            refined = extract_answer_tag(raw_content).strip()
-            severity = DEFAULT_SEVERITY
-            severity_match = re.findall(r"<severity>(.*?)</severity>", raw_content or "", flags=re.IGNORECASE | re.DOTALL)
-            if severity_match:
-                severity = str(severity_match[-1]).strip().lower()
-            if severity not in ("low", "medium", "high", "critical"):
-                severity = DEFAULT_SEVERITY
-
-            # print(f"severity={severity}, draft='{translation}', refined='{refined}'")
-
-            if not refined:
-                if attempt < MAX_REFINE_ATTEMPTS - 1:
-                    continue
-                return {"status": "ok", "no_change": True}
-
-            if refined.startswith("```"):
-                refined = re.sub(r"^```[^\n]*\n", "", refined)
-                refined = re.sub(r"\n```$", "", refined.strip())
-            refined = refined.strip("`").strip()
-
-            if refined == PLACEHOLDER_ANSWER:
-                if attempt < MAX_REFINE_ATTEMPTS - 1:
-                    continue
-                return {"status": "ok", "no_change": True}
-
-            if refined == NO_CHANGE_MARKER:
-                return {"status": "ok", "no_change": True}
-
-            if severity not in ("high", "critical"):
-                return {"status": "ok", "no_change": True}
-
-            return {"status": "ok", "no_change": False, "refined_translation": refined}
-
-        return {"status": "ok", "no_change": True}
 
     async def _perform_translate(self, source: str, context_items: list) -> dict:
-        """执行 LLM 直接翻译"""
-        PLACEHOLDER_ANSWER = "...translated text..."
-        MAX_TRANSLATE_ATTEMPTS = 3
-
-        source = (source or "").strip()
-        if not source:
-            return {"status": "error", "message": "empty source"}
-
-        target_lang_value = ""
-        try:
-            tl = self.get_translation_target_lang()
-            if isinstance(tl, str) and tl.strip():
-                target_lang_value = tl.strip().lower()[:16]
-        except Exception:
-            target_lang_value = ""
-
-        normalized_context: list[dict[str, str]] = []
-        if isinstance(context_items, list) and LLM_REFINE_CONTEXT_MAX_COUNT > 0:
-            max_items = max(1, int(LLM_REFINE_CONTEXT_MAX_COUNT))
-            for item in context_items[-max_items:]:
-                if not isinstance(item, dict):
-                    continue
-                ctx_source = item.get("source")
-                ctx_translation = item.get("translation")
-                if not isinstance(ctx_source, str) or not isinstance(ctx_translation, str):
-                    continue
-                ctx_source = ctx_source.strip()
-                ctx_translation = ctx_translation.strip()
-                if not ctx_source or not ctx_translation:
-                    continue
-                if len(ctx_source) > 5000 or len(ctx_translation) > 5000:
-                    continue
-                normalized_context.append({"source": ctx_source, "translation": ctx_translation})
-
-        context_block = ""
-        if normalized_context:
-            lines = [
-                "Context (for coherence only; do NOT quote it; do NOT merge or rewrite it into the current translation; "
-                "even if the source is short, do NOT output the context; use it only to resolve pronouns, references, and coherence):",
-            ]
-            for idx, item in enumerate(normalized_context, start=1):
-                lines.append(f"{idx}. Source: {item['source']}")
-                lines.append(f"   Translation: {item['translation']}")
-            context_block = "\n".join(lines) + "\n\n"
-
-        prompt_suffix = (LLM_PROMPT_SUFFIX or "").strip()
-        suffix_block = f"\n{prompt_suffix}" if prompt_suffix else ""
-
-        prompt = (
-            f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
-            "You are a professional real-time translator. Translate the source text into the target language.\n"
-            "\n"
-            "Rules:\n"
-            "1. Output ONLY the translation; no explanations or extra text.\n"
-            "2. Preserve the original meaning, named entities, numbers, and tone.\n"
-            "3. If the source is a question, keep it a question in the translation (preserve question intent and punctuation such as '?' where appropriate).\n"
-            "4. Do NOT add or omit information.\n\n"
-            "Output ONLY the translation wrapped exactly as:\n"
-            f"<answer>{PLACEHOLDER_ANSWER}</answer>\n\n"
-            f"{context_block}"
-            "Source:\n```\n"
-            f"{source}\n"
-            "```\n"
-            f"{suffix_block}"
+        """执行 LLM 直接翻译（共享逻辑见 llm_refine.perform_translate）。"""
+        return await llm_refine.perform_translate(
+            self._llm_chat,
+            source,
+            context_items,
+            target_lang=self.get_translation_target_lang(),
         )
-
-        for attempt in range(MAX_TRANSLATE_ATTEMPTS):
-            try:
-                content = await self._llm_chat(
-                    "You are a precise real-time translator.",
-                    prompt,
-                    temperature=float(LLM_TEMPERATURE),
-                    max_tokens=int(LLM_REFINE_MAX_TOKENS),
-                )
-            except (asyncio.CancelledError, Exception) as exc:
-                if isinstance(exc, HostedLlmDisabled):
-                    return {"status": "error", "message": "llm_disabled"}
-                if isinstance(exc, (LlmError, HostedLlmError)):
-                    return {"status": "error", "message": str(exc)}
-                return {"status": "error", "message": "LLM request failed"}
-
-            raw_content = str(content or "").strip()
-            translated = extract_answer_tag(raw_content).strip()
-
-            if not translated:
-                if attempt < MAX_TRANSLATE_ATTEMPTS - 1:
-                    continue
-                return {"status": "error", "message": "empty translation"}
-
-            if translated.startswith("```"):
-                translated = re.sub(r"^```[^\n]*\n", "", translated)
-                translated = re.sub(r"\n```$", "", translated.strip())
-            translated = translated.strip("`").strip()
-
-            if translated == PLACEHOLDER_ANSWER:
-                if attempt < MAX_TRANSLATE_ATTEMPTS - 1:
-                    continue
-                return {"status": "error", "message": "placeholder translation"}
-
-            return {"status": "ok", "translation": translated}
-
-        return {"status": "error", "message": "translation failed"}
 
     def set_llm_refine_mode(self, mode: str) -> tuple[bool, str]:
         value = (mode or "").strip().lower()
@@ -1792,8 +1624,12 @@ class GeminiSession:
                 t.get("text")
                 and not self._is_internal_token(t)
                 and (t.get("translation_status") == "translation" or source_as_output)
-                and self._is_sentence_ending_punctuation(t.get("text", ""))
-                for t in new_final_tokens
+                and self._token_text_is_sentence_ending(
+                    new_final_tokens,
+                    index,
+                    source_as_output=source_as_output,
+                )
+                for index, t in enumerate(new_final_tokens)
             )
             speaker_value = None
             for token in reversed(new_final_tokens):

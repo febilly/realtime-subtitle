@@ -7,6 +7,9 @@ from unittest.mock import MagicMock
 
 def _install_soniox_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "soniox_session", raising=False)
+    # Re-import the shared LLM helper fresh so it binds to this test's mocked
+    # config / llm_client rather than a version cached by an earlier test.
+    monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
     config = ModuleType("config")
     config.SONIOX_WEBSOCKET_URL = "wss://example.invalid"
     config.SONIOX_STREAM_DURATION_SECONDS = None
@@ -243,6 +246,32 @@ def test_punctuation_separator_lands_at_period_within_batch(monkeypatch):
     assert kinds == ["foo.", "SEP", "and", "you"], kinds
 
 
+def test_punctuation_does_not_split_unspaced_decimal_point(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    _feed_original_batch(session, ["version 3.", "10", " is out."], "en")
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = [
+        "SEP" if t.get("is_separator") else t.get("text")
+        for t in final_tokens
+    ]
+    assert kinds == ["version 3.", "10", " is out.", "SEP"], kinds
+
+
 def _feed_tokens(session, tokens):
     return session._process_soniox_response(
         {
@@ -427,6 +456,471 @@ def _feed_non_final(session, text, language):
     )
 
 
+def _feed_non_final_translation(session, text, language):
+    return session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": text,
+                    "is_final": False,
+                    "speaker": "1",
+                    "translation_status": "translation",
+                    "language": language,
+                }
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def _feed_original_and_translation(session, source, translation, source_language="en", translation_language="zh"):
+    return session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": source,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": source_language,
+                    "source_language": source_language,
+                },
+                {
+                    "text": translation,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "translation",
+                    "language": translation_language,
+                    "source_language": source_language,
+                },
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def _feed_original_and_translation_pair(session, source, translation, source_language="en", translation_language="zh"):
+    return session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": source,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": source_language,
+                    "source_language": source_language,
+                },
+                {
+                    "text": translation,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "translation",
+                    "language": translation_language,
+                    "source_language": source_language,
+                },
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def _feed_original_and_translation_pair_with_endpoint(session, source, translation, source_language="en", translation_language="zh"):
+    return session._process_soniox_response(
+        {
+            "endpoint_detected": True,
+            "tokens": [
+                {
+                    "text": source,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": source_language,
+                    "source_language": source_language,
+                },
+                {
+                    "text": translation,
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "translation",
+                    "language": translation_language,
+                    "source_language": source_language,
+                },
+            ],
+        },
+        [],
+        0,
+        object(),
+    )
+
+
+def test_non_final_translation_tokens_are_marked_as_interim(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._llm_refine_mode = "translate"
+
+    _feed_non_final_translation(session, "你好", "zh")
+
+    non_final_translation_tokens = [
+        token
+        for update in updates
+        for token in update.get("non_final_tokens", [])
+        if token.get("translation_status") == "translation"
+    ]
+    assert non_final_translation_tokens
+    assert all(token.get("had_interim_translation") is True for token in non_final_translation_tokens)
+
+
+def test_displayed_final_translation_tokens_before_sentence_end_are_marked_as_interim(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+
+    _feed_original_and_translation_pair(session, "Hello ", "你好", source_language="en")
+
+    final_translation_tokens = [
+        token
+        for update in updates
+        for token in update.get("final_tokens", [])
+        if token.get("translation_status") == "translation"
+    ]
+    assert final_translation_tokens
+    assert all(token.get("had_interim_translation") is True for token in final_translation_tokens)
+
+
+def test_hybrid_finalize_without_interim_translation_uses_direct_llm_translate(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_translate(source, context_items, target_lang=None):
+        calls.append(("translate", source, target_lang))
+        return {"status": "ok", "translation": "LLM translation."}
+
+    async def fake_refine(*args, **kwargs):
+        raise AssertionError("refine should not run without interim translation")
+
+    session._perform_translate = fake_translate
+    session._perform_refine = fake_refine
+
+    _feed_original_and_translation(session, "Hello there.", "你好。")
+
+    assert calls == [("translate", "Hello there.", "zh")]
+    refined = [u for u in updates if u.get("type") == "refine_result"]
+    assert refined[-1]["refined_translation"] == "LLM translation."
+    final_translation_tokens = [
+        token
+        for update in updates
+        for token in update.get("final_tokens", [])
+        if token.get("translation_status") == "translation"
+    ]
+    assert final_translation_tokens
+    assert all(not token.get("had_interim_translation") for token in final_translation_tokens)
+
+
+def test_hybrid_finalize_with_interim_translation_refines_final_stt_translation(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append(("refine", source, translation))
+        return {"status": "ok", "no_change": False, "refined_translation": "Refined STT translation."}
+
+    async def fake_translate(*args, **kwargs):
+        raise AssertionError("direct translate should not run after interim translation")
+
+    session._perform_refine = fake_refine
+    session._perform_translate = fake_translate
+
+    _feed_non_final_translation(session, "你好", "zh")
+    _feed_original_and_translation(session, "Hello there.", "你好。")
+
+    assert calls == [("refine", "Hello there.", "你好。")]
+    refined = [u for u in updates if u.get("type") == "refine_result"]
+    assert refined[-1]["original_translation"] == "你好。"
+    assert refined[-1]["refined_translation"] == "Refined STT translation."
+    final_translation_tokens = [
+        token
+        for update in updates
+        for token in update.get("final_tokens", [])
+        if token.get("translation_status") == "translation"
+    ]
+    assert final_translation_tokens
+    assert any(token.get("had_interim_translation") is True for token in final_translation_tokens)
+
+
+def test_hybrid_final_translation_seen_before_sentence_end_uses_refine(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append(("refine", source, translation))
+        return {"status": "ok", "no_change": False, "refined_translation": "Refined STT translation."}
+
+    async def fake_translate(*args, **kwargs):
+        raise AssertionError("direct translate should not run after displayed interim translation")
+
+    session._perform_refine = fake_refine
+    session._perform_translate = fake_translate
+
+    _feed_original_and_translation_pair(session, "Hello ", "你好", source_language="en")
+    _feed_original_and_translation_pair(session, "there.", "。", source_language="en")
+
+    assert calls == [("refine", "Hello there.", "你好。")]
+
+
+def test_hybrid_endpoint_finalizes_punctuation_mode_without_sentence_punctuation(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append(("refine", source, translation))
+        return {"status": "ok", "no_change": False, "refined_translation": "Refined endpoint translation"}
+
+    async def fake_translate(*args, **kwargs):
+        raise AssertionError("direct translate should not run when endpoint closes displayed translation")
+
+    session._perform_refine = fake_refine
+    session._perform_translate = fake_translate
+
+    _feed_original_and_translation_pair_with_endpoint(
+        session,
+        "In modern times we do much the same",
+        "在现代，我们也做着很多类似的事",
+        source_language="en",
+    )
+
+    assert calls == [
+        (
+            "refine",
+            "In modern times we do much the same",
+            "在现代，我们也做着很多类似的事",
+        )
+    ]
+    assert _separator_in_updates(updates)
+
+
+def test_hybrid_source_punctuation_finalizes_without_translation_punctuation(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append(("refine", source, translation))
+        return {"status": "ok", "no_change": False, "refined_translation": "Refined punctuation translation"}
+
+    async def fake_translate(*args, **kwargs):
+        raise AssertionError("direct translate should not run when source punctuation closes displayed translation")
+
+    session._perform_refine = fake_refine
+    session._perform_translate = fake_translate
+
+    _feed_original_and_translation_pair(
+        session,
+        "Blood.",
+        "血",
+        source_language="en",
+    )
+
+    assert calls == [("refine", "Blood.", "血")]
+    assert _separator_in_updates(updates)
+
+
+def test_hybrid_finalize_with_interim_translation_keeps_stt_when_refine_no_change(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = False
+
+    async def fake_refine(source, translation, context_items):
+        return {"status": "ok", "no_change": True}
+
+    async def fake_translate(*args, **kwargs):
+        raise AssertionError("direct translate should not run after interim translation")
+
+    session._perform_refine = fake_refine
+    session._perform_translate = fake_translate
+
+    _feed_non_final_translation(session, "你好", "zh")
+    _feed_original_and_translation(session, "Hello there.", "你好。")
+
+    refined = [u for u in updates if u.get("type") == "refine_result"]
+    assert refined[-1]["original_translation"] == "你好。"
+    assert refined[-1]["no_change"] is True
+    assert refined[-1]["refined_translation"] is None
+
+
+def test_perform_refine_keeps_medium_severity_as_no_change(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+    import llm_refine
+
+    monkeypatch.setattr(llm_refine, "extract_answer_tag", lambda _raw: "更自然的译文。")
+    session = module.SonioxSession(MagicMock(), MagicMock())
+
+    async def fake_llm_chat(*args, **kwargs):
+        return "<answer>更自然的译文。</answer>\n<severity>medium</severity>"
+
+    session._llm_chat = fake_llm_chat
+
+    result = asyncio.run(session._perform_refine("Hello there.", "你好。", []))
+
+    assert result == {"status": "ok", "no_change": True}
+
+
+def test_perform_refine_accepts_high_severity_replacement(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+    import llm_refine
+
+    monkeypatch.setattr(llm_refine, "extract_answer_tag", lambda _raw: "更准确的译文。")
+    session = module.SonioxSession(MagicMock(), MagicMock())
+
+    async def fake_llm_chat(*args, **kwargs):
+        return "<answer>更准确的译文。</answer>\n<severity>high</severity>"
+
+    session._llm_chat = fake_llm_chat
+
+    result = asyncio.run(session._perform_refine("Hello there.", "你好。", []))
+
+    assert result == {
+        "status": "ok",
+        "no_change": False,
+        "refined_translation": "更准确的译文。",
+    }
+
+
 def test_accurate_mode_speculative_translation_fires_instantly_and_reuses_cache(monkeypatch):
     """准确 mode speculative translation: a sentence complete in the non-final
     text fires the LLM immediately (interim text rarely changes, so no upfront
@@ -606,6 +1100,7 @@ def test_split_into_sentence_lines(monkeypatch):
     assert split("等等…好") == ["等等…", "好"]
     assert split("A。 B。 C") == ["A。", "B。", "C"]   # trailing partial kept, spaces trimmed
     assert split("no punct tail") == ["no punct tail"]
+    assert split("版本 3.10 已发布。下一句") == ["版本 3.10 已发布。", "下一句"]
     assert split("") == []
 
 
@@ -824,3 +1319,73 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
 
     assert opened_warming_flags == [False, True]
     session._broadcast_preserve_existing_subtitles.assert_not_called()
+
+
+def test_punctuation_speaker_change_finalizes_previous_speaker(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append(("refine", source, translation))
+        return {"status": "ok", "no_change": False, "refined_translation": "Refined"}
+
+    async def fake_translate(*args, **kwargs):
+        raise AssertionError("direct translate should not run when speaker change closes displayed translation")
+
+    session._perform_refine = fake_refine
+    session._perform_translate = fake_translate
+
+    all_final_tokens = []
+
+    # Speaker 1 speaks with no sentence-ending punctuation and no endpoint yet:
+    # the sentence stays open (nothing to finalize).
+    sent_count, _, _ = session._process_soniox_response(
+        {
+            "tokens": [
+                {"text": "Hello there", "is_final": True, "speaker": "1",
+                 "translation_status": "original", "language": "en", "source_language": "en"},
+                {"text": "你好", "is_final": True, "speaker": "1",
+                 "translation_status": "translation", "language": "zh", "source_language": "en"},
+            ]
+        },
+        all_final_tokens,
+        0,
+        object(),
+    )
+    assert calls == []
+
+    # Speaker 2 starts: speaker 1's open sentence must finalize (LLM refine)
+    # instead of lingering as a provisional line.
+    session._process_soniox_response(
+        {
+            "tokens": [
+                {"text": "Goodbye", "is_final": True, "speaker": "2",
+                 "translation_status": "original", "language": "en", "source_language": "en"},
+                {"text": "再见", "is_final": True, "speaker": "2",
+                 "translation_status": "translation", "language": "zh", "source_language": "en"},
+            ]
+        },
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+
+    assert ("refine", "Hello there", "你好") in calls

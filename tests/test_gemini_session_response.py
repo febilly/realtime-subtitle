@@ -8,6 +8,9 @@ import pytest
 
 def _install_gemini_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "gemini_session", raising=False)
+    # Re-import the shared LLM helper fresh so it binds to this test's mocked
+    # config / llm_client rather than a version cached by an earlier test.
+    monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
     config = ModuleType("config")
     config.GEMINI_STREAM_DURATION_SECONDS = None
     config.GEMINI_SLEEP_ON_SILENCE = False
@@ -198,6 +201,7 @@ def test_split_into_sentence_lines(monkeypatch):
     assert split("在睡觉。") == ["在睡觉。"]
     assert split("等等…好") == ["等等…", "好"]
     assert split("no punct tail") == ["no punct tail"]
+    assert split("版本 3.10 已发布。下一句") == ["版本 3.10 已发布。", "下一句"]
     assert split("") == []
 
 
