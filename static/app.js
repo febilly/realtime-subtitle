@@ -676,6 +676,10 @@ let sessionHadLlmCost = false;
 // 存储后端改进结果
 const backendRefinedResults = new Map();
 const backendRefinedResultsBySentenceId = new Map();
+// Sentences the LLM reviewed and decided need NO change: the STT/Soniox
+// translation is confirmed as-is, so it is revealed as final text (not left
+// gray/provisional) even though there is no refined replacement.
+const backendConfirmedSentenceIds = new Set();
 // LLM 直译模式下覆盖 Soniox 译文
 const llmTranslationOverrides = new Map();
 const llmTranslationOverridesBySentenceId = new Map();
@@ -1842,13 +1846,6 @@ function getDisplayTranslationForSentence(sentence, source, originalTranslation)
 }
 
 function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
-    // 混合 (hybrid) must show the STT API's built-in translation immediately and
-    // then let the LLM result replace it, so it must NOT be hidden here. Only
-    // 准确 (accurate) — which runs the STT API with its translation disabled, so
-    // there's normally nothing to show — suppresses any stray built-in tokens.
-    if (translationUiMode !== 'accurate') {
-        return false;
-    }
     if (!isLlmTranslateMode()) {
         return false;
     }
@@ -1858,7 +1855,20 @@ function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
     if (hasRefined) {
         return false;
     }
-    return sentenceHasTranslationTokenAtOrAfter(sentence, llmTranslateHideAfterSequence);
+    if (translationUiMode === 'accurate') {
+        return sentenceHasTranslationTokenAtOrAfter(sentence, llmTranslateHideAfterSequence);
+    }
+    if (translationUiMode === 'hybrid') {
+        if (!sentence || sentence.isClosed !== true) {
+            return false;
+        }
+        if (sentenceHasNonFinalTranslation(sentence)) {
+            return false;
+        }
+        const afterHybridBoundary = sentenceHasTranslationTokenAtOrAfter(sentence, hybridInterimAfterSequence);
+        return afterHybridBoundary && !sentenceHadInterimTranslation(sentence);
+    }
+    return false;
 }
 
 // True when any of the sentence's translation tokens carries a sequence index
@@ -1875,6 +1885,20 @@ function sentenceHasTranslationTokenAtOrAfter(sentence, threshold) {
         const seq = token && typeof token._sequenceIndex === 'number' ? token._sequenceIndex : null;
         return seq !== null && seq >= threshold;
     });
+}
+
+function sentenceHadInterimTranslation(sentence) {
+    if (!sentence || !Array.isArray(sentence.translationTokens)) {
+        return false;
+    }
+    return sentence.translationTokens.some((token) => token && token.had_interim_translation === true);
+}
+
+function sentenceHasNonFinalTranslation(sentence) {
+    if (!sentence || !Array.isArray(sentence.translationTokens)) {
+        return false;
+    }
+    return sentence.translationTokens.some((token) => token && token.is_final === false);
 }
 
 function handleBackendRefineResult(data) {
@@ -1914,6 +1938,10 @@ function handleBackendRefineResult(data) {
                 }
             }
         }
+    } else if (noChange && sentenceId) {
+        // LLM confirmed the STT translation is good enough: mark the sentence
+        // reviewed so it renders as final text instead of staying gray.
+        backendConfirmedSentenceIds.add(sentenceId);
     }
     renderSubtitles();
 }
@@ -3474,6 +3502,14 @@ async function restartRecognition({ auto = false, targetLang = null, translation
 
         await delay(1500);
 
+        // Restart is done: swap the "restarting…" placeholder for the waiting
+        // state (matches the Qt overlay's "等待字幕…") until real subtitles
+        // arrive. Guard so we don't clobber subtitles that already streamed in.
+        if (!auto && subtitleContainer.innerHTML === manualStatusHtml) {
+            subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
+            subtitleContainer.scrollTop = 0;
+        }
+
         shouldReconnect = true;
         if (!auto || !hasUsableWebSocket()) {
             connect();
@@ -4379,6 +4415,7 @@ function clearSubtitleState() {
 
     backendRefinedResults.clear();
     backendRefinedResultsBySentenceId.clear();
+    backendConfirmedSentenceIds.clear();
     llmTranslationOverrides.clear();
     llmTranslationOverridesBySentenceId.clear();
     llmTranslationLangBySentenceId.clear();
@@ -4639,6 +4676,7 @@ function renderSubtitles() {
             translationLang: null,
             requiresTranslation: options.requiresTranslation !== undefined ? options.requiresTranslation : null, // null means undecided
             isTranslationOnly: !!options.translationOnly,
+            isClosed: false,
             hasFakeTranslation: false
         };
         sentences.push(sentence);
@@ -4679,6 +4717,9 @@ function renderSubtitles() {
                 currentSentence.translationTokens.length === 0
             ) {
                 currentSentence.hasFakeTranslation = true;
+            }
+            if (currentSentence) {
+                currentSentence.isClosed = true;
             }
 
             currentSentence = null;
@@ -4870,7 +4911,10 @@ function renderSubtitles() {
                 }
                 const hasRefined = (sentenceLlmId && backendRefinedResultsBySentenceId.has(sentenceLlmId))
                     || (key ? backendRefinedResults.has(key) : false);
-                const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined);
+                // The LLM reviewed this sentence and left it unchanged: treat it
+                // as resolved so the STT translation is revealed as final text.
+                const isLlmConfirmed = !!(sentenceLlmId && backendConfirmedSentenceIds.has(sentenceLlmId));
+                const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined || isLlmConfirmed);
 
                 if (!shouldHide) {
                     const displayTranslation = overrideTranslation
@@ -4894,6 +4938,7 @@ function renderSubtitles() {
                         // produced after switching into the mode; pre-existing ones
                         // get no LLM result, so they render as normal final text.
                         const afterHybridBoundary = translationUiMode === 'hybrid'
+                            && !isLlmConfirmed
                             && sentenceHasTranslationTokenAtOrAfter(sentence, hybridInterimAfterSequence);
 
                         // 混合 mode should surface STT/Soniox's provisional
