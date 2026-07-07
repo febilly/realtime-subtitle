@@ -150,6 +150,61 @@ def canonicalize_target_lang(lang: str, provider: str | None = None) -> str:
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
     return canonicalize_language_code(lang) if p == "gemini" else normalize_language_code(lang)
 
+
+# English display names for language codes, used to enrich LLM translate/refine
+# prompts so the model is told the full language name, not just the code.
+# Mirrors the English names in the frontend LANGUAGE_NAME_MAP (static/app.js).
+LANGUAGE_ENGLISH_NAMES = {
+    "af": "Afrikaans", "ak": "Akan", "sq": "Albanian", "am": "Amharic",
+    "ar": "Arabic", "hy": "Armenian", "az": "Azerbaijani", "eu": "Basque",
+    "be": "Belarusian", "bn": "Bengali", "bs": "Bosnian", "bg": "Bulgarian",
+    "my": "Burmese", "ca": "Catalan", "zh": "Chinese",
+    "zh-hans": "Chinese (Simplified)", "zh-hant": "Chinese (Traditional)",
+    "hr": "Croatian", "cs": "Czech", "da": "Danish", "nl": "Dutch",
+    "en": "English", "et": "Estonian", "fil": "Filipino", "fi": "Finnish",
+    "fr": "French", "gl": "Galician", "ka": "Georgian", "de": "German",
+    "el": "Greek", "gu": "Gujarati", "ha": "Hausa", "he": "Hebrew",
+    "hi": "Hindi", "hu": "Hungarian", "is": "Icelandic", "id": "Indonesian",
+    "it": "Italian", "ja": "Japanese", "jv": "Javanese", "kn": "Kannada",
+    "kk": "Kazakh", "km": "Khmer", "rw": "Kinyarwanda", "ko": "Korean",
+    "lo": "Lao", "lv": "Latvian", "lt": "Lithuanian", "mk": "Macedonian",
+    "ms": "Malay", "ml": "Malayalam", "mr": "Marathi", "mn": "Mongolian",
+    "ne": "Nepali", "no": "Norwegian", "fa": "Persian", "pl": "Polish",
+    "pt": "Portuguese", "pa": "Punjabi", "ro": "Romanian", "ru": "Russian",
+    "sr": "Serbian", "sd": "Sindhi", "si": "Sinhala", "sk": "Slovak",
+    "sl": "Slovenian", "es": "Spanish", "su": "Sundanese", "sw": "Swahili",
+    "sv": "Swedish", "tl": "Tagalog", "ta": "Tamil", "te": "Telugu",
+    "th": "Thai", "tr": "Turkish", "uk": "Ukrainian", "ur": "Urdu",
+    "uz": "Uzbek", "vi": "Vietnamese", "cy": "Welsh", "zu": "Zulu",
+}
+
+
+def language_english_name(lang: str) -> str:
+    """Return the English name for a language code, or '' when unknown.
+
+    Tries the raw code first (so BCP-47 variants like 'zh-hant' resolve to
+    'Chinese (Traditional)'), then falls back to the normalized primary subtag.
+    """
+    raw = str(lang or "").strip().lower()
+    if not raw:
+        return ""
+    if raw in LANGUAGE_ENGLISH_NAMES:
+        return LANGUAGE_ENGLISH_NAMES[raw]
+    return LANGUAGE_ENGLISH_NAMES.get(normalize_language_code(raw), "")
+
+
+def describe_target_language(lang: str) -> str:
+    """Human-readable target-language description for LLM prompts.
+
+    Returns e.g. 'zh (Chinese)' so the model gets both the code and the name.
+    Falls back to just the code, or 'unknown' when empty.
+    """
+    raw = str(lang or "").strip()
+    if not raw:
+        return "unknown"
+    name = language_english_name(raw)
+    return f"{raw} ({name})" if name else raw
+
 # Load .env here so env vars are available when other modules import this config.
 load_dotenv()
 
@@ -590,8 +645,11 @@ LLM_PROMPT_SUFFIX = _env_str("LLM_PROMPT_SUFFIX", "")
 LLM_TEMPERATURE = min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.2)))
 
 # Whether to show edits (diff highlight) between original and refined translation on frontend.
-# - True: deleted text in red background + strikethrough; added text in green background
-# - False: show final translation only (default)
+# - True: added text in green background (and, when SHOW_DELETIONS, deleted text in red +
+#   strikethrough) so the user can see what the refinement changed (default).
+# - False: directly replace the original translation with the refined one, no highlight.
+# Default is True because Improve mode makes surgical, minimal edits to the fast
+# translation, so a word-level diff pinpoints exactly what was fixed.
 LLM_REFINE_SHOW_DIFF = _env_bool("LLM_REFINE_SHOW_DIFF", True)
 
 # When diff highlight is enabled, whether to show deleted text.
@@ -668,8 +726,84 @@ def get_llm_api_keys() -> list[str]:
     return list(_LLM_API_KEYS)
 
 
+# ======================== Hosted (relay) LLM tuning ========================
+# In relay/hosted mode the LLM upstream config, context window, timeout and
+# input cap are delivered by the subtitle-server (GET /billing/llm-config) rather
+# than read from the local .env. Populated via set_hosted_llm_config().
+HOSTED_LLM_AVAILABLE = False
+HOSTED_LLM_CONTEXT_MIN = int(LLM_REFINE_CONTEXT_MIN_COUNT)
+HOSTED_LLM_CONTEXT_MAX = int(LLM_REFINE_CONTEXT_MAX_COUNT)
+HOSTED_LLM_TIMEOUT_SECONDS = 8.0
+HOSTED_LLM_MAX_INPUT_TOKENS = 10000
+HOSTED_LLM_MAX_OUTPUT_TOKENS = 200
+# STT billing factor the server applies to soniox 准确 (accurate) mode, where
+# soniox's built-in translation is disabled. Defaults to 1.0 (no discount) until
+# the server delivers the real value, so the client never under-estimates cost.
+HOSTED_SONIOX_NO_TRANSLATION_FACTOR = 1.0
+
+
+def set_hosted_llm_config(cfg) -> None:
+    """Store the server-delivered hosted LLM tuning (relay mode)."""
+    global HOSTED_LLM_AVAILABLE, HOSTED_LLM_CONTEXT_MIN, HOSTED_LLM_CONTEXT_MAX
+    global HOSTED_LLM_TIMEOUT_SECONDS, HOSTED_LLM_MAX_INPUT_TOKENS, HOSTED_LLM_MAX_OUTPUT_TOKENS
+    global HOSTED_SONIOX_NO_TRANSLATION_FACTOR
+    if not isinstance(cfg, dict):
+        return
+    HOSTED_LLM_AVAILABLE = bool(cfg.get("available"))
+    try:
+        cmin = int(cfg.get("context_min", HOSTED_LLM_CONTEXT_MIN))
+        cmax = int(cfg.get("context_max", HOSTED_LLM_CONTEXT_MAX))
+        HOSTED_LLM_CONTEXT_MIN = max(1, cmin)
+        HOSTED_LLM_CONTEXT_MAX = max(HOSTED_LLM_CONTEXT_MIN, cmax)
+    except Exception:
+        pass
+    try:
+        HOSTED_LLM_TIMEOUT_SECONDS = max(1.0, float(cfg.get("timeout_seconds", HOSTED_LLM_TIMEOUT_SECONDS)))
+    except Exception:
+        pass
+    try:
+        HOSTED_LLM_MAX_INPUT_TOKENS = max(1, int(cfg.get("max_input_tokens", HOSTED_LLM_MAX_INPUT_TOKENS)))
+    except Exception:
+        pass
+    try:
+        HOSTED_LLM_MAX_OUTPUT_TOKENS = max(1, int(cfg.get("max_output_tokens", HOSTED_LLM_MAX_OUTPUT_TOKENS)))
+    except Exception:
+        pass
+    try:
+        factor = float(cfg.get("soniox_no_translation_factor", HOSTED_SONIOX_NO_TRANSLATION_FACTOR))
+        if factor > 0:
+            HOSTED_SONIOX_NO_TRANSLATION_FACTOR = min(1.0, factor)
+    except Exception:
+        pass
+
+
+def llm_is_hosted() -> bool:
+    """Whether LLM calls should go through the relay instead of a local key."""
+    return bool(RELAY_MODE)
+
+
+def llm_context_bounds() -> tuple[int, int]:
+    """Effective (min, max) context item counts for LLM refine/translate."""
+    if RELAY_MODE:
+        return (int(HOSTED_LLM_CONTEXT_MIN), int(HOSTED_LLM_CONTEXT_MAX))
+    return (int(LLM_REFINE_CONTEXT_MIN_COUNT), int(LLM_REFINE_CONTEXT_MAX_COUNT))
+
+
+def llm_timeout_seconds() -> float:
+    """Per-request LLM timeout. Hosted mode uses the server value; own-key mode a
+    generous timeout (no client-side retry there)."""
+    return float(HOSTED_LLM_TIMEOUT_SECONDS) if RELAY_MODE else 60.0
+
+
+def llm_max_output_tokens() -> int:
+    return int(HOSTED_LLM_MAX_OUTPUT_TOKENS) if RELAY_MODE else int(LLM_REFINE_MAX_TOKENS)
+
+
 def is_llm_refine_available() -> bool:
-    """Whether the backend has enough configuration to use LLM refine feature."""
+    """Whether LLM refine/translate can run. In relay mode this reflects the
+    server-advertised hosted availability; in own-key mode the local config."""
+    if RELAY_MODE:
+        return bool(HOSTED_LLM_AVAILABLE)
     keys = get_llm_api_keys()
     base_url = (LLM_BASE_URL or "").strip()
     model = (LLM_MODEL or "").strip()
@@ -860,23 +994,31 @@ def _http_to_ws(url: str) -> str:
     return url
 
 
-def relay_ws_url(provider: str | None = None, model: str | None = None) -> str:
+def relay_ws_url(provider: str | None = None, model: str | None = None, translation: str | None = None) -> str:
     """WebSocket relay endpoint for a provider on the configured server.
 
     When ``model`` is given it is appended as a ``?model=`` query parameter so the
     server can authenticate, authorize and meter the stream at the WebSocket
     handshake (before the first frame). The model is still also sent in the first
     frame, so older servers that read it from the body keep working.
+
+    ``translation="none"`` signals the server that soniox runs STT-only (准确
+    mode), so it bills at the reduced no-translation factor.
     """
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
     p = str(p).strip().lower()
     if p not in ("soniox", "gemini"):
         p = "soniox"
     url = f"{_http_to_ws(SUBTITLE_SERVER_URL)}/relay/{p}"
-    if model:
-        from urllib.parse import quote
+    from urllib.parse import quote
 
-        url += f"?model={quote(str(model), safe='')}"
+    params = []
+    if model:
+        params.append(f"model={quote(str(model), safe='')}")
+    if translation:
+        params.append(f"translation={quote(str(translation), safe='')}")
+    if params:
+        url += "?" + "&".join(params)
     return url
 
 
