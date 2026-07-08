@@ -669,6 +669,17 @@ let translationUiMode = getStoredTranslationUiMode();
 // before switching into 混合 are never grayed (no LLM result is coming for them).
 // null = not in 混合. See setTranslationUiMode / clearSubtitleState.
 let hybridInterimAfterSequence = translationUiMode === 'hybrid' ? 0 : null;
+// 混合 (soniox) provisional-translation display debounce. When a non-final
+// Soniox translation first appears we hold it back for 20ms, showing only the
+// target-language label. If it survives that window it gets painted, and its
+// sentence id is latched into hybridShownTranslationSentenceIds so that a later
+// finalize (e.g. a short clause ending in "、") can never hide a translation the
+// user has already seen — it stays until the LLM result replaces it.
+const HYBRID_TRANSLATION_DISPLAY_DEBOUNCE_MS = 20;
+// stable per-speaker-stream key -> timestamp at which the interim may be shown.
+const hybridTranslationReadyAt = new Map();
+const hybridShownTranslationSentenceIds = new Set();
+let hybridTranslationDebounceTimer = null;
 // Per-request hosted LLM cost reported by the relay, accumulated for this session.
 let sessionLlmCost = 0;
 let sessionHadLlmCost = false;
@@ -1895,7 +1906,18 @@ function sentenceHadInterimTranslation(sentence) {
     if (!sentence || !Array.isArray(sentence.translationTokens)) {
         return false;
     }
-    return sentence.translationTokens.some((token) => token && token.had_interim_translation === true);
+    const sentenceId = getLlmSentenceId(sentence);
+    // Latched at render time once the Soniox translation was actually painted:
+    // even if the sentence later finalizes as a single short chunk, a
+    // translation the user has already seen must not disappear.
+    if (sentenceId && hybridShownTranslationSentenceIds.has(sentenceId)) {
+        return true;
+    }
+    const had = sentence.translationTokens.some((token) => token && token.had_interim_translation === true);
+    if (had && sentenceId) {
+        hybridShownTranslationSentenceIds.add(sentenceId);
+    }
+    return had;
 }
 
 function sentenceHasNonFinalTranslation(sentence) {
@@ -1903,6 +1925,96 @@ function sentenceHasNonFinalTranslation(sentence) {
         return false;
     }
     return sentence.translationTokens.some((token) => token && token.is_final === false);
+}
+
+// A non-final Soniox translation never carries an llm_sentence_id (those get
+// assigned only when a token is finalized), so the debounce is keyed by the
+// stable speaker/language stream instead of the (constantly changing) text.
+function getHybridTranslationStreamKey(token) {
+    if (!token) return null;
+    return [
+        token.speaker || '',
+        token.language || '',
+        token.source_language || ''
+    ].join('|');
+}
+
+function clearHybridTranslationDebounceState() {
+    hybridTranslationReadyAt.clear();
+    hybridShownTranslationSentenceIds.clear();
+    if (hybridTranslationDebounceTimer !== null) {
+        clearTimeout(hybridTranslationDebounceTimer);
+        hybridTranslationDebounceTimer = null;
+    }
+}
+
+function scheduleHybridTranslationDebounceRender(readyAt) {
+    const delay = Math.max(0, readyAt - Date.now() + 1);
+    if (hybridTranslationDebounceTimer !== null) {
+        clearTimeout(hybridTranslationDebounceTimer);
+    }
+    hybridTranslationDebounceTimer = setTimeout(() => {
+        hybridTranslationDebounceTimer = null;
+        renderSubtitles();
+    }, delay);
+}
+
+function prepareHybridTranslationDebounce(tokens) {
+    if (translationProvider !== 'soniox' || translationUiMode !== 'hybrid' || !isLlmTranslateMode()) {
+        clearHybridTranslationDebounceState();
+        return;
+    }
+    const now = Date.now();
+    const activeKeys = new Set();
+    let nextReadyAt = null;
+    (tokens || []).forEach((token) => {
+        if (!token || token.is_final !== false) return;
+        if ((token.translation_status || 'original') !== 'translation') return;
+        const key = getHybridTranslationStreamKey(token);
+        if (!key) return;
+        activeKeys.add(key);
+        if (!hybridTranslationReadyAt.has(key)) {
+            hybridTranslationReadyAt.set(key, now + HYBRID_TRANSLATION_DISPLAY_DEBOUNCE_MS);
+        }
+        const readyAt = hybridTranslationReadyAt.get(key);
+        if (readyAt > now && (nextReadyAt === null || readyAt < nextReadyAt)) {
+            nextReadyAt = readyAt;
+        }
+    });
+    // A stream whose interim translation is no longer present has ended (it
+    // finalized or was retracted). Drop it so the next sentence by the same
+    // speaker starts a fresh 20ms window instead of inheriting a stale one.
+    for (const key of Array.from(hybridTranslationReadyAt.keys())) {
+        if (!activeKeys.has(key)) {
+            hybridTranslationReadyAt.delete(key);
+        }
+    }
+    if (nextReadyAt !== null) {
+        scheduleHybridTranslationDebounceRender(nextReadyAt);
+    }
+}
+
+function shouldHoldHybridTranslationForDebounce(sentence) {
+    if (translationProvider !== 'soniox' || translationUiMode !== 'hybrid' || !isLlmTranslateMode()) {
+        return false;
+    }
+    if (!sentence || !Array.isArray(sentence.translationTokens)) {
+        return false;
+    }
+    // Never hold back a translation the user has already seen.
+    const sentenceId = getLlmSentenceId(sentence);
+    if (sentenceId && hybridShownTranslationSentenceIds.has(sentenceId)) {
+        return false;
+    }
+    const now = Date.now();
+    return sentence.translationTokens.some((token) => {
+        if (!token || token.is_final !== false) return false;
+        if ((token.translation_status || 'original') !== 'translation') return false;
+        const key = getHybridTranslationStreamKey(token);
+        if (!key) return false;
+        const readyAt = hybridTranslationReadyAt.get(key);
+        return Number.isFinite(readyAt) && now < readyAt;
+    });
 }
 
 function handleBackendRefineResult(data) {
@@ -3189,9 +3301,11 @@ function noteHybridInterimBoundary(mode, previous) {
     if (mode === 'hybrid') {
         if (previous !== 'hybrid') {
             hybridInterimAfterSequence = tokenSequenceCounter + 1;
+            clearHybridTranslationDebounceState();
         }
     } else {
         hybridInterimAfterSequence = null;
+        clearHybridTranslationDebounceState();
     }
 }
 
@@ -4065,6 +4179,7 @@ function handleMessage(data) {
         // 当前进行中尾巴（属于下一句），与已确定 final token 不重叠。清空它只会让
         // 这段预览消失一帧、等下一帧再出现，造成界面闪烁。
         currentNonFinalTokens = (data.non_final_tokens || []).filter(token => token.text !== '<end>');
+        prepareHybridTranslationDebounce(currentNonFinalTokens);
         currentNonFinalTokens.forEach(assignSequenceIndex);
 
         // 合并新增的final tokens
@@ -4584,6 +4699,7 @@ function clearSubtitleState() {
     llmTranslationLangBySentenceId.clear();
     specTranslations.clear();
     specPendingSources.clear();
+    clearHybridTranslationDebounceState();
 
     if (isLlmTranslateMode()) {
         llmTranslateHideAfterSequence = tokenSequenceCounter;
@@ -5092,7 +5208,8 @@ function renderSubtitles() {
                 // The LLM reviewed this sentence and left it unchanged: treat it
                 // as resolved so the STT translation is revealed as final text.
                 const isLlmConfirmed = !!(sentenceLlmId && backendConfirmedSentenceIds.has(sentenceLlmId));
-                const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined || isLlmConfirmed);
+                const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined || isLlmConfirmed)
+                    || shouldHoldHybridTranslationForDebounce(sentence);
 
                 if (!shouldHide) {
                     const displayTranslation = overrideTranslation
@@ -5118,6 +5235,14 @@ function renderSubtitles() {
                         const afterHybridBoundary = translationUiMode === 'hybrid'
                             && !isLlmConfirmed
                             && sentenceHasTranslationTokenAtOrAfter(sentence, hybridInterimAfterSequence);
+
+                        // Latch: the raw Soniox translation is being painted now.
+                        // Record the sentence so a later finalize can't hide a
+                        // translation the user already saw — it stays until the
+                        // LLM result replaces it via overrideTranslation above.
+                        if (afterHybridBoundary && sentenceLlmId) {
+                            hybridShownTranslationSentenceIds.add(sentenceLlmId);
+                        }
 
                         // 混合 mode should surface STT/Soniox's provisional
                         // translation as soon as it arrives, including the first
