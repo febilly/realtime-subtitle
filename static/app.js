@@ -280,12 +280,6 @@ let lockManualControls = false;
 // 由后端下发：LLM 译文修复能力是否可用（缺少 API key 时为 false）
 let llmRefineAvailable = false;
 
-// 由后端下发：是否展示 refined 译文的修订 diff（无前端开关）
-let llmRefineShowDiff = false;
-
-// 由后端下发：diff 高亮时是否显示“被删除”的文本（无前端开关）
-let llmRefineShowDeletions = false;
-
 // 由后端下发：是否启用说话人分离
 let speakerDiarizationEnabled = true;
 // 由后端下发：是否隐藏说话人标签
@@ -648,19 +642,21 @@ let llmTranslateHideAfterSequence = llmRefineMode === 'translate' ? 0 : null;
 // Settings; it drives llmRefineMode for display and is pushed to the backend via
 // /translation-mode (which owns soniox-translation suppression + billing factor).
 const TRANSLATION_UI_MODE_STORAGE_KEY = 'translationUiMode';
-const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid', 'refine'];
-const TRANSLATION_UI_MODE_TO_LLM = { fast: 'off', accurate: 'translate', hybrid: 'translate', refine: 'refine' };
-let refineModeAvailable = false; // whether 改进 is offered (backend-advertised)
+// 混合 now shows the STT draft immediately and refines it in place, so it maps
+// to the internal 'refine' LLM mode. The old separate 改进 UI mode is gone.
+const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid'];
+const TRANSLATION_UI_MODE_TO_LLM = { fast: 'off', accurate: 'translate', hybrid: 'refine' };
 let translationModeSynced = false; // pushed the stored mode to the backend once
 function getStoredTranslationUiMode() {
     try {
         const raw = localStorage.getItem(TRANSLATION_UI_MODE_STORAGE_KEY);
+        // Legacy stored value: the old 改进 mode folds into 混合.
+        if (raw === 'refine') return 'hybrid';
         if (raw && TRANSLATION_UI_MODES.includes(raw)) return raw;
     } catch (e) { /* ignore */ }
-    if (llmRefineMode === 'refine') return 'refine';
-    if (llmRefineMode === 'translate') return 'hybrid';
-    // Default 翻译模式 with no stored preference: 混合 (hybrid). Downgraded to
-    // 'fast' by the caller when LLM/translate isn't available for the active mode.
+    // Transient default before the backend's authoritative translation_ui_mode
+    // (fast/accurate/hybrid) arrives. Default 翻译模式 is 混合 (hybrid); the caller
+    // downgrades to 'fast' when LLM isn't available for the active mode.
     return 'hybrid';
 }
 let translationUiMode = getStoredTranslationUiMode();
@@ -1337,9 +1333,6 @@ async function fetchUiConfig() {
             llmRefineEnabled = false;
             llmTranslateHideAfterSequence = null;
         }
-        llmRefineShowDiff = !!data.llm_refine_show_diff;
-        llmRefineShowDeletions = !!data.llm_refine_show_deletions;
-        refineModeAvailable = !!data.refine_mode_available;
         if (data && Number.isFinite(Number(data.soniox_no_translation_factor)) && Number(data.soniox_no_translation_factor) > 0) {
             sonioxNoTranslationFactor = Math.min(1, Number(data.soniox_no_translation_factor));
         }
@@ -1600,236 +1593,6 @@ async function fetchLlmRefineStatus() {
     }
 }
 
-function containsCjkOrJapanese(text) {
-    // Han (CJK ideographs), Hiragana, Katakana.
-    // We intentionally do NOT include Hangul here; Korean generally benefits from word-level diff.
-    const value = (text || '').toString();
-    return /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value);
-}
-
-function shouldUseCharDiff(original, refined) {
-    return containsCjkOrJapanese(original) || containsCjkOrJapanese(refined);
-}
-
-function tokenizeForDiff(text, mode) {
-    // Tokenize for alignment while ignoring whitespace differences.
-    // mode: 'char' | 'word'
-    const value = (text || '').toString();
-    const out = [];
-
-    if (mode === 'char') {
-        for (let idx = 0; idx < value.length; idx++) {
-            const ch = value[idx];
-            if (/\s/.test(ch)) {
-                continue;
-            }
-            out.push({ text: ch, start: idx, end: idx + 1 });
-        }
-        return out;
-    }
-
-    // Word-level tokenization for non-CJK languages.
-    // We align on words; punctuation becomes its own token.
-    // Uses Unicode character properties (modern Chromium / modern browsers).
-    const wordRe = /[\p{L}\p{N}]+(?:[’'\-][\p{L}\p{N}]+)*/gu;
-    let idx = 0;
-    while (idx < value.length) {
-        const ch = value[idx];
-        if (/\s/.test(ch)) {
-            idx++;
-            continue;
-        }
-
-        wordRe.lastIndex = idx;
-        const m = wordRe.exec(value);
-        if (m && m.index === idx) {
-            const w = m[0] || '';
-            out.push({ text: w, start: idx, end: idx + w.length });
-            idx += w.length;
-            continue;
-        }
-
-        // Punctuation / symbol as a single-character token.
-        out.push({ text: ch, start: idx, end: idx + 1 });
-        idx++;
-    }
-
-    return out;
-}
-
-function renderTranslationDiffHtml(original, refined) {
-    const a = (original || '').toString();
-    const b = (refined || '').toString();
-
-    // Guardrails: LCS is O(n*m). Keep it safe.
-    if (a.length > 12000 || b.length > 12000) {
-        return escapeHtml(b);
-    }
-
-    const mode = shouldUseCharDiff(a, b) ? 'char' : 'word';
-    const A = tokenizeForDiff(a, mode);
-    const B = tokenizeForDiff(b, mode);
-
-    const n = A.length;
-    const m = B.length;
-    if (n === 0 && m === 0) {
-        return escapeHtml(b);
-    }
-
-    // If this would be too expensive, skip highlighting.
-    if (n * m > 400000) {
-        return escapeHtml(b);
-    }
-
-    // LCS DP table (typed arrays for lower overhead).
-    const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-    for (let i = 1; i <= n; i++) {
-        const ai = A[i - 1].text;
-        const row = dp[i];
-        const prevRow = dp[i - 1];
-        for (let j = 1; j <= m; j++) {
-            if (ai === B[j - 1].text) {
-                row[j] = prevRow[j - 1] + 1;
-            } else {
-                const up = prevRow[j];
-                const left = row[j - 1];
-                row[j] = up >= left ? up : left;
-            }
-        }
-    }
-
-    const ops = [];
-    let i = n;
-    let j = m;
-    while (i > 0 || j > 0) {
-        if (i > 0 && j > 0 && A[i - 1].text === B[j - 1].text) {
-            ops.push({ type: 'eq', start: B[j - 1].start, end: B[j - 1].end });
-            i--;
-            j--;
-        } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-            ops.push({ type: 'ins', start: B[j - 1].start, end: B[j - 1].end });
-            j--;
-        } else {
-            ops.push({ type: 'del', text: A[i - 1].text });
-            i--;
-        }
-    }
-    ops.reverse();
-
-    const parts = [];
-    const showDeletions = !!llmRefineShowDeletions;
-    const pushDel = (text) => {
-        if (!showDeletions) return;
-        if (!text) return;
-        parts.push(`<span class="llm-diff-del">${escapeHtml(text)}</span>`);
-    };
-    const pushIns = (text) => {
-        if (!text) return;
-        parts.push(`<span class="llm-diff-ins">${escapeHtml(text)}</span>`);
-    };
-
-    let refinedPos = 0;
-    let delBuffer = '';
-    let insBuffer = '';
-
-    const isWordChar = (s) => {
-        if (!s) return false;
-        try {
-            return /[\p{L}\p{N}]/u.test(s);
-        } catch (e) {
-            return /[A-Za-z0-9]/.test(s);
-        }
-    };
-
-    const appendDeletedToken = (tokenText) => {
-        if (!showDeletions) {
-            return;
-        }
-        const t = (tokenText || '').toString();
-        if (!t) return;
-        if (mode === 'word' && delBuffer) {
-            const last = delBuffer[delBuffer.length - 1];
-            const first = t[0];
-            if (isWordChar(last) && isWordChar(first)) {
-                delBuffer += ' ';
-            }
-        }
-        delBuffer += t;
-    };
-
-    const flushDel = () => {
-        if (!showDeletions) {
-            delBuffer = '';
-            return;
-        }
-        if (delBuffer) {
-            pushDel(delBuffer);
-            delBuffer = '';
-        }
-    };
-    const flushIns = () => {
-        if (insBuffer) {
-            pushIns(insBuffer);
-            insBuffer = '';
-        }
-    };
-
-    for (const op of ops) {
-        if (op.type !== 'ins') {
-            flushIns();
-        }
-        if (op.type !== 'del') {
-            flushDel();
-        }
-
-        if (op.type === 'del') {
-            // Deleted non-whitespace characters are shown in red with strikethrough.
-            if (showDeletions) {
-                appendDeletedToken(op.text);
-            }
-            continue;
-        }
-
-        const start = op.start;
-        const end = op.end;
-        if (typeof start !== 'number' || typeof end !== 'number' || start < 0 || end < start || end > b.length) {
-            continue;
-        }
-
-        // Important: when we ignore whitespace in the alignment, two consecutive non-whitespace insertions
-        // may still be separated by whitespace in the refined string (e.g. inserted multi-word phrase).
-        // If we buffer insertions across that gap, we'd output the whitespace *before* the buffered letters,
-        // which breaks languages that use spaces (English, etc.).
-        if (op.type === 'ins' && start > refinedPos) {
-            flushIns();
-        }
-
-        // Always output refined whitespace (and any other chars between aligned non-ws chars) as plain.
-        if (start > refinedPos) {
-            parts.push(escapeHtml(b.slice(refinedPos, start)));
-        }
-
-        const tokenText = b.slice(start, end);
-        if (op.type === 'eq') {
-            parts.push(escapeHtml(tokenText));
-        } else if (op.type === 'ins') {
-            // Inserted non-whitespace characters are shown in green.
-            insBuffer += tokenText;
-        }
-
-        refinedPos = end;
-    }
-
-    flushIns();
-    flushDel();
-
-    if (refinedPos < b.length) {
-        parts.push(escapeHtml(b.slice(refinedPos)));
-    }
-
-    return parts.join('');
-}
-
 function getDisplayTranslation(source, originalTranslation) {
     const key = `${source}||${originalTranslation}`;
     const refined = backendRefinedResults.get(key);
@@ -1857,10 +1620,12 @@ function getDisplayTranslationForSentence(sentence, source, originalTranslation)
     return getDisplayTranslation(source, originalTranslation);
 }
 
-function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
-    if (translationProvider !== 'soniox') {
-        return false;
-    }
+function shouldHideBuiltinTranslation(sentence, sourceText, hasRefined) {
+    // 准确 (accurate) only: withhold the provider's built-in translation until the
+    // LLM translate result arrives, so the user never sees the lower-quality fast
+    // translation in this mode. soniox suppresses its built-in entirely (so there
+    // are usually no tokens to hide); gemini always translates, so we hide its
+    // built-in tokens here. 混合 (hybrid) shows the draft immediately — never hides.
     if (!isLlmTranslateMode()) {
         return false;
     }
@@ -1870,20 +1635,7 @@ function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
     if (hasRefined) {
         return false;
     }
-    if (translationUiMode === 'accurate') {
-        return sentenceHasTranslationTokenAtOrAfter(sentence, llmTranslateHideAfterSequence);
-    }
-    if (translationUiMode === 'hybrid') {
-        if (!sentence || sentence.isClosed !== true) {
-            return false;
-        }
-        if (sentenceHasNonFinalTranslation(sentence)) {
-            return false;
-        }
-        const afterHybridBoundary = sentenceHasTranslationTokenAtOrAfter(sentence, hybridInterimAfterSequence);
-        return afterHybridBoundary && !sentenceHadInterimTranslation(sentence);
-    }
-    return false;
+    return sentenceHasTranslationTokenAtOrAfter(sentence, llmTranslateHideAfterSequence);
 }
 
 // True when any of the sentence's translation tokens carries a sequence index
@@ -1960,7 +1712,7 @@ function scheduleHybridTranslationDebounceRender(readyAt) {
 }
 
 function prepareHybridTranslationDebounce(tokens) {
-    if (translationProvider !== 'soniox' || translationUiMode !== 'hybrid' || !isLlmTranslateMode()) {
+    if (translationProvider !== 'soniox' || translationUiMode !== 'hybrid') {
         clearHybridTranslationDebounceState();
         return;
     }
@@ -1995,7 +1747,7 @@ function prepareHybridTranslationDebounce(tokens) {
 }
 
 function shouldHoldHybridTranslationForDebounce(sentence) {
-    if (translationProvider !== 'soniox' || translationUiMode !== 'hybrid' || !isLlmTranslateMode()) {
+    if (translationProvider !== 'soniox' || translationUiMode !== 'hybrid') {
         return false;
     }
     if (!sentence || !Array.isArray(sentence.translationTokens)) {
@@ -3230,14 +2982,12 @@ function translationModeLabel(mode) {
 }
 
 function availableTranslationModes() {
-    const modes = ['fast', 'accurate', 'hybrid'];
-    if (refineModeAvailable) modes.push('refine');
-    return modes;
+    return ['fast', 'accurate', 'hybrid'];
 }
 
 function translationModeCostHint(mode) {
-    // 快速(fast) uses no LLM, so no hint. Every other mode (准确/混合/改进) calls
-    // the LLM and shows the same note.
+    // 快速(fast) uses no LLM, so no hint. 准确/混合 both call the LLM and show
+    // the same note.
     if (mode === 'fast') return '';
     return t('translation_cost_llm');
 }
@@ -5208,7 +4958,7 @@ function renderSubtitles() {
                 // The LLM reviewed this sentence and left it unchanged: treat it
                 // as resolved so the STT translation is revealed as final text.
                 const isLlmConfirmed = !!(sentenceLlmId && backendConfirmedSentenceIds.has(sentenceLlmId));
-                const shouldHide = shouldHideSonioxTranslation(sentence, sourceText, hasRefined || isLlmConfirmed)
+                const shouldHide = shouldHideBuiltinTranslation(sentence, sourceText, hasRefined || isLlmConfirmed)
                     || shouldHoldHybridTranslationForDebounce(sentence);
 
                 if (!shouldHide) {
@@ -5219,10 +4969,9 @@ function renderSubtitles() {
                             : baseTranslationNormalized);
 
                     if (displayTranslation && displayTranslation !== baseTranslationNormalized) {
-                        const showDiff = llmRefineShowDiff && !isLlmTranslateMode();
-                        const html = showDiff
-                            ? renderTranslationDiffHtml(baseTranslationNormalized, displayTranslation)
-                            : escapeHtml(displayTranslation);
+                        // LLM-refined text replaces the draft in place as plain
+                        // text — no diff highlighting (it's a distraction to read).
+                        const html = escapeHtml(displayTranslation);
                         sentenceParts.push(`<div class="subtitle-line" lang="${sentence.translationLang || ''}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text" lang="${sentence.translationLang || ''}">${html}</span>`, translationDir, sentence.translationLang)}</div>`);
                     } else if (overrideTranslation) {
                         const html = escapeHtml(displayTranslation || '');

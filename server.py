@@ -146,18 +146,6 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--twitch-stream-quality', dest='twitch_stream_quality', default=None)
     parser.add_argument('--ffmpeg-path', dest='ffmpeg_path', default=None)
 
-    refine_diff_group = parser.add_mutually_exclusive_group()
-    refine_diff_group.add_argument('--llm-refine-show-diff', dest='llm_refine_show_diff', action='store_true', default=None,
-                                  help='Show diff highlights for refined translations (no UI toggle)')
-    refine_diff_group.add_argument('--no-llm-refine-show-diff', dest='llm_refine_show_diff', action='store_false', default=None,
-                                  help='Do not show diff highlights for refined translations (default)')
-
-    refine_del_group = parser.add_mutually_exclusive_group()
-    refine_del_group.add_argument('--llm-refine-show-deletions', dest='llm_refine_show_deletions', action='store_true', default=None,
-                                 help='When diff is enabled, show deleted text with red strikethrough (no UI toggle)')
-    refine_del_group.add_argument('--no-llm-refine-show-deletions', dest='llm_refine_show_deletions', action='store_false', default=None,
-                                 help='When diff is enabled, do not show deleted text (default)')
-
     refine_toggle_group = parser.add_mutually_exclusive_group()
     refine_toggle_group.add_argument('--llm-refine', dest='llm_refine_default_enabled', action='store_true', default=None,
                                      help='Enable LLM refine by default (can be toggled in UI if unlocked)')
@@ -213,8 +201,6 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     _set_env_if_provided('TWITCH_STREAM_QUALITY', args.twitch_stream_quality)
     _set_env_if_provided('FFMPEG_PATH', args.ffmpeg_path)
 
-    _set_env_bool_if_provided('LLM_REFINE_SHOW_DIFF', args.llm_refine_show_diff)
-    _set_env_bool_if_provided('LLM_REFINE_SHOW_DELETIONS', args.llm_refine_show_deletions)
     _set_env_bool_if_provided('LLM_REFINE_DEFAULT_ENABLED', args.llm_refine_default_enabled)
 
 

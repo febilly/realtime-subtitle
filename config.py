@@ -665,19 +665,6 @@ LLM_PROMPT_SUFFIX = _env_str("LLM_PROMPT_SUFFIX", "")
 # LLM temperature (0.0-2.0). Lower is more deterministic.
 LLM_TEMPERATURE = min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.2)))
 
-# Whether to show edits (diff highlight) between original and refined translation on frontend.
-# - True: added text in green background (and, when SHOW_DELETIONS, deleted text in red +
-#   strikethrough) so the user can see what the refinement changed (default).
-# - False: directly replace the original translation with the refined one, no highlight.
-# Default is True because Improve mode makes surgical, minimal edits to the fast
-# translation, so a word-level diff pinpoints exactly what was fixed.
-LLM_REFINE_SHOW_DIFF = _env_bool("LLM_REFINE_SHOW_DIFF", True)
-
-# When diff highlight is enabled, whether to show deleted text.
-# - True: current behavior (show deletions with red background + strikethrough)
-# - False: show additions only, hide deletions (default)
-LLM_REFINE_SHOW_DELETIONS = _env_bool("LLM_REFINE_SHOW_DELETIONS", False)
-
 # Context item range used for LLM refine / translate (completed pairs: source + translation).
 # Strategy:
 # - each request starts from min count and increases by +1 up to max count

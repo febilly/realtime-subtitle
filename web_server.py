@@ -25,7 +25,6 @@ from config import (
     LLM_REFINE_CONTEXT_MIN_COUNT,
     LLM_REFINE_CONTEXT_MAX_COUNT,
 )
-from config import LLM_REFINE_SHOW_DIFF, LLM_REFINE_SHOW_DELETIONS
 
 from audio_capture import list_microphone_devices, normalize_microphone_device_id
 from llm_client import close_llm_http_session
@@ -268,12 +267,9 @@ class WebServer:
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
             "llm_refine_context_min_count": int(config.llm_context_bounds()[0]),
             "llm_refine_context_max_count": int(config.llm_context_bounds()[1]),
-            "llm_refine_show_diff": bool(LLM_REFINE_SHOW_DIFF),
-            "llm_refine_show_deletions": bool(LLM_REFINE_SHOW_DELETIONS),
-            # Unified 翻译模式 (fast/accurate/hybrid/refine). 改进(refine) is available
-            # in both hosted and own-key modes now (it routes LLM calls the same way).
+            # Unified 翻译模式: 快速(fast) / 准确(accurate) / 混合(hybrid). 混合 shows
+            # the STT draft immediately and refines it in place.
             "translation_ui_mode": (self.session.get_translation_mode() if hasattr(self.session, "get_translation_mode") else "fast"),
-            "refine_mode_available": bool(is_llm_refine_available()),
             # Server-delivered STT billing factor for soniox 准确 mode (built-in
             # translation off); the client mirrors it in its live cost estimate.
             "soniox_no_translation_factor": float(config.HOSTED_SONIOX_NO_TRANSLATION_FACTOR),
