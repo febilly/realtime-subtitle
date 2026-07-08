@@ -1642,6 +1642,59 @@ def test_stream_rollover_disabled_in_relay_mode(monkeypatch):
     assert session._stream_rollover_seconds() is None
 
 
+def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    relay_calls = []
+    sent_payloads = []
+    config_translations = []
+
+    class FakeWs:
+        def send(self, payload):
+            sent_payloads.append(payload)
+
+        def close(self):
+            return None
+
+    def relay_ws_url(provider=None, model=None, translation=None):
+        relay_calls.append({
+            "provider": provider,
+            "model": model,
+            "translation": translation,
+        })
+        return "wss://relay.invalid/relay/soniox"
+
+    def get_config(api_key, audio_format, translation, **kwargs):
+        config_translations.append(translation)
+        return {
+            "api_key": api_key,
+            "model": "stt-rt-v5",
+        }
+
+    monkeypatch.setattr(module, "sync_connect", MagicMock(return_value=FakeWs()))
+    monkeypatch.setattr(module, "get_config", get_config)
+    module.config.RELAY_MODE = True
+    module.config.RELAY_TOKEN = "ss_test"
+    module.config.relay_ws_url = relay_ws_url
+
+    session = module.SonioxSession(MagicMock(), MagicMock())
+
+    stream = session._open_soniox_stream_state(
+        "relay-placeholder",
+        1,
+        "pcm_s16le",
+        "none",
+        "en",
+    )
+
+    assert config_translations == ["none"]
+    assert relay_calls[-1]["translation"] == "none"
+    assert sent_payloads
+    assert '"api_key": ""' in sent_payloads[-1]
+    stream.ws.close()
+
+
 def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

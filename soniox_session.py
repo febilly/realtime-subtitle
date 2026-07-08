@@ -1787,8 +1787,8 @@ class SonioxSession:
         *,
         warming: bool = False,
     ) -> _SonioxStreamState:
-        # 准确 (accurate) mode: disable soniox's built-in translation — the LLM
-        # does the translating — so it bills at the reduced no-translation factor.
+        # Disable Soniox's built-in translation for any STT-only stream: either
+        # the user selected no translation, or accurate mode lets the LLM handle it.
         effective_translation = "none" if self._suppress_soniox_translation else translation
         stream_config = get_config(
             api_key,
@@ -1810,7 +1810,7 @@ class SonioxSession:
             relay_url = config.relay_ws_url(
                 "soniox",
                 model=stream_config.get("model"),
-                translation="none" if self._suppress_soniox_translation else None,
+                translation="none" if effective_translation == "none" else None,
             )
             print(f"Connecting to relay Soniox ({label}{purpose}): {relay_url}")
             ws = sync_connect(
