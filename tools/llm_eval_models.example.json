@@ -1,0 +1,21 @@
+{
+  "models": [
+    {
+      "name": "example-openai-compatible",
+      "base_url": "https://api.example.com/v1",
+      "api_key_env": "EXAMPLE_LLM_API_KEY",
+      "model": "example-chat-model",
+      "temperature": 0.2,
+      "max_tokens": 1024,
+      "timeout_seconds": 60,
+      "currency": "CNY",
+      "extra_headers": {},
+      "extra_json": {},
+      "pricing": {
+        "input_per_1m": 0.5,
+        "cached_input_per_1m": 0.1,
+        "output_per_1m": 1.5
+      }
+    }
+  ]
+}

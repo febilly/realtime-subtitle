@@ -160,6 +160,60 @@ def _build_translate_prompt(source: str, target_lang_value: str, context_block: 
     )
 
 
+def build_refine_messages(
+    source: str,
+    translation: str,
+    context_items: list,
+    *,
+    target_lang,
+) -> list[dict[str, str]]:
+    """Build the exact chat messages used by ``perform_refine``.
+
+    Offline evaluation tools import this so experiments exercise the same prompt
+    template as the realtime session path.
+    """
+    target_lang_value = _clean_target_lang(target_lang)
+    context_block = _render_context_block(
+        _normalize_context(context_items), mention_translation=True
+    )
+    return [
+        {"role": "system", "content": "You are a precise translation reviewer."},
+        {
+            "role": "user",
+            "content": _build_refine_prompt(
+                (source or "").strip(),
+                (translation or "").strip(),
+                target_lang_value,
+                context_block,
+            ),
+        },
+    ]
+
+
+def build_translate_messages(
+    source: str,
+    context_items: list,
+    *,
+    target_lang: Optional[str] = None,
+) -> list[dict[str, str]]:
+    """Build the exact chat messages used by ``perform_translate``."""
+    target_lang_value = _clean_target_lang(target_lang)
+    context_block = _render_context_block(
+        _normalize_context(context_items), mention_translation=False
+    )
+    return [
+        {"role": "system", "content": "You are a precise real-time translator."},
+        {
+            "role": "user",
+            "content": _build_translate_prompt(
+                (source or "").strip(),
+                target_lang_value,
+                context_block,
+            ),
+        },
+    ]
+
+
 async def perform_refine(
     chat: ChatFn,
     source: str,
@@ -175,17 +229,18 @@ async def perform_refine(
     if not source or not translation:
         return {"status": "error", "no_change": True}
 
-    target_lang_value = _clean_target_lang(target_lang)
-    context_block = _render_context_block(
-        _normalize_context(context_items), mention_translation=True
+    messages = build_refine_messages(
+        source,
+        translation,
+        context_items,
+        target_lang=target_lang,
     )
-    prompt = _build_refine_prompt(source, translation, target_lang_value, context_block)
 
     for attempt in range(MAX_REFINE_ATTEMPTS):
         try:
             content = await chat(
-                "You are a precise translation reviewer.",
-                prompt,
+                messages[0]["content"],
+                messages[1]["content"],
                 temperature=float(config.LLM_TEMPERATURE),
                 max_tokens=int(config.LLM_REFINE_MAX_TOKENS),
             )
@@ -236,17 +291,17 @@ async def perform_translate(
     if not source:
         return {"status": "error", "message": "empty source"}
 
-    target_lang_value = _clean_target_lang(target_lang)
-    context_block = _render_context_block(
-        _normalize_context(context_items), mention_translation=False
+    messages = build_translate_messages(
+        source,
+        context_items,
+        target_lang=target_lang,
     )
-    prompt = _build_translate_prompt(source, target_lang_value, context_block)
 
     for attempt in range(MAX_TRANSLATE_ATTEMPTS):
         try:
             content = await chat(
-                "You are a precise real-time translator.",
-                prompt,
+                messages[0]["content"],
+                messages[1]["content"],
                 temperature=float(config.LLM_TEMPERATURE),
                 max_tokens=int(config.LLM_REFINE_MAX_TOKENS),
             )
