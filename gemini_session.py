@@ -53,6 +53,7 @@ from relay_errors import relay_close_info
 import gemini_client
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
+from osc_draft import OscDraftPublisher
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
 import sentence_segmentation
@@ -960,10 +961,21 @@ class GeminiSession:
 
         context_items = self._get_dynamic_context_items()
 
+        mode = self.get_llm_refine_mode()
+
+        # 混合: push the fast built-in draft to the chatbox immediately (before the
+        # LLM), so viewers never wait on refine latency; a high/critical refine
+        # replaces that same line afterwards. 准确 publishes once, after the LLM.
+        osc_pub = OscDraftPublisher(
+            osc_manager,
+            enabled=self.get_osc_translation_enabled(),
+            wants_draft=(mode != "translate"),
+        )
+        osc_pub.send_draft(self._select_osc_text(display_translation, source, original_tokens))
+
         refined_translation = display_translation
         no_change = True
 
-        mode = self.get_llm_refine_mode()
         if is_llm_refine_available() and mode != "off" and translation:
             try:
                 if mode == "refine":
@@ -995,13 +1007,10 @@ class GeminiSession:
             "no_change": no_change,
         })
 
-        if self.get_osc_translation_enabled():
-            try:
-                osc_text = self._select_osc_text(refined_translation, source, original_tokens)
-                if osc_text:
-                    osc_manager.add_message_and_send(osc_text, ongoing=False)
-            except Exception as error:
-                print(f"OSC send failed: {error}")
+        osc_pub.publish_final(
+            self._select_osc_text(refined_translation, source, original_tokens),
+            no_change=no_change,
+        )
 
         self._refine_context_history.append({"source": source, "translation": refined_translation})
         max_history = max(1, int(self._context_bounds()[1]))
@@ -1095,11 +1104,15 @@ class GeminiSession:
         )
 
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
-        """Apply the unified 翻译模式. Gemini always translates, so accurate and
-        hybrid behave the same (LLM on, built-in translation on); no restart is
-        ever needed here."""
+        """Apply the unified 翻译模式 (fast/accurate/hybrid), mirroring the soniox
+        session. 混合 shows the built-in draft and refines it in place (internal
+        refine); 准确 does a full LLM translate. Gemini always keeps its built-in
+        translation on, so no stream restart is ever needed here."""
         normalized = str(mode or "").strip().lower()
-        mapping = {"fast": "off", "accurate": "translate", "hybrid": "translate", "refine": "refine"}
+        # "refine" is accepted as a legacy alias and normalized to 混合.
+        if normalized == "refine":
+            normalized = "hybrid"
+        mapping = {"fast": "off", "accurate": "translate", "hybrid": "refine"}
         if normalized not in mapping:
             return False, f"Invalid translation mode: {mode}", False
         self._llm_refine_mode = mapping[normalized]
@@ -1110,9 +1123,9 @@ class GeminiSession:
 
     def get_translation_mode(self) -> str:
         if self._llm_refine_mode == "refine":
-            return "refine"
-        if self._llm_refine_mode == "translate":
             return "hybrid"
+        if self._llm_refine_mode == "translate":
+            return "accurate"
         return "fast"
 
     async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:

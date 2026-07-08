@@ -53,6 +53,7 @@ from relay_errors import relay_close_info
 from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
+from osc_draft import OscDraftPublisher
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
 import sentence_segmentation
@@ -915,7 +916,10 @@ class SonioxSession:
         """在非 Pure LLM 模式下，实时发送最新翻译（ongoing=True）。"""
         if not self.get_osc_translation_enabled():
             return
-        if self.get_llm_refine_mode() == "translate":
+        # 准确 mode suppresses soniox's built-in translation, so there is no live
+        # translation stream to preview here (the LLM handles it at finalize).
+        # 混合 keeps the built-in translation and previews it live as usual.
+        if self._suppress_soniox_translation:
             return
 
         non_final_translation_by_speaker: dict[str, list[str]] = {}
@@ -1460,9 +1464,9 @@ class SonioxSession:
 
         mode = self.get_llm_refine_mode()
         llm_can_run = is_llm_refine_available() and mode != "off"
-        # refine improves an existing translation; translate (hybrid/accurate)
-        # can work from the source alone, so it runs even with no built-in
-        # translation (准确 mode, where soniox translation is disabled).
+        # 混合 (refine) improves the built-in draft, so it needs one; 准确
+        # (translate) works from the source alone and runs even with soniox
+        # translation disabled.
         if mode == "refine" and not translation:
             llm_can_run = False
         # Source already in the target language: nothing to translate — skip the
@@ -1486,6 +1490,19 @@ class SonioxSession:
             or normalize_language_code(self.get_translation_target_lang())
         )
 
+        # 混合: push the fast STT draft to the VRChat chatbox immediately (before
+        # the LLM), so viewers never wait on refine latency; a high/critical refine
+        # replaces that same line afterwards. 准确 has no draft (soniox translation
+        # is off), so it publishes once, after the LLM.
+        osc_pub = OscDraftPublisher(
+            osc_manager,
+            enabled=self.get_osc_translation_enabled(),
+            wants_draft=(mode != "translate"),
+            speaker=speaker,
+        )
+        if display_translation:
+            osc_pub.send_draft(self._select_osc_text(display_translation, source, original_tokens))
+
         refined_translation = display_translation
         no_change = True
 
@@ -1497,34 +1514,28 @@ class SonioxSession:
                         refined_translation = result.get("refined_translation") or translation
                         no_change = False
                 elif mode == "translate":
-                    if had_interim_translation and translation:
-                        result = await self._perform_refine(source, translation, context_items)
-                        if result.get("status") == "ok" and not result.get("no_change"):
-                            refined_translation = result.get("refined_translation") or translation
-                            no_change = False
+                    # A speculative call may already have translated this exact
+                    # sentence from the non-final text; reuse it (awaiting an
+                    # in-flight one) instead of paying for a second request.
+                    speculative = await self._spec_take_for(source)
+                    if speculative:
+                        refined_translation = speculative
+                        no_change = False
                     else:
-                        # A speculative call may already have translated this exact
-                        # sentence from the non-final text; reuse it (awaiting an
-                        # in-flight one) instead of paying for a second request.
-                        speculative = await self._spec_take_for(source)
-                        if speculative:
-                            refined_translation = speculative
+                        # 准确 mode: no speculative result to show — put the
+                        # translation-line placeholder up right away while this
+                        # finalize-path LLM call runs (refine_result clears it).
+                        if self._suppress_soniox_translation:
+                            await self.broadcast_callback({
+                                "type": "spec_translation_pending",
+                                "source": source,
+                                "target_lang": utterance_target_lang,
+                            })
+                        result = await self._perform_translate(source, context_items, target_lang=utterance_target_lang)
+                        if result.get("status") == "ok":
+                            translated = (result.get("translation") or "").strip()
+                            refined_translation = translated if translated else translation
                             no_change = False
-                        else:
-                            # 准确 mode: no speculative result to show — put the
-                            # translation-line placeholder up right away while this
-                            # finalize-path LLM call runs (refine_result clears it).
-                            if self._suppress_soniox_translation:
-                                await self.broadcast_callback({
-                                    "type": "spec_translation_pending",
-                                    "source": source,
-                                    "target_lang": utterance_target_lang,
-                                })
-                            result = await self._perform_translate(source, context_items, target_lang=utterance_target_lang)
-                            if result.get("status") == "ok":
-                                translated = (result.get("translation") or "").strip()
-                                refined_translation = translated if translated else translation
-                                no_change = False
             except Exception as error:
                 if mode == "translate":
                     refined_translation = translation
@@ -1546,13 +1557,10 @@ class SonioxSession:
             "target_lang": utterance_target_lang,
         })
 
-        if self.get_osc_translation_enabled():
-            try:
-                osc_text = self._select_osc_text(refined_translation, source, original_tokens)
-                if osc_text:
-                    osc_manager.add_message_and_send(osc_text, ongoing=False, speaker=speaker)
-            except Exception as error:
-                print(f"OSC send failed: {error}")
+        osc_pub.publish_final(
+            self._select_osc_text(refined_translation, source, original_tokens),
+            no_change=no_change,
+        )
 
         self._refine_context_history.append({
             "sentence_id": sentence_id,
@@ -1664,11 +1672,15 @@ class SonioxSession:
         soniox stream must be reopened because its translation on/off changed.
         """
         normalized = str(mode or "").strip().lower()
+        # 混合 (hybrid) now shows the STT draft immediately and refines it in place,
+        # so it maps onto the internal refine mode. "refine" is accepted as a
+        # legacy alias (old stored prefs / clients) and normalized to hybrid.
+        if normalized == "refine":
+            normalized = "hybrid"
         mapping = {
             "fast": ("off", False),
             "accurate": ("translate", True),
-            "hybrid": ("translate", False),
-            "refine": ("refine", False),
+            "hybrid": ("refine", False),
         }
         if normalized not in mapping:
             return False, f"Invalid translation mode: {mode}", False
@@ -1686,8 +1698,6 @@ class SonioxSession:
         if self._suppress_soniox_translation:
             return "accurate"
         if self._llm_refine_mode == "refine":
-            return "refine"
-        if self._llm_refine_mode == "translate":
             return "hybrid"
         return "fast"
 
@@ -1717,8 +1727,10 @@ class SonioxSession:
         if mode not in ("translation", "endpoint", "punctuation"):
             return False, f"Invalid segment mode: {mode}"
 
-        if mode == "translation" and self.get_llm_refine_mode() == "translate":
-            return False, "Segment mode 'translation' is disabled when LLM translate mode is enabled"
+        # 准确 mode disables soniox's built-in translation, so there is no
+        # translation stream to segment on. 混合 keeps it, so it is allowed.
+        if mode == "translation" and self._suppress_soniox_translation:
+            return False, "Segment mode 'translation' is disabled in 准确 (accurate) mode"
 
         self._segment_mode = mode
         self._sentence_buffers.clear()

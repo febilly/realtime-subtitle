@@ -834,3 +834,111 @@ def test_output_transcription_applies_fullwidth_punct_fix(monkeypatch):
     token = updates[-1]["final_tokens"][0]
     assert token["translation_status"] == "translation"
     assert token["text"] == "这是，翻译。"
+
+
+def test_gemini_translation_mode_maps_onto_internal_llm_mode(monkeypatch):
+    # Gemini mirrors soniox's 3-mode model: 混合→refine, 准确→translate, 快速→off.
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    session = module.GeminiSession(MagicMock(), MagicMock())
+
+    ok, normalized, needs_restart = session.set_translation_mode("hybrid")
+    assert (ok, normalized, needs_restart) == (True, "hybrid", False)
+    assert session._llm_refine_mode == "refine"
+    assert session.get_translation_mode() == "hybrid"
+
+    session.set_translation_mode("accurate")
+    assert session._llm_refine_mode == "translate"
+    assert session.get_translation_mode() == "accurate"
+
+    session.set_translation_mode("fast")
+    assert session._llm_refine_mode == "off"
+    assert session.get_translation_mode() == "fast"
+
+    # Legacy 改进 value folds into 混合.
+    ok, normalized, _ = session.set_translation_mode("refine")
+    assert normalized == "hybrid"
+    assert session._llm_refine_mode == "refine"
+
+    assert session.set_translation_mode("nonsense")[0] is False
+
+
+def test_gemini_hybrid_finalize_refines_draft_and_updates_osc(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("hybrid")
+    session.set_osc_translation_enabled(True)
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append(("refine", source, translation))
+        return {"status": "ok", "no_change": False, "refined_translation": "改进后的译文。"}
+
+    session._perform_refine = fake_refine
+
+    original_tokens = [{"text": "Hello there.", "translation_status": "original",
+                        "language": "en", "is_final": True, "speaker": "0"}]
+    translation_tokens = [{"text": "你好。", "translation_status": "translation",
+                           "language": "zh", "is_final": True, "speaker": "0"}]
+
+    asyncio.run(session._finalize_sentence_async("0", original_tokens, translation_tokens, "sid-1"))
+
+    assert calls == [("refine", "Hello there.", "你好。")]
+    refined = [u for u in updates if u.get("type") == "refine_result"]
+    assert refined[-1]["refined_translation"] == "改进后的译文。"
+    # 混合: the fast draft goes out first, then the refine replaces it in place.
+    assert module.osc_manager.add_message_and_send.call_count == 1
+    assert module.osc_manager.update_message_and_send.call_count == 1
+
+
+def test_gemini_hybrid_finalize_keeps_draft_when_refine_no_change(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("hybrid")
+    session.set_osc_translation_enabled(True)
+
+    async def fake_refine(source, translation, context_items):
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    original_tokens = [{"text": "Hello there.", "translation_status": "original",
+                        "language": "en", "is_final": True, "speaker": "0"}]
+    translation_tokens = [{"text": "你好。", "translation_status": "translation",
+                           "language": "zh", "is_final": True, "speaker": "0"}]
+
+    asyncio.run(session._finalize_sentence_async("0", original_tokens, translation_tokens, "sid-1"))
+
+    refined = [u for u in updates if u.get("type") == "refine_result"]
+    assert refined[-1]["no_change"] is True
+    # Draft sent once; no update because the LLM left it unchanged.
+    assert module.osc_manager.add_message_and_send.call_count == 1
+    assert module.osc_manager.update_message_and_send.call_count == 0
