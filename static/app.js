@@ -680,6 +680,7 @@ const backendRefinedResultsBySentenceId = new Map();
 // translation is confirmed as-is, so it is revealed as final text (not left
 // gray/provisional) even though there is no refined replacement.
 const backendConfirmedSentenceIds = new Set();
+const retractedSentenceIds = new Set();
 // LLM 直译模式下覆盖 Soniox 译文
 const llmTranslationOverrides = new Map();
 const llmTranslationOverridesBySentenceId = new Map();
@@ -1846,6 +1847,9 @@ function getDisplayTranslationForSentence(sentence, source, originalTranslation)
 }
 
 function shouldHideSonioxTranslation(sentence, sourceText, hasRefined) {
+    if (translationProvider !== 'soniox') {
+        return false;
+    }
     if (!isLlmTranslateMode()) {
         return false;
     }
@@ -1917,6 +1921,9 @@ function handleBackendRefineResult(data) {
     if (!source) {
         return;
     }
+    if (sentenceId && retractedSentenceIds.has(sentenceId)) {
+        return;
+    }
     // The sentence is finalized now; its speculative-pending marker (if any)
     // is obsolete — the synthesized line takes over from here.
     specPendingSources.delete(source);
@@ -1943,6 +1950,60 @@ function handleBackendRefineResult(data) {
         // reviewed so it renders as final text instead of staying gray.
         backendConfirmedSentenceIds.add(sentenceId);
     }
+    renderSubtitles();
+}
+
+function cleanupSentenceCaches(sentenceId) {
+    if (!sentenceId) {
+        return;
+    }
+    const id = String(sentenceId);
+    retractedSentenceIds.add(id);
+    backendRefinedResultsBySentenceId.delete(id);
+    backendConfirmedSentenceIds.delete(id);
+    llmTranslationOverridesBySentenceId.delete(id);
+    llmTranslationLangBySentenceId.delete(id);
+}
+
+function handleSubtitleRetract(data) {
+    const sentenceId = data && data.sentence_id ? String(data.sentence_id).trim() : '';
+    if (!sentenceId) {
+        return;
+    }
+
+    cleanupSentenceCaches(sentenceId);
+
+    const kept = [];
+    let removedAny = false;
+    for (const token of allFinalTokens) {
+        if (token && token.llm_sentence_id && String(token.llm_sentence_id) === sentenceId) {
+            removedAny = true;
+            continue;
+        }
+        kept.push(token);
+    }
+
+    if (!removedAny) {
+        return;
+    }
+
+    allFinalTokens = kept;
+    for (let i = allFinalTokens.length - 1; i >= 0; i--) {
+        const token = allFinalTokens[i];
+        if (!token || !token.is_separator) {
+            continue;
+        }
+        const prev = allFinalTokens[i - 1];
+        const next = allFinalTokens[i + 1];
+        if (!prev || !next || (prev.is_separator && next.is_separator)) {
+            allFinalTokens.splice(i, 1);
+        }
+    }
+
+    lastMergedIndex = Math.max(0, allFinalTokens.length - 1);
+    renderedSentences.clear();
+    renderedBlocks.clear();
+    mergeFinalTokens();
     renderSubtitles();
 }
 
@@ -3863,6 +3924,10 @@ function handleMessage(data) {
         handleBackendRefineResult(data);
         return;
     }
+    if (data.type === 'subtitle_retract') {
+        handleSubtitleRetract(data);
+        return;
+    }
     if (data.type === 'llm_cost') {
         const credits = Number(data.credits);
         if (Number.isFinite(credits) && credits > 0) {
@@ -4124,10 +4189,90 @@ function getLanguageTag(language) {
 // Mirrors the backend's sentence-ending set / _split_into_sentence_lines so
 // the 准确-mode speculative preview keys match the backend's cache keys.
 const SENTENCE_ENDING_CHARS = new Set(['。', '！', '？', '.', '!', '?', '︒', '︕', '︖', '…']);
+const CLOSING_QUOTE_CHARS = new Set(['"', "'", '”', '’', '»', '›', '」', '』', '》']);
+const SENTENCE_END_ABBREVIATION_EXCEPTIONS = ['a.m.', 'p.m.', 'e.g.', 'i.e.', 'u.s.', 'u.k.'];
+const SENTENCE_END_ABBREVIATION_PREFIXES = SENTENCE_END_ABBREVIATION_EXCEPTIONS.flatMap((abbr) => {
+    const prefixes = [];
+    for (let i = 0; i < abbr.length - 1; i++) {
+        if (abbr[i] === '.') {
+            prefixes.push(abbr.slice(0, i + 1));
+        }
+    }
+    return prefixes;
+});
+
+function isSentenceEnderAt(value, index) {
+    const ch = value[index];
+    if (ch === '.') {
+        const prevCh = index > 0 ? value[index - 1] : '';
+        const nextCh = index + 1 < value.length ? value[index + 1] : '';
+        if (/\d/.test(prevCh) && /\d/.test(nextCh)) {
+            return false;
+        }
+    }
+    return SENTENCE_ENDING_CHARS.has(ch);
+}
+
+function textEndsWithAbbreviationSegment(text, segment) {
+    const value = String(text || '').trimEnd().toLowerCase();
+    if (!value.endsWith(segment)) {
+        return false;
+    }
+    const start = value.length - segment.length;
+    return start === 0 || !/[a-z]/i.test(value[start - 1]);
+}
+
+function textEndsWithAbbreviationException(text) {
+    return SENTENCE_END_ABBREVIATION_EXCEPTIONS.some((abbr) => textEndsWithAbbreviationSegment(text, abbr));
+}
+
+function textEndsWithAbbreviationPrefix(text) {
+    return SENTENCE_END_ABBREVIATION_PREFIXES.some((prefix) => textEndsWithAbbreviationSegment(text, prefix));
+}
+
+function tokenTextContinuesDecimal(previousText, nextText) {
+    if (!previousText || !nextText) {
+        return false;
+    }
+    return !/\s$/.test(previousText) && !/^\s/.test(nextText) && /^\d/.test(nextText);
+}
+
+function tokenTextStartsWithClosingQuote(previousText, nextText) {
+    if (!previousText || !nextText) {
+        return false;
+    }
+    return !/\s$/.test(previousText) && CLOSING_QUOTE_CHARS.has(nextText[0]);
+}
+
+function textContinuesAbbreviation(previousText, nextText) {
+    const combined = `${previousText || ''}${nextText || ''}`;
+    return textEndsWithAbbreviationException(combined) || textEndsWithAbbreviationPrefix(combined);
+}
+
+function isSentenceEndingPunctuation(text) {
+    let value = String(text || '').trim();
+    if (!value) {
+        return false;
+    }
+    while (value && CLOSING_QUOTE_CHARS.has(value[value.length - 1])) {
+        value = value.slice(0, -1).trimEnd();
+    }
+    if (!value || textEndsWithAbbreviationException(value) || textEndsWithAbbreviationPrefix(value)) {
+        return false;
+    }
+    for (let i = value.length - 1; i >= 0; i--) {
+        if (SENTENCE_ENDING_CHARS.has(value[i])) {
+            return isSentenceEnderAt(value, i);
+        }
+        if (!/\s/.test(value[i])) {
+            return false;
+        }
+    }
+    return false;
+}
 
 function endsWithSentenceEnding(text) {
-    const value = (text || '').trim();
-    return !!value && SENTENCE_ENDING_CHARS.has(value[value.length - 1]);
+    return isSentenceEndingPunctuation(text);
 }
 
 // "甲。乙丙！丁" -> ["甲。", "乙丙！", "丁"]; a run of ending punctuation stays
@@ -4137,12 +4282,29 @@ function splitIntoSentenceSegments(text) {
     if (!value) return [];
     const lines = [];
     let start = 0;
-    for (let i = 0; i < value.length; i++) {
-        if (SENTENCE_ENDING_CHARS.has(value[i])
-            && (i + 1 >= value.length || !SENTENCE_ENDING_CHARS.has(value[i + 1]))) {
-            lines.push(value.slice(start, i + 1));
-            start = i + 1;
+    let i = 0;
+    while (i < value.length) {
+        if (!SENTENCE_ENDING_CHARS.has(value[i]) || !isSentenceEnderAt(value, i)) {
+            i += 1;
+            continue;
         }
+        if (i + 1 < value.length && SENTENCE_ENDING_CHARS.has(value[i + 1])) {
+            i += 1;
+            continue;
+        }
+
+        let end = i + 1;
+        while (end < value.length && CLOSING_QUOTE_CHARS.has(value[end])) {
+            end += 1;
+        }
+        const segment = value.slice(start, end);
+        if (textEndsWithAbbreviationException(segment) || textEndsWithAbbreviationPrefix(segment)) {
+            i += 1;
+            continue;
+        }
+        lines.push(segment);
+        start = end;
+        i = end;
     }
     if (start < value.length) {
         lines.push(value.slice(start));
@@ -4416,6 +4578,7 @@ function clearSubtitleState() {
     backendRefinedResults.clear();
     backendRefinedResultsBySentenceId.clear();
     backendConfirmedSentenceIds.clear();
+    retractedSentenceIds.clear();
     llmTranslationOverrides.clear();
     llmTranslationOverridesBySentenceId.clear();
     llmTranslationLangBySentenceId.clear();
@@ -4608,11 +4771,24 @@ function getSentenceId(sentence, fallbackIndex) {
     return `sent-fallback-${fallbackIndex}`;
 }
 
-const SENTENCE_ENDING_PUNCTUATION_RE = /[。．.！!？?…︒︕︖]$/;
-
 function endsWithSentencePunctuation(text) {
-    const value = (text === null || text === undefined) ? '' : String(text).trim();
-    return value !== '' && SENTENCE_ENDING_PUNCTUATION_RE.test(value);
+    return isSentenceEndingPunctuation(text);
+}
+
+function shouldSpeculativelySplitAfterToken(text, nextText) {
+    if (!endsWithSentencePunctuation(text)) {
+        return false;
+    }
+    if (tokenTextStartsWithClosingQuote(text, nextText)) {
+        return false;
+    }
+    if (tokenTextContinuesDecimal(text, nextText)) {
+        return false;
+    }
+    if (textContinuesAbbreviation(text, nextText)) {
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -4640,7 +4816,9 @@ function buildRenderTokens() {
     nonFinal.forEach((token, index) => {
         tokens.push(token);
         const isLast = index === nonFinal.length - 1;
-        if (!isLast && !token.is_separator && endsWithSentencePunctuation(token.text)) {
+        const nextToken = nonFinal[index + 1];
+        const nextText = nextToken ? nextToken.text : '';
+        if (!isLast && !token.is_separator && shouldSpeculativelySplitAfterToken(token.text, nextText)) {
             tokens.push({ is_separator: true, is_final: false, separator_type: 'speculative' });
         }
     });

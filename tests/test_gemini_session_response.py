@@ -202,6 +202,8 @@ def test_split_into_sentence_lines(monkeypatch):
     assert split("等等…好") == ["等等…", "好"]
     assert split("no punct tail") == ["no punct tail"]
     assert split("版本 3.10 已发布。下一句") == ["版本 3.10 已发布。", "下一句"]
+    assert split("Meet at 9 a.m. tomorrow.") == ["Meet at 9 a.m. tomorrow."]
+    assert split("He said hello.\" Next") == ["He said hello.\"", "Next"]
     assert split("") == []
 
 
@@ -598,6 +600,135 @@ def test_same_language_source_punctuation_triggers_segmentation(monkeypatch):
         object(),
     )
     assert _separator_in_updates(updates)
+
+
+def test_same_language_decimal_does_not_segment_across_gemini_batches(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "en"
+    session.loop = object()
+
+    all_final_tokens = []
+    sent_count, *_ = session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "Back during the CS 1.", "languageCode": "en"}}},
+        all_final_tokens,
+        0,
+        object(),
+    )
+    sent_count, *_ = session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "5.", "languageCode": "en"}}},
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": " Next sentence", "languageCode": "en"}}},
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
+    assert kinds == ["Back during the CS 1.", "5.", "SEP", " Next sentence"], kinds
+
+
+def test_same_language_am_pm_does_not_segment_across_gemini_batches(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "en"
+    session.loop = object()
+
+    all_final_tokens = []
+    sent_count, *_ = session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "Meet at 9 a.", "languageCode": "en"}}},
+        all_final_tokens,
+        0,
+        object(),
+    )
+    sent_count, *_ = session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "m.", "languageCode": "en"}}},
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": " tomorrow.", "languageCode": "en"}}},
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
+    assert kinds == ["Meet at 9 a.", "m.", " tomorrow.", "SEP"], kinds
+
+
+def test_same_language_closing_quote_stays_with_previous_gemini_sentence(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "en"
+    session.loop = object()
+
+    all_final_tokens = []
+    sent_count, *_ = session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "He said hello", "languageCode": "en"}}},
+        all_final_tokens,
+        0,
+        object(),
+    )
+    sent_count, *_ = session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": ".", "languageCode": "en"}}},
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    sent_count, *_ = session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": "\"", "languageCode": "en"}}},
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    session._process_stream_response(
+        {"serverContent": {"inputTranscription": {"text": " Next sentence", "languageCode": "en"}}},
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
+    assert kinds == ["He said hello", ".", "\"", "SEP", " Next sentence"], kinds
 
 
 def test_translation_ahead_of_source_keeps_full_source_together(monkeypatch):

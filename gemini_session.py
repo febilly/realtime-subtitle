@@ -55,6 +55,7 @@ from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
+import sentence_segmentation
 import llm_refine
 
 logger = logging.getLogger(__name__)
@@ -266,6 +267,7 @@ class GeminiSession:
         # Gemini's slightly-late trailing source tokens don't spill onto the next
         # line. Flushed unconditionally on a turnComplete <end>.
         self._pending_translation_finalization: set[str] = set()
+        self._pending_boundaries = sentence_segmentation.PendingBoundaryState()
         self._last_input_language = ""
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
@@ -337,6 +339,7 @@ class GeminiSession:
         self.loop = loop
         self._sentence_buffers.clear()
         self._pending_translation_finalization.clear()
+        self._pending_boundaries.clear()
         self._last_input_language = ""
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
@@ -481,6 +484,7 @@ class GeminiSession:
             osc_manager.clear_history()
             self._sentence_buffers.clear()
             self._pending_translation_finalization.clear()
+            self._pending_boundaries.clear()
             self._reset_osc_live_state()
             with self._ipc_lock:
                 self._ipc_ongoing_text = ""
@@ -842,25 +846,10 @@ class GeminiSession:
 
     def _is_sentence_ending_punctuation(self, text: str) -> bool:
         """检测是否为句末标点"""
-        value = (text or "").strip()
-        if not value:
-            return False
-        ending_chars = ("。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…")
-        for index in range(len(value) - 1, -1, -1):
-            if value[index] in ending_chars:
-                return self._is_sentence_ender_at(value, index)
-            if not value[index].isspace():
-                return False
-        return False
+        return sentence_segmentation.is_sentence_ending_punctuation(text)
 
     def _is_sentence_ender_at(self, value: str, index: int) -> bool:
-        ch = value[index]
-        if ch == ".":
-            prev_ch = value[index - 1] if index > 0 else ""
-            next_ch = value[index + 1] if index + 1 < len(value) else ""
-            if prev_ch.isdigit() and next_ch.isdigit():
-                return False
-        return ch in {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
+        return sentence_segmentation.is_sentence_ender_at(value, index)
 
     def _token_text_is_sentence_ending(
         self,
@@ -870,54 +859,41 @@ class GeminiSession:
         source_as_output: bool = False,
     ) -> bool:
         token = tokens[index]
-        text = str(token.get("text") or "")
-        if not self._is_sentence_ending_punctuation(text):
-            return False
-        stripped = text.rstrip()
-        if not stripped.endswith("."):
-            return True
-        prev_ch = stripped[-2] if len(stripped) >= 2 else ""
-        if not prev_ch.isdigit():
-            return True
-        is_translation = token.get("translation_status") == "translation"
-        speaker = token.get("speaker")
-        for next_token in tokens[index + 1:]:
-            if self._is_internal_token(next_token):
+        return self._pending_boundaries.is_token_sentence_ending(
+            tokens,
+            index,
+            context_text=self._sentence_context_text_for_token(token),
+            is_internal_token=self._is_internal_token,
+            source_as_output=source_as_output,
+        )
+
+    def _sentence_context_text_for_token(self, token: dict) -> str:
+        speaker = str(token.get("speaker", "?"))
+        buffer = self._sentence_buffers.get(speaker) or {}
+        token_text = str(token.get("text") or "")
+        if token.get("translation_status") == "translation":
+            return f"{self._join_token_texts(buffer.get('translation_tokens') or [])}{token_text}"
+        return f"{self._join_token_texts(buffer.get('original_tokens') or [])}{token_text}"
+
+    def _clear_pending_boundaries_for_speaker(self, speaker: str) -> None:
+        self._pending_boundaries.clear_speaker(speaker)
+
+    def _flush_stale_quote_boundaries(self, token: dict, outgoing_final_tokens: list[dict]) -> None:
+        for speaker in self._pending_boundaries.flush_stale_quote_boundaries_before_incompatible_token(token):
+            if not speaker:
                 continue
-            if next_token.get("speaker") != speaker:
-                continue
-            next_is_translation = next_token.get("translation_status") == "translation"
-            if next_is_translation != is_translation and not (source_as_output and not is_translation):
-                continue
-            next_text = str(next_token.get("text") or "")
-            if not next_text:
-                continue
-            return not (not text[-1].isspace() and not next_text[0].isspace() and next_text[0].isdigit())
-        return True
+            self._pending_translation_finalization.discard(speaker)
+            if self._trigger_sentence_finalization(speaker):
+                outgoing_final_tokens.append(
+                    self._minify_token(self._make_separator_token("punctuation"))
+                )
 
     def _split_into_sentence_lines(self, text: str) -> list[str]:
         """Split in-progress text into per-sentence lines for the OSC preview,
         e.g. "甲。乙丙！丁" -> ["甲。", "乙丙！", "丁"]. A run of ending punctuation
         stays attached to its sentence; the trailing partial (if any) is the last
         line."""
-        value = text or ""
-        if not value:
-            return []
-        ender_set = {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
-        lines: list[str] = []
-        start = 0
-        length = len(value)
-        for i, ch in enumerate(value):
-            if (
-                ch in ender_set
-                and self._is_sentence_ender_at(value, i)
-                and (i + 1 >= length or value[i + 1] not in ender_set)
-            ):
-                lines.append(value[start:i + 1])
-                start = i + 1
-        if start < length:
-            lines.append(value[start:])
-        return [segment for segment in (line.strip() for line in lines) if segment]
+        return sentence_segmentation.split_into_sentence_lines(text)
 
     def _buffer_source_is_sentence_complete(self, speaker: str) -> bool:
         """Whether the speaker's buffered source text ends on sentence-ending
@@ -944,6 +920,7 @@ class GeminiSession:
             return False
 
         self._sentence_buffers.pop(speaker, None)
+        self._clear_pending_boundaries_for_speaker(speaker)
         self._reset_osc_live_state(speaker)
 
         self._llm_sentence_counter += 1
@@ -1598,12 +1575,47 @@ class GeminiSession:
 
         separator_tokens: list[dict] = []
         outgoing_final_tokens: list[dict] = []
+        source_as_output = self._can_use_source_as_translation(new_final_tokens)
+        output_sentence_done = False
 
         if new_final_tokens:
-            for token in new_final_tokens:
+            for index, token in enumerate(new_final_tokens):
                 if token.get("text") is None:
                     continue
+                is_internal = self._is_internal_token(token)
+                context_text = "" if is_internal else self._sentence_context_text_for_token(token)
+                if not is_internal and self._pending_boundaries.flush_before_token(token):
+                    spk = token.get("speaker")
+                    speaker = str(spk) if (spk is not None and spk != "") else None
+                    if speaker:
+                        self._pending_translation_finalization.discard(speaker)
+                        if self._trigger_sentence_finalization(speaker):
+                            outgoing_final_tokens.append(
+                                self._minify_token(self._make_separator_token("punctuation"))
+                            )
+                if not is_internal:
+                    self._flush_stale_quote_boundaries(token, outgoing_final_tokens)
+                if (
+                    not is_internal
+                    and (token.get("translation_status") == "translation" or source_as_output)
+                    and self._pending_boundaries.is_token_sentence_ending(
+                        new_final_tokens,
+                        index,
+                        context_text=context_text,
+                        is_internal_token=self._is_internal_token,
+                        source_as_output=source_as_output,
+                    )
+                ):
+                    output_sentence_done = True
                 self._process_token_for_sentence(token)
+                if not is_internal:
+                    self._pending_boundaries.mark_after_token(
+                        new_final_tokens,
+                        index,
+                        context_text=context_text,
+                        is_internal_token=self._is_internal_token,
+                        source_as_output=source_as_output,
+                    )
 
         self._maybe_send_live_osc_translation(non_final_tokens)
 
@@ -1615,22 +1627,8 @@ class GeminiSession:
             # is used as the output — in that case segment on punctuation in the
             # original tokens too (gated by _can_use_source_as_translation so we
             # never cut before a real translation arrives).
-            source_as_output = self._can_use_source_as_translation(new_final_tokens)
             # A turnComplete <end> is a hard turn boundary: always flush.
             hard_end = any(t.get("text") == "<end>" for t in new_final_tokens)
-            # The output (translation, or the source when it doubles as output)
-            # reached a sentence end in this batch.
-            output_sentence_done = any(
-                t.get("text")
-                and not self._is_internal_token(t)
-                and (t.get("translation_status") == "translation" or source_as_output)
-                and self._token_text_is_sentence_ending(
-                    new_final_tokens,
-                    index,
-                    source_as_output=source_as_output,
-                )
-                for index, t in enumerate(new_final_tokens)
-            )
             speaker_value = None
             for token in reversed(new_final_tokens):
                 if token.get("translation_status") == "translation" and token.get("text"):

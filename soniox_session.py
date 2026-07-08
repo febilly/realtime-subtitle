@@ -8,6 +8,7 @@ import time
 import re
 import concurrent.futures
 import logging
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -54,6 +55,7 @@ from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
+import sentence_segmentation
 import llm_refine
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,19 @@ SONIOX_INTERNAL_TOKEN_TEXTS = {"<end>", "<fin>"}
 SPEC_TRANSLATE_COOLDOWN_SECONDS = 1.0
 SPEC_TRANSLATE_CACHE_MAX = 64
 SPEC_TRANSLATE_MAX_INFLIGHT = 3
+INTERRUPT_REPAIR_HISTORY_MAX = 8
+
+
+@dataclass
+class _FinalizedSentenceSnapshot:
+    speaker: str
+    sentence_id: str
+    original_tokens: list[dict]
+    translation_tokens: list[dict]
+    source_start_ms: float
+    source_end_ms: float
+    had_interim_translation: bool
+    retracted: bool = False
 
 
 class _RealtimeSilenceSender:
@@ -241,6 +256,9 @@ class SonioxSession:
         self._spec_inflight: dict[str, object] = {}
         self._spec_cache: dict[str, str] = {}
         self._interim_translation_speakers: set[str] = set()
+        self._recent_finalized_sentences: list[_FinalizedSentenceSnapshot] = []
+        self._retracted_sentence_ids: set[str] = set()
+        self._pending_boundaries = sentence_segmentation.PendingBoundaryState()
         # Hosted (relay) LLM transport: LLM calls ride the STT relay socket.
         self._hosted_llm = HostedLlmTransport()
         self._hosted_llm.on_credits = self._on_hosted_llm_credits
@@ -310,6 +328,9 @@ class SonioxSession:
         self._spec_inflight.clear()
         self._spec_cache.clear()
         self._interim_translation_speakers.clear()
+        self._recent_finalized_sentences.clear()
+        self._retracted_sentence_ids.clear()
+        self._pending_boundaries.clear()
         self._reset_osc_live_state()
 
         if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
@@ -466,6 +487,7 @@ class SonioxSession:
             osc_manager.clear_history()
             self._sentence_buffers.clear()
             self._pending_endpoint_speakers.clear()
+            self._pending_boundaries.clear()
             self._reset_osc_live_state()
             with self._ipc_lock:
                 self._ipc_ongoing_text = ""
@@ -1002,25 +1024,10 @@ class SonioxSession:
 
     def _is_sentence_ending_punctuation(self, text: str) -> bool:
         """检测是否为句末标点"""
-        value = (text or "").strip()
-        if not value:
-            return False
-        ending_chars = ("。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…")
-        for index in range(len(value) - 1, -1, -1):
-            if value[index] in ending_chars:
-                return self._is_sentence_ender_at(value, index)
-            if not value[index].isspace():
-                return False
-        return False
+        return sentence_segmentation.is_sentence_ending_punctuation(text)
 
     def _is_sentence_ender_at(self, value: str, index: int) -> bool:
-        ch = value[index]
-        if ch == ".":
-            prev_ch = value[index - 1] if index > 0 else ""
-            next_ch = value[index + 1] if index + 1 < len(value) else ""
-            if prev_ch.isdigit() and next_ch.isdigit():
-                return False
-        return ch in {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
+        return sentence_segmentation.is_sentence_ender_at(value, index)
 
     def _token_text_is_sentence_ending(
         self,
@@ -1030,54 +1037,67 @@ class SonioxSession:
         source_as_output: bool = False,
     ) -> bool:
         token = tokens[index]
-        text = str(token.get("text") or "")
-        if not self._is_sentence_ending_punctuation(text):
-            return False
-        stripped = text.rstrip()
-        if not stripped.endswith("."):
-            return True
-        prev_ch = stripped[-2] if len(stripped) >= 2 else ""
-        if not prev_ch.isdigit():
-            return True
-        is_translation = token.get("translation_status") == "translation"
-        speaker = token.get("speaker")
-        for next_token in tokens[index + 1:]:
-            if self._is_internal_soniox_token(next_token):
+        return self._pending_boundaries.is_token_sentence_ending(
+            tokens,
+            index,
+            context_text=self._sentence_context_text_for_token(token),
+            is_internal_token=self._is_internal_soniox_token,
+            source_as_output=source_as_output,
+        )
+
+    def _sentence_context_text_for_token(self, token: dict) -> str:
+        speaker = str(token.get("speaker", "?"))
+        buffer = self._sentence_buffers.get(speaker) or {}
+        token_text = str(token.get("text") or "")
+        if token.get("translation_status") == "translation":
+            return f"{self._join_token_texts(buffer.get('translation_tokens') or [])}{token_text}"
+        return f"{self._join_token_texts(buffer.get('original_tokens') or [])}{token_text}"
+
+    def _clear_pending_boundaries_for_speaker(self, speaker: str) -> None:
+        self._pending_boundaries.clear_speaker(speaker)
+
+    def _flush_pending_boundary(
+        self,
+        token: dict,
+        outgoing_final_tokens: list,
+        finalized_speakers: set,
+    ) -> None:
+        if not self._pending_boundaries.flush_before_token(token):
+            return
+        speaker = str(token.get("speaker", "?"))
+        if speaker in finalized_speakers:
+            return
+        if self._trigger_sentence_finalization(speaker):
+            finalized_speakers.add(speaker)
+            outgoing_final_tokens.append(
+                self._minify_token(self._make_separator_token("punctuation"))
+            )
+        else:
+            self._pending_endpoint_speakers.add(speaker)
+
+    def _flush_stale_quote_boundaries(
+        self,
+        token: dict,
+        outgoing_final_tokens: list,
+        finalized_speakers: set,
+    ) -> None:
+        for speaker in self._pending_boundaries.flush_stale_quote_boundaries_before_incompatible_token(token):
+            if speaker in finalized_speakers:
                 continue
-            if next_token.get("speaker") != speaker:
-                continue
-            next_is_translation = next_token.get("translation_status") == "translation"
-            if next_is_translation != is_translation and not (source_as_output and not is_translation):
-                continue
-            next_text = str(next_token.get("text") or "")
-            if not next_text:
-                continue
-            return not (not text[-1].isspace() and not next_text[0].isspace() and next_text[0].isdigit())
-        return True
+            if self._trigger_sentence_finalization(speaker):
+                finalized_speakers.add(speaker)
+                outgoing_final_tokens.append(
+                    self._minify_token(self._make_separator_token("punctuation"))
+                )
+            else:
+                self._pending_endpoint_speakers.add(speaker)
 
     def _split_into_sentence_lines(self, text: str) -> list[str]:
         """Split in-progress text into per-sentence lines for the OSC preview,
         e.g. "甲。乙丙！丁" -> ["甲。", "乙丙！", "丁"]. A run of ending punctuation
         stays attached to its sentence; the trailing partial (if any) is the last
         line."""
-        value = text or ""
-        if not value:
-            return []
-        ender_set = {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
-        lines: list[str] = []
-        start = 0
-        length = len(value)
-        for i, ch in enumerate(value):
-            if (
-                ch in ender_set
-                and self._is_sentence_ender_at(value, i)
-                and (i + 1 >= length or value[i + 1] not in ender_set)
-            ):
-                lines.append(value[start:i + 1])
-                start = i + 1
-        if start < length:
-            lines.append(value[start:])
-        return [segment for segment in (line.strip() for line in lines) if segment]
+        return sentence_segmentation.split_into_sentence_lines(text)
 
     def _finalize_superseded_speakers(
         self,
@@ -1102,13 +1122,199 @@ class SonioxSession:
                 continue
             if self._trigger_sentence_finalization(other):
                 finalized_speakers.add(other)
+                self._clear_pending_boundaries_for_speaker(other)
                 outgoing_final_tokens.append(
                     self._minify_token(self._make_separator_token("speaker_change"))
                 )
             else:
                 # Translation not ready yet: defer so it finalizes once the
                 # translation tokens arrive (see the pending-speaker pass).
+                self._clear_pending_boundaries_for_speaker(other)
                 self._pending_endpoint_speakers.add(other)
+
+    def _source_time_bounds_ms(self, tokens: list[dict]) -> tuple[float | None, float | None]:
+        starts: list[float] = []
+        ends: list[float] = []
+        for token in tokens or []:
+            if not isinstance(token, dict):
+                continue
+            if token.get("translation_status") == "translation":
+                continue
+            if self._is_internal_soniox_token(token):
+                continue
+            try:
+                start = float(token["start_ms"])
+                end = float(token["end_ms"])
+            except (KeyError, TypeError, ValueError):
+                return (None, None)
+            starts.append(start)
+            ends.append(end)
+        if not starts or not ends:
+            return (None, None)
+        return (min(starts), max(ends))
+
+    def _record_finalized_sentence_snapshot(
+        self,
+        speaker: str,
+        sentence_id: str,
+        original_tokens: list[dict],
+        translation_tokens: list[dict],
+        *,
+        had_interim_translation: bool,
+    ) -> None:
+        start_ms, end_ms = self._source_time_bounds_ms(original_tokens)
+        if start_ms is None or end_ms is None:
+            return
+        snapshot = _FinalizedSentenceSnapshot(
+            speaker=str(speaker),
+            sentence_id=str(sentence_id),
+            original_tokens=[dict(t) for t in original_tokens if isinstance(t, dict)],
+            translation_tokens=[dict(t) for t in translation_tokens if isinstance(t, dict)],
+            source_start_ms=start_ms,
+            source_end_ms=end_ms,
+            had_interim_translation=bool(had_interim_translation),
+        )
+        self._recent_finalized_sentences.append(snapshot)
+        if len(self._recent_finalized_sentences) > INTERRUPT_REPAIR_HISTORY_MAX:
+            self._recent_finalized_sentences = self._recent_finalized_sentences[-INTERRUPT_REPAIR_HISTORY_MAX:]
+
+    def _source_duration_ms(self, snapshot: _FinalizedSentenceSnapshot) -> float | None:
+        if snapshot.source_start_ms is None or snapshot.source_end_ms is None:
+            return None
+        return max(0.0, float(snapshot.source_end_ms) - float(snapshot.source_start_ms))
+
+    def _normalize_interrupt_filler_text(self, text: str) -> str:
+        value = unicodedata.normalize("NFKC", str(text or "")).casefold()
+        chars: list[str] = []
+        for ch in value:
+            category = unicodedata.category(ch)
+            if category.startswith("P") or category.startswith("S") or category.startswith("Z"):
+                continue
+            chars.append(ch)
+        return "".join(chars).strip()
+
+    def _interrupt_filler_whitelist(self) -> set[str]:
+        raw = str(getattr(config, "SONIOX_INTERRUPT_FILLER_WHITELIST", "") or "")
+        values: set[str] = set()
+        for item in re.split(r"[,，\r\n\t]+", raw):
+            normalized = self._normalize_interrupt_filler_text(item)
+            if normalized:
+                values.add(normalized)
+        return values
+
+    def _interrupt_text_matches_whitelist(self, snapshot: _FinalizedSentenceSnapshot) -> bool:
+        if not bool(getattr(config, "SONIOX_INTERRUPT_FILLER_WHITELIST_ENABLED", True)):
+            return True
+        normalized = self._normalize_interrupt_filler_text(self._join_token_texts(snapshot.original_tokens))
+        if not normalized:
+            return False
+        return normalized in self._interrupt_filler_whitelist()
+
+    def _clone_tokens_for_interrupt_merge(self, tokens: list[dict], new_sentence_id: str) -> list[dict]:
+        cloned = [dict(t) for t in tokens or [] if isinstance(t, dict)]
+        for token in cloned:
+            token["llm_sentence_id"] = new_sentence_id
+        for token in reversed(cloned):
+            if token.get("translation_status") == "translation":
+                continue
+            text = str(token.get("text") or "")
+            stripped = text.rstrip()
+            if not stripped:
+                continue
+            cleaned = re.sub(r"[。．.!！？?…︒︕︖]+$", "", stripped)
+            if cleaned != stripped:
+                token["text"] = text[:len(text) - len(stripped)] + cleaned
+            break
+        return cloned
+
+    def _find_interrupt_merge_pair(
+        self,
+        current_speaker: str,
+        current_start_ms: float,
+    ) -> tuple[_FinalizedSentenceSnapshot, _FinalizedSentenceSnapshot] | None:
+        if not bool(getattr(config, "SONIOX_INTERRUPT_REPAIR_ENABLED", True)):
+            return None
+        max_duration_ms = float(getattr(config, "SONIOX_INTERRUPT_MAX_DURATION_MS", 300))
+        resume_gap_ms = float(getattr(config, "SONIOX_INTERRUPT_RESUME_GAP_MS", 1000))
+        if max_duration_ms <= 0 or resume_gap_ms <= 0:
+            return None
+
+        for index in range(len(self._recent_finalized_sentences) - 1, 0, -1):
+            interrupt = self._recent_finalized_sentences[index]
+            previous = self._recent_finalized_sentences[index - 1]
+            if interrupt.retracted or previous.retracted:
+                continue
+            if previous.speaker != str(current_speaker):
+                continue
+            if interrupt.speaker == str(current_speaker):
+                continue
+            duration = self._source_duration_ms(interrupt)
+            if duration is None or duration > max_duration_ms:
+                continue
+            if not self._interrupt_text_matches_whitelist(interrupt):
+                continue
+            overlap_tolerance_ms = 250.0
+            if interrupt.source_start_ms - previous.source_end_ms > resume_gap_ms:
+                continue
+            if current_start_ms + overlap_tolerance_ms < interrupt.source_end_ms:
+                continue
+            if current_start_ms - interrupt.source_end_ms > resume_gap_ms:
+                continue
+            return previous, interrupt
+        return None
+
+    def _maybe_merge_interrupted_sentence(
+        self,
+        current_speaker: str,
+        token: dict,
+        outgoing_final_tokens: list,
+    ) -> str | None:
+        if token.get("translation_status") == "translation" or self._is_internal_soniox_token(token):
+            return None
+        try:
+            current_start_ms = float(token["start_ms"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+        match = self._find_interrupt_merge_pair(current_speaker, current_start_ms)
+        if not match:
+            return None
+
+        previous, _interrupt = match
+        previous.retracted = True
+        self._retracted_sentence_ids.add(previous.sentence_id)
+        self._refine_context_history = [
+            item for item in self._refine_context_history
+            if item.get("sentence_id") != previous.sentence_id
+        ]
+        self._llm_sentence_counter += 1
+        merged_sentence_id = f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
+        restored_original = self._clone_tokens_for_interrupt_merge(previous.original_tokens, merged_sentence_id)
+        restored_translation = self._clone_tokens_for_interrupt_merge(previous.translation_tokens, merged_sentence_id)
+        self._sentence_buffers[str(current_speaker)] = {
+            "original_tokens": restored_original,
+            "translation_tokens": restored_translation,
+            "sentence_id": merged_sentence_id,
+            "had_interim_translation": previous.had_interim_translation,
+            "interrupt_repair_of": previous.sentence_id,
+        }
+        if previous.had_interim_translation:
+            self._interim_translation_speakers.add(str(current_speaker))
+        self._pending_endpoint_speakers.discard(str(current_speaker))
+        if self.loop:
+            asyncio.run_coroutine_threadsafe(
+                self.broadcast_callback({
+                    "type": "subtitle_retract",
+                    "sentence_id": previous.sentence_id,
+                    "replacement_sentence_id": merged_sentence_id,
+                    "reason": "short_interrupt",
+                }),
+                self.loop,
+            )
+        outgoing_final_tokens.append(self._minify_token(self._make_separator_token("interrupt_repair")))
+        for restored in restored_original + restored_translation:
+            outgoing_final_tokens.append(self._minify_token(restored, is_final=True))
+        return merged_sentence_id
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""
@@ -1129,6 +1335,7 @@ class SonioxSession:
         self._sentence_buffers.pop(speaker, None)
         self._interim_translation_speakers.discard(str(speaker))
         self._pending_endpoint_speakers.discard(speaker)
+        self._clear_pending_boundaries_for_speaker(speaker)
         self._reset_osc_live_state(speaker)
 
         # The id was assigned when the buffer opened (_process_token_for_sentence);
@@ -1140,6 +1347,14 @@ class SonioxSession:
         for token in original_tokens + translation_tokens:
             if isinstance(token, dict):
                 token["llm_sentence_id"] = sentence_id
+
+        self._record_finalized_sentence_snapshot(
+            speaker,
+            sentence_id,
+            original_tokens,
+            translation_tokens,
+            had_interim_translation=had_interim_translation,
+        )
 
         if not self.loop:
             return False
@@ -1170,6 +1385,8 @@ class SonioxSession:
         translation = self._join_token_texts(translation_tokens)
 
         if not source:
+            return
+        if sentence_id and str(sentence_id) in self._retracted_sentence_ids:
             return
 
         if ipc_server and hasattr(ipc_server, "broadcast_foreign_speech"):
@@ -1255,6 +1472,9 @@ class SonioxSession:
                     no_change = False
                 print(f"LLM refine error: {error}")
 
+        if sentence_id and str(sentence_id) in self._retracted_sentence_ids:
+            return
+
         await self.broadcast_callback({
             "type": "refine_result",
             "sentence_id": sentence_id,
@@ -1275,7 +1495,11 @@ class SonioxSession:
             except Exception as error:
                 print(f"OSC send failed: {error}")
 
-        self._refine_context_history.append({"source": source, "translation": refined_translation})
+        self._refine_context_history.append({
+            "sentence_id": sentence_id,
+            "source": source,
+            "translation": refined_translation,
+        })
         max_history = max(1, int(self._context_bounds()[1]))
         if len(self._refine_context_history) > max_history:
             self._refine_context_history = self._refine_context_history[-max_history:]
@@ -1440,6 +1664,7 @@ class SonioxSession:
         self._segment_mode = mode
         self._sentence_buffers.clear()
         self._pending_endpoint_speakers.clear()
+        self._pending_boundaries.clear()
         self._reset_osc_live_state()
         if self.loop:
             asyncio.run_coroutine_threadsafe(
@@ -1837,6 +2062,7 @@ class SonioxSession:
                     continue
                 is_internal = self._is_internal_soniox_token(token)
                 is_translation = token.get("translation_status") == "translation"
+                abbreviation_context_text = "" if is_internal else self._sentence_context_text_for_token(token)
 
                 # A pending endpoint means an earlier <end> fired before this
                 # sentence's translation had streamed in, so the line break was
@@ -1855,6 +2081,7 @@ class SonioxSession:
                         self._pending_endpoint_speakers.discard(pending_speaker)
                         if self._trigger_sentence_finalization(pending_speaker):
                             finalized_speakers.add(pending_speaker)
+                            self._clear_pending_boundaries_for_speaker(pending_speaker)
                             outgoing_final_tokens.append(
                                 self._minify_token(self._make_separator_token("endpoint"))
                             )
@@ -1873,9 +2100,6 @@ class SonioxSession:
                     and not is_translation
                     and not source_as_output
                 )
-                self._process_token_for_sentence(token)
-                if is_translation and not is_boundary:
-                    self._mark_displayed_final_translation_token_seen(token)
                 if not is_internal:
                     spk = token.get("speaker")
                     token_speaker = str(spk) if (spk is not None and spk != "") else None
@@ -1886,9 +2110,35 @@ class SonioxSession:
                         self._finalize_superseded_speakers(
                             token_speaker, outgoing_final_tokens, finalized_speakers
                         )
+                        if not is_translation:
+                            self._maybe_merge_interrupted_sentence(
+                                token_speaker, token, outgoing_final_tokens
+                            )
+                    if token_speaker:
+                        self._flush_stale_quote_boundaries(
+                            token,
+                            outgoing_final_tokens,
+                            finalized_speakers,
+                        )
+                        self._flush_pending_boundary(
+                            token,
+                            outgoing_final_tokens,
+                            finalized_speakers,
+                        )
+                self._process_token_for_sentence(token)
+                if is_translation and not is_boundary:
+                    self._mark_displayed_final_translation_token_seen(token)
+                if not is_internal:
                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
                     if token_speaker:
                         last_real_speaker = token_speaker
+                    self._pending_boundaries.mark_after_token(
+                        new_final_tokens,
+                        index,
+                        context_text=abbreviation_context_text,
+                        is_internal_token=self._is_internal_soniox_token,
+                        source_as_output=source_as_output,
+                    )
                 if not is_boundary:
                     continue
                 spk = token.get("speaker")

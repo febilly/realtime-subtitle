@@ -601,6 +601,27 @@ ENABLE_CHROMA_THEME = _env_bool("ENABLE_CHROMA_THEME", False)
 # - punctuation: based on sentence-ending punctuation (default)
 DEFAULT_SEGMENT_MODE = _env_str("DEFAULT_SEGMENT_MODE", "punctuation")
 
+# Repair short speaker interruptions in noisy VRChat rooms. Soniox real-time
+# diarization can temporarily split A's sentence as A1 -> short B -> A2; when
+# timestamps prove B was brief and A resumes quickly, the UI retracts A1 and the
+# LLM receives A1+A2 as one source sentence.
+SONIOX_INTERRUPT_REPAIR_ENABLED = _env_bool("SONIOX_INTERRUPT_REPAIR_ENABLED", True)
+SONIOX_INTERRUPT_MAX_DURATION_MS = max(0, _env_int("SONIOX_INTERRUPT_MAX_DURATION_MS", 800))
+SONIOX_INTERRUPT_RESUME_GAP_MS = max(0, _env_int("SONIOX_INTERRUPT_RESUME_GAP_MS", 1500))
+SONIOX_INTERRUPT_FILLER_WHITELIST_ENABLED = _env_bool("SONIOX_INTERRUPT_FILLER_WHITELIST_ENABLED", True)
+SONIOX_INTERRUPT_FILLER_WHITELIST = _env_str(
+    "SONIOX_INTERRUPT_FILLER_WHITELIST",
+    (
+        "啊,阿,呀,哎,唉,诶,欸,嗯,恩,唔,呃,额,呜,哦,噢,喔,嗷,哼,嗯嗯,呃呃,"
+        "哦哦,啊啊,哎呀,哎哟,"
+        "uh,uhh,uh-huh,um,umm,erm,er,ah,oh,o,ooh,oooh,eh,huh,hm,hmm,mm,mmm,"
+        "yeah,yep,ya,yes,mhm,mhmm,"
+        "うん,ううん,うーん,うわ,え,ええ,あ,ああ,お,おお,ほう,へえ,ふむ,ん,あの,えっと,まあ,えへ,えへへ,"
+        "はい,はいはい,そう,そうそう,そうそうそう,そっか,なるほど,"
+        "어,어어,음,응,응응,아,아아,오,에,으음,흠,네,네네,맞아,맞아맞아"
+    ),
+)
+
 # Twitch channel name (without https://www.twitch.tv/ prefix)
 TWITCH_CHANNEL = _env_str("TWITCH_CHANNEL", "")
 
