@@ -225,18 +225,18 @@ def connect_live(
     if not api_key:
         raise RuntimeError("Gemini API key is missing")
 
-    # Hosted mode: connect through the subtitle-server relay. The relay injects
-    # its own upstream key into the upstream URL, so we send no ?key= and instead
-    # authenticate with the account token as the Authorization bearer.
+    # Hosted mode: connect through the subtitle-server relay. The server mints a
+    # short-lived backend ticket URL and injects its own upstream key.
     import config as _config
     if _config.RELAY_MODE:
         # Mirror the model the setup frame carries (models/<GEMINI_MODEL>) so the
-        # relay can authorize/meter the stream at the handshake.
-        url = _config.relay_ws_url("gemini", model=f"models/{GEMINI_MODEL}")
-        connect_kwargs = {
-            "max_size": None,
-            "additional_headers": {"Authorization": f"Bearer {_config.RELAY_TOKEN}"},
-        }
+        # relay can authorize/meter the stream before the first setup frame.
+        relay_info = _config.relay_connect_info("gemini", model=f"models/{GEMINI_MODEL}")
+        url = relay_info["url"]
+        connect_kwargs = {"max_size": None}
+        relay_headers = relay_info.get("headers") or {}
+        if relay_headers:
+            connect_kwargs["additional_headers"] = relay_headers
     else:
         url = f"{GEMINI_WEBSOCKET_URL}?key={api_key}"
         connect_kwargs = {"max_size": None}

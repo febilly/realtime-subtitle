@@ -24,7 +24,10 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.SONIOX_TEMP_KEY_URL = None
     config.RELAY_MODE = False
     config.RELAY_TOKEN = ""
-    config.relay_ws_url = lambda provider=None, model=None, translation=None: f"wss://relay.invalid/relay/{provider or 'soniox'}"
+    config.relay_connect_info = lambda provider=None, model=None, translation=None: {
+        "url": f"wss://relay.invalid/relay/{provider or 'soniox'}?ticket=test",
+        "headers": {},
+    }
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MICROPHONE_DEVICE_ID = ""
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
@@ -1723,13 +1726,16 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
         def close(self):
             return None
 
-    def relay_ws_url(provider=None, model=None, translation=None):
+    def relay_connect_info(provider=None, model=None, translation=None):
         relay_calls.append({
             "provider": provider,
             "model": model,
             "translation": translation,
         })
-        return "wss://relay.invalid/relay/soniox"
+        return {
+            "url": "wss://relay.invalid/relay/soniox?ticket=test",
+            "headers": {"X-Test-Relay": "ok"},
+        }
 
     def get_config(api_key, audio_format, translation, **kwargs):
         config_translations.append(translation)
@@ -1742,7 +1748,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     monkeypatch.setattr(module, "get_config", get_config)
     module.config.RELAY_MODE = True
     module.config.RELAY_TOKEN = "ss_test"
-    module.config.relay_ws_url = relay_ws_url
+    module.config.relay_connect_info = relay_connect_info
 
     session = module.SonioxSession(MagicMock(), MagicMock())
 
@@ -1756,6 +1762,10 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
 
     assert config_translations == ["none"]
     assert relay_calls[-1]["translation"] == "none"
+    module.sync_connect.assert_called_once_with(
+        "wss://relay.invalid/relay/soniox?ticket=test",
+        additional_headers={"X-Test-Relay": "ok"},
+    )
     assert sent_payloads
     assert '"api_key": ""' in sent_payloads[-1]
     stream.ws.close()

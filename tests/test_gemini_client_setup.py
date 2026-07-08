@@ -87,3 +87,55 @@ def test_two_way_warns_once(gemini_client, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert out.count("does not support two-way translation") == 1
+
+
+def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch):
+    import config
+
+    connect_calls = []
+    sent_payloads = []
+    relay_calls = []
+
+    class FakeWs:
+        def send(self, payload):
+            sent_payloads.append(payload)
+
+        def recv(self, timeout=None):
+            return '{"setupComplete": {}}'
+
+        def close(self):
+            return None
+
+    def relay_connect_info(provider=None, model=None, translation=None):
+        relay_calls.append({
+            "provider": provider,
+            "model": model,
+            "translation": translation,
+        })
+        return {
+            "url": "wss://relay-2.example.invalid/?ticket=test",
+            "headers": {"X-Test-Relay": "ok"},
+        }
+
+    def sync_connect(url, **kwargs):
+        connect_calls.append((url, kwargs))
+        return FakeWs()
+
+    monkeypatch.setattr(config, "RELAY_MODE", True)
+    monkeypatch.setattr(config, "relay_connect_info", relay_connect_info)
+    monkeypatch.setattr(gemini_client, "sync_connect", sync_connect)
+
+    stream = gemini_client.connect_live("local-key", "one_way", "en")
+    stream.close()
+
+    assert relay_calls == [{
+        "provider": "gemini",
+        "model": f"models/{gemini_client.GEMINI_MODEL}",
+        "translation": None,
+    }]
+    assert connect_calls == [(
+        "wss://relay-2.example.invalid/?ticket=test",
+        {"max_size": None, "additional_headers": {"X-Test-Relay": "ok"}},
+    )]
+    assert "Authorization" not in connect_calls[0][1].get("additional_headers", {})
+    assert sent_payloads

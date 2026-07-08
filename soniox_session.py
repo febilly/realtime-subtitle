@@ -1875,19 +1875,20 @@ class SonioxSession:
         # next stream.
         if config.RELAY_MODE:
             # Hosted mode: connect through the subtitle-server relay. The relay
-            # injects its own upstream key, so the body key is blanked and the
-            # account token is sent as the Authorization bearer.
+            # injects its own upstream key. The account token is exchanged with
+            # the server for a short-lived backend ticket before opening the WS.
             stream_config["api_key"] = ""
-            relay_url = config.relay_ws_url(
+            relay_info = config.relay_connect_info(
                 "soniox",
                 model=stream_config.get("model"),
                 translation="none" if effective_translation == "none" else None,
             )
-            print(f"Connecting to relay Soniox ({label}{purpose}): {relay_url}")
-            ws = sync_connect(
-                relay_url,
-                additional_headers={"Authorization": f"Bearer {config.RELAY_TOKEN}"},
-            )
+            relay_headers = relay_info.get("headers") or {}
+            connect_kwargs = {}
+            if relay_headers:
+                connect_kwargs["additional_headers"] = relay_headers
+            print(f"Connecting to relay Soniox ({label}{purpose})...")
+            ws = sync_connect(relay_info["url"], **connect_kwargs)
         else:
             print(f"Connecting to Soniox ({label}{purpose})...")
             ws = sync_connect(config.SONIOX_WEBSOCKET_URL)

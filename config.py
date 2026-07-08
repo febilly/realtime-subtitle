@@ -7,6 +7,8 @@ import sys
 import locale
 import time
 import threading
+from urllib.parse import urlencode
+import requests
 from dotenv import load_dotenv
 
 
@@ -480,7 +482,7 @@ SUBTITLE_SERVER_TOKEN = _env_str("SUBTITLE_SERVER_TOKEN", "").strip()
 
 # Runtime relay state (hot-switchable, like provider/key). RELAY_MODE selects
 # whether sessions connect through the relay; RELAY_TOKEN is the active account
-# token used as the relay WebSocket Authorization bearer.
+# token used only when requesting a short-lived relay connect ticket.
 RELAY_MODE = False
 RELAY_TOKEN = SUBTITLE_SERVER_TOKEN
 
@@ -994,40 +996,86 @@ def set_relay_token(token) -> str:
     return RELAY_TOKEN
 
 
-def _http_to_ws(url: str) -> str:
-    if url.startswith("https://"):
-        return "wss://" + url[len("https://"):]
-    if url.startswith("http://"):
-        return "ws://" + url[len("http://"):]
-    return url
-
-
-def relay_ws_url(provider: str | None = None, model: str | None = None, translation: str | None = None) -> str:
-    """WebSocket relay endpoint for a provider on the configured server.
-
-    When ``model`` is given it is appended as a ``?model=`` query parameter so the
-    server can authenticate, authorize and meter the stream at the WebSocket
-    handshake (before the first frame). The model is still also sent in the first
-    frame, so older servers that read it from the body keep working.
-
-    ``translation="none"`` signals the server that soniox runs STT-only (准确
-    mode), so it bills at the reduced no-translation factor.
-    """
+def _relay_provider(provider: str | None = None) -> str:
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
     p = str(p).strip().lower()
     if p not in ("soniox", "gemini"):
         p = "soniox"
-    url = f"{_http_to_ws(SUBTITLE_SERVER_URL)}/relay/{p}"
-    from urllib.parse import quote
+    return p
 
-    params = []
+
+def _relay_connect_url(provider: str | None = None, model: str | None = None, translation: str | None = None) -> str:
+    """REST endpoint used to mint a short-lived provider relay connection."""
+    p = _relay_provider(provider)
+    url = relay_rest_url(f"/relay/{p}/connect")
+    params = {}
     if model:
-        params.append(f"model={quote(str(model), safe='')}")
+        params["model"] = str(model)
     if translation:
-        params.append(f"translation={quote(str(translation), safe='')}")
+        params["translation"] = str(translation)
     if params:
-        url += "?" + "&".join(params)
+        url += "?" + urlencode(params)
     return url
+
+
+def relay_connect_info(provider: str | None = None, model: str | None = None, translation: str | None = None) -> dict:
+    """Request the actual relay WebSocket URL from subtitle-server.
+
+    The server registers the full relay session directly with the selected
+    backend (Durable Object or VPS) and returns only an opaque one-time ticket in
+    the WebSocket URL. The account token is sent only to this REST endpoint, not
+    to the relay backend WebSocket.
+    """
+    if not SUBTITLE_SERVER_URL:
+        raise RuntimeError("SUBTITLE_SERVER_URL is required for hosted relay mode")
+
+    token = str(RELAY_TOKEN or "").strip()
+    if not token:
+        raise RuntimeError("Relay account token is missing; please sign in again")
+
+    url = _relay_connect_url(provider, model=model, translation=translation)
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError(f"Failed to request relay connection: {exc}") from exc
+
+    if response.status_code != 200:
+        detail = (response.text or "").strip()
+        if len(detail) > 300:
+            detail = detail[:300] + "..."
+        raise RuntimeError(f"Relay connection request failed ({response.status_code}): {detail or response.reason}")
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError(f"Relay connection response is not valid JSON: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError("Relay connection response must be a JSON object")
+
+    ws_url = data.get("url")
+    if not isinstance(ws_url, str) or not ws_url.strip():
+        raise RuntimeError("Relay connection response is missing url")
+
+    relay_headers = data.get("headers") or {}
+    if not isinstance(relay_headers, dict):
+        raise RuntimeError("Relay connection response headers must be an object")
+
+    clean_headers = {}
+    for key, value in relay_headers.items():
+        header_name = str(key).strip()
+        if not header_name or value is None:
+            continue
+        clean_headers[header_name] = str(value)
+
+    result = dict(data)
+    result["url"] = ws_url.strip()
+    result["headers"] = clean_headers
+    return result
 
 
 def relay_rest_url(path: str = "") -> str:
