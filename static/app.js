@@ -7321,11 +7321,10 @@ function balanceTotalRemaining(data) {
 // a whole number of per-second ticks — the same value the "this session" meter
 // shows. This is the deduction we optimistically apply between server refreshes.
 // Only the deduction total is rounded, not the resulting balance.
-// Server bills soniox 准确 mode (built-in translation off) at a reduced STT rate;
-// mirror that factor so the live estimate matches. Only soniox+accurate; gemini
-// keeps its built-in translation on, and all other modes bill at the full rate.
+// Server bills Soniox STT-only streams at a reduced rate. Mirror that factor
+// when built-in translation is disabled by either 翻译语言=关闭 or 准确 mode.
 function sttRateMultiplier() {
-    if (translationProvider === 'soniox' && translationUiMode === 'accurate') {
+    if (translationProvider === 'soniox' && (uiTranslationMode === 'none' || translationUiMode === 'accurate')) {
         const f = Number(sonioxNoTranslationFactor);
         if (Number.isFinite(f) && f > 0) return f;
     }
