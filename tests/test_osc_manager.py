@@ -184,6 +184,47 @@ def test_add_message_and_send_without_speaker_is_plain():
     assert text == "My message"
 
 
+def test_update_message_replaces_draft_in_history_and_resends():
+    # 混合 mode: a fast draft goes out first, then a high/critical refine replaces
+    # that same line in place (same speaker prefix, updated text).
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._udp_send_target = ("127.0.0.1", 9000)
+    osc._compat_mode_enabled = lambda: False
+
+    handle = osc.add_message_and_send("fast draft", ongoing=False, speaker="1")
+    assert handle is not None
+    assert len(osc._message_history) == 1
+
+    osc._last_send_time = 0.0  # dodge the send cooldown so the update goes out now
+    updated = osc.update_message_and_send(handle, "refined text", ongoing=False)
+
+    assert updated is True
+    # Still one history entry (replaced in place, not appended).
+    assert len(osc._message_history) == 1
+    assert osc._message_history[0].text == "refined text"
+    text = _last_chatbox_input_text(mock_client)
+    assert text == "S1：refined text"
+
+
+def test_update_message_no_op_for_unknown_handle():
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._udp_send_target = ("127.0.0.1", 9000)
+    osc._compat_mode_enabled = lambda: False
+
+    osc.add_message_and_send("only draft", ongoing=False, speaker="1")
+    mock_client.send_message.reset_mock()
+
+    # A handle that was never issued (e.g. the draft was pruned) is ignored.
+    assert osc.update_message_and_send(999999, "should not send", ongoing=False) is False
+    assert osc.update_message_and_send(None, "should not send", ongoing=False) is False
+    assert mock_client.send_message.call_count == 0
+    assert osc._message_history[0].text == "only draft"
+
+
 def test_speaker_labels_disabled_hides_prefix():
     # When labels are disabled (Gemini), even an explicit speaker is not prefixed.
     osc = _fresh_osc_manager()

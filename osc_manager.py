@@ -50,11 +50,13 @@ class HistoryMessage:
 
     - speaker: 说话人标签（Soniox 分离说话人时使用，渲染为 S{speaker}：前缀）
     - own: True 表示自己说的话（从 yakutan 接收），用 >...< 标记，优先级高于 speaker
+    - msg_id: 已记录消息的稳定句柄，供 update_message_and_send 事后替换文本使用
     """
     text: str
     timestamp: float
     speaker: str = "?"
     own: bool = False
+    msg_id: Optional[int] = None
 
 
 class OSCManager:
@@ -90,6 +92,7 @@ class OSCManager:
             self._state_lock = threading.Lock()
             self._truncate_enabled = True
             self._message_history: list[HistoryMessage] = []
+            self._next_msg_id = 1
             self._history_ttl_seconds = 10.0
             self._header_line = TRANSLATION_HEADER
             # Whether to render per-speaker labels (S0/S1) in OSC output.
@@ -418,6 +421,7 @@ class OSCManager:
                     timestamp=msg.timestamp,
                     speaker=getattr(msg, "speaker", "?"),
                     own=getattr(msg, "own", False),
+                    msg_id=getattr(msg, "msg_id", None),
                 )
                 lines[latest_idx] = self._format_line(history[-1])
                 combined = assemble(lines)
@@ -433,34 +437,73 @@ class OSCManager:
         with self._state_lock:
             self._message_history.clear()
 
-    def add_message_and_send(self, text: str, ongoing: bool = False, speaker: Optional[str] = None, own: bool = False):
+    def add_message_and_send(self, text: str, ongoing: bool = False, speaker: Optional[str] = None, own: bool = False) -> Optional[int]:
         """记录消息并按历史拼接发送，自动清理过期消息。
 
         - speaker: Soniox 分离出的说话人索引（渲染为 S{speaker}：前缀）
         - own=True: 自己说的话（从 yakutan 接收），渲染为 >...<
+
+        返回该条已记录消息的稳定句柄（msg_id），可传给 update_message_and_send
+        事后替换其文本；消息为空未记录时返回 None。
         """
-        self._add_message_with_history(text, ongoing, speaker, own, record_history=True)
+        return self._add_message_with_history(text, ongoing, speaker, own, record_history=True)
+
+    def update_message_and_send(self, msg_id: Optional[int], text: str, ongoing: bool = False) -> bool:
+        """替换先前 add_message_and_send 记录的某条消息的文本并重发整框。
+
+        用于混合模式：先用快速草稿发出，LLM 改进返回后再把该条替换为最终译文。
+        若该条已被 TTL 清理或行数裁剪挤出历史，则放弃更新，返回 False。
+        """
+        if msg_id is None:
+            return False
+        safe_text = (text or "").strip()
+        if not safe_text:
+            return False
+
+        now = time.time()
+        with self._state_lock:
+            self._prune_history_locked(now)
+            target = None
+            for msg in self._message_history:
+                if getattr(msg, "msg_id", None) == msg_id:
+                    target = msg
+                    break
+            if target is None:
+                return False
+            target.text = safe_text
+            combined = self._build_combined_history_locked()
+
+        if combined:
+            self.send_text_sync(combined, ongoing)
+        return True
 
     def add_external_message(self, text: str, ongoing: bool = False):
         # 外部（yakutan 同伴）消息：不加说话人前缀，也非自己说的话。
         self._add_message_with_history(text, ongoing, speaker=None, own=False, record_history=not ongoing)
 
-    def _add_message_with_history(self, text: str, ongoing: bool, speaker: Optional[str], own: bool, record_history: bool):
+    def _add_message_with_history(self, text: str, ongoing: bool, speaker: Optional[str], own: bool, record_history: bool) -> Optional[int]:
         safe_text = (text or "").strip()
         if not safe_text:
-            return
+            return None
 
         speaker_label = (speaker or "").strip()
         speaker_label = speaker_label if speaker_label else "?"
         if len(speaker_label) > 3:
             speaker_label = speaker_label[:3]
 
+        msg_id = None
         now = time.time()
         with self._state_lock:
             self._prune_history_locked(now)
             if record_history:
-                self._message_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label, own=own))
+                msg_id = self._next_msg_id
+                self._next_msg_id += 1
+                self._message_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label, own=own, msg_id=msg_id))
                 combined = self._build_combined_history_locked()
+                # Build may have pruned this message out (line/length caps); if so
+                # the handle is dead, so don't hand it back as updatable.
+                if not any(getattr(m, "msg_id", None) == msg_id for m in self._message_history):
+                    msg_id = None
             else:
                 preview_history = list(self._message_history)
                 preview_history.append(HistoryMessage(text=safe_text, timestamp=now, speaker=speaker_label, own=own))
@@ -468,6 +511,7 @@ class OSCManager:
 
         if combined:
             self.send_text_sync(combined, ongoing)
+        return msg_id
 
     def send_preview_message_with_history(self, text: str, ongoing: bool = True, speaker: Optional[str] = None, own: bool = False):
         """按与最终消息相同格式发送中间结果，但不写入历史记录"""
