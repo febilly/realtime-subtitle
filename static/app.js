@@ -206,8 +206,6 @@ const furiganaButton = document.getElementById('furiganaButton');
 const furiganaIcon = document.getElementById('furiganaIcon');
 const translationLangButton = document.getElementById('translationLangButton');
 const translationLangIcon = document.getElementById('translationLangIcon');
-const translationRefineButton = document.getElementById('translationRefineButton');
-const translationRefineIcon = document.getElementById('translationRefineIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
@@ -618,8 +616,6 @@ function showToast(message, isError = false, options = {}) {
 }
 
 const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
-const LLM_REFINE_ICON = 'wand-sparkles';
-const LLM_TRANSLATE_ICON = 'bot';
 const LLM_REFINE_MODE_STORAGE_KEY = 'llmRefineMode';
 const LLM_TRANSLATION_MODE_STORAGE_KEY = 'llmTranslationMode';
 let defaultLlmRefineMode = null;
@@ -645,19 +641,25 @@ const TRANSLATION_UI_MODE_STORAGE_KEY = 'translationUiMode';
 // 混合 now shows the STT draft immediately and refines it in place, so it maps
 // to the internal 'refine' LLM mode. The old separate 改进 UI mode is gone.
 const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid'];
+const DEFAULT_TRANSLATION_UI_MODE = 'hybrid';
 const TRANSLATION_UI_MODE_TO_LLM = { fast: 'off', accurate: 'translate', hybrid: 'refine' };
 let translationModeSynced = false; // pushed the stored mode to the backend once
-function getStoredTranslationUiMode() {
+function readStoredTranslationUiMode() {
     try {
         const raw = localStorage.getItem(TRANSLATION_UI_MODE_STORAGE_KEY);
         // Legacy stored value: the old 改进 mode folds into 混合.
         if (raw === 'refine') return 'hybrid';
         if (raw && TRANSLATION_UI_MODES.includes(raw)) return raw;
     } catch (e) { /* ignore */ }
+    return null;
+}
+
+function getStoredTranslationUiMode() {
+    const stored = readStoredTranslationUiMode();
+    if (stored) return stored;
     // Transient default before the backend's authoritative translation_ui_mode
-    // (fast/accurate/hybrid) arrives. Default 翻译模式 is 混合 (hybrid); the caller
-    // downgrades to 'fast' when LLM isn't available for the active mode.
-    return 'hybrid';
+    // (fast/accurate/hybrid) arrives. Default 翻译模式 is 混合 (hybrid).
+    return DEFAULT_TRANSLATION_UI_MODE;
 }
 let translationUiMode = getStoredTranslationUiMode();
 // 混合 mode: token-sequence threshold at/after which STT translations are shown
@@ -915,7 +917,6 @@ updateFuriganaButton();
 updateOscTranslationButton();
 updateAutoRestartButton();
 updateBottomSafeAreaButton();
-updateTranslationRefineButton();
 enforceTranslateSegmentMode();
 applySpeakerLabelVisibility();
 applyBottomSafeArea();
@@ -941,10 +942,6 @@ function applyStaticUiText() {
 
     if (translationLangButton) {
         translationLangButton.title = t('translation_language');
-    }
-
-    if (translationRefineButton) {
-        translationRefineButton.title = t(getLlmRefineTitleKey());
     }
 
     if (pauseButton) {
@@ -997,16 +994,6 @@ function isLlmTranslateMode() {
     return llmRefineMode === 'translate';
 }
 
-function getLlmRefineTitleKey() {
-    if (llmRefineMode === 'translate') {
-        return 'translation_refine_translate';
-    }
-    if (llmRefineMode === 'refine') {
-        return 'translation_refine_on';
-    }
-    return 'translation_refine_off';
-}
-
 function applyLlmRefineMode(mode, options = {}) {
     const normalized = normalizeLlmRefineMode(mode);
     const previous = llmRefineMode;
@@ -1036,7 +1023,6 @@ function applyLlmRefineMode(mode, options = {}) {
         llmTranslateHideAfterSequence = null;
     }
 
-    updateTranslationRefineButton();
     updateSegmentModeButton();
 
     if (wasTranslate && llmRefineMode !== 'translate') {
@@ -1056,53 +1042,9 @@ function enforceTranslateSegmentMode() {
     }
 }
 
-function getNextLlmRefineMode(currentMode) {
-    if (currentMode === 'off') {
-        return 'refine';
-    }
-    if (currentMode === 'refine') {
-        return 'translate';
-    }
-    return 'off';
-}
-
 function getSegmentModes() {
     return isLlmTranslateMode() ? ['endpoint', 'punctuation'] : SEGMENT_MODES;
 }
-
-function updateTranslationRefineButton() {
-    // The main-UI LLM toggle has been replaced by the Settings "Translation mode"
-    // control, so the button is always hidden now.
-    if (translationRefineButton) {
-        translationRefineButton.style.display = 'none';
-    }
-    return;
-    // eslint-disable-next-line no-unreachable
-    if (!translationRefineButton || !translationRefineIcon) {
-        return;
-    }
-
-    if (!llmRefineAvailable || lockManualControls) {
-        translationRefineButton.style.display = 'none';
-        return;
-    }
-
-    translationRefineButton.style.display = '';
-
-    const isTranslate = isLlmTranslateMode();
-
-    setControlIcon(translationRefineIcon, isTranslate ? LLM_TRANSLATE_ICON : LLM_REFINE_ICON);
-    translationRefineButton.title = t(getLlmRefineTitleKey());
-
-    if (llmRefineMode !== 'off') {
-        translationRefineButton.classList.add('active');
-    } else {
-        translationRefineButton.classList.remove('active');
-    }
-
-    translationRefineButton.classList.toggle('mode-translate', isTranslate);
-}
-
 
 // 主题切换功能（默认深色）
 const ALL_THEMES = ['dark', 'light', 'chroma'];
@@ -1307,10 +1249,6 @@ function applyLockPauseRestartControlsUI() {
         // Hidden when locked or when the active provider has no segmentation control.
         segmentModeButton.style.display = (lockManualControls || !segmentModeSupported) ? 'none' : '';
     }
-    if (translationRefineButton) {
-        translationRefineButton.style.display = lockManualControls ? 'none' : '';
-    }
-
     if (lockManualControls) {
         autoRestartEnabled = true;
     }
@@ -1336,11 +1274,12 @@ async function fetchUiConfig() {
         if (data && Number.isFinite(Number(data.soniox_no_translation_factor)) && Number(data.soniox_no_translation_factor) > 0) {
             sonioxNoTranslationFactor = Math.min(1, Number(data.soniox_no_translation_factor));
         }
-        // 翻译模式: localStorage is the source of truth, but downgrade a stored
-        // mode not offered here (e.g. 改进 in relay mode, or any when LLM is off).
-        if (!llmRefineAvailable || !availableTranslationModes().includes(translationUiMode)) {
-            if (!llmRefineAvailable) translationUiMode = 'fast';
-            else if (!availableTranslationModes().includes(translationUiMode)) translationUiMode = 'fast';
+        // 翻译模式: localStorage is the source of truth when the user has made a
+        // choice. Without a saved choice, default to 混合; an unavailable LLM only
+        // hides the Settings control and must not poison the later login default.
+        translationUiMode = readStoredTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE;
+        if (!availableTranslationModes().includes(translationUiMode)) {
+            translationUiMode = DEFAULT_TRANSLATION_UI_MODE;
         }
         renderTranslationModePicker();
         // Backend restarted (new boot id): its in-memory translation mode reset
@@ -1515,7 +1454,6 @@ async function fetchUiConfig() {
         }
         applySpeakerLabelVisibility();
         applyLockPauseRestartControlsUI();
-        updateTranslationRefineButton();
         enforceTranslateSegmentMode();
     } catch (error) {
         console.error('Error fetching UI config:', error);
@@ -1529,7 +1467,6 @@ async function fetchLlmRefineStatus() {
         llmRefineMode = 'off';
         llmRefineEnabled = false;
         llmTranslateHideAfterSequence = null;
-        updateTranslationRefineButton();
         enforceTranslateSegmentMode();
         return;
     }
@@ -1559,35 +1496,7 @@ async function fetchLlmRefineStatus() {
         );
 
         const preferredDefault = normalizeLlmRefineMode(defaultLlmRefineMode || serverMode);
-
-        const storedMode = getStoredLlmRefineMode();
-        const hasStoredMode = !!storedMode;
-
-        if (lockManualControls) {
-            applyLlmRefineMode(preferredDefault, { persist: false });
-            return;
-        }
-
-        if (hasStoredMode && storedMode) {
-            if (storedMode !== serverMode) {
-                const appliedMode = await setLlmRefineMode(storedMode);
-                if (!appliedMode) {
-                    applyLlmRefineMode(serverMode, { persist: false });
-                }
-            } else {
-                applyLlmRefineMode(storedMode);
-            }
-            return;
-        }
-
-        if (preferredDefault !== serverMode) {
-            const appliedMode = await setLlmRefineMode(preferredDefault);
-            if (!appliedMode) {
-                applyLlmRefineMode(serverMode, { persist: false });
-            }
-        } else {
-            applyLlmRefineMode(preferredDefault);
-        }
+        applyLlmRefineMode(preferredDefault, { persist: false });
     } catch (error) {
         console.error('Error fetching LLM refine status:', error);
     }
@@ -2703,37 +2612,6 @@ if (translationLangButton) {
     });
 }
 
-if (translationRefineButton) {
-    translationRefineButton.addEventListener('click', () => {
-        if (!llmRefineAvailable) {
-            return;
-        }
-        const nextMode = getNextLlmRefineMode(llmRefineMode);
-        void setLlmRefineMode(nextMode);
-    });
-}
-
-async function setLlmRefineMode(mode) {
-    try {
-        const response = await fetch('/llm-refine', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode })
-        });
-        if (response.ok) {
-            const data = await response.json();
-            const nextMode = normalizeLlmRefineMode(data && data.mode ? data.mode : mode);
-            applyLlmRefineMode(nextMode);
-            return nextMode;
-        } else {
-            console.error('Failed to set LLM refine');
-        }
-    } catch (error) {
-        console.error('Error setting LLM refine:', error);
-    }
-    return null;
-}
-
 function updateAudioSourceButton() {
     if (!audioSourceButton || !audioSourceIcon) {
         return;
@@ -3029,7 +2907,7 @@ function renderTranslationModePicker() {
     }
     const modes = availableTranslationModes();
     let selected = translationUiMode;
-    if (!modes.includes(selected)) selected = 'fast';
+    if (!modes.includes(selected)) selected = DEFAULT_TRANSLATION_UI_MODE;
     translationModePickerEl = buildCustomSelect(modes.map((mode) => ({
         value: mode,
         label: translationModeLabel(mode),
@@ -3060,7 +2938,7 @@ function noteHybridInterimBoundary(mode, previous) {
 }
 
 async function setTranslationUiMode(mode, options = {}) {
-    const normalized = TRANSLATION_UI_MODES.includes(mode) ? mode : 'fast';
+    const normalized = TRANSLATION_UI_MODES.includes(mode) ? mode : DEFAULT_TRANSLATION_UI_MODE;
     const previous = translationUiMode;
     translationUiMode = normalized;
     noteHybridInterimBoundary(normalized, previous);
