@@ -1551,8 +1551,22 @@ class WebServer:
         """静态文件处理"""
         index_path = get_resource_path(os.path.join('static', 'index.html'))
         with open(index_path, 'r', encoding='utf-8') as f:
+            html = f.read()
+            initial_config = {
+                "relay_available": bool(config.RELAY_AVAILABLE),
+                "server_url": config.SUBTITLE_SERVER_URL,
+                "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
+            }
+            boot_script = (
+                "<script>"
+                "window.__INITIAL_UI_CONFIG__="
+                + json.dumps(initial_config, ensure_ascii=False)
+                + ";</script>"
+            )
+            if "</head>" in html:
+                html = html.replace("</head>", f"    {boot_script}\n</head>", 1)
             return web.Response(
-                text=f.read(),
+                text=html,
                 content_type='text/html',
                 headers={
                     "Cache-Control": "no-store, no-cache, must-revalidate",

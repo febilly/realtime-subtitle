@@ -272,8 +272,12 @@ function localizeBackendMessage(message) {
     return raw;
 }
 
+const INITIAL_UI_CONFIG = (window.__INITIAL_UI_CONFIG__ && typeof window.__INITIAL_UI_CONFIG__ === 'object')
+    ? window.__INITIAL_UI_CONFIG__
+    : {};
+
 // 由后端下发：锁定“手动控制”相关 UI
-let lockManualControls = false;
+let lockManualControls = !!INITIAL_UI_CONFIG.lock_manual_controls;
 
 // 由后端下发：LLM 译文修复能力是否可用（缺少 API key 时为 false）
 let llmRefineAvailable = false;
@@ -394,8 +398,8 @@ const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
 // Optional client-update reminders throttle: at least this many ms between popups.
 const CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
 const CLIENT_UPDATE_REMINDER_KEY = 'clientUpdateReminderLastShown';
-let relayAvailable = false;
-let relayServerUrl = '';
+let relayAvailable = !!INITIAL_UI_CONFIG.relay_available;
+let relayServerUrl = typeof INITIAL_UI_CONFIG.server_url === 'string' ? INITIAL_UI_CONFIG.server_url : '';
 let creditsPurchaseUrl = '';
 let firstRedeemBonusCredits = 0;
 let firstRedeemBonusEligible = false;
@@ -410,6 +414,7 @@ let loginForcedOpen = false;
 let relayPricing = null; // { soniox: {price_per_second, free_*}, gemini: {...} }
 let loginRegistrationInfo = null; // { bonuses: [...], registration_threshold }
 let loginSubmitBusy = false;
+let loginWaitingForBrowser = false;
 // Balance bar / this-session cost meter.
 let balancePollTimer = null;
 let balancePollIntervalMs = 0; // cadence the poll timer is currently running at
@@ -6026,6 +6031,49 @@ function maybeForceOpenSettings() {
     }
 }
 
+let startupLoginPreopened = false;
+
+function shouldPreopenHostedLogin() {
+    if (lockManualControls || !relayAvailable || !relayServerUrl) {
+        return false;
+    }
+    const server = loadServerSettings();
+    if (server.token) {
+        return false;
+    }
+    if (server.mode === 'direct' && hasExplicitConnectionMode(server)) {
+        return false;
+    }
+    return server.mode === 'relay' || !hasExplicitConnectionMode(server);
+}
+
+function preopenHostedLoginIfNeeded() {
+    if (!shouldPreopenHostedLogin()) {
+        return false;
+    }
+    const server = loadServerSettings();
+    if (!hasExplicitConnectionMode(server)) {
+        server.mode = 'relay';
+        server.modeChosen = true;
+        saveServerSettings(server);
+    }
+    startupLoginPreopened = true;
+    openLogin({ forced: true });
+    return true;
+}
+
+function refreshPreopenedHostedLogin() {
+    if (!startupLoginPreopened) {
+        return;
+    }
+    if (lockManualControls || !relayAvailable || !relayServerUrl || getConnectionMode() !== 'relay') {
+        hideLogin();
+        return;
+    }
+    applyLoginI18n();
+    updateLoginSubmitState();
+}
+
 if (settingsButton) {
     settingsButton.addEventListener('click', () => openSettings());
 }
@@ -6466,9 +6514,13 @@ function hasLoginCodeInput() {
 function updateLoginSubmitState() {
     if (!loginPrimaryButton) return;
     loginPrimaryButton.hidden = !loginManualShown;
-    loginPrimaryButton.disabled = loginSubmitBusy || !hasLoginCodeInput();
+    loginPrimaryButton.disabled = loginSubmitBusy || loginWaitingForBrowser || !hasLoginCodeInput();
     if (!loginSubmitBusy) {
         loginPrimaryButton.textContent = loginPrimaryLabel(loginForm && loginForm.getAttribute('data-step'));
+    }
+    if (loginCodeLink) {
+        loginCodeLink.disabled = loginSubmitBusy || loginWaitingForBrowser;
+        if (!loginSubmitBusy) loginCodeLink.textContent = t('login_vrchat_button');
     }
 }
 
@@ -6476,8 +6528,13 @@ function setLoginBusy(busy) {
     loginSubmitBusy = !!busy;
     if (loginSubmitBusy && loginPrimaryButton) {
         loginPrimaryButton.disabled = true;
-        return;
+        loginPrimaryButton.textContent = t('login_verifying');
     }
+    if (loginCodeLink) {
+        loginCodeLink.disabled = loginSubmitBusy || loginWaitingForBrowser;
+        loginCodeLink.textContent = loginSubmitBusy ? t('login_verifying') : t('login_vrchat_button');
+    }
+    if (loginSubmitBusy) return;
     updateLoginSubmitState();
 }
 
@@ -6564,9 +6621,11 @@ function setLoginManualShown(show) {
 }
 
 function setLoginWaiting(waiting) {
+    loginWaitingForBrowser = !!waiting;
     const hint = document.getElementById('loginWaitingHint');
     if (hint) hint.hidden = !waiting;
-    if (loginCodeLink) loginCodeLink.disabled = !!waiting;
+    if (loginCodeLink) loginCodeLink.disabled = loginSubmitBusy || loginWaitingForBrowser;
+    updateLoginSubmitState();
 }
 
 function openLogin({ forced = false } = {}) {
@@ -6593,6 +6652,7 @@ function hideLogin() {
     loginForcedOpen = false;
     stopLoginPolling();
     setLoginWaiting(false);
+    setLoginBusy(false);
 }
 
 function stopLoginPolling() {
@@ -6659,8 +6719,14 @@ async function pollLoginCallback() {
         const data = await resp.json().catch(() => ({}));
         if (data && data.status === 'done' && data.api_key) {
             stopLoginPolling();
+            setLoginBusy(true);
             setLoginWaiting(false);
-            await onLoginSuccess(data);
+            try {
+                await onLoginSuccess(data);
+            } catch (e) {
+                if (loginErrorEl) loginErrorEl.textContent = String(e);
+                setLoginBusy(false);
+            }
             return;
         }
         if (data && data.status === 'error') {
@@ -6723,15 +6789,21 @@ async function onLoginSuccess(data) {
     server.displayName = data.display_name || '';
     server.trustRank = data.trust_rank || '';
     saveServerSettings(server);
-    // Persist provider override and start a relay session.
-    const settings = loadProviderSettings();
-    const provider = settings.providerOverride || translationProvider || 'soniox';
-    await pushSetup(provider, null, { silent: true, mode: 'relay', token: data.api_key });
     showToast(t('login_success', { name: server.displayName || data.display_name || '' }));
     hideLogin();
     updateBalanceBarVisibility();
     void fetchBalance();
     clearSubtitleState();
+
+    // Persist provider override and start a relay session after the login UI is gone.
+    const settings = loadProviderSettings();
+    const provider = settings.providerOverride || translationProvider || 'soniox';
+    translationModeSynced = false;
+    try {
+        await pushSetup(provider, null, { silent: true, mode: 'relay', token: data.api_key });
+    } catch (e) {
+        showToast(String(e), true);
+    }
 }
 
 function mapVerifyError(status, data) {
@@ -7287,9 +7359,12 @@ function sessionCostReset() {
 
 document.addEventListener('DOMContentLoaded', () => {
     (async () => {
+        preopenHostedLoginIfNeeded();
         await fetchUiConfig();
+        refreshPreopenedHostedLogin();
         await maybeRunFirstLaunchFlow();
         await ensureHostedVersionAllowed();
+        refreshPreopenedHostedLogin();
         await syncProviderFromStorage();
         await fetchLlmRefineStatus();
         fetchApiKeyStatus();
