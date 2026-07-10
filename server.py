@@ -33,7 +33,11 @@ def _set_env_bool_if_provided(name: str, value) -> None:
 def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(add_help=True)
 
-    parser.add_argument('--debug', action='store_true', help='Enable WebView devtools (when WebView is enabled)')
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable WebView devtools and print outbound network requests in the console',
+    )
 
     webview_group = parser.add_mutually_exclusive_group()
     webview_group.add_argument('--webview', dest='auto_open_webview', action='store_true', default=None,
@@ -620,6 +624,10 @@ def main():
 
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
+
+    if args.debug:
+        from network_debug import enable as enable_network_debug
+        enable_network_debug()
 
     # 非交互式解析翻译 provider（soniox|gemini）。必须在导入 config 之前完成，
     # 以便 config 在求值时能读到 TRANSLATION_PROVIDER。
