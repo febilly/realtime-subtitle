@@ -20,10 +20,29 @@ ChatFn = Callable[..., Awaitable[str]]
 NO_CHANGE_MARKER = "__NO_CHANGE__"
 _REFINE_PLACEHOLDER = "...refined translation..."
 _TRANSLATE_PLACEHOLDER = "...translated text..."
-_DEFAULT_SEVERITY = "low"
-_SEVERITY_LEVELS = ("low", "medium", "high", "critical")
 MAX_REFINE_ATTEMPTS = 3
 MAX_TRANSLATE_ATTEMPTS = 3
+
+# Meaning-level error categories the refine model must cite to justify a
+# change. Naming a discrete category is an easier, better-calibrated ask for
+# small models than self-grading a severity level, and style rewrites have no
+# category to hide behind — a proposal without a recognized category is
+# discarded.
+ERROR_CATEGORIES = frozenset(
+    {
+        "mistranslation",
+        "wrong-subject",
+        "wrong-number-or-name",
+        "question-form",
+        "omission",
+        "hallucination",
+        "untranslated",
+        "garbled",
+    }
+)
+
+_ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
+_ERROR_TAG_RE = re.compile(r"<error>(.*?)</error>", re.IGNORECASE | re.DOTALL)
 
 
 def _clean_target_lang(target_lang) -> str:
@@ -84,49 +103,121 @@ def _strip_code_fence(text: str) -> str:
     return value.strip("`").strip()
 
 
-def _parse_severity(raw_content: str) -> str:
-    severity = _DEFAULT_SEVERITY
-    matches = re.findall(r"<severity>(.*?)</severity>", raw_content or "", flags=re.IGNORECASE | re.DOTALL)
-    if matches:
-        severity = str(matches[-1]).strip().lower()
-    if severity not in _SEVERITY_LEVELS:
-        severity = _DEFAULT_SEVERITY
-    return severity
+def parse_refine_response(raw_content: str, draft: str, source: str = "") -> dict:
+    """Parse a refine response into a gate decision.
+
+    Requires a literal ``<answer>`` tag (no fallback to the whole text: the
+    response also carries a ``<check>`` scan line that must never leak into the
+    subtitle). A changed answer is applied only when the model cites a
+    recognized meaning-level error category in ``<error>``. A "fix" that
+    merely echoes the draft or the untranslated source is discarded.
+
+    Returns ``{"has_answer", "no_change", "refined", "category"}``; offline
+    eval tools use this too, so experiments exercise the production gate.
+    """
+    raw = str(raw_content or "")
+    matches = _ANSWER_TAG_RE.findall(raw)
+    answer = _strip_code_fence(str(matches[-1]).strip()) if matches else ""
+
+    category = ""
+    error_matches = _ERROR_TAG_RE.findall(raw)
+    if error_matches:
+        category = str(error_matches[-1]).strip().lower()
+    if category not in ERROR_CATEGORIES:
+        category = ""
+
+    if not matches or answer == _REFINE_PLACEHOLDER:
+        return {"has_answer": False, "no_change": True, "refined": "", "category": category}
+    if (
+        answer == NO_CHANGE_MARKER
+        or not answer
+        or answer == (draft or "").strip()
+        or answer == (source or "").strip()
+        or not category
+    ):
+        return {"has_answer": True, "no_change": True, "refined": "", "category": category}
+    return {"has_answer": True, "no_change": False, "refined": answer, "category": category}
 
 
 def _build_refine_prompt(source: str, translation: str, target_lang_value: str, context_block: str) -> str:
     return (
         f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
-        "Role: Translation editor for real-time subtitles. Improve the draft translation while preserving its overall sentence structure.\n\n"
-        "## Goals\n"
-        " - Keep the meaning faithful to the source, including names, numbers, speaker intent, and question/statement form.\n"
-        " - Make the translation more accurate, fluent, natural, and easy to read in the target language.\n"
-        " - Clean up streaming artifacts, awkward word order, loose punctuation, and minor grammar issues when doing so improves readability.\n\n"
-        "## Editing limits\n"
-        " - Keep the draft's broad structure and information order unless a small change is needed for correctness or natural target-language flow.\n"
-        " - Do NOT add information that is not in the source. Do NOT omit source meaning.\n"
-        " - Do NOT rewrite into a new style, summary, explanation, or localization beyond what the source supports.\n"
-        " - If the draft is already accurate, fluent, and natural, output the NO CHANGE marker.\n"
-        " - Subject-less source: keep a subject/actor only when it can be confidently inferred (and fix it if the draft supplied the wrong one). "
-        "If the subject cannot be confidently inferred, prefer leaving it unstated rather than inventing one, where the target language allows subject omission.\n"
-        " - Common variations that keep the same meaning are NOT errors and are at most low severity — usually a NO CHANGE. Examples: "
-        "active vs passive voice with identical meaning; equivalent ways of listing or exemplifying items "
-        "(e.g. \"a and b are X, and c is also X\" vs \"a, b, and c are X\"); reordering coordinate items; synonym choice. "
-        "Do NOT raise severity for these.\n\n"
-        "## Severity guide\n"
-        " - low: Small wording, grammar, punctuation, or fluency improvement; the draft is understandable and meaning is essentially correct. "
-        "Meaning-preserving rephrasings (voice swaps, equivalent enumeration/coordination, synonyms) also belong here at most.\n"
-        " - medium: Noticeable awkwardness, ambiguity, or minor meaning drift; a reader may pause, but the main message is still recoverable. "
-        "Ordinary, not-serious sentence-structure problems (clumsy or non-idiomatic word order, run-on phrasing, awkward clause structure) that do NOT distort the core meaning belong here, NOT in high.\n"
-        " - high: Clear mistranslation, omitted/added important detail, wrong relation, number, name, tense, or question intent that would mislead the reader. "
-        "This includes a wrong subject/actor that the draft inferred for a subject-less source (e.g. the source omits the subject and the draft supplies the wrong \"I/you/he/she/they\"), since it misattributes who does or receives the action. "
-        "Reserve this for meaning-level errors; mere awkward or imperfect sentence structure, voice swaps, or equivalent list phrasings that still convey the correct meaning are low/medium, not high.\n"
-        " - critical: Opposite meaning, dangerous instruction, severe hallucination, or a change that would cause the reader to understand the source incorrectly.\n\n"
-        "## Output Format\n"
-        f" - NO CHANGE: <answer>{NO_CHANGE_MARKER}</answer>\n"
-        f" - Refined translation: <answer>{_REFINE_PLACEHOLDER}</answer>\n"
-        "   - Severity (only when changed): <severity>low|medium|high|critical</severity>\n\n"
-        "Do NOT explain. Do NOT add preamble.\n\n"
+        "Role: Error checker for real-time subtitle translations. The draft below was produced by a fast "
+        "streaming translator. Decide whether the draft contains a MEANING-LEVEL ERROR against the source "
+        "utterance. Fix only meaning-level errors; never restyle.\n\n"
+        "## Meaning-level errors (the ONLY reasons to change the draft)\n"
+        " - mistranslation: the draft says something different from the source (wrong meaning, reversed logic, "
+        "negation lost, tense that changes meaning)\n"
+        " - wrong-subject: the action is attributed to the wrong person (e.g. the source omits the subject and "
+        "the draft guessed the wrong \"I/you/he/she/they\")\n"
+        " - wrong-number-or-name: wrong number, date, quantity, or named entity\n"
+        " - question-form: a question rendered as a statement, or the reverse\n"
+        " - omission: meaning-bearing source words are missing from the draft and not covered by a context line\n"
+        " - hallucination: the draft contains meaning found in neither the source nor the context lines\n"
+        " - untranslated: source-language words left untranslated in the draft (names may stay in their usual "
+        "written form)\n"
+        " - garbled: the draft text is corrupted or unreadable\n\n"
+        "## Not errors — NEVER change these\n"
+        " - unidiomatic but understandable wording, word order, synonyms, punctuation, active/passive voice, "
+        "equivalent phrasings; a defensible word choice is not a mistranslation — flag mistranslation only when "
+        "the draft's meaning actually differs from the source's\n"
+        " - the source is a mid-sentence fragment and the draft translates it as a fragment; incompleteness "
+        "that mirrors the source is normal\n"
+        " - dangling sentence-final particles, fillers, stray tense markers, or word repetitions that "
+        "segmentation cut off (e.g. a lone \"た。\" or trailing \"from\") carry no translatable meaning — "
+        "leaving them out is not an omission, and restoring them is not a fix\n"
+        " - the draft borrows a subject, name, or a few words from the context lines — the streaming translator "
+        "hears neighboring speech, so this is correct behavior, not hallucination; if unsure whether a word came "
+        "from neighboring speech, keep the draft\n"
+        " - names transliterated as the speaker actually said them; never replace a name with a different name "
+        "you infer from context\n"
+        " - source text that is already in the target language; the draft may keep or drop it — neither is an "
+        "omission or untranslated; if most of the source is already in the target language, output NO CHANGE\n\n"
+        "Streaming caution: sources are cut mid-sentence. Before calling omission or hallucination, check the "
+        "context lines — meaning that appears in a neighboring line is already covered there. If the source is "
+        "too fragmentary to judge, output NO CHANGE.\n\n"
+        "## Procedure\n"
+        "First output one short <check> line: `none`, or `category: evidence`. The evidence must quote the exact "
+        "words as they appear in the source and/or draft above — if you cannot quote them, output NO CHANGE. "
+        "Then output the answer. A change without a category from the list above will be discarded.\n\n"
+        "## Output format (exactly one of)\n"
+        "1. No meaning-level error:\n"
+        "<check>none</check>\n"
+        f"<answer>{NO_CHANGE_MARKER}</answer>\n"
+        "2. Meaning-level error found — minimal fix, keep all other draft wording:\n"
+        "<check>category: evidence</check>\n"
+        f"<answer>{_REFINE_PLACEHOLDER}</answer>\n"
+        "<error>mistranslation|wrong-subject|wrong-number-or-name|question-form|omission|hallucination|"
+        "untranslated|garbled</error>\n\n"
+        "## Examples (target language Chinese here; apply the same rules for the actual target language)\n"
+        "Source: 行くって言ってたよ。 (context: talking about a friend)\n"
+        "Draft: 我说过我会去。\n"
+        "<check>wrong-subject: 言ってた reports the friend, draft says 我</check>\n"
+        "<answer>他说过他会去。</answer>\n"
+        "<error>wrong-subject</error>\n\n"
+        "Source: and then we could probably\n"
+        "Draft: 然后我们大概可以\n"
+        "<check>none</check>\n"
+        f"<answer>{NO_CHANGE_MARKER}</answer>\n\n"
+        "Source: った。それでね、\n"
+        "Draft: 然后呢，\n"
+        "<check>none — the stray った。 was cut off by segmentation, not an omission</check>\n"
+        f"<answer>{NO_CHANGE_MARKER}</answer>\n\n"
+        "Source: said she would be late (context mentions 小美 speaking)\n"
+        "Draft: 小美说她会迟到\n"
+        "<check>none</check>\n"
+        f"<answer>{NO_CHANGE_MARKER}</answer>\n\n"
+        "Source: I haven't seen him since Monday.\n"
+        "Draft: 我周一见过他。\n"
+        "<check>mistranslation: haven't seen since Monday became 见过</check>\n"
+        "<answer>我从周一起就没见过他。</answer>\n"
+        "<error>mistranslation</error>\n\n"
+        "Source: つまりこういう感じで、\n"
+        "Draft: 所以就买了这个，\n"
+        "<check>hallucination: 买了这个 is in neither source nor context</check>\n"
+        "<answer>就是这种感觉，</answer>\n"
+        "<error>hallucination</error>\n\n"
+        "Do NOT explain outside the tags.\n\n"
         f"{context_block}"
         "Source:\n```\n"
         f"{source}\n"
@@ -177,7 +268,7 @@ def build_refine_messages(
         _normalize_context(context_items), mention_translation=True
     )
     return [
-        {"role": "system", "content": "You are a precise translation reviewer."},
+        {"role": "system", "content": "You are a precise translation error checker."},
         {
             "role": "user",
             "content": _build_refine_prompt(
@@ -223,7 +314,7 @@ async def perform_refine(
     target_lang,
 ) -> dict:
     """Refine an existing draft translation. Returns a dict with ``status`` and
-    ``no_change`` (and ``refined_translation`` when a high/critical fix applies)."""
+    ``no_change`` (and ``refined_translation`` when a cited meaning-level fix applies)."""
     source = (source or "").strip()
     translation = (translation or "").strip()
     if not source or not translation:
@@ -251,29 +342,22 @@ async def perform_refine(
                 return {"status": "error", "message": str(exc), "no_change": True}
             return {"status": "error", "message": "LLM request failed", "no_change": True}
 
-        raw_content = str(content or "").strip()
-        refined = extract_answer_tag(raw_content).strip()
-        severity = _parse_severity(raw_content)
+        parsed = parse_refine_response(str(content or ""), translation, source)
 
-        if not refined:
+        if not parsed["has_answer"]:
             if attempt < MAX_REFINE_ATTEMPTS - 1:
                 continue
             return {"status": "ok", "no_change": True}
 
-        refined = _strip_code_fence(refined)
-
-        if refined == _REFINE_PLACEHOLDER:
-            if attempt < MAX_REFINE_ATTEMPTS - 1:
-                continue
+        if parsed["no_change"]:
             return {"status": "ok", "no_change": True}
 
-        if refined == NO_CHANGE_MARKER:
-            return {"status": "ok", "no_change": True}
-
-        if severity not in ("high", "critical"):
-            return {"status": "ok", "no_change": True}
-
-        return {"status": "ok", "no_change": False, "refined_translation": refined}
+        return {
+            "status": "ok",
+            "no_change": False,
+            "refined_translation": parsed["refined"],
+            "error_category": parsed["category"],
+        }
 
     return {"status": "ok", "no_change": True}
 

@@ -1423,16 +1423,15 @@ def test_hybrid_finalize_with_interim_translation_keeps_stt_when_refine_no_chang
     assert refined[-1]["refined_translation"] is None
 
 
-def test_perform_refine_keeps_medium_severity_as_no_change(monkeypatch):
+def test_perform_refine_keeps_uncited_change_as_no_change(monkeypatch):
+    """A changed answer without a recognized <error> category is discarded."""
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
-    import llm_refine
 
-    monkeypatch.setattr(llm_refine, "extract_answer_tag", lambda _raw: "更自然的译文。")
     session = module.SonioxSession(MagicMock(), MagicMock())
 
     async def fake_llm_chat(*args, **kwargs):
-        return "<answer>更自然的译文。</answer>\n<severity>medium</severity>"
+        return "<check>none</check>\n<answer>更自然的译文。</answer>"
 
     session._llm_chat = fake_llm_chat
 
@@ -1441,16 +1440,17 @@ def test_perform_refine_keeps_medium_severity_as_no_change(monkeypatch):
     assert result == {"status": "ok", "no_change": True}
 
 
-def test_perform_refine_accepts_high_severity_replacement(monkeypatch):
+def test_perform_refine_accepts_cited_error_replacement(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
-    import llm_refine
 
-    monkeypatch.setattr(llm_refine, "extract_answer_tag", lambda _raw: "更准确的译文。")
     session = module.SonioxSession(MagicMock(), MagicMock())
 
     async def fake_llm_chat(*args, **kwargs):
-        return "<answer>更准确的译文。</answer>\n<severity>high</severity>"
+        return (
+            "<check>mistranslation: greeting reversed</check>\n"
+            "<answer>更准确的译文。</answer>\n<error>mistranslation</error>"
+        )
 
     session._llm_chat = fake_llm_chat
 
@@ -1460,6 +1460,7 @@ def test_perform_refine_accepts_high_severity_replacement(monkeypatch):
         "status": "ok",
         "no_change": False,
         "refined_translation": "更准确的译文。",
+        "error_category": "mistranslation",
     }
 
 

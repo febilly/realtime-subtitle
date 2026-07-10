@@ -372,12 +372,14 @@ def _final_translation(sample: dict[str, Any], mode: str, raw_content: str) -> d
     severity = _parse_severity(raw_content)
     draft = (sample.get("draft_translation") or "").strip()
     if mode == "refine":
-        no_change = not answer or answer == llm_refine.NO_CHANGE_MARKER or severity not in {"high", "critical"}
+        parsed = llm_refine.parse_refine_response(
+            raw_content, draft, (sample.get("source") or "").strip()
+        )
         return {
-            "answer": answer,
-            "severity": severity,
-            "no_change": no_change,
-            "output_translation": draft if no_change else answer,
+            "answer": parsed["refined"] or answer,
+            "severity": parsed["category"] or severity,
+            "no_change": parsed["no_change"],
+            "output_translation": draft if parsed["no_change"] else parsed["refined"],
         }
     return {
         "answer": answer,
