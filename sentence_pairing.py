@@ -72,6 +72,13 @@ class PairedSentence:
     # Why the entry completed / the source closed — display separators reuse
     # the finalize reason ("punctuation" / "endpoint" / "speaker_change").
     close_reason: str = "punctuation"
+    # Observability for tuning RESYNC_GAP / QUIET_CLOSE / MAX_WAIT: which
+    # rule closed the translation side and the timing it saw (llm_log's
+    # pairing_close event; see tools/llm_log_report.py).
+    translation_close_reason: str = ""
+    translation_closed_at: float = 0.0
+    first_translation_at: float = 0.0
+    max_chunk_gap: float = 0.0
 
     def source_text(self) -> str:
         return "".join(str(t.get("text") or "") for t in self.source_tokens)
@@ -174,6 +181,8 @@ class SentencePairer:
                 and now - entry.last_translation_at >= RESYNC_GAP_SECONDS
             ):
                 entry.translation_closed = True
+                entry.translation_close_reason = "resync_gap"
+                entry.translation_closed_at = now
                 continue
             break
 
@@ -196,6 +205,12 @@ class SentencePairer:
                 )
             target = queue[-1]
 
+        if not target.translation_tokens:
+            target.first_translation_at = now
+        else:
+            target.max_chunk_gap = max(
+                target.max_chunk_gap, now - target.last_translation_at
+            )
         target.translation_tokens.append(token)
         target.last_translation_at = now
         token["llm_sentence_id"] = target.sentence_id
@@ -223,6 +238,8 @@ class SentencePairer:
         )
         if not entry.expects_translation:
             entry.translation_closed = True
+            entry.translation_close_reason = "no_translation_expected"
+            entry.translation_closed_at = entry.source_closed_at
         return entry
 
     # --------------------------------------------------------------- collect
@@ -243,10 +260,16 @@ class SentencePairer:
                         if head.translation_ends_sentence():
                             # batch-end punctuation close
                             head.translation_closed = True
+                            head.translation_close_reason = "punct"
+                            head.translation_closed_at = now
                         elif now - head.last_translation_at >= QUIET_CLOSE_SECONDS:
                             head.translation_closed = True
+                            head.translation_close_reason = "quiet"
+                            head.translation_closed_at = now
                     elif now - head.source_closed_at >= MAX_WAIT_SECONDS:
                         head.translation_closed = True
+                        head.translation_close_reason = "timeout_empty"
+                        head.translation_closed_at = now
                 if head.source_closed and head.translation_closed:
                     completed.append(queue.pop(0))
                     continue
@@ -265,7 +288,10 @@ class SentencePairer:
                 entry.source_closed = True
                 entry.source_closed_at = self._now()
                 entry.close_reason = reason
-            entry.translation_closed = True
+            if not entry.translation_closed:
+                entry.translation_closed = True
+                entry.translation_close_reason = "flush"
+                entry.translation_closed_at = self._now()
         return queue
 
     def flush_all(self, *, reason: str = "flush") -> list[PairedSentence]:

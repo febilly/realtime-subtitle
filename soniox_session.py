@@ -742,6 +742,27 @@ class SonioxSession:
         the time-based close rules (quiet close, timeout) make progress even
         without boundary tokens."""
         for entry in self._pairer.collect_completed(speaker):
+            # Timing evidence for tuning the pairing close constants
+            # (RESYNC_GAP / QUIET_CLOSE / MAX_WAIT in sentence_pairing.py):
+            # wait_ms is the latency the close rules added after the source
+            # ended; first_translation_lag_ms validates MAX_WAIT;
+            # max_chunk_gap_ms bounds RESYNC_GAP / QUIET_CLOSE from below.
+            llm_log.log_event(
+                "pairing_close",
+                sentence_id=entry.sentence_id,
+                reason=entry.translation_close_reason,
+                wait_ms=int(
+                    max(0.0, entry.translation_closed_at - entry.source_closed_at) * 1000
+                ),
+                first_translation_lag_ms=(
+                    int((entry.first_translation_at - entry.source_closed_at) * 1000)
+                    if entry.first_translation_at
+                    else None
+                ),
+                max_chunk_gap_ms=int(entry.max_chunk_gap * 1000),
+                chunks=len(entry.translation_tokens),
+                ends_punct=entry.translation_ends_sentence(),
+            )
             self._record_finalized_sentence_snapshot(
                 entry.speaker,
                 entry.sentence_id,

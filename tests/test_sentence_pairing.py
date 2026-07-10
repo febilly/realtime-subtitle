@@ -141,6 +141,49 @@ def test_no_translation_expected_completes_at_source_close():
     assert len(completed) == 1
 
 
+def test_close_reasons_and_timing_metrics_are_recorded():
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    # punct close, with a measurable chunk gap and translation lag
+    pairer.route_source_token({"text": "こんにちは。"}, "1")
+    pairer.close_source("1")
+    clock["t"] = 100.4
+    pairer.route_translation_token({"text": "你"}, "1")
+    clock["t"] = 100.55
+    pairer.route_translation_token({"text": "好。"}, "1")
+    clock["t"] = 100.6
+    done = pairer.collect_completed()
+    assert len(done) == 1
+    entry = done[0]
+    assert entry.translation_close_reason == "punct"
+    assert abs(entry.first_translation_at - 100.4) < 1e-9
+    assert abs(entry.max_chunk_gap - 0.15) < 1e-9
+    assert entry.translation_closed_at >= entry.source_closed_at
+
+    # quiet close
+    pairer.route_source_token({"text": "うん"}, "1")
+    pairer.close_source("1")
+    clock["t"] = 101.0
+    pairer.route_translation_token({"text": "嗯"}, "1")
+    clock["t"] = 102.0
+    done = pairer.collect_completed()
+    assert [e.translation_close_reason for e in done] == ["quiet"]
+
+    # empty timeout
+    pairer.route_source_token({"text": "え"}, "1")
+    pairer.close_source("1")
+    clock["t"] = 106.0
+    done = pairer.collect_completed()
+    assert [e.translation_close_reason for e in done] == ["timeout_empty"]
+
+    # no translation expected
+    pairer.route_source_token({"text": "同语言。"}, "1")
+    pairer.close_source("1", expects_translation=False)
+    done = pairer.collect_completed()
+    assert [e.translation_close_reason for e in done] == ["no_translation_expected"]
+
+
 def test_per_speaker_queues_are_independent():
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)

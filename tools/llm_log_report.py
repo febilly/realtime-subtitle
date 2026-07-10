@@ -98,6 +98,25 @@ def main():
         for category, count in Counter(r.get("category") for r in applied).most_common():
             print(f"    applied {category}: {count}")
 
+    # Pairing close timing (tunes sentence_pairing constants)
+    closes = [r for r in rows if r.get("event") == "pairing_close"]
+    if closes:
+        print("\n== pairing close ==")
+        by_reason = Counter(r.get("reason") for r in closes)
+        total = len(closes)
+        for reason, count in by_reason.most_common():
+            waits = [r["wait_ms"] for r in closes if r.get("reason") == reason and isinstance(r.get("wait_ms"), (int, float))]
+            wait_str = ""
+            if waits:
+                wait_str = f"  wait p50={_percentile(waits, 0.5)}ms p95={_percentile(waits, 0.95)}ms max={max(waits)}ms"
+            print(f"  {reason}: {count} ({100 * count / total:.0f}%){wait_str}")
+        gaps = [r["max_chunk_gap_ms"] for r in closes if isinstance(r.get("max_chunk_gap_ms"), (int, float)) and r.get("chunks", 0) > 1]
+        if gaps:
+            print(f"  intra-sentence chunk gap: p50={_percentile(gaps, 0.5)}ms p95={_percentile(gaps, 0.95)}ms p99={_percentile(gaps, 0.99)}ms max={max(gaps)}ms")
+        lags = [r["first_translation_lag_ms"] for r in closes if isinstance(r.get("first_translation_lag_ms"), (int, float))]
+        if lags:
+            print(f"  first-translation lag after source close: p50={_percentile(lags, 0.5)}ms p95={_percentile(lags, 0.95)}ms max={max(lags)}ms")
+
     # Dispatch/broadcast correlation
     dispatched = {r.get("sentence_id"): r for r in rows if r.get("event") == "refine_dispatch" and r.get("sentence_id")}
     broadcast_ids = {r.get("sentence_id") for r in rows if r.get("event") in ("refine_broadcast", "refine_dropped_retracted")}
