@@ -59,6 +59,7 @@ from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
 import sentence_segmentation
 import llm_refine
 import llm_log
+from sentence_pairing import SentencePairer, PairedSentence
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,11 @@ class SonioxSession:
         self._pending_endpoint_speakers: set[str] = set()
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
+        # Order-based (source, translation) pairing for the LLM refine path.
+        # Display separators above stay stream-positional; semantic pairing —
+        # which translation belongs to which source sentence — lives here
+        # exclusively. See sentence_pairing.py for the routing/close rules.
+        self._pairer = SentencePairer(self._alloc_sentence_id)
         self._osc_live_last_text_by_speaker: dict[str, str] = {}
         self._refine_context_history: list[dict] = []
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
@@ -324,6 +330,7 @@ class SonioxSession:
         self.loop = loop
         self._sentence_buffers.clear()
         self._pending_endpoint_speakers.clear()
+        self._pairer.flush_all()
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
         self._refine_context_history.clear()
@@ -492,6 +499,7 @@ class SonioxSession:
             osc_manager.clear_history()
             self._sentence_buffers.clear()
             self._pending_endpoint_speakers.clear()
+            self._pairer.flush_all()
             self._pending_boundaries.clear()
             self._reset_osc_live_state()
             with self._ipc_lock:
@@ -663,8 +671,22 @@ class SonioxSession:
             value["is_final"] = bool(is_final)
         return value
 
+    def _alloc_sentence_id(self) -> str:
+        self._llm_sentence_counter += 1
+        return f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
+
     def _process_token_for_sentence(self, token: dict) -> None:
-        """缓存 token 供后续断句/改进使用。"""
+        """Route the token twice, for two independent concerns:
+
+        1. SentencePairer — semantic (source, translation) pairing for the
+           LLM refine path. Routing happens at arrival (before the outgoing
+           copy is minified) so every final token carries the authoritative
+           ``llm_sentence_id`` of the sentence it semantically belongs to,
+           even when a translation streams in late.
+        2. The display sentence buffer — a per-speaker accumulator that only
+           feeds separator/boundary decisions (where the line break lands in
+           the outgoing stream). It carries no sentence identity.
+        """
         text = token.get("text", "")
         if self._is_internal_soniox_token(text):
             return
@@ -672,22 +694,24 @@ class SonioxSession:
         speaker = str(token.get("speaker", "?"))
         translation_status = token.get("translation_status", "original")
 
+        if translation_status == "translation":
+            self._pairer.route_translation_token(
+                token, speaker, expected_language=token.get("language")
+            )
+        else:
+            entry = self._pairer.route_source_token(token, speaker)
+            if speaker in self._interim_translation_speakers:
+                entry.had_interim_translation = True
+                token["had_interim_translation"] = True
+
         if speaker not in self._sentence_buffers:
-            # Assign the sentence id when the buffer opens, not at finalization:
-            # in interleaved punctuation mode the outgoing token copies are
-            # minified before finalization runs, and the frontend needs the id
-            # on those copies to match refine_result to the sentence (准确 mode
-            # has no translation text to fall back on).
-            self._llm_sentence_counter += 1
             self._sentence_buffers[speaker] = {
                 "original_tokens": [],
                 "translation_tokens": [],
-                "sentence_id": f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}",
                 "had_interim_translation": speaker in self._interim_translation_speakers,
             }
 
         buffer = self._sentence_buffers[speaker]
-        token["llm_sentence_id"] = buffer["sentence_id"]
         if buffer.get("had_interim_translation"):
             token["had_interim_translation"] = True
 
@@ -695,6 +719,62 @@ class SonioxSession:
             buffer["translation_tokens"].append(token)
         else:
             buffer["original_tokens"].append(token)
+
+    def _pairing_expects_translation(self, entry: PairedSentence) -> bool:
+        """Whether a separate translation stream is coming for this sentence.
+        Same-language speech, 准确 mode (soniox translation suppressed), and
+        translation-off sessions complete on source close alone."""
+        if self._suppress_soniox_translation:
+            return False
+        if not self.translation:
+            return False
+        if self._can_use_source_as_translation(entry.source_tokens):
+            return False
+        return True
+
+    def _pairing_close_source(self, speaker: str, *, reason: str = "punctuation") -> None:
+        """Close the source side of the speaker's open paired sentence at a
+        display sentence boundary (punctuation / <end> / speaker change).
+
+        Entries that complete right away (no translation expected, or the
+        translation already closed) dispatch inline so their finalized
+        snapshot exists before later tokens in the same batch consult it
+        (the short-interrupt merge does)."""
+        entry = self._pairer.open_entry(str(speaker))
+        if entry is None:
+            return
+        self._pairer.close_source(
+            str(speaker),
+            reason=reason,
+            expects_translation=self._pairing_expects_translation(entry),
+        )
+        self._dispatch_paired_sentences(str(speaker))
+
+    def _dispatch_paired_sentences(self, speaker: str | None = None) -> None:
+        """Collect fully paired sentences and dispatch the LLM refine path.
+        Called at source-close points and once per Soniox response batch so
+        the time-based close rules (quiet close, timeout) make progress even
+        without boundary tokens."""
+        for entry in self._pairer.collect_completed(speaker):
+            self._record_finalized_sentence_snapshot(
+                entry.speaker,
+                entry.sentence_id,
+                entry.source_tokens,
+                entry.translation_tokens,
+                had_interim_translation=entry.had_interim_translation,
+            )
+            if not self.loop:
+                continue
+            asyncio.run_coroutine_threadsafe(
+                self._finalize_sentence_async(
+                    entry.speaker,
+                    entry.source_tokens,
+                    entry.translation_tokens,
+                    entry.sentence_id,
+                    had_interim_translation=entry.had_interim_translation,
+                ),
+                self.loop,
+            )
 
     def _mark_interim_translation_seen(self, non_final_tokens: list[dict]) -> None:
         for token in non_final_tokens or []:
@@ -729,6 +809,7 @@ class SonioxSession:
         token["had_interim_translation"] = True
         self._interim_translation_speakers.add(speaker)
         buffer["had_interim_translation"] = True
+        self._pairer.mark_interim_translation(speaker)
         for existing in (buffer.get("original_tokens") or []) + (buffer.get("translation_tokens") or []):
             if isinstance(existing, dict):
                 existing["had_interim_translation"] = True
@@ -749,6 +830,7 @@ class SonioxSession:
             for existing in (buffer.get("original_tokens") or []) + (buffer.get("translation_tokens") or []):
                 if isinstance(existing, dict):
                     existing["had_interim_translation"] = True
+        self._pairer.mark_interim_translation(speaker)
         return True
 
     def _promote_pending_interim_translations(self) -> None:
@@ -1130,6 +1212,7 @@ class SonioxSession:
         speaker = str(token.get("speaker", "?"))
         if speaker in finalized_speakers:
             return
+        self._pairing_close_source(speaker)
         if self._trigger_sentence_finalization(speaker):
             finalized_speakers.add(speaker)
             outgoing_final_tokens.append(
@@ -1147,6 +1230,7 @@ class SonioxSession:
         for speaker in self._pending_boundaries.flush_stale_quote_boundaries_before_incompatible_token(token):
             if speaker in finalized_speakers:
                 continue
+            self._pairing_close_source(speaker)
             if self._trigger_sentence_finalization(speaker):
                 finalized_speakers.add(speaker)
                 outgoing_final_tokens.append(
@@ -1183,6 +1267,7 @@ class SonioxSession:
         for other in list(self._sentence_buffers.keys()):
             if other == current_speaker or other in finalized_speakers:
                 continue
+            self._pairing_close_source(other, reason="speaker_change")
             if self._trigger_sentence_finalization(other):
                 finalized_speakers.add(other)
                 self._clear_pending_boundaries_for_speaker(other)
@@ -1350,17 +1435,29 @@ class SonioxSession:
             item for item in self._refine_context_history
             if item.get("sentence_id") != previous.sentence_id
         ]
-        self._llm_sentence_counter += 1
-        merged_sentence_id = f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
+        merged_sentence_id = self._alloc_sentence_id()
         restored_original = self._clone_tokens_for_interrupt_merge(previous.original_tokens, merged_sentence_id)
         restored_translation = self._clone_tokens_for_interrupt_merge(previous.translation_tokens, merged_sentence_id)
         self._sentence_buffers[str(current_speaker)] = {
             "original_tokens": restored_original,
             "translation_tokens": restored_translation,
-            "sentence_id": merged_sentence_id,
             "had_interim_translation": previous.had_interim_translation,
             "interrupt_repair_of": previous.sentence_id,
         }
+        # Reopen the merged sentence in the pairer so the continuation's
+        # source tokens append to it and any translation still streaming for
+        # the retracted fragment routes back into the merged sentence.
+        # Independent copies: the display buffer above appends future tokens
+        # to its lists; sharing them would double-append via the pairer.
+        self._pairer.restore_entry(
+            PairedSentence(
+                sentence_id=merged_sentence_id,
+                speaker=str(current_speaker),
+                source_tokens=list(restored_original),
+                translation_tokens=list(restored_translation),
+                had_interim_translation=previous.had_interim_translation,
+            )
+        )
         if previous.had_interim_translation:
             self._interim_translation_speakers.add(str(current_speaker))
         self._pending_endpoint_speakers.discard(str(current_speaker))
@@ -1380,14 +1477,22 @@ class SonioxSession:
         return merged_sentence_id
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
-        """触发句子完成处理"""
+        """Close the speaker's DISPLAY sentence: decides whether a separator
+        (line break) may be emitted at this point in the outgoing stream.
+
+        Semantic pairing and the LLM refine dispatch are NOT handled here —
+        the SentencePairer owns those (see _dispatch_paired_sentences). This
+        keeps the old readiness rule ("wait until some translation text has
+        streamed in") purely as a display heuristic: it places the line break
+        after the translation text the viewer is watching, and being fooled
+        by a late previous-sentence translation no longer corrupts the refine
+        pairs."""
         buffer = self._sentence_buffers.get(speaker)
         if not buffer:
             return False
 
         original_tokens = buffer.get("original_tokens") or []
         translation_tokens = buffer.get("translation_tokens") or []
-        had_interim_translation = bool(buffer.get("had_interim_translation"))
 
         if not original_tokens:
             return False
@@ -1401,38 +1506,6 @@ class SonioxSession:
         self._pending_endpoint_speakers.discard(speaker)
         self._clear_pending_boundaries_for_speaker(speaker)
         self._reset_osc_live_state(speaker)
-
-        # The id was assigned when the buffer opened (_process_token_for_sentence);
-        # allocate one here only for legacy buffers without it.
-        sentence_id = buffer.get("sentence_id")
-        if not sentence_id:
-            self._llm_sentence_counter += 1
-            sentence_id = f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
-        for token in original_tokens + translation_tokens:
-            if isinstance(token, dict):
-                token["llm_sentence_id"] = sentence_id
-
-        self._record_finalized_sentence_snapshot(
-            speaker,
-            sentence_id,
-            original_tokens,
-            translation_tokens,
-            had_interim_translation=had_interim_translation,
-        )
-
-        if not self.loop:
-            return False
-
-        asyncio.run_coroutine_threadsafe(
-            self._finalize_sentence_async(
-                speaker,
-                original_tokens,
-                translation_tokens,
-                sentence_id,
-                had_interim_translation=had_interim_translation,
-            ),
-            self.loop,
-        )
         return True
 
     async def _finalize_sentence_async(
@@ -1767,6 +1840,7 @@ class SonioxSession:
         self._segment_mode = mode
         self._sentence_buffers.clear()
         self._pending_endpoint_speakers.clear()
+        self._pairer.flush_all()
         self._pending_boundaries.clear()
         self._reset_osc_live_state()
         if self.loop:
@@ -2259,6 +2333,14 @@ class SonioxSession:
                     speaker_value = next(iter(self._sentence_buffers.keys()))
                 if not speaker_value:
                     continue
+                # A source-side boundary (source punctuation or <end>) ends
+                # the sentence semantically right here, even when the display
+                # line break is deferred until translation text shows up.
+                if not is_translation:
+                    self._pairing_close_source(
+                        speaker_value,
+                        reason="endpoint" if text == "<end>" else "punctuation",
+                    )
                 if defer_source_punctuation:
                     self._pending_endpoint_speakers.add(speaker_value)
                     continue
@@ -2298,6 +2380,7 @@ class SonioxSession:
             if speaker_value is None and len(self._sentence_buffers) == 1:
                 speaker_value = next(iter(self._sentence_buffers.keys()))
             if speaker_value and speaker_value not in finalized_speakers:
+                self._pairing_close_source(speaker_value, reason="endpoint")
                 if self._trigger_sentence_finalization(speaker_value):
                     outgoing_final_tokens.append(
                         self._minify_token(self._make_separator_token("endpoint"))
@@ -2348,6 +2431,7 @@ class SonioxSession:
                     if speaker_value is None and self._sentence_buffers:
                         speaker_value = next(iter(self._sentence_buffers.keys()))
                     if speaker_value:
+                        self._pairing_close_source(speaker_value)
                         self._trigger_sentence_finalization(speaker_value)
                     separator_tokens.append(self._make_separator_token("translation"))
 
@@ -2366,6 +2450,7 @@ class SonioxSession:
                     if speaker_value is None and self._sentence_buffers:
                         speaker_value = next(iter(self._sentence_buffers.keys()))
                     if speaker_value:
+                        self._pairing_close_source(speaker_value, reason="endpoint")
                         self._trigger_sentence_finalization(speaker_value)
                     separator_tokens.append(self._make_separator_token("endpoint"))
 
@@ -2425,6 +2510,11 @@ class SonioxSession:
         if new_final_tokens:
             sent_count = len(all_final_tokens)
             self.last_sent_count = sent_count
+
+        # Semantic pairing progress: hand fully paired sentences to the LLM
+        # refine path. After the token broadcast so the frontend has the
+        # sentence's tokens before its refine_result can arrive.
+        self._dispatch_paired_sentences()
 
         # Session finished.
         if res.get("finished"):

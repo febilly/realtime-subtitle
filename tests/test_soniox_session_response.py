@@ -1007,6 +1007,18 @@ def _feed_original_and_translation_pair(session, source, translation, source_lan
     )
 
 
+def _settle_pairing(monkeypatch, module, session, seconds=2.0):
+    """Advance the pairing clock past the quiet-close window and feed an
+    empty batch so the pairer collects. Translations without sentence-ending
+    punctuation close on quiescence (sentence_pairing.QUIET_CLOSE_SECONDS)
+    rather than instantly — pairing correctness over immediacy."""
+    import time as _time
+
+    base = _time.monotonic()
+    monkeypatch.setattr(module.time, "monotonic", lambda: base + seconds)
+    session._process_soniox_response({"tokens": []}, [], 0, object())
+
+
 def _feed_original_and_translation_pair_with_endpoint(session, source, translation, source_language="en", translation_language="zh"):
     return session._process_soniox_response(
         {
@@ -1331,6 +1343,9 @@ def test_hybrid_endpoint_finalizes_short_sentence_with_refine(monkeypatch):
         "在现代，我们也做着很多类似的事",
         source_language="en",
     )
+    # The translation has no ending punctuation, so the pairer waits for
+    # quiescence before treating it as complete.
+    _settle_pairing(monkeypatch, module, session)
 
     assert calls == [("refine", "In modern times we do much the same", "在现代，我们也做着很多类似的事")]
     refined = [u for u in updates if u.get("type") == "refine_result"]
@@ -1376,6 +1391,8 @@ def test_hybrid_source_punctuation_short_sentence_uses_refine(monkeypatch):
         "血",
         source_language="en",
     )
+    # "血" has no ending punctuation: quiet close applies before refine runs.
+    _settle_pairing(monkeypatch, module, session)
 
     assert calls == [("refine", "Blood.", "血")]
     refined = [u for u in updates if u.get("type") == "refine_result"]
@@ -1979,8 +1996,10 @@ def test_punctuation_speaker_change_finalizes_previous_speaker(monkeypatch):
     assert calls == []
 
     # Speaker 2 starts: speaker 1's open sentence must finalize (LLM refine)
-    # instead of lingering as a provisional line.
-    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0 + module.HYBRID_INTERIM_TRANSLATION_DEBOUNCE_SECONDS + 0.001)
+    # instead of lingering as a provisional line. "你好" has no ending
+    # punctuation, so the pairer needs the quiet-close window to have
+    # elapsed before it treats the translation as complete.
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0 + 1.0)
     session._process_soniox_response(
         {
             "tokens": [
