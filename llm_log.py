@@ -12,8 +12,9 @@ line, always with ``ts`` (ISO, milliseconds) and ``event``. Layers:
               a dispatch with no matching broadcast means the refine
               coroutine died before delivering its result)
 
-Enabled by default so field issues get captured without a relaunch; disable
-with ENABLE_LLM_LOG=0. Never raises: logging must not break the session.
+Disabled by default; set ENABLE_LLM_LOG=1 when collecting diagnostics
+(pairing timing, refine decisions). Never raises: logging must not break
+the session.
 """
 import json
 import os
@@ -35,7 +36,7 @@ def _env_enabled() -> bool:
         return False
     value = os.environ.get("ENABLE_LLM_LOG")
     if value is None:
-        return True
+        return False
     return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
 
 
