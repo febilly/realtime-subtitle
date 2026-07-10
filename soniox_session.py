@@ -762,6 +762,7 @@ class SonioxSession:
                 max_chunk_gap_ms=int(entry.max_chunk_gap * 1000),
                 chunks=len(entry.translation_tokens),
                 ends_punct=entry.translation_ends_sentence(),
+                seeded=entry.translation_was_seeded or None,
             )
             self._record_finalized_sentence_snapshot(
                 entry.speaker,

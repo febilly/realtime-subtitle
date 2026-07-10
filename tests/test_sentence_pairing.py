@@ -184,6 +184,81 @@ def test_close_reasons_and_timing_metrics_are_recorded():
     assert [e.translation_close_reason for e in done] == ["no_translation_expected"]
 
 
+def test_seeded_translation_survives_until_fresh_chunk_arrives():
+    """Interrupt-merge regression (llm_20260710_193303 run #34-#39): the
+    restored entry is seeded with the retracted fragment's punct-ended
+    translation. It must not punct-close (nor resync-close) on the seeded
+    text alone — the continuation's translation, arriving later, belongs to
+    the merged sentence, not the next one."""
+    from sentence_pairing import PairedSentence
+
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    # Merged entry seeded with the fragment's translation "真的。"
+    pairer.restore_entry(
+        PairedSentence(
+            sentence_id="merged",
+            speaker="1",
+            source_tokens=[{"text": "マジで"}],
+            translation_tokens=[{"text": "真的。"}],
+        )
+    )
+    pairer.route_source_token({"text": " いや、ほんとに。"}, "1")
+    pairer.close_source("1")
+
+    # Batch end right after the close: seeded punct must NOT complete it.
+    assert pairer.collect_completed() == []
+
+    # Next sentence's source opens while the merged translation is late.
+    nxt = {"text": "ほんとに、大人になってからいくらでもできるから。"}
+    pairer.route_source_token(nxt, "1")
+    pairer.close_source("1")
+
+    # The continuation's translation arrives 0.5s later (beyond RESYNC_GAP):
+    # it must land on the merged entry, not shift to the next sentence.
+    clock["t"] += 0.5
+    late = {"text": "不是，真的。"}
+    pairer.route_translation_token(late, "1")
+    assert late["llm_sentence_id"] == "merged"
+
+    completed = pairer.collect_completed()
+    assert [e.sentence_id for e in completed] == ["merged"]
+    assert completed[0].translation_text() == "真的。不是，真的。"
+    assert completed[0].translation_was_seeded
+
+    # And the next sentence still pairs with its own translation.
+    own = {"text": "真的，长大以后随时都能做。"}
+    pairer.route_translation_token(own, "1")
+    clock["t"] += 1.0
+    completed = pairer.collect_completed()
+    assert [e.translation_text() for e in completed] == ["真的，长大以后随时都能做。"]
+    assert own["llm_sentence_id"] == completed[0].sentence_id
+
+
+def test_seeded_translation_quiet_closes_when_no_fresh_chunk_comes():
+    from sentence_pairing import PairedSentence
+
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+    pairer.restore_entry(
+        PairedSentence(
+            sentence_id="merged",
+            speaker="1",
+            source_tokens=[{"text": "そうね"}],
+            translation_tokens=[{"text": "是啊。"}],
+        )
+    )
+    pairer.route_source_token({"text": " それは思ってる。"}, "1")
+    pairer.close_source("1")
+
+    assert pairer.collect_completed() == []
+    clock["t"] += 1.0  # QUIET_CLOSE_SECONDS elapsed with no fresh translation
+    completed = pairer.collect_completed()
+    assert [e.translation_close_reason for e in completed] == ["quiet"]
+    assert completed[0].translation_text() == "是啊。"
+
+
 def test_per_speaker_queues_are_independent():
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)

@@ -79,6 +79,15 @@ class PairedSentence:
     translation_closed_at: float = 0.0
     first_translation_at: float = 0.0
     max_chunk_gap: float = 0.0
+    # Interrupt-repair merges seed the restored entry with the retracted
+    # fragment's translation, which usually ends with punctuation. Seeded
+    # text must not punct-close (or resync-close) the entry: the merged
+    # sentence's remaining translation is still streaming, and closing early
+    # routes it to the NEXT sentence, starting a shift run (live evidence in
+    # llm_20260710_193303.jsonl). Cleared by the first fresh translation
+    # token after the merge; was_seeded stays sticky for pairing_close logs.
+    translation_seeded: bool = False
+    translation_was_seeded: bool = False
 
     def source_text(self) -> str:
         return "".join(str(t.get("text") or "") for t in self.source_tokens)
@@ -177,6 +186,7 @@ class SentencePairer:
             if (
                 entry.source_closed
                 and entry.translation_tokens
+                and not entry.translation_seeded
                 and entry.translation_ends_sentence()
                 and now - entry.last_translation_at >= RESYNC_GAP_SECONDS
             ):
@@ -213,6 +223,9 @@ class SentencePairer:
             )
         target.translation_tokens.append(token)
         target.last_translation_at = now
+        # A fresh post-merge token arrived: the seeded text is no longer the
+        # end of the stream, normal close rules apply again.
+        target.translation_seeded = False
         token["llm_sentence_id"] = target.sentence_id
         return target
 
@@ -233,6 +246,12 @@ class SentencePairer:
         entry.source_closed = True
         entry.source_closed_at = self._now()
         entry.close_reason = reason
+        if entry.translation_seeded:
+            # The quiet-close fallback for a seeded (interrupt-merged) entry
+            # counts from the SOURCE close, not the merge: the continuation
+            # can easily speak longer than QUIET_CLOSE_SECONDS, and its
+            # translation only starts streaming after it ends.
+            entry.last_translation_at = entry.source_closed_at
         entry.expects_translation = expects_translation and bool(
             entry.expects_translation
         )
@@ -257,7 +276,7 @@ class SentencePairer:
                 head = queue[0]
                 if not head.translation_closed and head.source_closed:
                     if head.translation_tokens:
-                        if head.translation_ends_sentence():
+                        if head.translation_ends_sentence() and not head.translation_seeded:
                             # batch-end punctuation close
                             head.translation_closed = True
                             head.translation_close_reason = "punct"
@@ -307,4 +326,11 @@ class SentencePairer:
         queue = self._queues.setdefault(str(entry.speaker), [])
         entry.source_closed = False
         entry.translation_closed = False
+        if entry.translation_tokens:
+            entry.translation_seeded = True
+            entry.translation_was_seeded = True
+            # Restart the quiet clock: the seeded text's original arrival
+            # time is long past, and quiet close is the fallback that
+            # completes the merge if no fresh translation ever comes.
+            entry.last_translation_at = self._now()
         queue.append(entry)
