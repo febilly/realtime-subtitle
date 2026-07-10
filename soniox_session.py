@@ -113,7 +113,6 @@ SONIOX_INTERNAL_TOKEN_TEXTS = {"<end>", "<fin>"}
 SPEC_TRANSLATE_COOLDOWN_SECONDS = 1.0
 SPEC_TRANSLATE_CACHE_MAX = 64
 SPEC_TRANSLATE_MAX_INFLIGHT = 3
-HYBRID_INTERIM_TRANSLATION_DEBOUNCE_SECONDS = 0.02
 INTERRUPT_REPAIR_HISTORY_MAX = 8
 
 
@@ -125,7 +124,6 @@ class _FinalizedSentenceSnapshot:
     translation_tokens: list[dict]
     source_start_ms: float
     source_end_ms: float
-    had_interim_translation: bool
     retracted: bool = False
 
 
@@ -264,8 +262,6 @@ class SonioxSession:
         self._spec_last_fired_at = 0.0
         self._spec_inflight: dict[str, object] = {}
         self._spec_cache: dict[str, str] = {}
-        self._interim_translation_speakers: set[str] = set()
-        self._pending_interim_translation_seen_at: dict[str, float] = {}
         self._recent_finalized_sentences: list[_FinalizedSentenceSnapshot] = []
         self._retracted_sentence_ids: set[str] = set()
         self._pending_boundaries = sentence_segmentation.PendingBoundaryState()
@@ -338,8 +334,6 @@ class SonioxSession:
         self._spec_last_fired_at = 0.0
         self._spec_inflight.clear()
         self._spec_cache.clear()
-        self._interim_translation_speakers.clear()
-        self._pending_interim_translation_seen_at.clear()
         self._recent_finalized_sentences.clear()
         self._retracted_sentence_ids.clear()
         self._pending_boundaries.clear()
@@ -663,8 +657,6 @@ class SonioxSession:
         llm_sentence_id = token.get("llm_sentence_id")
         if llm_sentence_id:
             value["llm_sentence_id"] = str(llm_sentence_id)
-        if token.get("had_interim_translation"):
-            value["had_interim_translation"] = True
         if is_final is None:
             value["is_final"] = bool(token.get("is_final", False))
         else:
@@ -699,21 +691,15 @@ class SonioxSession:
                 token, speaker, expected_language=token.get("language")
             )
         else:
-            entry = self._pairer.route_source_token(token, speaker)
-            if speaker in self._interim_translation_speakers:
-                entry.had_interim_translation = True
-                token["had_interim_translation"] = True
+            self._pairer.route_source_token(token, speaker)
 
         if speaker not in self._sentence_buffers:
             self._sentence_buffers[speaker] = {
                 "original_tokens": [],
                 "translation_tokens": [],
-                "had_interim_translation": speaker in self._interim_translation_speakers,
             }
 
         buffer = self._sentence_buffers[speaker]
-        if buffer.get("had_interim_translation"):
-            token["had_interim_translation"] = True
 
         if translation_status == "translation":
             buffer["translation_tokens"].append(token)
@@ -761,7 +747,6 @@ class SonioxSession:
                 entry.sentence_id,
                 entry.source_tokens,
                 entry.translation_tokens,
-                had_interim_translation=entry.had_interim_translation,
             )
             if not self.loop:
                 continue
@@ -771,107 +756,9 @@ class SonioxSession:
                     entry.source_tokens,
                     entry.translation_tokens,
                     entry.sentence_id,
-                    had_interim_translation=entry.had_interim_translation,
                 ),
                 self.loop,
             )
-
-    def _mark_interim_translation_seen(self, non_final_tokens: list[dict]) -> None:
-        for token in non_final_tokens or []:
-            text = token.get("text")
-            if text is None or self._is_internal_soniox_token(text):
-                continue
-            if token.get("translation_status") != "translation":
-                continue
-            if self._note_interim_translation_candidate(token):
-                token["had_interim_translation"] = True
-
-    def _mark_displayed_final_translation_seen(self, final_tokens: list[dict]) -> None:
-        for token in final_tokens or []:
-            if self._should_mark_final_translation_as_interim(
-                token,
-                endpoint_detected=False,
-            ):
-                self._note_interim_translation_candidate(token, require_buffer=True)
-
-    def _mark_displayed_final_translation_token_seen(self, token: dict) -> None:
-        if not isinstance(token, dict):
-            return
-        text = token.get("text")
-        if text is None or self._is_internal_soniox_token(text):
-            return
-        if token.get("translation_status") != "translation":
-            return
-        speaker = str(token.get("speaker", "?"))
-        buffer = self._sentence_buffers.get(speaker)
-        if buffer is None:
-            return
-        token["had_interim_translation"] = True
-        self._interim_translation_speakers.add(speaker)
-        buffer["had_interim_translation"] = True
-        self._pairer.mark_interim_translation(speaker)
-        for existing in (buffer.get("original_tokens") or []) + (buffer.get("translation_tokens") or []):
-            if isinstance(existing, dict):
-                existing["had_interim_translation"] = True
-
-    def _promote_pending_interim_translation(self, speaker: str, *, now: float | None = None) -> bool:
-        seen_at = self._pending_interim_translation_seen_at.get(speaker)
-        if seen_at is None:
-            return speaker in self._interim_translation_speakers
-        current = time.monotonic() if now is None else now
-        if current - seen_at < HYBRID_INTERIM_TRANSLATION_DEBOUNCE_SECONDS:
-            return False
-
-        self._pending_interim_translation_seen_at.pop(speaker, None)
-        self._interim_translation_speakers.add(speaker)
-        buffer = self._sentence_buffers.get(speaker)
-        if buffer is not None:
-            buffer["had_interim_translation"] = True
-            for existing in (buffer.get("original_tokens") or []) + (buffer.get("translation_tokens") or []):
-                if isinstance(existing, dict):
-                    existing["had_interim_translation"] = True
-        self._pairer.mark_interim_translation(speaker)
-        return True
-
-    def _promote_pending_interim_translations(self) -> None:
-        now = time.monotonic()
-        for speaker in list(self._pending_interim_translation_seen_at.keys()):
-            self._promote_pending_interim_translation(speaker, now=now)
-
-    def _note_interim_translation_candidate(self, token: dict, *, require_buffer: bool = False) -> bool:
-        if not isinstance(token, dict):
-            return False
-        spk = token.get("speaker")
-        speaker = str(spk) if (spk is not None and spk != "") else "?"
-        if speaker in self._interim_translation_speakers:
-            return True
-        if require_buffer and speaker not in self._sentence_buffers:
-            return False
-        if speaker not in self._pending_interim_translation_seen_at:
-            self._pending_interim_translation_seen_at[speaker] = time.monotonic()
-        return self._promote_pending_interim_translation(speaker)
-
-    def _should_mark_final_translation_as_interim(
-        self,
-        token: dict,
-        *,
-        endpoint_detected: bool,
-    ) -> bool:
-        """Final translation tokens count as interim only while the sentence is still open."""
-        if not isinstance(token, dict):
-            return False
-        text = token.get("text")
-        if text is None or self._is_internal_soniox_token(text):
-            return False
-        if token.get("translation_status") != "translation":
-            return False
-        if endpoint_detected:
-            return False
-        spk = token.get("speaker")
-        speaker = str(spk) if (spk is not None and spk != "") else None
-        if speaker and speaker in self._pending_endpoint_speakers:
-            return False
-        return True
 
     def _join_token_texts(self, tokens: list[dict]) -> str:
         return "".join(
@@ -1307,8 +1194,6 @@ class SonioxSession:
         sentence_id: str,
         original_tokens: list[dict],
         translation_tokens: list[dict],
-        *,
-        had_interim_translation: bool,
     ) -> None:
         start_ms, end_ms = self._source_time_bounds_ms(original_tokens)
         if start_ms is None or end_ms is None:
@@ -1320,7 +1205,6 @@ class SonioxSession:
             translation_tokens=[dict(t) for t in translation_tokens if isinstance(t, dict)],
             source_start_ms=start_ms,
             source_end_ms=end_ms,
-            had_interim_translation=bool(had_interim_translation),
         )
         self._recent_finalized_sentences.append(snapshot)
         if len(self._recent_finalized_sentences) > INTERRUPT_REPAIR_HISTORY_MAX:
@@ -1441,7 +1325,6 @@ class SonioxSession:
         self._sentence_buffers[str(current_speaker)] = {
             "original_tokens": restored_original,
             "translation_tokens": restored_translation,
-            "had_interim_translation": previous.had_interim_translation,
             "interrupt_repair_of": previous.sentence_id,
         }
         # Reopen the merged sentence in the pairer so the continuation's
@@ -1455,11 +1338,8 @@ class SonioxSession:
                 speaker=str(current_speaker),
                 source_tokens=list(restored_original),
                 translation_tokens=list(restored_translation),
-                had_interim_translation=previous.had_interim_translation,
             )
         )
-        if previous.had_interim_translation:
-            self._interim_translation_speakers.add(str(current_speaker))
         self._pending_endpoint_speakers.discard(str(current_speaker))
         if self.loop:
             asyncio.run_coroutine_threadsafe(
@@ -1501,8 +1381,6 @@ class SonioxSession:
             return False
 
         self._sentence_buffers.pop(speaker, None)
-        self._interim_translation_speakers.discard(str(speaker))
-        self._pending_interim_translation_seen_at.pop(str(speaker), None)
         self._pending_endpoint_speakers.discard(speaker)
         self._clear_pending_boundaries_for_speaker(speaker)
         self._reset_osc_live_state(speaker)
@@ -1514,8 +1392,6 @@ class SonioxSession:
         original_tokens: list,
         translation_tokens: list,
         sentence_id: str | None = None,
-        *,
-        had_interim_translation: bool = False,
     ):
         """异步执行 LLM 改进与 OSC 发送"""
         source = self._join_token_texts(original_tokens)
@@ -2206,7 +2082,6 @@ class SonioxSession:
         # 计算新增的final tokens（增量部分）
         new_final_tokens = all_final_tokens[sent_count:]
         endpoint_detected = bool(res.get("endpoint_detected", False))
-        self._promote_pending_interim_translations()
 
         separator_tokens: list[dict] = []
         outgoing_final_tokens: list[dict] = []
@@ -2305,15 +2180,6 @@ class SonioxSession:
                             finalized_speakers,
                         )
                 self._process_token_for_sentence(token)
-                if (
-                    is_translation
-                    and not is_boundary
-                    and self._should_mark_final_translation_as_interim(
-                        token,
-                        endpoint_detected=endpoint_detected,
-                    )
-                ):
-                    self._note_interim_translation_candidate(token, require_buffer=True)
                 if not is_internal:
                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
                     if token_speaker:
@@ -2457,8 +2323,6 @@ class SonioxSession:
             # punctuation mode is handled by the interleaved pass above so the
             # separator lands at the period's position within the batch.
 
-        self._mark_interim_translation_seen(non_final_tokens)
-        self._mark_displayed_final_translation_seen(new_final_tokens)
 
         if new_final_tokens and not interleaved_punctuation:
             for token in new_final_tokens:

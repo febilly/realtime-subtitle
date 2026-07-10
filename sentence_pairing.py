@@ -67,7 +67,6 @@ class PairedSentence:
     source_closed: bool = False
     translation_closed: bool = False
     expects_translation: bool = True
-    had_interim_translation: bool = False
     source_closed_at: float = 0.0
     last_translation_at: float = 0.0
     # Why the entry completed / the source closed — display separators reuse
@@ -142,8 +141,6 @@ class SentencePairer:
         entry = queue[-1]
         entry.source_tokens.append(token)
         token["llm_sentence_id"] = entry.sentence_id
-        if entry.had_interim_translation:
-            token["had_interim_translation"] = True
         return entry
 
     def route_translation_token(
@@ -202,8 +199,6 @@ class SentencePairer:
         target.translation_tokens.append(token)
         target.last_translation_at = now
         token["llm_sentence_id"] = target.sentence_id
-        if target.had_interim_translation:
-            token["had_interim_translation"] = True
         return target
 
     # ---------------------------------------------------------------- closing
@@ -229,18 +224,6 @@ class SentencePairer:
         if not entry.expects_translation:
             entry.translation_closed = True
         return entry
-
-    def mark_interim_translation(self, speaker: str) -> None:
-        """A provisional (non-final) translation was displayed for this
-        speaker's in-progress sentence: mark the newest entry so the refine
-        result keeps the STT draft visible instead of hiding it."""
-        queue = self._queues.get(str(speaker)) or []
-        entry = queue[-1] if queue else None
-        if entry is not None:
-            entry.had_interim_translation = True
-            for token in entry.source_tokens + entry.translation_tokens:
-                if isinstance(token, dict):
-                    token["had_interim_translation"] = True
 
     # --------------------------------------------------------------- collect
 
