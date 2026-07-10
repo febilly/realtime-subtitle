@@ -50,3 +50,6 @@ Thumbs.db
 scratch/
 
 *.ttc
+
+# Claude helper directories
+.claude/
