@@ -8,10 +8,12 @@ key) and the per-utterance target language.
 """
 import asyncio
 import re
+import time
 from typing import Awaitable, Callable, Optional
 
 import config
 from llm_client import extract_answer_tag, LlmError
+from llm_log import log_event
 from hosted_llm import HostedLlmError, HostedLlmDisabled
 
 # ``chat(system_prompt, user_prompt, *, temperature, max_tokens) -> str``
@@ -327,6 +329,24 @@ async def perform_refine(
         target_lang=target_lang,
     )
 
+    t0 = time.perf_counter()
+
+    def _log_decision(decision: str, *, attempt: int, raw: str = "", parsed: Optional[dict] = None, error: str = ""):
+        log_event(
+            "refine_result",
+            decision=decision,
+            source=source,
+            draft=translation,
+            target_lang=str(target_lang or ""),
+            context_count=len(context_items or []),
+            attempts=attempt + 1,
+            elapsed_ms=int((time.perf_counter() - t0) * 1000),
+            raw=raw,
+            category=(parsed or {}).get("category", ""),
+            refined=(parsed or {}).get("refined", ""),
+            error=error,
+        )
+
     for attempt in range(MAX_REFINE_ATTEMPTS):
         try:
             content = await chat(
@@ -337,21 +357,34 @@ async def perform_refine(
             )
         except (asyncio.CancelledError, Exception) as exc:
             if isinstance(exc, HostedLlmDisabled):
+                _log_decision("error", attempt=attempt, error="llm_disabled")
                 return {"status": "error", "message": "llm_disabled", "no_change": True}
             if isinstance(exc, (LlmError, HostedLlmError)):
+                _log_decision("error", attempt=attempt, error=str(exc))
                 return {"status": "error", "message": str(exc), "no_change": True}
+            _log_decision("error", attempt=attempt, error=f"{type(exc).__name__}: {exc}")
             return {"status": "error", "message": "LLM request failed", "no_change": True}
 
-        parsed = parse_refine_response(str(content or ""), translation, source)
+        raw_content = str(content or "")
+        parsed = parse_refine_response(raw_content, translation, source)
 
         if not parsed["has_answer"]:
             if attempt < MAX_REFINE_ATTEMPTS - 1:
+                log_event(
+                    "refine_retry_no_answer",
+                    attempt=attempt + 1,
+                    source=source,
+                    raw=raw_content,
+                )
                 continue
+            _log_decision("no_answer", attempt=attempt, raw=raw_content, parsed=parsed)
             return {"status": "ok", "no_change": True}
 
         if parsed["no_change"]:
+            _log_decision("no_change", attempt=attempt, raw=raw_content, parsed=parsed)
             return {"status": "ok", "no_change": True}
 
+        _log_decision("applied", attempt=attempt, raw=raw_content, parsed=parsed)
         return {
             "status": "ok",
             "no_change": False,
@@ -381,6 +414,22 @@ async def perform_translate(
         target_lang=target_lang,
     )
 
+    t0 = time.perf_counter()
+
+    def _log_translate(decision: str, *, attempt: int, raw: str = "", translated: str = "", error: str = ""):
+        log_event(
+            "translate_result",
+            decision=decision,
+            source=source,
+            target_lang=str(target_lang or ""),
+            context_count=len(context_items or []),
+            attempts=attempt + 1,
+            elapsed_ms=int((time.perf_counter() - t0) * 1000),
+            raw=raw,
+            translation=translated,
+            error=error,
+        )
+
     for attempt in range(MAX_TRANSLATE_ATTEMPTS):
         try:
             content = await chat(
@@ -391,9 +440,12 @@ async def perform_translate(
             )
         except (asyncio.CancelledError, Exception) as exc:
             if isinstance(exc, HostedLlmDisabled):
+                _log_translate("error", attempt=attempt, error="llm_disabled")
                 return {"status": "error", "message": "llm_disabled"}
             if isinstance(exc, (LlmError, HostedLlmError)):
+                _log_translate("error", attempt=attempt, error=str(exc))
                 return {"status": "error", "message": str(exc)}
+            _log_translate("error", attempt=attempt, error=f"{type(exc).__name__}: {exc}")
             return {"status": "error", "message": "LLM request failed"}
 
         raw_content = str(content or "").strip()
@@ -402,6 +454,7 @@ async def perform_translate(
         if not translated:
             if attempt < MAX_TRANSLATE_ATTEMPTS - 1:
                 continue
+            _log_translate("empty", attempt=attempt, raw=raw_content)
             return {"status": "error", "message": "empty translation"}
 
         translated = _strip_code_fence(translated)
@@ -409,8 +462,10 @@ async def perform_translate(
         if translated == _TRANSLATE_PLACEHOLDER:
             if attempt < MAX_TRANSLATE_ATTEMPTS - 1:
                 continue
+            _log_translate("placeholder", attempt=attempt, raw=raw_content)
             return {"status": "error", "message": "placeholder translation"}
 
+        _log_translate("ok", attempt=attempt, raw=raw_content, translated=translated)
         return {"status": "ok", "translation": translated}
 
     return {"status": "error", "message": "translation failed"}

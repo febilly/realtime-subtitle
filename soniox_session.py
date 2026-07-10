@@ -58,6 +58,7 @@ from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
 from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
 import sentence_segmentation
 import llm_refine
+import llm_log
 
 logger = logging.getLogger(__name__)
 
@@ -1478,7 +1479,26 @@ class SonioxSession:
         # In accurate mode there is no built-in translation to show, so only bail
         # when nothing at all will be produced.
         if not display_translation and not will_llm_translate:
+            llm_log.log_event(
+                "refine_dispatch_skipped",
+                sentence_id=sentence_id,
+                mode=mode,
+                reason="no display translation and no llm translate",
+                source=source,
+            )
             return
+
+        # Correlates with refine_broadcast below: a dispatch with no matching
+        # broadcast means this coroutine died (cancelled/crashed) before
+        # delivering its refine_result — the frontend line would stay gray.
+        llm_log.log_event(
+            "refine_dispatch",
+            sentence_id=sentence_id,
+            mode=mode,
+            llm_can_run=llm_can_run,
+            source=source,
+            draft=display_translation,
+        )
 
         context_items = self._get_dynamic_context_items()
 
@@ -1543,6 +1563,11 @@ class SonioxSession:
                 print(f"LLM refine error: {error}")
 
         if sentence_id and str(sentence_id) in self._retracted_sentence_ids:
+            llm_log.log_event(
+                "refine_dropped_retracted",
+                sentence_id=sentence_id,
+                source=source,
+            )
             return
 
         await self.broadcast_callback({
@@ -1556,6 +1581,13 @@ class SonioxSession:
             # frontend which language the synthesized translation line is in.
             "target_lang": utterance_target_lang,
         })
+
+        llm_log.log_event(
+            "refine_broadcast",
+            sentence_id=sentence_id,
+            no_change=no_change,
+            refined=refined_translation if not no_change else "",
+        )
 
         osc_pub.publish_final(
             self._select_osc_text(refined_translation, source, original_tokens),

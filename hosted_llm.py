@@ -25,6 +25,8 @@ import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional
 
+from llm_log import log_event
+
 
 class HostedLlmError(RuntimeError):
     """A hosted LLM request failed. `reason` carries the relay's reason code."""
@@ -96,6 +98,7 @@ class HostedLlmTransport:
     def _dispatch(self, data: Dict[str, Any]) -> None:
         frame_type = data.get("type")
         if frame_type == "llm.disabled":
+            log_event("relay_llm_disabled", reason=str(data.get("reason") or ""))
             self._disabled = True
             self._disabled_reason = str(data.get("reason") or "")
             for fut in list(self._pending.values()):
@@ -116,7 +119,7 @@ class HostedLlmTransport:
             # Log + count the spend even if the caller already timed out — the
             # relay still billed this (late) response, so it must count toward the
             # totals shown in the console and the balance estimate.
-            self._log_response(rid, data)
+            self._log_response(rid, data, late=fut is None)
             credits = data.get("credits")
             if isinstance(credits, (int, float)) and credits > 0 and callable(self.on_credits):
                 try:
@@ -126,18 +129,25 @@ class HostedLlmTransport:
             if fut is not None and not fut.done():
                 fut.set_result(str(data.get("content") or ""))
         elif frame_type == "llm.error":
+            log_event(
+                "relay_error",
+                rid=rid,
+                reason=str(data.get("reason") or "error"),
+                late=fut is None,
+            )
             if isinstance(rid, str):
                 self._started_at.pop(rid, None)
             if fut is not None and not fut.done():
                 fut.set_exception(HostedLlmError(str(data.get("reason") or "error")))
         else:
             # Unknown llm.* frame: resolve empty so the caller can fall back.
+            log_event("relay_unknown_frame", rid=rid, frame_type=frame_type)
             if isinstance(rid, str):
                 self._started_at.pop(rid, None)
             if fut is not None and not fut.done():
                 fut.set_result("")
 
-    def _log_response(self, rid: Any, data: Dict[str, Any]) -> None:
+    def _log_response(self, rid: Any, data: Dict[str, Any], late: bool = False) -> None:
         """Print an own-key-style call line plus this-call and total credits."""
         started = self._started_at.pop(rid, None) if isinstance(rid, str) else None
         elapsed_ms = int((time.perf_counter() - started) * 1000) if started is not None else -1
@@ -165,6 +175,20 @@ class HostedLlmTransport:
         self._total_completion += completion
         self._total_credits += credits
 
+        content = str(data.get("content") or "")
+        log_event(
+            "relay_response",
+            rid=rid,
+            latency_ms=elapsed_ms,
+            late=late,
+            content_len=len(content),
+            empty=not content.strip(),
+            uncached=uncached,
+            cached=cached,
+            completion=completion,
+            credits=credits,
+        )
+
         elapsed_str = f"{elapsed_ms:>4}ms" if elapsed_ms >= 0 else "   ?ms"
         print(
             f"⚡ LLM (relay) {elapsed_str}  "
@@ -190,7 +214,7 @@ class HostedLlmTransport:
 
         attempts = max(1, int(retries) + 1)
         last_exc: Optional[BaseException] = None
-        for _ in range(attempts):
+        for attempt in range(attempts):
             rid = uuid.uuid4().hex
             fut: "asyncio.Future[str]" = self._loop.create_future()
             self._pending[rid] = fut
@@ -204,11 +228,19 @@ class HostedLlmTransport:
                     "max_tokens": max_tokens,
                 }
             )
+            log_event(
+                "relay_send",
+                rid=rid,
+                attempt=attempt + 1,
+                max_tokens=max_tokens,
+                timeout_seconds=timeout_seconds,
+            )
             try:
                 self._send(frame)
             except Exception as exc:
                 self._pending.pop(rid, None)
                 self._started_at.pop(rid, None)
+                log_event("relay_send_failed", rid=rid, error=str(exc))
                 raise HostedLlmError(f"send failed: {exc}")
             try:
                 return await asyncio.wait_for(fut, timeout=max(1.0, float(timeout_seconds)))
@@ -216,6 +248,7 @@ class HostedLlmTransport:
                 # Drop the stale future (a late response for this id is ignored)
                 # and retry with a fresh id. The relay still bills the old one.
                 self._pending.pop(rid, None)
+                log_event("relay_timeout", rid=rid, attempt=attempt + 1, timeout_seconds=timeout_seconds)
                 last_exc = HostedLlmError("timeout")
                 continue
             except HostedLlmDisabled:

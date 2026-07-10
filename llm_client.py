@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+from llm_log import log_event
+
 
 @dataclass(frozen=True)
 class LlmConfig:
@@ -128,16 +130,37 @@ async def chat_completion(
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     session = await _get_http_session()
     _t0 = time.perf_counter()
-    async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
-        text = await resp.text()
-        _elapsed_ms = int((time.perf_counter() - _t0) * 1000)
-        if resp.status >= 400:
-            raise LlmError(f"LLM request failed: HTTP {resp.status}: {text[:4000]}")
+    try:
+        async with session.post(url, json=payload, headers=headers, timeout=timeout) as resp:
+            text = await resp.text()
+            _elapsed_ms = int((time.perf_counter() - _t0) * 1000)
+            if resp.status >= 400:
+                log_event(
+                    "llm_http",
+                    model=config.model,
+                    status=resp.status,
+                    latency_ms=_elapsed_ms,
+                    error=text[:500],
+                )
+                raise LlmError(f"LLM request failed: HTTP {resp.status}: {text[:4000]}")
 
-        try:
-            data = json.loads(text)
-        except Exception as exc:
-            raise LlmError(f"LLM returned non-JSON response: {text[:4000]}") from exc
+            try:
+                data = json.loads(text)
+            except Exception as exc:
+                log_event(
+                    "llm_http",
+                    model=config.model,
+                    status=resp.status,
+                    latency_ms=_elapsed_ms,
+                    error=f"non-JSON response: {text[:500]}",
+                )
+                raise LlmError(f"LLM returned non-JSON response: {text[:4000]}") from exc
+    except LlmError:
+        raise
+    except Exception as exc:
+        _elapsed_ms = int((time.perf_counter() - _t0) * 1000)
+        log_event("llm_http", model=config.model, latency_ms=_elapsed_ms, error=str(exc))
+        raise
 
     # Extract usage info
     usage = data.get("usage") or {}
@@ -161,6 +184,23 @@ async def chat_completion(
         f"⚡ LLM ({config.model}) {_elapsed_ms:>4}ms  "
         f"↑{uncached_tokens:<4} + {cached_tokens:<4}c  ↓{completion_tokens:<3}  "
         f"total: ↑{_llm_total_uncached}+{_llm_total_cached}c  ↓{_llm_total_completion}"
+    )
+
+    _content = ""
+    try:
+        _content = str(data.get("choices", [])[0].get("message", {}).get("content", "") or "")
+    except Exception:
+        pass
+    log_event(
+        "llm_http",
+        model=config.model,
+        status=200,
+        latency_ms=_elapsed_ms,
+        content_len=len(_content),
+        empty=not _content.strip(),
+        uncached=uncached_tokens,
+        cached=cached_tokens,
+        completion=completion_tokens,
     )
 
     try:
