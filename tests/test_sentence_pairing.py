@@ -131,6 +131,78 @@ def test_missing_translation_times_out_and_completes_empty():
     assert completed[0].translation_text() == ""
 
 
+def test_late_translation_revives_timed_out_sentence():
+    """User-reported bug (2026-07-10): an incomplete fragment gets <end> but
+    Soniox only emits its translation seconds later, after someone else's
+    complete sentence forces a commit. The fragment times out empty; the late
+    translation must revive it under the ORIGINAL sentence id — not open a
+    source-less orphan entry whose fresh id makes the frontend's gray line
+    vanish once the speaker's next source tokens claim it."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    frag = {"text": "鉄の供給も"}
+    pairer.route_source_token(frag, "1")
+    pairer.close_source("1", reason="endpoint")
+
+    clock["t"] += 3.5  # MAX_WAIT elapses while another speaker talks
+    timed_out = pairer.collect_completed()
+    assert [e.translation_close_reason for e in timed_out] == ["timeout_empty"]
+
+    clock["t"] += 2.0  # late translation finally streams in
+    late = {"text": "铁的供应也"}
+    pairer.route_translation_token(late, "1")
+    assert late["llm_sentence_id"] == frag["llm_sentence_id"]
+
+    clock["t"] += 1.0  # quiet close (no ending punctuation)
+    completed = pairer.collect_completed()
+    assert len(completed) == 1
+    assert completed[0].sentence_id == frag["llm_sentence_id"]
+    assert completed[0].translation_text() == "铁的供应也"
+    assert completed[0].translation_was_revived
+
+    # The speaker's next sentence is unaffected.
+    pairer.route_source_token({"text": "次の話。"}, "1")
+    pairer.close_source("1")
+    own = {"text": "下一个话题。"}
+    pairer.route_translation_token(own, "1")
+    completed = pairer.collect_completed()
+    assert [e.translation_text() for e in completed] == ["下一个话题。"]
+
+
+def test_revival_window_expires():
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+    pairer.route_source_token({"text": "こんにちは"}, "1")
+    pairer.close_source("1")
+    clock["t"] += 3.5
+    assert pairer.collect_completed()[0].translation_close_reason == "timeout_empty"
+
+    clock["t"] += 10.0  # beyond REVIVE_WINDOW_SECONDS
+    orphan = {"text": "你好"}
+    entry = pairer.route_translation_token(orphan, "1")
+    assert not entry.translation_was_revived
+    assert not entry.source_tokens
+
+
+def test_revival_yields_to_awaiting_sentence():
+    """A newer sentence already awaiting its translation keeps FIFO priority:
+    the arriving chunk goes to it, not to the timed-out ghost."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+    pairer.route_source_token({"text": "古い文"}, "1")
+    pairer.close_source("1")
+    clock["t"] += 3.5
+    assert pairer.collect_completed()[0].translation_close_reason == "timeout_empty"
+
+    newer = {"text": "新しい文。"}
+    pairer.route_source_token(newer, "1")
+    pairer.close_source("1")
+    trans = {"text": "新句子。"}
+    pairer.route_translation_token(trans, "1")
+    assert trans["llm_sentence_id"] == newer["llm_sentence_id"]
+
+
 def test_no_translation_expected_completes_at_source_close():
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)
@@ -362,3 +434,87 @@ def test_session_fast_banter_never_shifts_refine_pairs(monkeypatch):
     for frame in refined:
         texts = token_ids.get(frame["sentence_id"]) or []
         assert frame["source"] in "".join(texts), (frame, token_ids)
+
+
+def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
+    """User-reported bug: speaker A's incomplete fragment gets <end> with no
+    translation; speaker B then says a full sentence; A's translation only
+    arrives after that. The fragment times out empty, so the late translation
+    must revive it — same sentence id on the tokens, one refine call pairing
+    (fragment, late translation) — instead of opening a fresh id that makes
+    the frontend's gray line vanish."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "refine"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append((source, translation))
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    def tok(text, speaker, status, lang):
+        return {"text": text, "is_final": True, "speaker": speaker,
+                "translation_status": status, "language": lang,
+                "source_language": "ja"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens, advance=0.4):
+        nonlocal sent
+        now["t"] += advance
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    # Speaker A: incomplete fragment, endpoint, no translation.
+    feed([tok("鉄の供給も", "1", "original", "ja"),
+          {"text": "<end>", "is_final": True, "speaker": "1",
+           "translation_status": "original"}])
+    # A's entry times out empty while B speaks.
+    feed([], advance=3.5)
+    # Speaker B: complete sentence with its translation.
+    feed([tok("これで完成です。", "2", "original", "ja"),
+          tok("这样就完成了。", "2", "translation", "zh")])
+    # A's translation finally arrives, seconds late.
+    feed([tok("铁的供应也。", "1", "translation", "zh")], advance=1.0)
+    feed([], advance=2.0)  # settle
+
+    assert calls == [
+        ("これで完成です。", "这样就完成了。"),
+        ("鉄の供給も", "铁的供应也。"),
+    ], calls
+
+    # The late translation tokens carry the FRAGMENT's sentence id, and the
+    # revived refine_result targets that same id.
+    frag_id = late_id = None
+    for update in updates:
+        for token in update.get("final_tokens", []):
+            if token.get("text") == "鉄の供給も":
+                frag_id = token.get("llm_sentence_id")
+            if token.get("text") == "铁的供应也。":
+                late_id = token.get("llm_sentence_id")
+    assert frag_id and frag_id == late_id, (frag_id, late_id)
+    refined_ids = [u["sentence_id"] for u in updates if u.get("type") == "refine_result"]
+    assert frag_id in refined_ids

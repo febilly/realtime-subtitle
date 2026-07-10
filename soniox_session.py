@@ -763,6 +763,7 @@ class SonioxSession:
                 chunks=len(entry.translation_tokens),
                 ends_punct=entry.translation_ends_sentence(),
                 seeded=entry.translation_was_seeded or None,
+                revived=entry.translation_was_revived or None,
             )
             self._record_finalized_sentence_snapshot(
                 entry.speaker,
@@ -778,6 +779,9 @@ class SonioxSession:
                     entry.source_tokens,
                     entry.translation_tokens,
                     entry.sentence_id,
+                    # A revived entry already passed through finalize once
+                    # (empty, at the timeout): skip one-shot side effects.
+                    announce=not entry.translation_was_revived,
                 ),
                 self.loop,
             )
@@ -1228,6 +1232,13 @@ class SonioxSession:
             source_start_ms=start_ms,
             source_end_ms=end_ms,
         )
+        # A revived sentence (timeout_empty then late translation) dispatches
+        # twice: replace the stale empty-translation snapshot instead of
+        # keeping same-id duplicates for the interrupt-repair walk.
+        self._recent_finalized_sentences = [
+            s for s in self._recent_finalized_sentences
+            if s.sentence_id != snapshot.sentence_id
+        ]
         self._recent_finalized_sentences.append(snapshot)
         if len(self._recent_finalized_sentences) > INTERRUPT_REPAIR_HISTORY_MAX:
             self._recent_finalized_sentences = self._recent_finalized_sentences[-INTERRUPT_REPAIR_HISTORY_MAX:]
@@ -1414,6 +1425,7 @@ class SonioxSession:
         original_tokens: list,
         translation_tokens: list,
         sentence_id: str | None = None,
+        announce: bool = True,
     ):
         """异步执行 LLM 改进与 OSC 发送"""
         source = self._join_token_texts(original_tokens)
@@ -1424,7 +1436,7 @@ class SonioxSession:
         if sentence_id and str(sentence_id) in self._retracted_sentence_ids:
             return
 
-        if ipc_server and hasattr(ipc_server, "broadcast_foreign_speech"):
+        if announce and ipc_server and hasattr(ipc_server, "broadcast_foreign_speech"):
             try:
                 detected_lang = self._infer_source_language(original_tokens)
                 asyncio.create_task(ipc_server.broadcast_foreign_speech(source, detected_lang))

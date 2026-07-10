@@ -32,7 +32,10 @@ Translation close signals, strongest first:
   3. quiet close: source closed, some translation arrived, none for
      QUIET_CLOSE_SECONDS -> done (covers translations without punctuation).
   4. timeout: source closed for MAX_WAIT_SECONDS with no translation at all
-     -> done empty (keeps refine/gray-reveal from stalling forever).
+     -> done empty (keeps refine/gray-reveal from stalling forever). The
+     popped entry stays revivable for REVIVE_WINDOW_SECONDS: if a translation
+     then arrives while nothing else awaits one, it re-enters the queue and
+     completes normally under its original sentence id.
 
 Entries that never get a translation (same-language speech, 准确 mode with
 soniox translation suppressed) are marked expects_translation=False and
@@ -56,6 +59,14 @@ RESYNC_GAP_SECONDS = 0.30
 QUIET_CLOSE_SECONDS = 0.90
 # Source closed this long with no translation at all -> give up waiting.
 MAX_WAIT_SECONDS = 3.0
+# A translation arriving within this long after an entry timed out empty
+# revives that entry, provided nothing else awaits a translation. Soniox can
+# emit a fragment's translation seconds late (only after later speech makes
+# it commit). Without revival the late translation opened a source-less
+# orphan entry under a fresh id: the frontend showed it gray via positional
+# fallback, then the speaker's next source tokens claimed that id and the
+# gray line vanished on re-render.
+REVIVE_WINDOW_SECONDS = 8.0
 
 
 @dataclass
@@ -88,6 +99,10 @@ class PairedSentence:
     # token after the merge; was_seeded stays sticky for pairing_close logs.
     translation_seeded: bool = False
     translation_was_seeded: bool = False
+    # Sticky: this entry timed out empty and was revived by a late
+    # translation (pairing_close logs it; the session skips duplicate
+    # side effects on the second dispatch).
+    translation_was_revived: bool = False
 
     def source_text(self) -> str:
         return "".join(str(t.get("text") or "") for t in self.source_tokens)
@@ -114,6 +129,10 @@ class SentencePairer:
         self._make_sentence_id = make_sentence_id
         self._now_override = now
         self._queues: dict[str, list[PairedSentence]] = {}
+        # Last entry per speaker that timed out with no translation, kept
+        # briefly so a late translation can revive it instead of opening a
+        # source-less orphan entry: (entry, popped_at).
+        self._timed_out: dict[str, tuple[PairedSentence, float]] = {}
 
     def _now(self) -> float:
         # Resolved lazily so tests that monkeypatch time.monotonic control
@@ -204,16 +223,27 @@ class SentencePairer:
             break
 
         if target is None:
-            # No sentence is awaiting a translation (e.g. the source side has
-            # not opened yet, or everything closed). Attach to the open entry
-            # or a fresh one: dropping the token would lose displayed text.
-            if not queue or queue[-1].source_closed:
+            # No sentence is awaiting a translation. If one recently timed
+            # out empty, this token is almost certainly its late translation:
+            # revive it (source stays closed; normal close rules resume).
+            revivable = self._timed_out.pop(speaker, None)
+            if revivable is not None and now - revivable[1] <= REVIVE_WINDOW_SECONDS:
+                target = revivable[0]
+                target.translation_closed = False
+                target.translation_close_reason = ""
+                target.translation_was_revived = True
+                queue.insert(0, target)  # older than anything queued
+            elif not queue or queue[-1].source_closed:
+                # Otherwise attach to the open entry or a fresh one: dropping
+                # the token would lose displayed text.
                 queue.append(
                     PairedSentence(
                         sentence_id=self._make_sentence_id(), speaker=speaker
                     )
                 )
-            target = queue[-1]
+                target = queue[-1]
+            else:
+                target = queue[-1]
 
         if not target.translation_tokens:
             target.first_translation_at = now
@@ -289,6 +319,8 @@ class SentencePairer:
                         head.translation_closed = True
                         head.translation_close_reason = "timeout_empty"
                         head.translation_closed_at = now
+                        # Keep it revivable: its translation may still come.
+                        self._timed_out[spk] = (head, now)
                 if head.source_closed and head.translation_closed:
                     completed.append(queue.pop(0))
                     continue
@@ -301,6 +333,7 @@ class SentencePairer:
         """Force-complete every entry for the speaker (stream end, sleep,
         session stop). Open sources are closed as-is."""
         speaker = str(speaker)
+        self._timed_out.pop(speaker, None)
         queue = self._queues.pop(speaker, [])
         for entry in queue:
             if not entry.source_closed:
@@ -317,6 +350,7 @@ class SentencePairer:
         flushed: list[PairedSentence] = []
         for speaker in list(self._queues.keys()):
             flushed.extend(self.flush_speaker(speaker, reason=reason))
+        self._timed_out.clear()
         return flushed
 
     def restore_entry(self, entry: PairedSentence) -> None:
