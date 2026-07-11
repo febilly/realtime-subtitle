@@ -2,6 +2,9 @@
 
 from collections.abc import Callable
 
+# "…" stays in this set so punctuation-run scans treat it as punctuation
+# (e.g. "。…" is one trailing-off run, not a boundary), but
+# is_sentence_ender_at never lets it END a sentence.
 SENTENCE_END_CHARS = {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
 CLOSING_QUOTE_CHARS = "\"'”’»›」』》"
 SENTENCE_END_ABBREVIATION_EXCEPTIONS = {
@@ -22,12 +25,27 @@ SENTENCE_END_ABBREVIATION_PREFIXES = {
 
 def is_sentence_ender_at(value: str, index: int) -> bool:
     ch = value[index]
+    # Ellipses mean the speaker trailed off, not that the sentence ended.
+    # Splitting there created extra pairing handoffs whose misfires shifted
+    # source/translation alignment (live 2026-07-11); the fragment before an
+    # ellipsis also translates worse on its own.
+    if ch == "…":
+        return False
     if ch == ".":
         prev_ch = value[index - 1] if index > 0 else ""
         next_ch = value[index + 1] if index + 1 < len(value) else ""
+        if prev_ch == "." or next_ch == ".":
+            return False  # part of an ASCII ellipsis ".." / "..."
         if prev_ch.isdigit() and next_ch.isdigit():
             return False
     return ch in SENTENCE_END_CHARS
+
+
+def text_ends_with_ellipsis(text: str) -> bool:
+    value = str(text or "").rstrip()
+    while value and value[-1] in CLOSING_QUOTE_CHARS:
+        value = value[:-1].rstrip()
+    return value.endswith("…") or value.endswith("..")
 
 
 def text_ends_with_abbreviation_segment(text: str, segment: str) -> bool:
@@ -202,6 +220,10 @@ class PendingBoundaryState:
         text = str(token.get("text") or "")
         if not is_sentence_ending_punctuation(text):
             return False
+        # context_text ends with this token's text: a lone "." whose buffered
+        # context already ends with "." is part of an ellipsis, not a boundary.
+        if text_ends_with_ellipsis(context_text):
+            return False
         if text_ends_with_abbreviation_exception(context_text):
             return False
         if text_ends_with_abbreviation_prefix(context_text):
@@ -220,6 +242,8 @@ class PendingBoundaryState:
         stripped = text.rstrip()
         if not stripped.endswith("."):
             return True
+        if next_text is not None and next_text.startswith("."):
+            return False  # an ASCII ellipsis is still streaming ("." + "..")
         prev_ch = stripped[-2] if len(stripped) >= 2 else ""
         if not prev_ch.isdigit():
             return True

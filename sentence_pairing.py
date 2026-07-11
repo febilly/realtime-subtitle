@@ -20,12 +20,14 @@ sentences:
 
 Translation close signals, strongest first:
 
-  1. resync-on-arrival: a new translation token arrives after a real gap
-     (>= RESYNC_GAP_SECONDS) while the head entry's translation already ends
-     with sentence-final punctuation -> the head is done, the token belongs
-     to the next entry. Soniox streams one sentence's translation as a rapid
-     chunk burst; the next sentence's translation cannot start until its
-     source was spoken, seconds later. Within-batch tokens after an internal
+  1. resync-on-arrival: a new translation token arrives while the head
+     entry's translation already ends with sentence-final punctuation, and
+     either a real gap passed (>= RESYNC_GAP_SECONDS; the next sentence's
+     translation cannot start until its source was spoken, seconds later) or
+     a later CLOSED source is already waiting for its translation (then the
+     burst provably carries more than one sentence's translation and must be
+     split at the punctuation even with no gap — "punct_handoff"). Only when
+     nothing later is waiting do within-batch tokens after an internal
      punctuation keep appending (no false split on "因为A。所以B。").
   2. batch-end punctuation: at the end of a response batch, a source-closed
      head whose translation ends with sentence-final punctuation is done.
@@ -124,19 +126,6 @@ class PairedSentence:
             return False
         return sentence_segmentation.is_sentence_ender_at(text, len(text) - 1)
 
-    @staticmethod
-    def _text_ends_ellipsis(text: str) -> bool:
-        value = str(text or "").rstrip()
-        while value and value[-1] in sentence_segmentation.CLOSING_QUOTE_CHARS:
-            value = value[:-1].rstrip()
-        return value.endswith("...") or value.endswith("…")
-
-    def source_ends_ellipsis(self) -> bool:
-        return self._text_ends_ellipsis(self.source_text())
-
-    def translation_ends_ellipsis(self) -> bool:
-        return self._text_ends_ellipsis(self.translation_text())
-
 
 class SentencePairer:
     """Per-speaker FIFO pairing of source sentences and streamed translations."""
@@ -223,31 +212,33 @@ class SentencePairer:
         for index, entry in enumerate(queue):
             if entry.translation_closed or not entry.expects_translation:
                 continue
-            later_closed_source_waits = any(
-                later.source_closed
-                and later.expects_translation
-                and not later.translation_closed
-                for later in queue[index + 1:]
-            )
-            rapid_ellipsis_handoff = (
-                later_closed_source_waits
-                and entry.source_ends_ellipsis()
-                and entry.translation_ends_ellipsis()
-            )
             if (
                 entry.source_closed
                 and entry.translation_tokens
                 and not entry.translation_seeded
                 and entry.translation_ends_sentence()
-                and (
-                    now - entry.last_translation_at >= RESYNC_GAP_SECONDS
-                    or rapid_ellipsis_handoff
-                )
             ):
-                entry.translation_closed = True
-                entry.translation_close_reason = (
-                    "ellipsis_handoff" if rapid_ellipsis_handoff else "resync_gap"
+                # A later CLOSED source already waiting for its translation
+                # means the burst carries more than one sentence's translation:
+                # hand off at the punctuation even with no time gap. (Live
+                # 2026-07-11, llm_20260711_210847: two sources closed in one
+                # batch, their translations arrived as one zero-gap burst, the
+                # head swallowed both and every later pair shifted by one.)
+                # The no-false-split guard for "因为A。所以B。" only applies
+                # while nothing later is waiting.
+                later_closed_source_waits = any(
+                    later.source_closed
+                    and later.expects_translation
+                    and not later.translation_closed
+                    for later in queue[index + 1:]
                 )
+                if now - entry.last_translation_at >= RESYNC_GAP_SECONDS:
+                    entry.translation_close_reason = "resync_gap"
+                elif later_closed_source_waits:
+                    entry.translation_close_reason = "punct_handoff"
+                else:
+                    break
+                entry.translation_closed = True
                 entry.translation_closed_at = now
                 continue
             break

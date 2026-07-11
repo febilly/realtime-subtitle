@@ -199,7 +199,7 @@ def test_split_into_sentence_lines(monkeypatch):
     assert split("看得人是脊背发凉。事发江西") == ["看得人是脊背发凉。", "事发江西"]
     assert split("甲。乙丙！丁") == ["甲。", "乙丙！", "丁"]
     assert split("在睡觉。") == ["在睡觉。"]
-    assert split("等等…好") == ["等等…", "好"]
+    assert split("等等…好") == ["等等…好"]      # ellipsis trails off, no split
     assert split("no punct tail") == ["no punct tail"]
     assert split("版本 3.10 已发布。下一句") == ["版本 3.10 已发布。", "下一句"]
     assert split("Meet at 9 a.m. tomorrow.") == ["Meet at 9 a.m. tomorrow."]

@@ -1109,6 +1109,36 @@ class SonioxSession:
             source_as_output=source_as_output,
         )
 
+    def _batch_completes_another_sentence(
+        self,
+        tokens: list[dict],
+        index: int,
+        speaker: str,
+    ) -> bool:
+        """Whether a later token in this same final batch completes ANOTHER
+        source sentence for this speaker, with nothing in between that would
+        break the merge: a translation token (then the FIFO can pair each
+        sentence normally), a speaker change, or an <end> (a real utterance
+        boundary). Used to keep same-batch complete sentences in one paired
+        entry — their translations arrive as one glued burst."""
+        for later_index in range(index + 1, len(tokens)):
+            later = tokens[later_index]
+            text = later.get("text")
+            if text is None:
+                continue
+            if text == "<end>":
+                return False
+            if self._is_internal_soniox_token(later):
+                continue
+            spk = later.get("speaker")
+            if spk is not None and spk != "" and str(spk) != speaker:
+                return False
+            if later.get("translation_status") == "translation":
+                return False
+            if self._token_text_is_sentence_ending(tokens, later_index):
+                return True
+        return False
+
     def _sentence_context_text_for_token(self, token: dict) -> str:
         speaker = str(token.get("speaker", "?"))
         buffer = self._sentence_buffers.get(speaker) or {}
@@ -2259,6 +2289,19 @@ class SonioxSession:
                 if speaker_value is None and self._sentence_buffers:
                     speaker_value = next(iter(self._sentence_buffers.keys()))
                 if not speaker_value:
+                    continue
+                # Two source sentences finalized in ONE batch usually get ONE
+                # glued zero-gap translation burst, which no time-based rule
+                # can split (live 2026-07-11, llm_20260711_210847: the first
+                # sentence swallowed both translations and every later pair
+                # shifted). The display already keeps them on one line (the
+                # break defers until translation text arrives), so keep the
+                # semantic sentence together too: skip this close and let the
+                # batch's LAST complete sentence close the merged entry. The
+                # refine LLM then sees both sentences with both translations.
+                if defer_source_punctuation and self._batch_completes_another_sentence(
+                    new_final_tokens, index, speaker_value
+                ):
                     continue
                 # A source-side boundary (source punctuation or <end>) ends
                 # the sentence semantically right here, even when the display

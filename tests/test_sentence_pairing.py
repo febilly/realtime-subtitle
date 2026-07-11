@@ -165,33 +165,56 @@ def test_internal_punctuation_within_burst_does_not_split():
     assert completed[0].translation_text() == "因为A。所以B。"
 
 
-def test_ellipsis_handoff_advances_when_next_closed_source_is_waiting():
-    """Live 2026-07-11 regression: two source sentences close in one batch.
-    Their translations arrive only 50 ms apart, so the ordinary 300 ms gap
-    cannot distinguish them. Matching source/translation ellipses are a strong
-    boundary when another closed source is already waiting."""
+def test_punct_handoff_splits_zero_gap_burst_when_next_closed_source_waits():
+    """Live 2026-07-11 regression (llm_20260711_210847 ids 19-21): two source
+    sentences are already closed and waiting when their translations arrive as
+    ONE zero-gap burst. The 300 ms resync gap can never fire inside the burst,
+    so without a handoff the head swallows both translations and every later
+    pair shifts by one. A later CLOSED source waiting is proof the burst spans
+    sentences: hand off at the punctuation immediately."""
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)
 
-    src1 = {"text": "ここに..."}
-    src2 = {"text": "こいつぶち込んで。"}
+    src1 = {"text": "すご！"}
+    src2 = {"text": "リペアキットいっぱい使うな、これ。"}
     pairer.route_source_token(src1, "1")
     pairer.close_source("1")
+    clock["t"] += 0.5  # closed in different batches: the session didn't merge
     pairer.route_source_token(src2, "1")
     pairer.close_source("1")
 
-    trans1 = {"text": "放到这里......", "translation_status": "translation"}
+    trans1 = {"text": "太厉害了！", "translation_status": "translation"}
     pairer.route_translation_token(trans1, "1")
-    clock["t"] += 0.05  # well below RESYNC_GAP_SECONDS
-    trans2 = {"text": "把这个塞进去。", "translation_status": "translation"}
+    clock["t"] += 0.05  # zero-gap burst: well below RESYNC_GAP_SECONDS
+    trans2 = {"text": "这个要用一堆修复套件。", "translation_status": "translation"}
     pairer.route_translation_token(trans2, "1")
 
     completed = pairer.collect_completed()
-    assert [e.source_text() for e in completed] == ["ここに...", "こいつぶち込んで。"]
-    assert [e.translation_text() for e in completed] == ["放到这里......", "把这个塞进去。"]
-    assert completed[0].translation_close_reason == "ellipsis_handoff"
+    assert [e.source_text() for e in completed] == ["すご！", "リペアキットいっぱい使うな、これ。"]
+    assert [e.translation_text() for e in completed] == ["太厉害了！", "这个要用一堆修复套件。"]
+    assert completed[0].translation_close_reason == "punct_handoff"
     assert trans1["llm_sentence_id"] == src1["llm_sentence_id"]
     assert trans2["llm_sentence_id"] == src2["llm_sentence_id"]
+
+
+def test_punct_handoff_needs_a_closed_later_source():
+    """The anti-split guard stays in force while the next sentence's source is
+    still OPEN: a multi-sentence translation of one source ("因为A。所以B。")
+    must keep gluing when nothing later is provably waiting."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    pairer.route_source_token({"text": "AだからBだ。"}, "1")
+    pairer.close_source("1")
+    pairer.route_source_token({"text": "次の"}, "1")  # next source still open
+
+    pairer.route_translation_token({"text": "因为A。"}, "1")
+    clock["t"] += 0.05
+    trans_tail = {"text": "所以B。"}
+    pairer.route_translation_token(trans_tail, "1")
+
+    completed = pairer.collect_completed()
+    assert [e.translation_text() for e in completed] == ["因为A。所以B。"]
 
 
 def test_missing_translation_times_out_and_completes_empty():
@@ -652,8 +675,11 @@ def test_session_translation_punctuation_closes_matching_open_source(monkeypatch
     )
 
 
-def test_session_ellipsis_burst_does_not_shift_following_translations(monkeypatch):
-    """End-to-end replay of llm_20260711_194734 ids 40-42."""
+def test_session_ellipsis_does_not_split_sentence(monkeypatch):
+    """Replay of llm_20260711_194734 ids 40-42. An ellipsis is a trail-off,
+    not a sentence end: the fragment before it must stay in the SAME paired
+    sentence as its continuation, so the pairing never needs to guess where
+    the translation splits (the guessing variants each misfired live)."""
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
 
@@ -699,27 +725,102 @@ def test_session_ellipsis_burst_does_not_shift_following_translations(monkeypatc
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
-    # Both Japanese sentences close in one response before either Chinese
-    # translation tail is assigned.
+    # The ellipsis fragment and its continuation arrive in one response; the
+    # "..." must not open a sentence boundary between them.
     feed([
         tok("で、青いやつもっといっぱい作って、ここに...", "original", "ja"),
         tok("こいつぶち込んで。", "original", "ja"),
     ])
-    # Both translations then arrive in one fast burst (< 300 ms apart).
+    # Both translation parts arrive in one fast burst (< 300 ms apart) and
+    # belong to that single merged sentence.
     feed([
         tok("然后把蓝色的那个多做一些，放到这里......", "translation", "zh"),
         tok("把这个塞进去。", "translation", "zh"),
     ], advance=0.05)
-    # A third pair proves the FIFO remains aligned after the ellipsis.
+    # The next pair proves the FIFO remains aligned after the ellipsis.
     feed([tok("どこ働かせると。", "original", "ja")], advance=0.5)
     feed([tok("要让它去哪里工作呢。", "translation", "zh")], advance=0.05)
+    feed([], advance=2.0)  # settle
 
     assert calls == [
-        ("で、青いやつもっといっぱい作って、ここに...",
-         "然后把蓝色的那个多做一些，放到这里......"),
-        ("こいつぶち込んで。", "把这个塞进去。"),
+        ("で、青いやつもっといっぱい作って、ここに...こいつぶち込んで。",
+         "然后把蓝色的那个多做一些，放到这里......把这个塞进去。"),
         ("どこ働かせると。", "要让它去哪里工作呢。"),
     ]
+
+
+def test_session_same_batch_sentences_merge_into_one_pair(monkeypatch):
+    """End-to-end replay of llm_20260711_210847 ids 19-21: Soniox finalizes
+    TWO complete sentences in one response, then streams both translations as
+    one glued zero-gap burst. Splitting that burst correctly is guesswork, so
+    the session must instead keep the two sentences in ONE paired entry — the
+    refine LLM then receives both sources with both translations, and the
+    following sentence still pairs with its own translation."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "refine"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append((source, translation))
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    def tok(text, status, language):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": status, "language": language,
+                "source_language": "ja"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens, advance=0.0):
+        nonlocal sent
+        now["t"] += advance
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    # Two complete sentences finalized in one response batch.
+    feed([
+        tok("すご！", "original", "ja"),
+        tok("リペアキットいっぱい使うな、これ。", "original", "ja"),
+    ])
+    # Their translations arrive as one glued zero-gap burst.
+    feed([
+        tok("太厉害了！", "translation", "zh"),
+        tok("这个要用一堆修复套件。", "translation", "zh"),
+    ], advance=0.06)
+    # The next sentence must still pair with its OWN translation (live it got
+    # the previous sentence's leftover and then timed out empty).
+    feed([tok("で、急いで今度上の退治に行かないといけない。", "original", "ja")], advance=0.5)
+    feed([tok("然后得赶紧去把上面的清掉。", "translation", "zh")], advance=0.06)
+    feed([], advance=2.0)  # settle
+
+    assert calls == [
+        ("すご！リペアキットいっぱい使うな、これ。", "太厉害了！这个要用一堆修复套件。"),
+        ("で、急いで今度上の退治に行かないといけない。", "然后得赶紧去把上面的清掉。"),
+    ], calls
 
 
 def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
