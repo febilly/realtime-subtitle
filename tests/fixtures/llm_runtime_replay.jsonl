@@ -1,0 +1,18 @@
+{"ts":"2026-07-11T08:00:00.000","event":"pairing_source_close","sentence_id":"s1","reason":"punctuation","source":"synthetic source one"}
+{"ts":"2026-07-11T08:00:00.100","event":"pairing_close","sentence_id":"s1","reason":"quiet","wait_ms":100,"chunks":2,"max_chunk_gap_ms":40,"first_translation_lag_ms":15}
+{"ts":"2026-07-11T08:00:00.110","event":"refine_dispatch","sentence_id":"s1","source":"synthetic source one","draft":"synthetic draft one","mode":"refine","llm_can_run":true}
+{"ts":"2026-07-11T08:00:00.120","event":"relay_send","rid":"r1","attempt":1,"max_tokens":256,"timeout_seconds":10}
+{"ts":"2026-07-11T08:00:00.220","event":"relay_response","rid":"r1","latency_ms":100,"late":false,"empty":false,"uncached":10,"cached":2,"completion":3,"credits":0.1}
+{"ts":"2026-07-11T08:00:00.230","event":"refine_result","decision":"no_change","source":"synthetic source one","draft":"synthetic draft one","category":"","refined":"","elapsed_ms":110}
+{"ts":"2026-07-11T08:00:00.240","event":"refine_broadcast","sentence_id":"s1","no_change":true,"refined":""}
+{"ts":"2026-07-11T08:00:01.000","event":"pairing_close","sentence_id":"s2","reason":"max_wait","wait_ms":900,"chunks":3,"max_chunk_gap_ms":300,"first_translation_lag_ms":250}
+{"ts":"2026-07-11T08:00:01.010","event":"refine_dispatch","sentence_id":"s2","source":"synthetic source two","draft":"synthetic draft two","mode":"refine","llm_can_run":true}
+{"ts":"2026-07-11T08:00:01.020","event":"relay_timeout","rid":"r2","attempt":1,"timeout_seconds":10}
+{"ts":"2026-07-11T08:00:01.320","event":"relay_response","rid":"r2","latency_ms":300,"late":true,"empty":false,"uncached":8,"cached":0,"completion":4,"credits":0.2}
+{"ts":"2026-07-11T08:00:01.330","event":"refine_result","decision":"applied","source":"synthetic source two","draft":"synthetic draft two","category":"mistranslation","refined":"synthetic fixed two","elapsed_ms":320}
+{"ts":"2026-07-11T08:00:01.340","event":"refine_dropped_retracted","sentence_id":"s2"}
+{"ts":"2026-07-11T08:00:02.000","event":"refine_dispatch","sentence_id":"s3","source":"synthetic lost source","draft":"synthetic lost draft","mode":"refine","llm_can_run":true}
+{"ts":"2026-07-11T08:00:02.010","event":"relay_error","rid":"r3","reason":"upstream_error"}
+{"ts":"2026-07-11T08:00:03.000","event":"llm_http","status":200,"latency_ms":80,"empty":false}
+{"ts":"2026-07-11T08:00:03.100","event":"llm_http","status":500,"latency_ms":90,"error":"synthetic upstream failure"}
+this line intentionally verifies malformed JSONL is ignored
