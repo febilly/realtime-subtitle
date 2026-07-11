@@ -124,6 +124,19 @@ class PairedSentence:
             return False
         return sentence_segmentation.is_sentence_ender_at(text, len(text) - 1)
 
+    @staticmethod
+    def _text_ends_ellipsis(text: str) -> bool:
+        value = str(text or "").rstrip()
+        while value and value[-1] in sentence_segmentation.CLOSING_QUOTE_CHARS:
+            value = value[:-1].rstrip()
+        return value.endswith("...") or value.endswith("…")
+
+    def source_ends_ellipsis(self) -> bool:
+        return self._text_ends_ellipsis(self.source_text())
+
+    def translation_ends_ellipsis(self) -> bool:
+        return self._text_ends_ellipsis(self.translation_text())
+
 
 class SentencePairer:
     """Per-speaker FIFO pairing of source sentences and streamed translations."""
@@ -207,18 +220,34 @@ class SentencePairer:
         # Resync-on-arrival: if the oldest awaiting translation already looks
         # complete and this token arrives after a real gap, it starts the NEXT
         # sentence's translation — close the old one instead of appending.
-        for entry in queue:
+        for index, entry in enumerate(queue):
             if entry.translation_closed or not entry.expects_translation:
                 continue
+            later_closed_source_waits = any(
+                later.source_closed
+                and later.expects_translation
+                and not later.translation_closed
+                for later in queue[index + 1:]
+            )
+            rapid_ellipsis_handoff = (
+                later_closed_source_waits
+                and entry.source_ends_ellipsis()
+                and entry.translation_ends_ellipsis()
+            )
             if (
                 entry.source_closed
                 and entry.translation_tokens
                 and not entry.translation_seeded
                 and entry.translation_ends_sentence()
-                and now - entry.last_translation_at >= RESYNC_GAP_SECONDS
+                and (
+                    now - entry.last_translation_at >= RESYNC_GAP_SECONDS
+                    or rapid_ellipsis_handoff
+                )
             ):
                 entry.translation_closed = True
-                entry.translation_close_reason = "resync_gap"
+                entry.translation_close_reason = (
+                    "ellipsis_handoff" if rapid_ellipsis_handoff else "resync_gap"
+                )
                 entry.translation_closed_at = now
                 continue
             break

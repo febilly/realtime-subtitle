@@ -165,6 +165,35 @@ def test_internal_punctuation_within_burst_does_not_split():
     assert completed[0].translation_text() == "因为A。所以B。"
 
 
+def test_ellipsis_handoff_advances_when_next_closed_source_is_waiting():
+    """Live 2026-07-11 regression: two source sentences close in one batch.
+    Their translations arrive only 50 ms apart, so the ordinary 300 ms gap
+    cannot distinguish them. Matching source/translation ellipses are a strong
+    boundary when another closed source is already waiting."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    src1 = {"text": "ここに..."}
+    src2 = {"text": "こいつぶち込んで。"}
+    pairer.route_source_token(src1, "1")
+    pairer.close_source("1")
+    pairer.route_source_token(src2, "1")
+    pairer.close_source("1")
+
+    trans1 = {"text": "放到这里......", "translation_status": "translation"}
+    pairer.route_translation_token(trans1, "1")
+    clock["t"] += 0.05  # well below RESYNC_GAP_SECONDS
+    trans2 = {"text": "把这个塞进去。", "translation_status": "translation"}
+    pairer.route_translation_token(trans2, "1")
+
+    completed = pairer.collect_completed()
+    assert [e.source_text() for e in completed] == ["ここに...", "こいつぶち込んで。"]
+    assert [e.translation_text() for e in completed] == ["放到这里......", "把这个塞进去。"]
+    assert completed[0].translation_close_reason == "ellipsis_handoff"
+    assert trans1["llm_sentence_id"] == src1["llm_sentence_id"]
+    assert trans2["llm_sentence_id"] == src2["llm_sentence_id"]
+
+
 def test_missing_translation_times_out_and_completes_empty():
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)
@@ -621,6 +650,76 @@ def test_session_translation_punctuation_closes_matching_open_source(monkeypatch
         original_ids["Every day people argue online"]
         != original_ids["But what do we think?"]
     )
+
+
+def test_session_ellipsis_burst_does_not_shift_following_translations(monkeypatch):
+    """End-to-end replay of llm_20260711_194734 ids 40-42."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "refine"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append((source, translation))
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    def tok(text, status, language):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": status, "language": language,
+                "source_language": "ja"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens, advance=0.0):
+        nonlocal sent
+        now["t"] += advance
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    # Both Japanese sentences close in one response before either Chinese
+    # translation tail is assigned.
+    feed([
+        tok("で、青いやつもっといっぱい作って、ここに...", "original", "ja"),
+        tok("こいつぶち込んで。", "original", "ja"),
+    ])
+    # Both translations then arrive in one fast burst (< 300 ms apart).
+    feed([
+        tok("然后把蓝色的那个多做一些，放到这里......", "translation", "zh"),
+        tok("把这个塞进去。", "translation", "zh"),
+    ], advance=0.05)
+    # A third pair proves the FIFO remains aligned after the ellipsis.
+    feed([tok("どこ働かせると。", "original", "ja")], advance=0.5)
+    feed([tok("要让它去哪里工作呢。", "translation", "zh")], advance=0.05)
+
+    assert calls == [
+        ("で、青いやつもっといっぱい作って、ここに...",
+         "然后把蓝色的那个多做一些，放到这里......"),
+        ("こいつぶち込んで。", "把这个塞进去。"),
+        ("どこ働かせると。", "要让它去哪里工作呢。"),
+    ]
 
 
 def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
