@@ -8,9 +8,10 @@ line, always with ``ts`` (ISO, milliseconds) and ``event``. Layers:
               llm_http (own-key OpenAI-compatible call)
   decision    refine_attempt / refine_result / translate_result
               (source, draft, raw model output, gate decision)
-  session     refine_dispatch / refine_broadcast (sentence_id correlation —
-              a dispatch with no matching broadcast means the refine
-              coroutine died before delivering its result)
+  session     pairing_source_close / pairing_close / refine_dispatch /
+              refine_broadcast (sentence_id correlation — a dispatch with no
+              matching broadcast means the refine coroutine died before
+              delivering its result)
 
 Disabled by default; set ENABLE_LLM_LOG=1 when collecting diagnostics
 (pairing timing, refine decisions). Never raises: logging must not break

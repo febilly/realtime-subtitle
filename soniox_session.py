@@ -734,6 +734,12 @@ class SonioxSession:
             reason=reason,
             expects_translation=self._pairing_expects_translation(entry),
         )
+        llm_log.log_event(
+            "pairing_source_close",
+            sentence_id=entry.sentence_id,
+            reason=reason,
+            source=self._join_token_texts(entry.source_tokens),
+        )
         self._dispatch_paired_sentences(str(speaker))
 
     def _dispatch_paired_sentences(self, speaker: str | None = None) -> None:
@@ -2214,6 +2220,27 @@ class SonioxSession:
                             finalized_speakers,
                         )
                 self._process_token_for_sentence(token)
+                if is_translation and has_sentence_punctuation and token_speaker:
+                    # Translation punctuation already closes the DISPLAY
+                    # sentence below. Keep the semantic pairer aligned with
+                    # that boundary too, otherwise the next source sentence
+                    # inherits the same llm_sentence_id and one refine result
+                    # is rendered under both display blocks. Only close when
+                    # this translation belongs to the currently open source;
+                    # a late translation for an older FIFO entry must never
+                    # close a newer sentence.
+                    open_entry = self._pairer.open_entry(token_speaker)
+                    token_sentence_id = token.get("llm_sentence_id")
+                    if (
+                        open_entry is not None
+                        and token_sentence_id
+                        and open_entry.sentence_id == str(token_sentence_id)
+                        and open_entry.source_tokens
+                    ):
+                        self._pairing_close_source(
+                            token_speaker,
+                            reason="translation_punctuation",
+                        )
                 if not is_internal:
                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
                     if token_speaker:
@@ -2790,8 +2817,21 @@ class SonioxSession:
                         if rollover_seconds is not None or sleep_idle_seconds is not None
                         else None
                     )
+                    pairing_timeout = self._pairer.seconds_until_next_deadline()
+                    if pairing_timeout is not None:
+                        # Avoid a zero-timeout spin while still waking at the
+                        # semantic pairing deadline when Soniox goes quiet.
+                        pairing_timeout = max(0.001, pairing_timeout)
+                        recv_timeout = (
+                            pairing_timeout
+                            if recv_timeout is None
+                            else min(recv_timeout, pairing_timeout)
+                        )
                     message = active_stream.ws.recv(timeout=recv_timeout)
                 except TimeoutError:
+                    # Time-based pairer rules must progress even when there is
+                    # no subsequent Soniox frame to trigger response handling.
+                    self._dispatch_paired_sentences()
                     continue
                 except ConnectionClosed as error:
                     if rollover_seconds is not None and self._stream_is_near_rollover_limit(

@@ -29,8 +29,10 @@ Translation close signals, strongest first:
      punctuation keep appending (no false split on "因为A。所以B。").
   2. batch-end punctuation: at the end of a response batch, a source-closed
      head whose translation ends with sentence-final punctuation is done.
-  3. quiet close: source closed, some translation arrived, none for
-     QUIET_CLOSE_SECONDS -> done (covers translations without punctuation).
+  3. quiet close: source closed, some translation arrived, the translation
+     has been quiet for QUIET_CLOSE_SECONDS, and an ordinary source boundary
+     has had a short post-close grace -> done (covers translations without
+     punctuation without losing a just-late tail).
   4. timeout: source closed for MAX_WAIT_SECONDS with no translation at all
      -> done empty (keeps refine/gray-reveal from stalling forever). The
      popped entry stays revivable for REVIVE_WINDOW_SECONDS: if a translation
@@ -57,6 +59,12 @@ RESYNC_GAP_SECONDS = 0.30
 # Source closed + translation present + no new translation tokens for this
 # long -> treat the translation as complete even without ending punctuation.
 QUIET_CLOSE_SECONDS = 0.90
+# When the translation was already quiet before an ordinary source boundary,
+# leave a short post-close window for its final words. Live 2026-07-11 tails
+# arrived about 33-90 ms after source close; reuse the conservative resync gap
+# rather than a brittle 20 ms delay. Speaker changes are strong boundaries and
+# intentionally skip this extra grace.
+SOURCE_CLOSE_GRACE_SECONDS = RESYNC_GAP_SECONDS
 # Source closed this long with no translation at all -> give up waiting.
 MAX_WAIT_SECONDS = 3.0
 # A translation arriving within this long after an entry timed out empty
@@ -311,7 +319,21 @@ class SentencePairer:
                             head.translation_closed = True
                             head.translation_close_reason = "punct"
                             head.translation_closed_at = now
-                        elif now - head.last_translation_at >= QUIET_CLOSE_SECONDS:
+                        # A translation can pause while the source is still
+                        # streaming, then emit its final few words just after
+                        # the source closes. The normal quiet window still
+                        # starts at the latest translation, but an ordinary
+                        # source boundary gets a short post-close grace so it
+                        # cannot look immediately overdue. A speaker change is
+                        # already a strong semantic boundary and skips it.
+                        elif (
+                            now - head.last_translation_at >= QUIET_CLOSE_SECONDS
+                            and (
+                                head.close_reason == "speaker_change"
+                                or now - head.source_closed_at
+                                >= SOURCE_CLOSE_GRACE_SECONDS
+                            )
+                        ):
                             head.translation_closed = True
                             head.translation_close_reason = "quiet"
                             head.translation_closed_at = now
@@ -328,6 +350,39 @@ class SentencePairer:
             if not queue:
                 self._queues.pop(spk, None)
         return completed
+
+    def seconds_until_next_deadline(self) -> Optional[float]:
+        """Seconds until a pending head can quiet-close or time out.
+
+        The receive loop uses this to wake even when Soniox sends no further
+        response. Without an actual wake-up, the close constants are only
+        checked opportunistically on the next response and can add arbitrary
+        refine latency during silence.
+        """
+        now = self._now()
+        deadlines: list[float] = []
+        for queue in self._queues.values():
+            if not queue:
+                continue
+            head = queue[0]
+            if not head.source_closed or head.translation_closed:
+                continue
+            if head.translation_tokens:
+                if head.translation_ends_sentence() and not head.translation_seeded:
+                    deadlines.append(now)
+                else:
+                    deadline = head.last_translation_at + QUIET_CLOSE_SECONDS
+                    if head.close_reason != "speaker_change":
+                        deadline = max(
+                            deadline,
+                            head.source_closed_at + SOURCE_CLOSE_GRACE_SECONDS,
+                        )
+                    deadlines.append(deadline)
+            else:
+                deadlines.append(head.source_closed_at + MAX_WAIT_SECONDS)
+        if not deadlines:
+            return None
+        return max(0.0, min(deadlines) - now)
 
     def flush_speaker(self, speaker: str, *, reason: str = "flush") -> list[PairedSentence]:
         """Force-complete every entry for the speaker (stream end, sleep,

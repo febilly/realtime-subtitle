@@ -78,6 +78,54 @@ def test_translation_split_across_batches_stays_on_one_sentence():
     assert completed[0].translation_text() == "对，就在这儿。"
 
 
+def test_quiet_close_keeps_post_source_grace_for_late_tail():
+    """Latest live regression (2026-07-11): translation pauses while the
+    source keeps streaming. Closing the source must start a short grace
+    window; otherwise the partial draft closes immediately and its tail is
+    routed into the next sentence."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    source = {"text": "What is stopping most people from switching to Linux?"}
+    pairer.route_source_token(source, "1")
+    partial = {"text": "是什么在阻止大多数人", "translation_status": "translation"}
+    pairer.route_translation_token(partial, "1")
+
+    # The source remains active long enough that the old translation token is
+    # already past QUIET_CLOSE_SECONDS when the source finally closes.
+    clock["t"] += 2.0
+    pairer.close_source("1")
+    assert pairer.collect_completed() == []
+    assert 0.29 <= pairer.seconds_until_next_deadline() <= 0.31
+
+    # The final translated words arrive just after source close and must stay
+    # on this sentence rather than opening/claiming the next entry.
+    clock["t"] += 0.05
+    tail = {"text": "切换到 Linux？", "translation_status": "translation"}
+    pairer.route_translation_token(tail, "1")
+    completed = pairer.collect_completed()
+    assert [e.sentence_id for e in completed] == [source["llm_sentence_id"]]
+    assert completed[0].translation_text() == "是什么在阻止大多数人切换到 Linux？"
+    assert tail["llm_sentence_id"] == source["llm_sentence_id"]
+
+
+def test_pairing_deadline_tracks_quiet_and_empty_waits():
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    pairer.route_source_token({"text": "quiet"}, "1")
+    pairer.route_translation_token({"text": "静默"}, "1")
+    pairer.close_source("1")
+    assert 0.89 <= pairer.seconds_until_next_deadline() <= 0.91
+    clock["t"] += 0.9
+    assert pairer.seconds_until_next_deadline() == 0.0
+    assert [e.translation_close_reason for e in pairer.collect_completed()] == ["quiet"]
+
+    pairer.route_source_token({"text": "empty"}, "1")
+    pairer.close_source("1")
+    assert 2.99 <= pairer.seconds_until_next_deadline() <= 3.01
+
+
 def test_resync_gap_moves_next_translation_to_next_sentence():
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)
@@ -434,6 +482,145 @@ def test_session_fast_banter_never_shifts_refine_pairs(monkeypatch):
     for frame in refined:
         texts = token_ids.get(frame["sentence_id"]) or []
         assert frame["source"] in "".join(texts), (frame, token_ids)
+
+
+def test_session_translation_tail_after_source_close_stays_with_sentence(monkeypatch):
+    """Replays the 2026-07-11 failure shape: an old partial translation is
+    already quiet when the source closes, then its tail arrives 50 ms later.
+    The refine call must wait for and retain that tail."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "refine"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append((source, translation))
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    def src(text):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": "original", "language": "en",
+                "source_language": "en"}
+
+    def trans(text):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": "translation", "language": "zh",
+                "source_language": "en"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens, advance):
+        nonlocal sent
+        now["t"] += advance
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    feed([src("What is stopping most people"), trans("是什么在阻止大多数人")], 0.1)
+    feed([src(" from switching to Linux?")], 2.0)
+    assert calls == []
+    feed([trans("切换到 Linux？")], 0.05)
+
+    assert calls == [
+        ("What is stopping most people from switching to Linux?",
+         "是什么在阻止大多数人切换到 Linux？")
+    ]
+
+
+def test_session_translation_punctuation_closes_matching_open_source(monkeypatch):
+    """2026-07-11 follow-up regression: translation punctuation split the
+    frontend display while the semantic source stayed open. The next English
+    sentence inherited the same id, so refine triggered late and its Chinese
+    result appeared under both display blocks."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "refine"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append((source, translation))
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    def tok(text, status, language):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": status, "language": language,
+                "source_language": "en"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens):
+        nonlocal sent
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    # Soniox has not finalized source punctuation yet, but its translation
+    # already provides an authoritative display/semantic sentence boundary.
+    feed([tok("Every day people argue online", "original", "en")])
+    feed([tok("每天都有人在网上争论。", "translation", "zh")])
+    assert calls == [
+        ("Every day people argue online", "每天都有人在网上争论。")
+    ]
+
+    feed([tok("But what do we think?", "original", "en")])
+    feed([tok("但我们怎么看？", "translation", "zh")])
+    assert calls == [
+        ("Every day people argue online", "每天都有人在网上争论。"),
+        ("But what do we think?", "但我们怎么看？"),
+    ]
+
+    original_ids = {}
+    for update in updates:
+        for token in update.get("final_tokens", []):
+            if token.get("translation_status") == "original":
+                original_ids[token.get("text")] = token.get("llm_sentence_id")
+    assert original_ids["Every day people argue online"]
+    assert original_ids["But what do we think?"]
+    assert (
+        original_ids["Every day people argue online"]
+        != original_ids["But what do we think?"]
+    )
 
 
 def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
