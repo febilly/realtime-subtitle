@@ -3072,42 +3072,16 @@ function maybeForceOpenSettings() {
     if (action === 'settings') openSettings({ forced: true });
 }
 
-let startupLoginPreopened = false;
-
 function shouldPreopenHostedLogin() {
-    return SettingsPolicy.shouldPreopenHostedLogin({
-        lockManualControls,
-        relayAvailable,
-        relayServerUrl,
-        serverSettings: loadServerSettings(),
-    });
+    return hostedMode.shouldPreopenHostedLogin();
 }
 
 function preopenHostedLoginIfNeeded() {
-    if (!shouldPreopenHostedLogin()) {
-        return false;
-    }
-    const server = loadServerSettings();
-    if (!hasExplicitConnectionMode(server)) {
-        server.mode = 'relay';
-        server.modeChosen = true;
-        saveServerSettings(server);
-    }
-    startupLoginPreopened = true;
-    openLogin({ forced: true });
-    return true;
+    return hostedMode.preopenHostedLoginIfNeeded();
 }
 
 function refreshPreopenedHostedLogin() {
-    if (!startupLoginPreopened) {
-        return;
-    }
-    if (lockManualControls || !relayAvailable || !relayServerUrl || getConnectionMode() !== 'relay') {
-        hideLogin();
-        return;
-    }
-    applyLoginI18n();
-    updateLoginSubmitState();
+    hostedMode.refreshPreopenedHostedLogin();
 }
 
 settingsUi.init({
@@ -3265,6 +3239,41 @@ const loginBackButton = document.getElementById('loginBackButton');
 const loginPasteButton = document.getElementById('loginPasteButton');
 const loginCodeLink = document.getElementById('loginCodeLink');
 const loginErrorEl = document.getElementById('loginError');
+const hostedMode = HostedMode.create({
+    policy: SettingsPolicy,
+    document,
+    t,
+    loadServerSettings,
+    saveServerSettings,
+    getState: () => ({
+        lockManualControls,
+        relayAvailable,
+        relayServerUrl,
+        connectionMode: getConnectionMode(),
+    }),
+    actions: {
+        openLogin,
+        hideLogin,
+        applyLoginI18n,
+        updateLoginSubmitState,
+        resetBootGuard: () => { pushedOverrideBootId = null; },
+        hideSettingsPanel,
+        ensureHostedVersionAllowed,
+        syncProviderFromStorage,
+        maybeForceOpenSettings,
+        updateBalanceBarVisibility,
+        setModeRadio,
+        applyModeSectionsVisibility,
+        updateAccountSection,
+        openSettings,
+    },
+    elements: {
+        chooserOverlay: modeChooserOverlay,
+        chooser: modeChooserEl,
+        relayButton: document.getElementById('modeChooserRelay'),
+        directButton: document.getElementById('modeChooserDirect'),
+    },
+});
 const balanceBar = document.getElementById('balanceBar');
 const balanceActionItem = document.getElementById('balanceActionItem');
 const balanceOpenSettingsButton = document.getElementById('balanceOpenSettingsButton');
@@ -3301,103 +3310,31 @@ function setElText(id, text) {
 
 // ---- First-launch mode chooser ----
 function applyChooserI18n() {
-    setElText('modeChooserTitle', t('chooser_title'));
-    setElText('modeChooserHint', t('chooser_hint'));
-    setElText('modeChooserRelayTitle', t('chooser_relay_title'));
-    setElText('modeChooserRelayDesc', t('chooser_relay_desc'));
-    setElText('modeChooserDirectTitle', t('chooser_direct_title'));
-    setElText('modeChooserDirectDesc', t('chooser_direct_desc'));
+    hostedMode.applyChooserI18n();
 }
 
 function openModeChooser() {
-    return new Promise((resolve) => {
-        applyChooserI18n();
-        if (modeChooserOverlay) modeChooserOverlay.hidden = false;
-        if (modeChooserEl) modeChooserEl.hidden = false;
-        const relayBtn = document.getElementById('modeChooserRelay');
-        const directBtn = document.getElementById('modeChooserDirect');
-        const choose = (mode) => {
-            const s = loadServerSettings();
-            s.mode = mode;
-            s.modeChosen = true;
-            saveServerSettings(s);
-            if (modeChooserOverlay) modeChooserOverlay.hidden = true;
-            if (modeChooserEl) modeChooserEl.hidden = true;
-            resolve(mode);
-        };
-        if (relayBtn) relayBtn.onclick = () => choose('relay');
-        if (directBtn) directBtn.onclick = () => choose('direct');
-    });
+    return hostedMode.openModeChooser();
 }
 
 function clearConnectionModeChoice() {
-    const s = loadServerSettings();
-    s.mode = null;
-    s.modeChosen = false;
-    saveServerSettings(s);
+    hostedMode.clearConnectionModeChoice();
 }
 
 function ensureHostedVersionAllowed(options = {}) {
     return hostedUpdate.ensure(options);
 }
 
-async function returnToModeChooser() {
-    if (lockManualControls || !relayAvailable) {
-        return;
-    }
-    clearConnectionModeChoice();
-    pushedOverrideBootId = null;
-    hideSettingsPanel();
-    hideLogin();
-    await openModeChooser();
-    await ensureHostedVersionAllowed();
-    await syncProviderFromStorage();
-    maybeForceOpenSettings();
-    updateBalanceBarVisibility();
+function returnToModeChooser() {
+    return hostedMode.returnToModeChooser();
 }
 
-// Escape hatch from the hosted-login panel: switch to own-key (direct) mode and
-// jump straight into Settings so the user can paste their own provider key.
-async function switchToOwnKeyMode() {
-    if (lockManualControls || !relayAvailable) {
-        return;
-    }
-    const s = loadServerSettings();
-    s.mode = 'direct';
-    s.modeChosen = true;
-    saveServerSettings(s);
-    pushedOverrideBootId = null;
-    hideLogin();
-    setModeRadio('direct');
-    applyModeSectionsVisibility('direct');
-    await syncProviderFromStorage();
-    updateAccountSection();
-    updateBalanceBarVisibility();
-    openSettings({ forced: true });
+function switchToOwnKeyMode() {
+    return hostedMode.switchToOwnKeyMode();
 }
 
-async function maybeRunFirstLaunchFlow() {
-    if (lockManualControls) {
-        return;
-    }
-    const s = loadServerSettings();
-    if ((s.mode === 'relay' || s.mode === 'direct') && hasExplicitConnectionMode(s)) {
-        return;
-    }
-    if (!relayAvailable) {
-        // No server configured: implicitly direct mode, no chooser shown.
-        s.mode = 'direct';
-        s.modeChosen = false;
-        saveServerSettings(s);
-        return;
-    }
-    // Server address is built in: default to hosted mode and surface the login
-    // panel directly (it carries a small "use own key" escape hatch) instead of
-    // making the user pick a connection mode up front.
-    s.mode = 'relay';
-    s.modeChosen = true;
-    saveServerSettings(s);
-    await ensureHostedVersionAllowed({ candidateMode: 'relay' });
+function maybeRunFirstLaunchFlow() {
+    return hostedMode.maybeRunFirstLaunchFlow();
 }
 
 // ---- Login overlay (web-generated one-time code only) ----
