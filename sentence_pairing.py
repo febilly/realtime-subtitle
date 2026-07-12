@@ -38,8 +38,9 @@ Translation close signals, strongest first:
   4. timeout: source closed for MAX_WAIT_SECONDS with no translation at all
      -> done empty (keeps refine/gray-reveal from stalling forever). The
      popped entry stays revivable for REVIVE_WINDOW_SECONDS: if a translation
-     then arrives while nothing else awaits one, it re-enters the queue and
-     completes normally under its original sentence id.
+     then arrives before a newer CLOSED sentence is waiting (and before an
+     open sentence has begun receiving translation), it re-enters the queue
+     and completes normally under its original sentence id.
 
 Entries that never get a translation (same-language speech, 准确 mode with
 soniox translation suppressed) are marked expects_translation=False and
@@ -121,10 +122,14 @@ class PairedSentence:
         return "".join(str(t.get("text") or "") for t in self.translation_tokens)
 
     def translation_ends_sentence(self) -> bool:
-        text = self.translation_text().rstrip()
-        if not text:
-            return False
-        return sentence_segmentation.is_sentence_ender_at(text, len(text) - 1)
+        # is_sentence_ending_punctuation, not a bare last-char check: a
+        # translation ending 「…吗？"」 hides its ender behind a closing quote,
+        # and missing it disabled every close rule mid-burst — the next
+        # sentence's translation glued on and started a shift run (live
+        # 2026-07-12, llm_20260712_081125 ids 16-20).
+        return sentence_segmentation.is_sentence_ending_punctuation(
+            self.translation_text()
+        )
 
 
 class SentencePairer:
@@ -244,11 +249,41 @@ class SentencePairer:
             break
 
         target = None
-        for entry in queue:
-            if entry.translation_closed or not entry.expects_translation:
-                continue
-            target = entry
-            break
+
+        # A timed-out sentence is still the oldest FIFO candidate. Prefer it
+        # over a newer source that is only OPEN and has not received any
+        # translation yet: live llm_20260711_214104 showed late "哦。" being
+        # assigned to the open next sentence, whose real long translation then
+        # revived the old short sentence and swapped the pair. A newer CLOSED
+        # sentence (or an open one whose translation already started) remains
+        # stronger evidence and keeps priority.
+        revivable = self._timed_out.get(speaker)
+        if revivable is not None and now - revivable[1] > REVIVE_WINDOW_SECONDS:
+            self._timed_out.pop(speaker, None)
+            revivable = None
+
+        waiting_entries = [
+            entry
+            for entry in queue
+            if not entry.translation_closed and entry.expects_translation
+        ]
+        newer_closed_waits = any(entry.source_closed for entry in waiting_entries)
+        newer_translation_started = any(
+            bool(entry.translation_tokens) for entry in waiting_entries
+        )
+        if (
+            revivable is not None
+            and not newer_closed_waits
+            and not newer_translation_started
+        ):
+            self._timed_out.pop(speaker, None)
+            target = revivable[0]
+            target.translation_closed = False
+            target.translation_close_reason = ""
+            target.translation_was_revived = True
+            queue.insert(0, target)
+        elif waiting_entries:
+            target = waiting_entries[0]
 
         if target is None:
             # No sentence is awaiting a translation. If one recently timed

@@ -197,6 +197,66 @@ def test_punct_handoff_splits_zero_gap_burst_when_next_closed_source_waits():
     assert trans2["llm_sentence_id"] == src2["llm_sentence_id"]
 
 
+def test_punct_handoff_sees_ender_behind_closing_quote():
+    """Live 2026-07-12 regression (llm_20260712_081125 ids 16-20): the head's
+    translation ends 「…吗？"」 — the sentence ender hides behind a closing
+    quote. A bare last-char check missed it, so the next sentence's "不。"
+    glued on and every later pair shifted (one entry even timed out empty and
+    needed revival)."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    src1 = {"text": 'In English, you can say, "Can I buy some ice cream?"'}
+    src2 = {"text": "No."}
+    pairer.route_source_token(src1, "1")
+    pairer.close_source("1")
+    clock["t"] += 0.4
+    pairer.route_source_token(src2, "1")
+    pairer.close_source("1")
+
+    trans1 = {"text": '在英语里，你可以说："我可以买点冰淇淋吗？"', "translation_status": "translation"}
+    pairer.route_translation_token(trans1, "1")
+    clock["t"] += 0.05  # zero-gap burst
+    trans2 = {"text": "不。", "translation_status": "translation"}
+    pairer.route_translation_token(trans2, "1")
+
+    completed = pairer.collect_completed()
+    assert [e.translation_text() for e in completed] == [
+        '在英语里，你可以说："我可以买点冰淇淋吗？"',
+        "不。",
+    ]
+    assert completed[0].translation_close_reason == "punct_handoff"
+    assert trans2["llm_sentence_id"] == src2["llm_sentence_id"]
+
+
+def test_resync_gap_sees_ender_behind_closing_quote():
+    """Same root cause, resync flavor (llm_20260712_081125 ids 4-5): the next
+    sentence's translation starts >= RESYNC_GAP after a quote-ended head while
+    that next source is still open — it must not glue onto the head."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    pairer.route_source_token({"text": '"We all know how to say no, right?"'}, "1")
+    pairer.close_source("1")
+    pairer.route_translation_token(
+        {"text": '"我们都知道怎么说不，对吧？"', "translation_status": "translation"}, "1"
+    )
+
+    pairer.route_source_token({"text": "Well, yeah, you can use いいえ."}, "1")
+
+    clock["t"] += 0.5  # a real gap: the next sentence's translation begins
+    tail = {"text": "嗯，是的，你可以用いいえ。", "translation_status": "translation"}
+    pairer.route_translation_token(tail, "1")
+    pairer.close_source("1")
+
+    completed = pairer.collect_completed()
+    assert [e.translation_text() for e in completed] == [
+        '"我们都知道怎么说不，对吧？"',
+        "嗯，是的，你可以用いいえ。",
+    ]
+    assert completed[0].translation_close_reason == "resync_gap"
+
+
 def test_punct_handoff_needs_a_closed_later_source():
     """The anti-split guard stays in force while the next sentence's source is
     still OPEN: a multi-sentence translation of one source ("因为A。所以B。")
@@ -301,6 +361,37 @@ def test_revival_yields_to_awaiting_sentence():
     trans = {"text": "新句子。"}
     pairer.route_translation_token(trans, "1")
     assert trans["llm_sentence_id"] == newer["llm_sentence_id"]
+
+
+def test_revival_precedes_newer_open_source_without_translation():
+    """Live llm_20260711_214104 ids 104-105: the old short sentence times
+    out, a newer long source starts but remains open, then the old short
+    translation arrives. FIFO must revive the old sentence instead of closing
+    the open new sentence with the wrong translation."""
+    clock = {"t": 100.0}
+    pairer = _make_pairer(clock)
+
+    old = {"text": "おー。"}
+    pairer.route_source_token(old, "1")
+    pairer.close_source("1")
+    clock["t"] += 3.1
+    assert pairer.collect_completed()[0].translation_close_reason == "timeout_empty"
+
+    newer = {"text": "これさ、ここがごちゃってなるのめっちゃ嫌だから、"}
+    pairer.route_source_token(newer, "1")  # still open
+
+    clock["t"] += 1.4
+    late_old = {"text": "哦。", "translation_status": "translation"}
+    pairer.route_translation_token(late_old, "1")
+    assert late_old["llm_sentence_id"] == old["llm_sentence_id"]
+    assert pairer.collect_completed()[0].source_text() == "おー。"
+
+    own = {
+        "text": "这个啊，这里会变得乱糟糟的我特别讨厌，",
+        "translation_status": "translation",
+    }
+    pairer.route_translation_token(own, "1")
+    assert own["llm_sentence_id"] == newer["llm_sentence_id"]
 
 
 def test_no_translation_expected_completes_at_source_close():
@@ -823,6 +914,135 @@ def test_session_same_batch_sentences_merge_into_one_pair(monkeypatch):
     ], calls
 
 
+def test_session_mid_token_period_still_splits_sentences(monkeypatch):
+    """Live 2026-07-12 (llm_20260712_083058, 准确 mode): soniox finalized
+    '...in Japanese. It's' as ONE token, and the boundary scan — which only
+    looks at token ends — never split, so two sentences dispatched as one.
+    Final tokens are now pre-split at internal sentence boundaries."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = True
+
+    calls = []
+
+    async def fake_translate(source, context_items, target_lang=None):
+        calls.append(source)
+        return {"status": "ok", "translation": "x"}
+
+    session._perform_translate = fake_translate
+
+    def src(text):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": "original", "language": "en",
+                "source_language": "en"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens, advance=0.4):
+        nonlocal sent
+        now["t"] += advance
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    feed([src("Some of you might be thinking, well, we all know how to say"
+              ' "no" in Japanese. It\'s')])
+    feed([src(' "いいえ," right?')])
+    feed([], advance=2.0)  # settle
+
+    assert calls == [
+        'Some of you might be thinking, well, we all know how to say "no" in Japanese.',
+        'It\'s "いいえ," right?',
+    ], calls
+
+
+def test_session_quoted_passage_stays_one_pair(monkeypatch):
+    """Live 2026-07-12 (llm_20260712_083348 ids 30-39, 混合 mode): the source
+    split at the 。 inside 「だめ、だめ、だめ。それ、スズメバチ。」 while
+    soniox translated the whole quotation as one block that arrived before the
+    second source half closed — the head swallowed it and the pairing shifted
+    for ten sentences. An ender inside an unclosed quote pair is no longer a
+    boundary, so the quotation is ONE pair."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "refine"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append((source, translation))
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    def tok(text, status, language):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": status, "language": language,
+                "source_language": "ja"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens, advance=0.4):
+        nonlocal sent
+        now["t"] += advance
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    # The quotation streams as two tokens; the inner 。 must not split it.
+    feed([tok("「だめ、だめ、だめ。", "original", "ja")])
+    # The WHOLE quoted translation arrives before the second source half.
+    feed([tok('"だめ、だめ、だめ。那是鹳。"', "translation", "zh")], advance=0.05)
+    feed([tok("それ、スズメバチ。」", "original", "ja")], advance=0.1)
+    # The next pair must stay aligned.
+    feed([tok("「危ないから触っちゃだめ。」", "original", "ja")], advance=0.5)
+    feed([tok('"很危险，别碰。"', "translation", "zh")], advance=0.05)
+    feed([], advance=2.0)  # settle
+
+    assert calls == [
+        ("「だめ、だめ、だめ。それ、スズメバチ。」", '"だめ、だめ、だめ。那是鹳。"'),
+        ("「危ないから触っちゃだめ。」", '"很危险，别碰。"'),
+    ], calls
+
+
 def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
     """User-reported bug: speaker A's incomplete fragment gets <end> with no
     translation; speaker B then says a full sentence; A's translation only
@@ -905,3 +1125,82 @@ def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
     assert frag_id and frag_id == late_id, (frag_id, late_id)
     refined_ids = [u["sentence_id"] for u in updates if u.get("type") == "refine_result"]
     assert frag_id in refined_ids
+
+
+def test_session_late_short_translation_does_not_swap_with_open_next_sentence(monkeypatch):
+    """End-to-end replay of llm_20260711_214104 ids 104-105."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "refine"
+    session._suppress_soniox_translation = False
+
+    calls = []
+
+    async def fake_refine(source, translation, context_items):
+        calls.append((source, translation))
+        return {"status": "ok", "no_change": True}
+
+    session._perform_refine = fake_refine
+
+    def tok(text, status, language="ja"):
+        return {"text": text, "is_final": True, "speaker": "1",
+                "translation_status": status, "language": language,
+                "source_language": "ja"}
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens, advance=0.0):
+        nonlocal sent
+        now["t"] += advance
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    feed([tok("おー。", "original")])
+    feed([], advance=3.1)  # timeout_empty, still revivable
+    feed([tok("これさ、ここがごちゃってなるのめっちゃ嫌だから、", "original")], advance=1.0)
+    feed([tok("哦。", "translation", "zh")], advance=0.4)
+    feed([tok("这个啊，这里会变得乱糟糟的我特别讨厌，", "translation", "zh")], advance=0.2)
+    feed([tok("<end>", "original")], advance=0.1)
+    feed([], advance=1.0)
+
+    assert calls == [
+        ("おー。", "哦。"),
+        ("これさ、ここがごちゃってなるのめっちゃ嫌だから、",
+         "这个啊，这里会变得乱糟糟的我特别讨厌，"),
+    ]
+
+    token_ids = {}
+    for update in updates:
+        for token in update.get("final_tokens", []):
+            text = token.get("text")
+            if text in {"おー。", "哦。", "これさ、ここがごちゃってなるのめっちゃ嫌だから、",
+                        "这个啊，这里会变得乱糟糟的我特别讨厌，"}:
+                token_ids[text] = token.get("llm_sentence_id")
+    assert token_ids["おー。"] == token_ids["哦。"]
+    assert (
+        token_ids["これさ、ここがごちゃってなるのめっちゃ嫌だから、"]
+        == token_ids["这个啊，这里会变得乱糟糟的我特别讨厌，"]
+    )
+    assert (
+        token_ids["おー。"]
+        != token_ids["これさ、ここがごちゃってなるのめっちゃ嫌だから、"]
+    )
