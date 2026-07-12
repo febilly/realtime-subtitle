@@ -676,35 +676,9 @@ let hybridInterimAfterSequence = translationUiMode === 'hybrid' ? 0 : null;
 let sessionLlmCost = 0;
 let sessionHadLlmCost = false;
 
-// 后端改进结果，按后端下发的 llm_sentence_id 归属。后端的 SentencePairer
-// 保证每个 finalize 的句子恰好有一个带正确 id 的 refine_result，所以不再
-// 需要按 "原文||译文" 文本匹配的兜底（那是配对错位时代的补丁）。
-const backendRefinedResultsBySentenceId = new Map();
-// Sentences the LLM reviewed and decided need NO change: the STT/Soniox
-// translation is confirmed as-is, so it is revealed as final text (not left
-// gray/provisional) even though there is no refined replacement.
-const backendConfirmedSentenceIds = new Set();
-const retractedSentenceIds = new Set();
-// LLM 直译模式下覆盖 Soniox 译文（按 llm_sentence_id）
-const llmTranslationOverridesBySentenceId = new Map();
-// 准确 mode: language of the LLM translation per sentence (from refine_result),
-// used to tag the synthesized translation line (no translation tokens exist).
-const llmTranslationLangBySentenceId = new Map();
-// 准确 mode speculative preview: sentences already complete in the not-yet-final
-// text are translated ahead of finalization (backend spec_translation frames).
-// Keyed by exact sentence text so revised interim readings simply miss the
-// cache; entries survive flip-flops, letting a reverted reading hit instantly.
-const specTranslations = new Map(); // source text -> { text, lang }
-const specPendingSources = new Map(); // source text -> target lang (in flight)
-const SPEC_MAP_MAX = 80;
-function trimSpecMaps() {
-    while (specTranslations.size > SPEC_MAP_MAX) {
-        specTranslations.delete(specTranslations.keys().next().value);
-    }
-    while (specPendingSources.size > SPEC_MAP_MAX) {
-        specPendingSources.delete(specPendingSources.keys().next().value);
-    }
-}
+// Refine/retraction/speculative-translation caches are private to their state
+// module; app.js only coordinates their effects with token and DOM state.
+const refineState = RefineState.createRefineState();
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -1497,24 +1471,12 @@ async function fetchLlmRefineStatus() {
 }
 
 function getLlmSentenceId(sentence) {
-    const tokens = [
-        ...(sentence && Array.isArray(sentence.originalTokens) ? sentence.originalTokens : []),
-        ...(sentence && Array.isArray(sentence.translationTokens) ? sentence.translationTokens : [])
-    ];
-    for (const token of tokens) {
-        if (token && token.llm_sentence_id) {
-            return String(token.llm_sentence_id);
-        }
-    }
-    return null;
+    return RenderModel.resolveLlmSentenceId(sentence);
 }
 
 function getDisplayTranslationForSentence(sentence, source, originalTranslation) {
     const sentenceId = getLlmSentenceId(sentence);
-    if (sentenceId && backendRefinedResultsBySentenceId.has(sentenceId)) {
-        return backendRefinedResultsBySentenceId.get(sentenceId) || originalTranslation;
-    }
-    return originalTranslation;
+    return (sentenceId && refineState.getRefinedTranslation(sentenceId)) || originalTranslation;
 }
 
 function shouldHideBuiltinTranslation(sentence, sourceText, hasRefined) {
@@ -1559,56 +1521,13 @@ function sentenceHasNonFinalTranslation(sentence) {
 }
 
 function handleBackendRefineResult(data) {
-    if (!data) {
-        return;
+    if (refineState.applyRefineResult(data, { translateMode: isLlmTranslateMode() })) {
+        renderSubtitles();
     }
-    const source = (data.source || '').toString().trim();
-    const originalTranslation = (data.original_translation || '').toString().trim();
-    const refinedTranslation = (data.refined_translation || '').toString().trim();
-    const sentenceId = data.sentence_id ? String(data.sentence_id).trim() : '';
-    const targetLang = (data.target_lang || '').toString().trim().toLowerCase();
-    const noChange = !!data.no_change;
-
-    // original_translation is empty in 准确 (accurate) mode — soniox's built-in
-    // translation is disabled — so only the source is required here.
-    if (!source) {
-        return;
-    }
-    if (sentenceId && retractedSentenceIds.has(sentenceId)) {
-        return;
-    }
-    // The sentence is finalized now; its speculative-pending marker (if any)
-    // is obsolete — the synthesized line takes over from here.
-    specPendingSources.delete(source);
-
-    if (!noChange && refinedTranslation) {
-        if (sentenceId) {
-            backendRefinedResultsBySentenceId.set(sentenceId, refinedTranslation);
-            if (isLlmTranslateMode()) {
-                llmTranslationOverridesBySentenceId.set(sentenceId, refinedTranslation);
-                if (targetLang) {
-                    llmTranslationLangBySentenceId.set(sentenceId, targetLang);
-                }
-            }
-        }
-    } else if (noChange && sentenceId) {
-        // LLM confirmed the STT translation is good enough: mark the sentence
-        // reviewed so it renders as final text instead of staying gray.
-        backendConfirmedSentenceIds.add(sentenceId);
-    }
-    renderSubtitles();
 }
 
 function cleanupSentenceCaches(sentenceId) {
-    if (!sentenceId) {
-        return;
-    }
-    const id = String(sentenceId);
-    retractedSentenceIds.add(id);
-    backendRefinedResultsBySentenceId.delete(id);
-    backendConfirmedSentenceIds.delete(id);
-    llmTranslationOverridesBySentenceId.delete(id);
-    llmTranslationLangBySentenceId.delete(id);
+    refineState.cleanupSentenceCaches(sentenceId);
 }
 
 function handleSubtitleRetract(data) {
@@ -1619,32 +1538,12 @@ function handleSubtitleRetract(data) {
 
     cleanupSentenceCaches(sentenceId);
 
-    const kept = [];
-    let removedAny = false;
-    for (const token of allFinalTokens) {
-        if (token && token.llm_sentence_id && String(token.llm_sentence_id) === sentenceId) {
-            removedAny = true;
-            continue;
-        }
-        kept.push(token);
-    }
-
-    if (!removedAny) {
+    const removal = refineState.removeSentenceTokens(allFinalTokens, sentenceId);
+    if (!removal.removed) {
         return;
     }
 
-    allFinalTokens = kept;
-    for (let i = allFinalTokens.length - 1; i >= 0; i--) {
-        const token = allFinalTokens[i];
-        if (!token || !token.is_separator) {
-            continue;
-        }
-        const prev = allFinalTokens[i - 1];
-        const next = allFinalTokens[i + 1];
-        if (!prev || !next || (prev.is_separator && next.is_separator)) {
-            allFinalTokens.splice(i, 1);
-        }
-    }
+    allFinalTokens = removal.tokens;
 
     lastMergedIndex = Math.max(0, allFinalTokens.length - 1);
     renderedSentences.clear();
@@ -3513,24 +3412,13 @@ function handleMessage(data) {
     }
     if (data.type === 'spec_translation_pending') {
         const src = (data.source || '').toString().trim();
-        if (src) {
-            specPendingSources.set(src, ((data.target_lang || '') + '').trim().toLowerCase());
-            trimSpecMaps();
+        if (refineState.markSpecPending(src, data.target_lang)) {
             renderSubtitles();
         }
         return;
     }
     if (data.type === 'spec_translation') {
-        const src = (data.source || '').toString().trim();
-        const text = (data.translation || '').toString().trim();
-        if (src) {
-            specPendingSources.delete(src);
-        }
-        if (src && text) {
-            specTranslations.set(src, { text, lang: ((data.target_lang || '') + '').trim().toLowerCase() });
-            trimSpecMaps();
-        }
-        renderSubtitles();
+        if (refineState.applySpecTranslation(data)) renderSubtitles();
         return;
     }
     if (data.type === 'refine_result') {
@@ -3726,9 +3614,6 @@ function getLanguageTag(language) {
 const {
     endsWithSentenceEnding,
     splitIntoSentenceSegments,
-    textContinuesAbbreviation,
-    tokenTextContinuesDecimal,
-    tokenTextStartsWithClosingQuote,
 } = Segmentation;
 
 function wrapSubtitleLineBody(innerHtml, dir, lang) {
@@ -3991,13 +3876,7 @@ function clearSubtitleState() {
     tokenSequenceCounter = 0;
     pendingFuriganaRequests.clear();
 
-    backendRefinedResultsBySentenceId.clear();
-    backendConfirmedSentenceIds.clear();
-    retractedSentenceIds.clear();
-    llmTranslationOverridesBySentenceId.clear();
-    llmTranslationLangBySentenceId.clear();
-    specTranslations.clear();
-    specPendingSources.clear();
+    refineState.clear();
 
     if (isLlmTranslateMode()) {
         llmTranslateHideAfterSequence = tokenSequenceCounter;
@@ -4178,31 +4057,7 @@ function renderTokenSpansTrimmed(tokens, useRubyHtml = null, options = {}) {
 }
 
 function getSentenceId(sentence, fallbackIndex) {
-    const anchorToken = sentence.originalTokens[0] || sentence.translationTokens[0];
-    if (anchorToken && anchorToken._sequenceIndex !== undefined) {
-        return `sent-${anchorToken._sequenceIndex}`;
-    }
-    return `sent-fallback-${fallbackIndex}`;
-}
-
-function endsWithSentencePunctuation(text) {
-    return isSentenceEndingPunctuation(text);
-}
-
-function shouldSpeculativelySplitAfterToken(text, nextText) {
-    if (!endsWithSentencePunctuation(text)) {
-        return false;
-    }
-    if (tokenTextStartsWithClosingQuote(text, nextText)) {
-        return false;
-    }
-    if (tokenTextContinuesDecimal(text, nextText)) {
-        return false;
-    }
-    if (textContinuesAbbreviation(text, nextText)) {
-        return false;
-    }
-    return true;
+    return sentence.renderKey || RenderModel.getSentenceRenderKey(sentence, fallbackIndex);
 }
 
 /**
@@ -4218,25 +4073,7 @@ function shouldSpeculativelySplitAfterToken(text, nextText) {
  * case), to avoid disturbing original/translation pairing.
  */
 function buildRenderTokens() {
-    const nonFinal = currentNonFinalTokens || [];
-    const hasNonFinalTranslation = nonFinal.some(
-        token => (token.translation_status || 'original') === 'translation'
-    );
-    if (hasNonFinalTranslation) {
-        return [...allFinalTokens, ...nonFinal];
-    }
-
-    const tokens = [...allFinalTokens];
-    nonFinal.forEach((token, index) => {
-        tokens.push(token);
-        const isLast = index === nonFinal.length - 1;
-        const nextToken = nonFinal[index + 1];
-        const nextText = nextToken ? nextToken.text : '';
-        if (!isLast && !token.is_separator && shouldSpeculativelySplitAfterToken(token.text, nextText)) {
-            tokens.push({ is_separator: true, is_final: false, separator_type: 'speculative' });
-        }
-    });
-    return tokens;
+    return RenderModel.buildRenderTokens({ allFinalTokens, currentNonFinalTokens });
 }
 
 function renderSubtitles() {
@@ -4251,187 +4088,12 @@ function renderSubtitles() {
         return;
     }
 
-    const sentences = [];
-    let currentSentence = null;
-
-    const ensureSpeakerValue = (speaker) => {
-        return (speaker === null || speaker === undefined) ? 'undefined' : speaker;
-    };
-
-    const startSentence = (speaker, options = {}) => {
-        const normalizedSpeaker = ensureSpeakerValue(speaker);
-        const sentence = {
-            speaker: normalizedSpeaker,
-            sentenceId: null, // llm_sentence_id from the first id-bearing token
-            originalTokens: [],
-            translationTokens: [],
-            originalLang: null,
-            translationLang: null,
-            requiresTranslation: options.requiresTranslation !== undefined ? options.requiresTranslation : null, // null means undecided
-            isTranslationOnly: !!options.translationOnly,
-            isClosed: false,
-            hasFakeTranslation: false
-        };
-        sentences.push(sentence);
-        if (!sentence.isTranslationOnly) {
-            currentSentence = sentence;
-        }
-        return sentence;
-    };
-
-    const findLastSentenceForSpeaker = (speaker, predicate = () => true, options = {}) => {
-        const normalizedSpeaker = ensureSpeakerValue(speaker);
-        const stopOnFakeTranslation = !!options.stopOnFakeTranslation;
-        for (let i = sentences.length - 1; i >= 0; i--) {
-            const sentence = sentences[i];
-            if (sentence.speaker === normalizedSpeaker && predicate(sentence)) {
-                return sentence;
-            }
-            if (stopOnFakeTranslation && sentence.speaker === normalizedSpeaker && sentence.hasFakeTranslation) {
-                break;
-            }
-        }
-        return null;
-    };
-
-    const findNearestOriginalSentenceForSpeaker = (speaker) => {
-        return findLastSentenceForSpeaker(
-            speaker,
-            (sentence) => !sentence.isTranslationOnly,
-            { stopOnFakeTranslation: false }
-        );
-    };
-
-    tokens.forEach(token => {
-        if (token.is_separator) {
-            if (
-                currentSentence &&
-                currentSentence.requiresTranslation !== false &&
-                currentSentence.translationTokens.length === 0
-            ) {
-                currentSentence.hasFakeTranslation = true;
-            }
-            if (currentSentence) {
-                currentSentence.isClosed = true;
-            }
-
-            currentSentence = null;
-            return;
-        }
-
-        const speaker = ensureSpeakerValue(token.speaker);
-        const translationStatus = token.translation_status || 'original';
-
-        if (translationStatus === 'translation') {
-            // Final translation tokens carry the authoritative llm_sentence_id
-            // stamped by the backend pairer at arrival: attach by id first, so
-            // a translation streaming in after the next sentence already
-            // started still lands on its own sentence. Non-final tokens (no
-            // id yet) fall back to the nearest previous original sentence.
-            let targetSentence = null;
-            const tokenSentenceId = token.llm_sentence_id ? String(token.llm_sentence_id) : '';
-            if (tokenSentenceId) {
-                for (let i = sentences.length - 1; i >= 0; i--) {
-                    const candidate = sentences[i];
-                    if (candidate.sentenceId === tokenSentenceId && !candidate.isTranslationOnly) {
-                        targetSentence = candidate;
-                        break;
-                    }
-                }
-            }
-            if (!targetSentence) {
-                targetSentence = findNearestOriginalSentenceForSpeaker(speaker);
-            }
-
-            if (!targetSentence) {
-                targetSentence = startSentence(speaker, { translationOnly: true });
-            }
-
-            if (targetSentence.translationLang === null && token.language) {
-                targetSentence.translationLang = token.language;
-            }
-
-            if (!targetSentence.originalLang && token.source_language) {
-                targetSentence.originalLang = token.source_language;
-            }
-
-            targetSentence.translationTokens.push(token);
-
-        } else {
-            // 原文 token (original 或 none)
-            const tokenRequiresTranslation = (translationStatus !== 'none');
-
-            // 检查是否需要新起一个句子
-            let shouldStartNew = false;
-            if (!currentSentence) shouldStartNew = true;
-            else if (currentSentence.speaker !== speaker) shouldStartNew = true;
-            else if (currentSentence.isTranslationOnly) shouldStartNew = true;
-            else if (currentSentence.requiresTranslation !== null && currentSentence.requiresTranslation !== tokenRequiresTranslation) {
-                // 如果当前句子的翻译需求状态与新token不一致（例如从 original 变 none），则新起一句
-                shouldStartNew = true;
-            }
-
-            if (shouldStartNew) {
-                currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
-            }
-
-            // 确保状态被设置（如果是新句子且 options 没传，或者 null 的情况）
-            if (currentSentence.requiresTranslation === null) {
-                currentSentence.requiresTranslation = tokenRequiresTranslation;
-            }
-
-            if (currentSentence.originalLang === null && token.language) {
-                currentSentence.originalLang = token.language;
-            } else if (currentSentence.originalLang && token.language && currentSentence.originalLang !== token.language) {
-                // 语言变了。但如果 token 与当前句共享同一个 llm_sentence_id，
-                // 这是后端配对器认定的同一个句子（例如英文句子里引用日语
-                // 「だいじょうぶです。」）——必须留在一个显示块里：拆开会产生
-                // 两个共享 id 的块，按 id 归属的 LLM 译文会在每个块下各渲染
-                // 一次（live 2026-07-12）。没有 id（非最终 token）或 id 不同
-                // （真正的新句子）时才新起一句。
-                const tokenLlmId = token.llm_sentence_id ? String(token.llm_sentence_id) : '';
-                if (!(tokenLlmId && currentSentence.sentenceId === tokenLlmId)) {
-                    currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
-                    currentSentence.originalLang = token.language;
-                }
-            }
-
-            if (!currentSentence.sentenceId && token.llm_sentence_id) {
-                currentSentence.sentenceId = String(token.llm_sentence_id);
-            }
-            currentSentence.originalTokens.push(token);
-        }
+    const renderModel = RenderModel.buildRenderModel({
+        tokens,
+        displayMode,
+        suppressTranslationDisplay,
     });
-
-    const showTranslation = !suppressTranslationDisplay && (displayMode === 'both' || displayMode === 'translation');
-    // When translation is suppressed (e.g. Gemini "no translation"), always keep the
-    // original visible so the subtitle area is never empty.
-    const showOriginal = suppressTranslationDisplay ? true : (displayMode === 'both' || displayMode === 'original');
-
-    const speakerBlocks = [];
-    let currentBlock = null;
-
-    sentences.forEach(sentence => {
-        const hasOriginal = showOriginal && sentence.originalTokens.length > 0;
-        const hasTranslation = showTranslation && sentence.translationTokens.length > 0;
-
-        if (!hasOriginal && !hasTranslation) {
-            return;
-        }
-
-        if (!currentBlock || currentBlock.speaker !== sentence.speaker) {
-            if (currentBlock) {
-                speakerBlocks.push(currentBlock);
-            }
-            currentBlock = { speaker: sentence.speaker, sentences: [] };
-        }
-
-        currentBlock.sentences.push(sentence);
-    });
-
-    if (currentBlock) {
-        speakerBlocks.push(currentBlock);
-    }
+    const { speakerBlocks, showOriginal, showTranslation } = renderModel;
 
     if (speakerBlocks.length === 0) {
         subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
@@ -4519,16 +4181,16 @@ function renderSubtitles() {
 
                 const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
                 const sentenceLlmId = getLlmSentenceId(sentence);
-                const overrideTranslation = sentenceLlmId && llmTranslationOverridesBySentenceId.has(sentenceLlmId)
-                    ? llmTranslationOverridesBySentenceId.get(sentenceLlmId)
+                const overrideTranslation = sentenceLlmId
+                    ? refineState.getTranslationOverride(sentenceLlmId)
                     : null;
                 if (overrideTranslation) {
                     baseTranslationNormalized = overrideTranslation;
                 }
-                const hasRefined = !!(sentenceLlmId && backendRefinedResultsBySentenceId.has(sentenceLlmId));
+                const hasRefined = !!(sentenceLlmId && refineState.getRefinedTranslation(sentenceLlmId));
                 // The LLM reviewed this sentence and left it unchanged: treat it
                 // as resolved so the STT translation is revealed as final text.
-                const isLlmConfirmed = !!(sentenceLlmId && backendConfirmedSentenceIds.has(sentenceLlmId));
+                const isLlmConfirmed = !!(sentenceLlmId && refineState.isConfirmed(sentenceLlmId));
                 const shouldHide = shouldHideBuiltinTranslation(sentence, sourceText, hasRefined || isLlmConfirmed);
 
                 if (!shouldHide) {
@@ -4577,11 +4239,11 @@ function renderSubtitles() {
                 // LLM result once it arrives (matched by sentence id).
                 const sentenceLlmId = getLlmSentenceId(sentence);
                 const overrideTranslation = sentenceLlmId
-                    ? (llmTranslationOverridesBySentenceId.get(sentenceLlmId) || '').trim()
+                    ? (refineState.getTranslationOverride(sentenceLlmId) || '').trim()
                     : '';
                 const srcText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
                 if (overrideTranslation && overrideTranslation !== srcText) {
-                    const lang = llmTranslationLangBySentenceId.get(sentenceLlmId) || currentTranslationTargetLang || '';
+                    const lang = refineState.getTranslationLanguage(sentenceLlmId) || currentTranslationTargetLang || '';
                     const translationDir = getLangDir(lang);
                     const langTag = getLanguageTag(lang);
                     sentenceParts.push(`<div class="subtitle-line" lang="${lang}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text" lang="${lang}">${escapeHtml(overrideTranslation)}</span>`, translationDir, lang)}</div>`);
@@ -4595,24 +4257,24 @@ function renderSubtitles() {
                     // Whole-sentence key first: the finalize-path pending
                     // marker uses the full source (which may lack ending
                     // punctuation when the sentence was endpoint-split).
-                    const whole = specTranslations.get(srcText);
+                    const whole = refineState.getSpecTranslation(srcText);
                     if (whole) {
                         parts.push(whole.text);
                         lang = whole.lang;
-                    } else if (specPendingSources.has(srcText)) {
+                    } else if (refineState.isSpecPending(srcText)) {
                         pending = true;
-                        lang = specPendingSources.get(srcText) || '';
+                        lang = refineState.getSpecPendingLanguage(srcText) || '';
                     } else {
                         // Per-segment speculative results from the non-final text.
                         for (const seg of splitIntoSentenceSegments(srcText)) {
                             if (!endsWithSentenceEnding(seg)) continue; // partial tail
-                            const hit = specTranslations.get(seg);
+                            const hit = refineState.getSpecTranslation(seg);
                             if (hit) {
                                 parts.push(hit.text);
                                 if (!lang) lang = hit.lang;
-                            } else if (specPendingSources.has(seg)) {
+                            } else if (refineState.isSpecPending(seg)) {
                                 pending = true;
-                                if (!lang) lang = specPendingSources.get(seg) || '';
+                                if (!lang) lang = refineState.getSpecPendingLanguage(seg) || '';
                             }
                         }
                     }
