@@ -343,16 +343,6 @@ const translationModePickerHost = document.getElementById('translationModePicker
 const translationModeHintEl = document.getElementById('translationModeHint');
 const toastEl = document.getElementById('toast');
 
-const SONIOX_REGIONS = SettingsPolicy.SONIOX_REGIONS;
-// Custom-select element (built lazily); mirrors the language picker styling.
-let sonioxRegionPickerEl = null;
-
-// Where users obtain an API key for each provider (shown as a link in Settings).
-const PROVIDER_KEY_URLS = {
-    soniox: 'https://console.soniox.com/api-keys',
-    gemini: 'https://aistudio.google.com/apikey',
-};
-
 const BUNDLED_CJK_FONT_STORAGE_KEY = 'useBundledCjkFont';
 
 let backendBootId = '';
@@ -367,7 +357,6 @@ let backendTargetLang1 = 'en';
 let backendTargetLang2 = 'zh';
 let suppressTranslationDisplay = false;
 let pushedOverrideBootId = null;
-let settingsForcedOpen = false;
 let useBundledCjkFont = localStorage.getItem(BUNDLED_CJK_FONT_STORAGE_KEY) === 'true';
 let customFontAvailable = false;
 
@@ -455,7 +444,6 @@ let clientUpdateUrl = '';
 let clientUpdateNotes = '';
 let backendMode = 'direct';
 let backendLoggedIn = false;
-let relayPricing = null; // { soniox: {price_per_second, free_*}, gemini: {...} }
 // STT billing factor for soniox 准确 mode (built-in translation off), delivered by
 // the server via /ui-config. 1 = no discount; applied to the live cost estimate.
 let sonioxNoTranslationFactor = 1;
@@ -2444,285 +2432,107 @@ function escapeHtml(text) {
 
 // ===================== Settings panel (provider + API key) =====================
 
+const settingsPanelController = SettingsPanel.create({
+    policy: SettingsPolicy,
+    billing: Hosted.Billing,
+    document,
+    fetch,
+    t,
+    buildCustomSelect,
+    loadProviderSettings,
+    freePoolsSummary,
+    getState: () => ({
+        lockManualControls,
+        relayAvailable,
+        connectionMode: getConnectionMode(),
+        translationProvider,
+        backendSonioxRegion,
+        backendSonioxCustomUrl,
+        envKeyPresent,
+        setupRequired,
+        clientVersion,
+        canRefreshBalance: backendLoggedIn || !!loadServerSettings().token,
+    }),
+    actions: {
+        renderMicrophoneDevicePicker,
+        renderRuntimeSettingsPickers,
+        renderBundledCjkFontPicker,
+        renderTranslationModePicker,
+        fetchMicrophoneDevices,
+        fetchBalance,
+        updateAccountSection,
+    },
+    elements: {
+        settingsButton,
+        overlayButton,
+        overlay: settingsOverlay,
+        panel: settingsPanel,
+        form: settingsForm,
+        closeButton: settingsCloseButton,
+        cancelButton: settingsCancelButton,
+        saveButton: settingsSaveButton,
+        backButton: settingsModeBackButton,
+        resetButton: resetAllButton,
+        errorElement: settingsErrorEl,
+        apiKeyLabel: document.getElementById('apiKeyLabel'),
+        apiKeyInput,
+        apiKeySourceHint,
+        providerDescription,
+        apiKeyGetLink,
+        sonioxRegionSection,
+        sonioxRegionPickerHost,
+        modeSection: document.getElementById('modeSection'),
+        accountSection: document.getElementById('accountSection'),
+        apiKeySection: document.getElementById('apiKeySection'),
+        modeDescription: document.getElementById('modeDescription'),
+        redeemPasteButton: document.getElementById('redeemPasteButton'),
+        versionElement: document.getElementById('settingsVersion'),
+    },
+});
+settingsPanelController.init();
+
 function updateSettingsButtonVisibility() {
-    if (settingsButton) {
-        settingsButton.style.display = lockManualControls ? 'none' : '';
-    }
-    if (overlayButton && lockManualControls) {
-        overlayButton.style.display = 'none';
-    }
+    settingsPanelController.updateButtonVisibility();
 }
 
 function applySettingsI18n() {
-    const setText = (id, key) => {
-        const el = document.getElementById(id);
-        if (el) {
-            el.textContent = t(key);
-        }
-    };
-    setText('settingsTitle', 'settings');
-    setText('modeLabel', 'conn_mode');
-    setText('modeRelayLabel', 'conn_mode_relay');
-    setText('modeDirectLabel', 'conn_mode_direct');
-    setText('accountLabel', 'account');
-    setText('redeemLabel', 'account_redeem_label');
-    setText('redeemButton', 'account_redeem');
-    const redeemPasteEl = document.getElementById('redeemPasteButton');
-    if (redeemPasteEl) {
-        const pasteLabel = t('login_paste');
-        redeemPasteEl.setAttribute('aria-label', pasteLabel);
-        redeemPasteEl.setAttribute('title', pasteLabel);
-    }
-    setText('purchaseCreditsLink', 'account_purchase_credits');
-    setText('copyInviteButton', 'account_invite_copy');
-    setText('openUserWebButton', 'account_open_web');
-    setText('reLoginButton', 'account_relogin');
-    setText('logoutButton', 'account_logout');
-    setText('providerLabel', 'api_selection');
-    setText('providerSonioxLabel', 'provider_soniox');
-    setText('providerGeminiLabel', 'provider_gemini');
-    setText('sonioxRegionLabel', 'soniox_region');
-    setText('microphoneDeviceLabel', 'microphone_device');
-    setText('runtimeControlsLabel', 'recognition_controls');
-    setText('autoRestartSettingLabel', 'auto_restart_setting');
-    setText('speakerLabelsSettingLabel', 'speaker_labels_setting');
-    setText('segmentModeSettingLabel', 'segment_mode_setting');
-    setText('translationModeSettingLabel', 'translation_mode_setting');
-    setText('appearanceLabel', 'appearance');
-    setText('bundledCjkFontLabel', 'bundled_cjk_font');
-    setText('bundledCjkFontHint', 'bundled_cjk_font_hint');
-    // Rebuild the region picker so its option labels follow the active language.
-    renderSonioxRegionPicker(getSelectedSonioxRegion());
-    renderMicrophoneDevicePicker();
-    renderRuntimeSettingsPickers();
-    renderBundledCjkFontPicker();
-    if (settingsSaveButton) settingsSaveButton.textContent = t('save');
-    if (settingsCancelButton) settingsCancelButton.textContent = t('cancel');
-    if (settingsModeBackButton) settingsModeBackButton.textContent = t('mode_back_to_chooser');
-    if (resetAllButton) resetAllButton.textContent = t('reset_all');
-    if (settingsButton) settingsButton.title = t('settings');
-    if (settingsCloseButton) settingsCloseButton.title = t('close');
-    const versionEl = document.getElementById('settingsVersion');
-    if (versionEl) {
-        versionEl.textContent = t('client_version', { version: clientVersion });
-    }
-}
-
-function getDesiredProvider() {
-    const settings = loadProviderSettings();
-    return settings.providerOverride || translationProvider || 'soniox';
-}
-
-function setProviderRadio(provider) {
-    if (!settingsForm) {
-        return;
-    }
-    settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
-        radio.checked = (radio.value === provider);
-    });
+    settingsPanelController.applyI18n();
 }
 
 function getSelectedProvider() {
-    if (settingsForm) {
-        const checked = settingsForm.querySelector('input[name="provider"]:checked');
-        if (checked) {
-            return checked.value;
-        }
-    }
-    return getDesiredProvider();
+    return settingsPanelController.getSelectedProvider();
 }
 
-function getProviderDisplayName(provider) {
-    return provider === 'gemini' ? t('provider_gemini') : t('provider_soniox');
-}
-
-// Format a per-second rate with enough precision for small fractional values.
-function formatRate(value) {
-    return Hosted.Billing.formatRate(value);
-}
-
-// Provider description line. In relay mode show the server's unit price
-// (credits/sec) for that provider's model instead of the direct-mode blurb.
-function getProviderDescriptionText(provider) {
-    if (getSettingsMode() === 'relay') {
-        const info = relayPricing && relayPricing[provider];
-        if (!info) {
-            return t('provider_relay_desc_loading');
-        }
-        // Show every configured free pool (total allocation > 0) for this provider,
-        // e.g. "托管中转 · 免费 (日 100 / 周 500 / 月 2000)".
-        const summary = freePoolsSummary(info.free_pools);
-        if (summary) {
-            return `${t('provider_relay_desc_free')} (${summary})`;
-        }
-        const pricePerSec = Number(info.price_per_second) || 0;
-        return t('provider_relay_desc', {
-            price: formatRate(pricePerSec),
-            minutePrice: formatRate(pricePerSec * 60)
-        });
-    }
-    return t(`provider_${provider}_desc`);
-}
-
-async function fetchRelayPricing() {
-    if (!relayAvailable) return;
-    try {
-        const resp = await fetch('/account/pricing');
-        if (!resp.ok) return;
-        const data = await resp.json();
-        relayPricing = (data && data.pricing) || {};
-        // Refresh the description if the settings panel is open in relay mode.
-        if (settingsPanel && !settingsPanel.hidden) {
-            updateApiKeyFieldForProvider(getSelectedProvider());
-        }
-    } catch (e) {
-        // ignore
-    }
-}
-
-const { normalizeSonioxRegion } = SettingsPolicy;
-
-function getDesiredSonioxRegion() {
-    const settings = loadProviderSettings();
-    return normalizeSonioxRegion(settings.sonioxRegion || backendSonioxRegion || 'us');
+function fetchRelayPricing() {
+    return settingsPanelController.fetchRelayPricing();
 }
 
 function getSelectedSonioxRegion() {
-    // No selectable region when the backend pins a custom endpoint; leave it untouched.
-    if (backendSonioxCustomUrl) {
-        return null;
-    }
-    if (sonioxRegionPickerEl && sonioxRegionPickerEl.value) {
-        return normalizeSonioxRegion(sonioxRegionPickerEl.value);
-    }
-    return getDesiredSonioxRegion();
+    return settingsPanelController.getSelectedSonioxRegion();
 }
 
-// (Re)build the custom region select with current-language option labels.
-function renderSonioxRegionPicker(selectedRegion) {
-    if (!sonioxRegionPickerHost) {
-        return;
-    }
-    sonioxRegionPickerHost.innerHTML = '';
-    if (backendSonioxCustomUrl) {
-        // Backend set a custom Soniox address: show a disabled "Custom" picker.
-        const options = [{ value: 'custom', label: t('soniox_region_custom') }];
-        sonioxRegionPickerEl = buildCustomSelect(options, { value: 'custom', disabled: true });
-        sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
-        return;
-    }
-    const value = normalizeSonioxRegion(selectedRegion);
-    const options = SONIOX_REGIONS.map((region) => ({
-        value: region,
-        label: t(`soniox_region_${region}`),
-    }));
-    sonioxRegionPickerEl = buildCustomSelect(options, { value });
-    sonioxRegionPickerHost.appendChild(sonioxRegionPickerEl);
-}
-
-// Region applies to Soniox direct mode only; hidden for other providers and in
-// relay mode (the hosted server picks the endpoint).
 function updateSonioxRegionForProvider(provider) {
-    const relay = getSettingsMode() === 'relay';
-    if (sonioxRegionSection) {
-        sonioxRegionSection.hidden = relay || (provider !== 'soniox');
-    }
-    if (!relay && provider === 'soniox') {
-        renderSonioxRegionPicker(getDesiredSonioxRegion());
-    }
+    settingsPanelController.updateSonioxRegion(provider);
 }
 
 function updateApiKeyFieldForProvider(provider) {
-    const settings = loadProviderSettings();
-    const override = settings.keys && settings.keys[provider];
-    const providerName = getProviderDisplayName(provider);
-    const label = document.getElementById('apiKeyLabel');
-    if (label) {
-        label.textContent = `${providerName} ${t('api_key')}`;
-    }
-    if (apiKeyInput) {
-        apiKeyInput.value = override || '';
-        if (override) {
-            apiKeyInput.placeholder = '';
-        } else if (envKeyPresent[provider]) {
-            apiKeyInput.placeholder = t('api_key_placeholder_env_configured', { provider: providerName });
-        } else {
-            apiKeyInput.placeholder = t('api_key_placeholder_env_missing', { provider: providerName });
-        }
-    }
-    if (apiKeySourceHint) {
-        apiKeySourceHint.textContent = '';
-    }
-    if (providerDescription) {
-        providerDescription.textContent = getProviderDescriptionText(provider);
-    }
-    if (apiKeyGetLink) {
-        const url = PROVIDER_KEY_URLS[provider];
-        if (url) {
-            apiKeyGetLink.textContent = t('api_key_get_link', { provider: providerName });
-            apiKeyGetLink.href = url;
-            apiKeyGetLink.parentElement.hidden = false;
-        } else {
-            apiKeyGetLink.textContent = '';
-            apiKeyGetLink.removeAttribute('href');
-            apiKeyGetLink.parentElement.hidden = true;
-        }
-    }
+    settingsPanelController.updateApiKeyField(provider);
 }
 
 function populateSettingsForm() {
-    const provider = getDesiredProvider();
-    setProviderRadio(provider);
-    // Set the mode radio first so the region/description helpers (which read it)
-    // see the correct mode.
-    const mode = (getConnectionMode() === 'relay') ? 'relay' : 'direct';
-    setModeRadio(mode);
-    updateApiKeyFieldForProvider(provider);
-    updateSonioxRegionForProvider(provider);
-    applyModeSectionsVisibility(mode);
-    renderMicrophoneDevicePicker();
-    renderRuntimeSettingsPickers();
-    renderBundledCjkFontPicker();
-    updateAccountSection();
-    if (settingsErrorEl) {
-        settingsErrorEl.textContent = setupRequired ? t('setup_required_hint') : '';
-    }
+    settingsPanelController.populate();
 }
 
 function setModeRadio(mode) {
-    if (!settingsForm) {
-        return;
-    }
-    settingsForm.querySelectorAll('input[name="connmode"]').forEach((radio) => {
-        radio.checked = (radio.value === mode);
-    });
+    settingsPanelController.setMode(mode);
 }
 
 function getSettingsMode() {
-    if (!relayAvailable) {
-        return 'direct';
-    }
-    if (settingsForm) {
-        const checked = settingsForm.querySelector('input[name="connmode"]:checked');
-        if (checked) {
-            return checked.value;
-        }
-    }
-    return (getConnectionMode() === 'relay') ? 'relay' : 'direct';
+    return settingsPanelController.getMode();
 }
 
-// Show the mode toggle only when a server is configured; in relay mode swap the
-// API-key field for the account panel (provider + region stay in both modes).
 function applyModeSectionsVisibility(mode) {
-    const modeSection = document.getElementById('modeSection');
-    const accountSection = document.getElementById('accountSection');
-    const apiKeySection = document.getElementById('apiKeySection');
-    if (modeSection) modeSection.hidden = !relayAvailable;
-    const relay = (mode === 'relay');
-    if (accountSection) accountSection.hidden = !relay;
-    if (apiKeySection) apiKeySection.hidden = relay;
-    const modeDesc = document.getElementById('modeDescription');
-    if (modeDesc) modeDesc.textContent = t(relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc');
+    settingsPanelController.applyModeVisibility(mode);
 }
 
 let hostedAccount = null;
@@ -2738,39 +2548,15 @@ function updateAccountBalance() {
 }
 
 function openSettings({ forced = false } = {}) {
-    if (lockManualControls) {
-        return;
-    }
-    settingsForcedOpen = !!forced;
-    applySettingsI18n();
-    populateSettingsForm();
-    // Rebuild the 翻译模式 picker from the applied mode so an unsaved selection
-    // from a previously cancelled panel doesn't linger.
-    renderTranslationModePicker();
-    if (relayAvailable && getConnectionMode() === 'relay') {
-        void fetchRelayPricing();
-        void fetchBalance();
-    }
-    void fetchMicrophoneDevices();
-    if (settingsOverlay) settingsOverlay.hidden = false;
-    if (settingsPanel) settingsPanel.hidden = false;
-    const hideClose = settingsForcedOpen ? 'none' : '';
-    if (settingsCancelButton) settingsCancelButton.style.display = hideClose;
-    if (settingsCloseButton) settingsCloseButton.style.display = hideClose;
-    if (settingsModeBackButton) settingsModeBackButton.hidden = !(settingsForcedOpen && relayAvailable);
+    return settingsPanelController.open({ forced });
 }
 
 function hideSettingsPanel() {
-    if (settingsOverlay) settingsOverlay.hidden = true;
-    if (settingsPanel) settingsPanel.hidden = true;
-    settingsForcedOpen = false;
+    settingsPanelController.hide();
 }
 
 function closeSettings() {
-    if (settingsForcedOpen) {
-        return;
-    }
-    hideSettingsPanel();
+    return settingsPanelController.close();
 }
 
 function pushSetup(provider, apiKey, options = {}) {
@@ -2996,38 +2782,6 @@ settingsUi.init({
     overlay: settingsOverlay,
     form: settingsForm,
 });
-if (settingsForm) {
-    settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
-        radio.addEventListener('change', () => {
-            const provider = getSelectedProvider();
-            updateApiKeyFieldForProvider(provider);
-            updateSonioxRegionForProvider(provider);
-            renderRuntimeSettingsPickers();
-            const server = loadServerSettings();
-            if (backendLoggedIn || !!server.token) {
-                void fetchBalance({ provider, force: true });
-            }
-        });
-    });
-    settingsForm.querySelectorAll('input[name="connmode"]').forEach((radio) => {
-        radio.addEventListener('change', () => {
-            const mode = getSettingsMode();
-            applyModeSectionsVisibility(mode);
-            updateAccountSection();
-            // Region + price description depend on the mode.
-            const provider = getSelectedProvider();
-            updateSonioxRegionForProvider(provider);
-            updateApiKeyFieldForProvider(provider);
-            if (mode === 'relay') {
-                void fetchRelayPricing();
-                const server = loadServerSettings();
-                if (backendLoggedIn || !!server.token) {
-                    void fetchBalance({ provider, force: true });
-                }
-            }
-        });
-    });
-}
 
 // ===================== Relay (hosted) client: chooser / login / account / balance =====================
 
