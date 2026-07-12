@@ -889,18 +889,9 @@ const settingsSaveController = SettingsSave.create({
     saveServerSettings: settingsPorts.saveServerSettings,
     ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
     actions: {
-        setSaving: (saving) => {
-            if (!settingsSaveButton) return;
-            settingsSaveButton.disabled = saving;
-            settingsSaveButton.textContent = t(saving ? 'saving' : 'save');
-        },
-        setError: (message) => {
-            if (settingsErrorEl) settingsErrorEl.textContent = message;
-        },
-        refreshProviderFields: (provider) => {
-            settingsPanelController.updateApiKeyField(provider);
-            settingsPanelController.updateSonioxRegion(provider);
-        },
+        setSaving: settingsPanelController.setSaving,
+        setError: settingsPanelController.setError,
+        refreshProviderFields: settingsPanelController.refreshProviderFields,
         hideSettingsPanel: settingsFlowController.hide,
         openLogin: hostedPorts.openLogin,
         finishHotSettingsSave: settingsFlowController.finishHotSave,

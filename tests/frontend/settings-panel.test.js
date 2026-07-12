@@ -212,6 +212,32 @@ describe('SettingsPanel provider and mode drafts', () => {
 });
 
 describe('SettingsPanel pricing and lifecycle', () => {
+    it('owns save progress, error text, and provider-field refresh rendering', () => {
+        const page = setup();
+        const saveButton = page.document.getElementById('settingsSaveButton');
+        const errorElement = page.document.getElementById('settingsError');
+
+        page.controller.setSaving(true);
+        expect(saveButton.disabled).toBe(true);
+        expect(saveButton.textContent).toBe('saving');
+        page.controller.setSaving(false);
+        expect(saveButton.disabled).toBe(false);
+        expect(saveButton.textContent).toBe('save');
+
+        page.controller.setError('bad settings');
+        expect(errorElement.textContent).toBe('bad settings');
+        page.controller.setError(null);
+        expect(errorElement.textContent).toBe('');
+
+        page.controller.setMode('direct');
+        page.controller.refreshProviderFields('gemini');
+        expect(page.document.getElementById('apiKeyInput').placeholder)
+            .toBe('api_key_placeholder_env_missing|provider=provider_gemini');
+        expect(page.document.getElementById('sonioxRegionSection').hidden).toBe(true);
+        expect(page.actions.renderRuntimeSettingsPickers).not.toHaveBeenCalled();
+        page.dom.window.close();
+    });
+
     it('renders relay loading, free-pool, and paid pricing descriptions', async () => {
         const fetch = vi.fn().mockResolvedValue(response({
             pricing: {

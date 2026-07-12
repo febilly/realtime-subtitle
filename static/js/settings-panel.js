@@ -58,6 +58,18 @@
             }
         }
 
+        function setSaving(saving) {
+            if (!elements.saveButton) return;
+            elements.saveButton.disabled = !!saving;
+            elements.saveButton.textContent = t(saving ? 'saving' : 'save');
+        }
+
+        function setError(message) {
+            if (elements.errorElement) {
+                elements.errorElement.textContent = message || '';
+            }
+        }
+
         function getDesiredProvider() {
             const settings = loadProviderSettings();
             return settings.providerOverride || state().translationProvider || 'soniox';
@@ -344,6 +356,11 @@
             call('renderRuntimeSettingsPickers');
         }
 
+        function refreshProviderFields(provider) {
+            updateApiKeyField(provider);
+            updateSonioxRegion(provider);
+        }
+
         function handleProviderChange() {
             const provider = getSelectedProvider();
             updateProviderFields(provider);
@@ -421,8 +438,11 @@
             open,
             populate,
             renderSonioxRegionPicker,
+            refreshProviderFields,
+            setError,
             setMode,
             setProvider,
+            setSaving,
             updateApiKeyField,
             updateButtonVisibility,
             updateProviderFields,
