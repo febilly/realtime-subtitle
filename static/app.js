@@ -442,6 +442,15 @@ const subtitleRenderer = SubtitleRenderer.create({
         hideSpeakerLabels: speakerLabelController.isHidden(),
     }),
 });
+const subtitleFrameController = SubtitleFrameController.create({
+    session: subtitleSession,
+    renderer: subtitleRenderer,
+    console,
+    getState: () => ({ translateMode: isLlmTranslateMode() }),
+    renderSubtitles,
+    finalizeCurrentNonFinalTokens,
+    clearSubtitleState,
+});
 
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
@@ -747,22 +756,6 @@ function fetchLlmRefineStatus() {
     return translationModeController.fetchLlmRefineStatus();
 }
 
-function handleBackendRefineResult(data) {
-    if (subtitleSession.applyRefineResult(data, {
-        translateMode: isLlmTranslateMode(),
-    }).changed) {
-        renderSubtitles();
-    }
-}
-
-function handleSubtitleRetract(data) {
-    const sentenceId = data && data.sentence_id ? String(data.sentence_id).trim() : '';
-    const result = subtitleSession.retract(sentenceId);
-    if (!result.removed) return;
-    subtitleRenderer.invalidateAll();
-    renderSubtitles();
-}
-
 function handleSegmentModeChanged(data) {
     return segmentModeController.handleBackendChanged(data);
 }
@@ -903,6 +896,7 @@ function handleMessage(data) {
 }
 
 function handleMessageFrame(data) {
+    if (subtitleFrameController.handle(data)) return;
     if (data.type === 'subtitle_font_preference') {
         const enabled = !!data.use_bundled_cjk_fonts;
         applyBundledCjkFontPreference(enabled, { persist: true });
@@ -926,25 +920,6 @@ function handleMessageFrame(data) {
         if (data.code === 'api_key' && !lockManualControls) {
             openSettings({ forced: true });
         }
-        return;
-    }
-    if (data.type === 'spec_translation_pending') {
-        const src = (data.source || '').toString().trim();
-        if (subtitleSession.markSpecPending(src, data.target_lang).changed) {
-            renderSubtitles();
-        }
-        return;
-    }
-    if (data.type === 'spec_translation') {
-        if (subtitleSession.applySpecTranslation(data).changed) renderSubtitles();
-        return;
-    }
-    if (data.type === 'refine_result') {
-        handleBackendRefineResult(data);
-        return;
-    }
-    if (data.type === 'subtitle_retract') {
-        handleSubtitleRetract(data);
         return;
     }
     if (data.type === 'llm_cost') {
@@ -1017,35 +992,6 @@ function handleMessageFrame(data) {
             triggerAutoRestart();
         }
         return;
-    }
-    if (data.type === 'clear') {
-        if (data.preserve_existing) {
-            console.log('Finalizing pending subtitles before restart...');
-            finalizeCurrentNonFinalTokens();
-            // The stream is reopening (e.g. 翻译模式 switched to 准确). Built-in
-            // translations hidden awaiting an LLM replacement may never get one
-            // (the old stream's LLM calls die with it) — reveal them instead of
-            // leaving a permanently empty translation line. Their override still
-            // applies if the LLM result does arrive late. The session advances
-            // both boundaries to its next sequence, revealing existing tokens.
-            const revealed = subtitleSession.revealPendingForRestart();
-            if (revealed.translateChanged) renderSubtitles();
-            // Same reasoning for 混合: STT translations already shown as provisional
-            // (gray) won't get their LLM replacement from the dying stream — reveal
-            // them as normal text and only gray translations from the new stream.
-            if (revealed.hybridChanged) renderSubtitles();
-        } else {
-            // 清空所有数据
-            console.log('Clearing all subtitles...');
-            clearSubtitleState();
-        }
-        // 不修改UI,因为重启流程会处理
-        return;
-    }
-    
-    if (data.type === 'update') {
-        subtitleSession.applyUpdateFrame(data);
-        renderSubtitles();
     }
 }
 
