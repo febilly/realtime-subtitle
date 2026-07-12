@@ -89,6 +89,26 @@ describe('SubtitleSession update stream', () => {
         expect(first).not.toBe(second);
         expect(session.getDebugState().tokenSequenceCounter).toBe(before);
     });
+
+    it('does not advance sequence state when assigning render-only speculative separators', () => {
+        const session = create();
+        session.applyUpdateFrame({
+            non_final_tokens: [
+                token('Sentence.', { is_final: false }),
+                token(' Next', { is_final: false }),
+            ],
+        });
+        const before = session.getDebugState().tokenSequenceCounter;
+        const first = session.buildRenderTokens();
+        const separator = first.find((entry) => entry.separator_type === 'speculative');
+        expect(separator).toBeDefined();
+
+        session.assignRenderTokenSequences(first);
+        session.assignRenderTokenSequences(session.buildRenderTokens());
+
+        expect(separator).not.toHaveProperty('_sequenceIndex');
+        expect(session.getDebugState().tokenSequenceCounter).toBe(before);
+    });
 });
 
 describe('SubtitleSession refine and retract state', () => {

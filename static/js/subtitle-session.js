@@ -23,7 +23,10 @@
         }
 
         function assignRenderTokenSequences(tokens) {
-            for (const token of tokens || []) assignSequenceIndex(token);
+            for (const token of tokens || []) {
+                if (token && token.separator_type === 'speculative') continue;
+                assignSequenceIndex(token);
+            }
             return tokens;
         }
 
