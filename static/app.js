@@ -322,7 +322,7 @@ const speakerLabelController = SpeakerLabelController.create({
     getRuntimeState: () => ({ lockManualControls, translationProvider }),
     getStoredPreference: () => settingsRuntime.getStoredHideSpeakerLabelsSetting(),
     renderPicker: () => settingsRuntime.renderSpeakerLabelsPicker(),
-    renderSubtitles,
+    renderSubtitles: () => subtitleRuntimeController.render(),
 });
 const oscTranslationController = OscTranslationController.create({
     fetch,
@@ -353,7 +353,7 @@ const furiganaToggleController = FuriganaToggleController.create({
     onChange: (enabled) => {
         furiganaService.setEnabled(enabled);
         subtitleRenderer.invalidateSentences();
-        renderSubtitles();
+        subtitleRuntimeController.render();
     },
 });
 furiganaToggleController.init();
@@ -379,7 +379,7 @@ const translationModeController = TranslationModeController.create({
     actions: {
         enforceTranslateSegmentMode: segmentModeController.enforceTranslateMode,
         updateSegmentModeButton: segmentModeController.updateButton,
-        renderSubtitles,
+        renderSubtitles: () => subtitleRuntimeController.render(),
         updateTranslationModeHint: settingsPorts.updateTranslationModeHint,
         renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
         restartRecognition: controlPorts.restartRecognition,
@@ -439,7 +439,7 @@ const languageUi = LanguageUI.create({
     },
     setUiTranslationMode,
     restartRecognition: controlPorts.restartRecognition,
-    renderSubtitles,
+    renderSubtitles: () => subtitleRuntimeController.render(),
 });
 languageUi.init();
 
@@ -452,7 +452,7 @@ let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
 const furiganaService = Furigana.createService({
     kuromoji: window.kuromoji,
     escapeHtml,
-    onReady: () => renderSubtitles(),
+    onReady: () => subtitleRuntimeController.render(),
 });
 furiganaService.setEnabled(furiganaToggleController.isEnabled(), { clearState: false });
 const subtitleRenderer = SubtitleRenderer.create({
@@ -477,14 +477,22 @@ const subtitleRenderer = SubtitleRenderer.create({
         hideSpeakerLabels: speakerLabelController.isHidden(),
     }),
 });
+const subtitleRuntimeController = SubtitleRuntimeController.create({
+    session: subtitleSession,
+    renderer: subtitleRenderer,
+    getState: () => ({
+        translateMode: controlPorts.isLlmTranslateMode(),
+        translationUiMode: translationModeController.getTranslationUiMode(),
+    }),
+});
 const subtitleFrameController = SubtitleFrameController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
     console,
     getState: () => ({ translateMode: controlPorts.isLlmTranslateMode() }),
-    renderSubtitles,
-    finalizeCurrentNonFinalTokens,
-    clearSubtitleState,
+    renderSubtitles: subtitleRuntimeController.render,
+    finalizeCurrentNonFinalTokens: subtitleRuntimeController.finalize,
+    clearSubtitleState: subtitleRuntimeController.clear,
 });
 
 // 控制标志
@@ -515,7 +523,7 @@ const runtimeControls = RuntimeControls.create({
     storage: localStorage,
     t,
     setControlIcon,
-    renderSubtitles,
+    renderSubtitles: subtitleRuntimeController.render,
     sessionCostPause: hostedPorts.sessionCostPause,
     console,
     getState: () => ({
@@ -561,8 +569,8 @@ const recognitionControls = RecognitionControls.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'shouldReconnect')) shouldReconnect = patch.shouldReconnect;
     },
     closeSocket: webSocketController.close,
-    finalizeCurrentNonFinalTokens,
-    clearSubtitleState,
+    finalizeCurrentNonFinalTokens: subtitleRuntimeController.finalize,
+    clearSubtitleState: subtitleRuntimeController.clear,
     sessionCostReset: hostedPorts.sessionCostReset,
     updatePauseButtonUi: () => runtimeControls.updatePauseButtonUi(),
     hasUsableWebSocket: webSocketController.isUsable,
@@ -805,27 +813,6 @@ function handleMessageFrame(data) {
     runtimeFrameController.handle(data);
 }
 
-function finalizeCurrentNonFinalTokens({ render = true } = {}) {
-    const result = subtitleSession.finalizeCurrentNonFinalTokens();
-    if (!result.changed) return false;
-    subtitleRenderer.invalidateAll();
-    if (render) renderSubtitles();
-    return true;
-}
-
-function clearSubtitleState() {
-    subtitleSession.clear({
-        translateMode: controlPorts.isLlmTranslateMode(),
-        translationUiMode: translationModeController.getTranslationUiMode(),
-    });
-    subtitleRenderer.clearSession();
-}
-
-
-function renderSubtitles() {
-    return subtitleRenderer.render();
-}
-
 function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -943,7 +930,7 @@ const settingsSaveController = SettingsSave.create({
         hideSettingsPanel: settingsFlowController.hide,
         openLogin: hostedPorts.openLogin,
         finishHotSettingsSave: settingsFlowController.finishHotSave,
-        clearSubtitleState,
+        clearSubtitleState: subtitleRuntimeController.clear,
         populateSettingsForm: () => settingsPanelController.populate(),
     },
 });
@@ -1090,7 +1077,7 @@ const hostedLogin = HostedLogin.create({
         showToast,
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         fetchBalance: hostedPorts.fetchBalance,
-        clearSubtitleState,
+        clearSubtitleState: subtitleRuntimeController.clear,
         setTranslationModeSynced: translationModeController.setTranslationModeSynced,
         pushSetup: settingsPorts.pushSetup,
         switchToOwnKeyMode: hostedPorts.switchToOwnKeyMode,
