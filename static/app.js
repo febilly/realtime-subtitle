@@ -308,6 +308,19 @@ const confirmDialog = document.getElementById('confirmDialog');
 const confirmMessageEl = document.getElementById('confirmMessage');
 const confirmOkButton = document.getElementById('confirmOkButton');
 const confirmCancelButton = document.getElementById('confirmCancelButton');
+const confirmController = ConfirmDialog.create({
+    document,
+    window,
+    t,
+    elements: {
+        overlay: confirmOverlay,
+        dialog: confirmDialog,
+        message: confirmMessageEl,
+        okButton: confirmOkButton,
+        cancelButton: confirmCancelButton,
+    },
+});
+confirmController.init();
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeySourceHint = document.getElementById('apiKeySourceHint');
 const providerDescription = document.getElementById('providerDescription');
@@ -2778,59 +2791,9 @@ function finishHotSettingsSave() {
     showToast(t('settings_saved'));
 }
 
-let confirmResolve = null;
-
-function closeConfirmDialog(result) {
-    if (confirmOverlay) confirmOverlay.hidden = true;
-    if (confirmDialog) confirmDialog.hidden = true;
-    document.removeEventListener('keydown', handleConfirmKeydown);
-    if (confirmResolve) {
-        const resolve = confirmResolve;
-        confirmResolve = null;
-        resolve(result);
-    }
-}
-
-function handleConfirmKeydown(event) {
-    if (event.key === 'Escape') {
-        closeConfirmDialog(false);
-    } else if (event.key === 'Enter') {
-        closeConfirmDialog(true);
-    }
-}
-
 // 自定义确认对话框，替代浏览器自带的 confirm()。
 function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
-    if (!confirmDialog || !confirmOverlay) {
-        return Promise.resolve(window.confirm(message));
-    }
-    if (confirmResolve) {
-        // 已有对话框在显示，先取消旧的。
-        closeConfirmDialog(false);
-    }
-    if (confirmMessageEl) confirmMessageEl.textContent = message;
-    if (confirmOkButton) {
-        confirmOkButton.textContent = okLabel || t('confirm');
-        confirmOkButton.className = danger ? 'danger-button' : 'primary-button';
-    }
-    if (confirmCancelButton) confirmCancelButton.textContent = cancelLabel || t('cancel');
-    confirmOverlay.hidden = false;
-    confirmDialog.hidden = false;
-    document.addEventListener('keydown', handleConfirmKeydown);
-    if (confirmCancelButton) confirmCancelButton.focus();
-    return new Promise((resolve) => {
-        confirmResolve = resolve;
-    });
-}
-
-if (confirmOkButton) {
-    confirmOkButton.addEventListener('click', () => closeConfirmDialog(true));
-}
-if (confirmCancelButton) {
-    confirmCancelButton.addEventListener('click', () => closeConfirmDialog(false));
-}
-if (confirmOverlay) {
-    confirmOverlay.addEventListener('click', () => closeConfirmDialog(false));
+    return confirmController.show(message, { okLabel, cancelLabel, danger });
 }
 
 async function handleResetAll() {
