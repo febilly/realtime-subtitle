@@ -182,13 +182,43 @@ const controlPorts = {
     fetchOscTranslationStatus: () => oscTranslationController.fetchStatus(),
 };
 
+const settingsPorts = {
+    applyBundledCjkFontPreference: (enabled, { persist = false, sync = false } = {}) => (
+        settingsRuntime.applyBundledCjkFontPreference(enabled, { persist, sync })
+    ),
+    loadServerSettings: () => settingsStore.loadServerSettings(),
+    saveServerSettings: (settings) => { settingsStore.saveServerSettings(settings); },
+    getConnectionMode: () => SettingsPolicy.resolveConnectionMode({
+        relayAvailable,
+        serverSettings: settingsStore.loadServerSettings(),
+    }),
+    loadProviderSettings: () => settingsStore.loadProviderSettings(),
+    saveProviderSettings: (settings) => { settingsStore.saveProviderSettings(settings); },
+    buildCustomSelect: (options, config = {}) => settingsUi.buildCustomSelect(options, config),
+    renderMicrophoneDevicePicker: () => settingsRuntime.renderMicrophoneDevicePicker(),
+    fetchMicrophoneDevices: () => settingsRuntime.fetchMicrophoneDevices(),
+    renderBundledCjkFontPicker: () => settingsRuntime.renderBundledCjkFontPicker(),
+    updateTranslationModeHint: () => { settingsRuntime.updateTranslationModeHint(); },
+    renderTranslationModePicker: () => settingsRuntime.renderTranslationModePicker(),
+    renderSegmentModePicker: () => settingsRuntime.renderSegmentModePicker(),
+    renderRuntimeSettingsPickers: () => settingsRuntime.renderRuntimeSettingsPickers(),
+    updateSettingsButtonVisibility: () => { settingsPanelController.updateButtonVisibility(); },
+    getSelectedProvider: () => settingsPanelController.getSelectedProvider(),
+    setModeRadio: (mode) => { settingsPanelController.setMode(mode); },
+    applyModeSectionsVisibility: (mode) => { settingsPanelController.applyModeVisibility(mode); },
+    pushSetup: (provider, apiKey, options = {}) => settingsSetup.push(provider, apiKey, options),
+    syncProviderFromStorage: async () => { await settingsSetup.syncFromStorage(); },
+    fetchUiConfig: () => uiConfigController.fetch(),
+    fetchLlmRefineStatus: () => translationModeController.fetchLlmRefineStatus(),
+};
+
 const settingsRuntime = SettingsRuntime.create({
     document,
     fetch,
     storage: localStorage,
     t,
     localizeBackendMessage,
-    buildCustomSelect,
+    buildCustomSelect: settingsPorts.buildCustomSelect,
     console,
     elements: {
         runtimeControlsSection,
@@ -208,8 +238,8 @@ const settingsRuntime = SettingsRuntime.create({
         segmentModePickerHost,
     },
     getState: () => ({
-        get selectedProvider() { return getSelectedProvider(); },
-        get providerSettings() { return loadProviderSettings(); },
+        get selectedProvider() { return settingsPorts.getSelectedProvider(); },
+        get providerSettings() { return settingsPorts.loadProviderSettings(); },
         get autoRestartEnabled() { return autoRestartEnabled; },
         get hideSpeakerLabels() { return speakerLabelController.isHidden(); },
         get customFontAvailable() { return customFontAvailable; },
@@ -239,11 +269,7 @@ const settingsRuntime = SettingsRuntime.create({
     },
 });
 
-function applyBundledCjkFontPreference(enabled, { persist = false, sync = false } = {}) {
-    return settingsRuntime.applyBundledCjkFontPreference(enabled, { persist, sync });
-}
-
-applyBundledCjkFontPreference(useBundledCjkFont, { sync: true });
+settingsPorts.applyBundledCjkFontPreference(useBundledCjkFont, { sync: true });
 
 // ---- Subtitle-server relay (hosted mode) state ----
 let relayAvailable = !!INITIAL_UI_CONFIG.relay_available;
@@ -287,30 +313,7 @@ const hostedPorts = {
 };
 const { safeHttpUrl } = SettingsStore;
 
-function loadServerSettings() {
-    return settingsStore.loadServerSettings();
-}
-
-function saveServerSettings(settings) {
-    settingsStore.saveServerSettings(settings);
-}
-// Resolved connection mode: 'relay' | 'direct' | null (undecided / first launch).
-function getConnectionMode() {
-    return SettingsPolicy.resolveConnectionMode({
-        relayAvailable,
-        serverSettings: loadServerSettings(),
-    });
-}
-
 let uiTranslationMode = settingsStore.loadUiTranslationMode();
-
-function loadProviderSettings() {
-    return settingsStore.loadProviderSettings();
-}
-
-function saveProviderSettings(settings) {
-    settingsStore.saveProviderSettings(settings);
-}
 
 const speakerLabelController = SpeakerLabelController.create({
     fetch,
@@ -377,8 +380,8 @@ const translationModeController = TranslationModeController.create({
         enforceTranslateSegmentMode: segmentModeController.enforceTranslateMode,
         updateSegmentModeButton: segmentModeController.updateButton,
         renderSubtitles,
-        updateTranslationModeHint,
-        renderTranslationModePicker,
+        updateTranslationModeHint: settingsPorts.updateTranslationModeHint,
+        renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
         restartRecognition: controlPorts.restartRecognition,
     },
 });
@@ -609,8 +612,8 @@ const sessionFrameController = SessionFrameController.create({
         handleHostedSessionFrame: (frame) => hostedController.handleSessionFrame(frame),
         showToast,
         openSettings: (options) => settingsFlowController.open(options),
-        loadServerSettings,
-        saveServerSettings,
+        loadServerSettings: settingsPorts.loadServerSettings,
+        saveServerSettings: settingsPorts.saveServerSettings,
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         openLogin: hostedPorts.openLogin,
         triggerAutoRestart: controlPorts.triggerAutoRestart,
@@ -620,14 +623,14 @@ const runtimeFrameController = RuntimeFrameController.create({
     t,
     getState: () => ({ lockManualControls }),
     actions: {
-        applyBundledCjkFontPreference,
+        applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
         syncOverlayState: runtimeControls.syncOverlayState,
         syncIpcStatus: appShellController.syncIpcStatus,
         displayErrorMessage,
         openSettings: (options) => settingsFlowController.open(options),
         addLlmCost: (credits) => hostedBalance.addLlmCost(credits),
         setTranslationUiMode: controlPorts.setTranslationUiMode,
-        renderTranslationModePicker,
+        renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
         showToast,
         restartRecognition: controlPorts.restartRecognition,
         handleSegmentModeChanged: segmentModeController.handleBackendChanged,
@@ -654,9 +657,9 @@ const settingsSetup = SettingsSetup.create({
         pushedOverrideBootId,
         uiTranslationMode,
         lockManualControls,
-        providerSettings: loadProviderSettings(),
-        connectionMode: getConnectionMode(),
-        serverSettings: loadServerSettings(),
+        providerSettings: settingsPorts.loadProviderSettings(),
+        connectionMode: settingsPorts.getConnectionMode(),
+        serverSettings: settingsPorts.loadServerSettings(),
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'translationProvider')) translationProvider = patch.translationProvider;
@@ -671,7 +674,7 @@ const settingsSetup = SettingsSetup.create({
         sessionCostReset: hostedPorts.sessionCostReset,
         showToast,
         setUiTranslationMode,
-        fetchUiConfig,
+        fetchUiConfig: settingsPorts.fetchUiConfig,
     },
 });
 
@@ -772,22 +775,14 @@ const uiConfigController = UiConfigController.create({
         resetFirstRedeemBonus: (value) => hostedBalance.resetFirstRedeemBonus(value),
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         updateAccountSection: hostedPorts.updateAccountSection,
-        updateSettingsButtonVisibility,
-        applyBundledCjkFontPreference,
-        renderBundledCjkFontPicker,
-        renderRuntimeSettingsPickers,
+        updateSettingsButtonVisibility: settingsPorts.updateSettingsButtonVisibility,
+        applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
+        renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
+        renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,
         enforceTranslateSegmentMode: controlPorts.enforceTranslateSegmentMode,
     },
 });
-
-function fetchUiConfig() {
-    return uiConfigController.fetch();
-}
-
-function fetchLlmRefineStatus() {
-    return translationModeController.fetchLlmRefineStatus();
-}
 
 function setUiTranslationMode(mode, { persistOnly = false } = {}) {
     if (!['none', 'one_way', 'two_way'].includes(mode)) {
@@ -799,39 +794,6 @@ function setUiTranslationMode(mode, { persistOnly = false } = {}) {
         return;
     }
     suppressTranslationDisplay = (translationProvider === 'gemini' && mode === 'none');
-}
-
-// Generic settings dropdown primitives remain available to the settings form.
-function buildCustomSelect(options, config = {}) {
-    return settingsUi.buildCustomSelect(options, config);
-}
-
-function renderMicrophoneDevicePicker() {
-    return settingsRuntime.renderMicrophoneDevicePicker();
-}
-
-function fetchMicrophoneDevices() {
-    return settingsRuntime.fetchMicrophoneDevices();
-}
-
-function renderBundledCjkFontPicker() {
-    return settingsRuntime.renderBundledCjkFontPicker();
-}
-
-function updateTranslationModeHint() {
-    settingsRuntime.updateTranslationModeHint();
-}
-
-function renderTranslationModePicker() {
-    return settingsRuntime.renderTranslationModePicker();
-}
-
-function renderSegmentModePicker() {
-    return settingsRuntime.renderSegmentModePicker();
-}
-
-function renderRuntimeSettingsPickers() {
-    return settingsRuntime.renderRuntimeSettingsPickers();
 }
 
 void controlPorts.refreshOverlayState();
@@ -878,27 +840,27 @@ const settingsPanelController = SettingsPanel.create({
     document,
     fetch,
     t,
-    buildCustomSelect,
-    loadProviderSettings,
+    buildCustomSelect: settingsPorts.buildCustomSelect,
+    loadProviderSettings: settingsPorts.loadProviderSettings,
     freePoolsSummary: hostedPorts.freePoolsSummary,
     getState: () => ({
         lockManualControls,
         relayAvailable,
-        connectionMode: getConnectionMode(),
+        connectionMode: settingsPorts.getConnectionMode(),
         translationProvider,
         backendSonioxRegion,
         backendSonioxCustomUrl,
         envKeyPresent,
         setupRequired,
         clientVersion,
-        canRefreshBalance: backendLoggedIn || !!loadServerSettings().token,
+        canRefreshBalance: backendLoggedIn || !!settingsPorts.loadServerSettings().token,
     }),
     actions: {
-        renderMicrophoneDevicePicker,
-        renderRuntimeSettingsPickers,
-        renderBundledCjkFontPicker,
-        renderTranslationModePicker,
-        fetchMicrophoneDevices,
+        renderMicrophoneDevicePicker: settingsPorts.renderMicrophoneDevicePicker,
+        renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
+        renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
+        renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
+        fetchMicrophoneDevices: settingsPorts.fetchMicrophoneDevices,
         fetchBalance: hostedPorts.fetchBalance,
         updateAccountSection: hostedPorts.updateAccountSection,
     },
@@ -936,8 +898,8 @@ const settingsFlowController = SettingsFlowController.create({
     t,
     getState: () => ({
         lockManualControls,
-        connectionMode: getConnectionMode(),
-        serverSettings: loadServerSettings(),
+        connectionMode: settingsPorts.getConnectionMode(),
+        serverSettings: settingsPorts.loadServerSettings(),
         setupRequired,
     }),
     updateState: (patch) => {
@@ -960,10 +922,10 @@ const settingsSaveController = SettingsSave.create({
         apiKey: apiKeyInput ? apiKeyInput.value : '',
     }),
     getState: () => ({ envKeyPresent }),
-    loadProviderSettings,
-    saveProviderSettings,
-    loadServerSettings,
-    saveServerSettings,
+    loadProviderSettings: settingsPorts.loadProviderSettings,
+    saveProviderSettings: settingsPorts.saveProviderSettings,
+    loadServerSettings: settingsPorts.loadServerSettings,
+    saveServerSettings: settingsPorts.saveServerSettings,
     ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
     actions: {
         setSaving: (saving) => {
@@ -986,33 +948,9 @@ const settingsSaveController = SettingsSave.create({
     },
 });
 
-function updateSettingsButtonVisibility() {
-    settingsPanelController.updateButtonVisibility();
-}
-
-function getSelectedProvider() {
-    return settingsPanelController.getSelectedProvider();
-}
-
-function setModeRadio(mode) {
-    settingsPanelController.setMode(mode);
-}
-
-function applyModeSectionsVisibility(mode) {
-    settingsPanelController.applyModeVisibility(mode);
-}
-
-function pushSetup(provider, apiKey, options = {}) {
-    return settingsSetup.push(provider, apiKey, options);
-}
-
 // 自定义确认对话框，替代浏览器自带的 confirm()。
 function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
     return confirmController.show(message, { okLabel, cancelLabel, danger });
-}
-
-async function syncProviderFromStorage() {
-    await settingsSetup.syncFromStorage();
 }
 
 settingsUi.init({
@@ -1052,7 +990,7 @@ const hostedUpdate = HostedUpdate.create({
     showConfirm,
     getState: () => ({
         relayAvailable,
-        connectionMode: getConnectionMode(),
+        connectionMode: settingsPorts.getConnectionMode(),
         currentVersion: clientVersion,
         latestVersion: clientLatestVersion,
         minimumVersion: clientMinimumVersion,
@@ -1060,12 +998,12 @@ const hostedUpdate = HostedUpdate.create({
         notes: clientUpdateNotes,
     }),
     onSwitchDirect: () => {
-        const settings = loadServerSettings();
+        const settings = settingsPorts.loadServerSettings();
         settings.mode = 'direct';
         settings.modeChosen = true;
-        saveServerSettings(settings);
-        setModeRadio('direct');
-        applyModeSectionsVisibility('direct');
+        settingsPorts.saveServerSettings(settings);
+        settingsPorts.setModeRadio('direct');
+        settingsPorts.applyModeSectionsVisibility('direct');
         hostedPorts.updateAccountSection();
     },
     elements: {
@@ -1101,13 +1039,13 @@ const hostedMode = HostedMode.create({
     policy: SettingsPolicy,
     document,
     t,
-    loadServerSettings,
-    saveServerSettings,
+    loadServerSettings: settingsPorts.loadServerSettings,
+    saveServerSettings: settingsPorts.saveServerSettings,
     getState: () => ({
         lockManualControls,
         relayAvailable,
         relayServerUrl,
-        connectionMode: getConnectionMode(),
+        connectionMode: settingsPorts.getConnectionMode(),
     }),
     actions: {
         openLogin: hostedPorts.openLogin,
@@ -1117,11 +1055,11 @@ const hostedMode = HostedMode.create({
         resetBootGuard: () => { pushedOverrideBootId = null; },
         hideSettingsPanel: settingsFlowController.hide,
         ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
-        syncProviderFromStorage,
+        syncProviderFromStorage: settingsPorts.syncProviderFromStorage,
         maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
-        setModeRadio,
-        applyModeSectionsVisibility,
+        setModeRadio: settingsPorts.setModeRadio,
+        applyModeSectionsVisibility: settingsPorts.applyModeSectionsVisibility,
         updateAccountSection: hostedPorts.updateAccountSection,
         openSettings: settingsFlowController.open,
     },
@@ -1145,16 +1083,16 @@ const hostedLogin = HostedLogin.create({
         relayServerUrl,
         translationProvider,
     }),
-    loadServerSettings,
-    saveServerSettings,
-    loadProviderSettings,
+    loadServerSettings: settingsPorts.loadServerSettings,
+    saveServerSettings: settingsPorts.saveServerSettings,
+    loadProviderSettings: settingsPorts.loadProviderSettings,
     actions: {
         showToast,
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         fetchBalance: hostedPorts.fetchBalance,
         clearSubtitleState,
         setTranslationModeSynced: translationModeController.setTranslationModeSynced,
-        pushSetup,
+        pushSetup: settingsPorts.pushSetup,
         switchToOwnKeyMode: hostedPorts.switchToOwnKeyMode,
     },
     elements: {
@@ -1182,9 +1120,9 @@ const hostedBalance = HostedBalance.create({
     fetch,
     t,
     getRuntimeState: () => ({
-        connectionMode: getConnectionMode(),
+        connectionMode: settingsPorts.getConnectionMode(),
         backendLoggedIn,
-        hasToken: !!loadServerSettings().token,
+        hasToken: !!settingsPorts.loadServerSettings().token,
         translationProvider,
         uiTranslationMode,
         translationUiMode: translationModeController.getTranslationUiMode(),
@@ -1212,8 +1150,8 @@ hostedAccount = HostedAccount.create({
         relayServerUrl,
         creditsPurchaseUrl,
     }),
-    loadServerSettings,
-    saveServerSettings,
+    loadServerSettings: settingsPorts.loadServerSettings,
+    saveServerSettings: settingsPorts.saveServerSettings,
     balance: hostedBalance,
     actions: {
         showToast,
@@ -1246,12 +1184,12 @@ if (balanceOpenSettingsButton) {
 
 const hostedController = Hosted.createController({
     preopenHostedLoginIfNeeded: hostedPorts.preopenHostedLoginIfNeeded,
-    fetchUiConfig,
+    fetchUiConfig: settingsPorts.fetchUiConfig,
     refreshPreopenedHostedLogin: hostedPorts.refreshPreopenedHostedLogin,
     maybeRunFirstLaunchFlow: hostedPorts.maybeRunFirstLaunchFlow,
     ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
-    syncProviderFromStorage,
-    fetchLlmRefineStatus,
+    syncProviderFromStorage: settingsPorts.syncProviderFromStorage,
+    fetchLlmRefineStatus: settingsPorts.fetchLlmRefineStatus,
     fetchApiKeyStatus,
     fetchOscTranslationStatus: controlPorts.fetchOscTranslationStatus,
     maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
