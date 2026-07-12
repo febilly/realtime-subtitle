@@ -119,7 +119,21 @@ const translationModeSection = document.getElementById('translationModeSection')
 const translationModeSettingField = document.getElementById('translationModeSettingField');
 const translationModePickerHost = document.getElementById('translationModePicker');
 const translationModeHintEl = document.getElementById('translationModeHint');
-const toastEl = document.getElementById('toast');
+const uiFeedbackController = UiFeedbackController.create({
+    document,
+    fetch,
+    subtitleContainer,
+    toast: document.getElementById('toast'),
+    t,
+    localizeBackendMessage,
+    escapeHtml,
+    console,
+});
+const {
+    displayErrorMessage,
+    fetchApiKeyStatus,
+    showToast,
+} = uiFeedbackController;
 
 const BUNDLED_CJK_FONT_STORAGE_KEY = 'useBundledCjkFont';
 
@@ -204,7 +218,6 @@ function syncBundledCjkFontPreference(enabled) {
 }
 
 applyBundledCjkFontPreference(useBundledCjkFont, { sync: true });
-let toastTimer = null;
 
 // ---- Subtitle-server relay (hosted mode) state ----
 const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
@@ -265,35 +278,6 @@ function loadProviderSettings() {
 
 function saveProviderSettings(settings) {
     settingsStore.saveProviderSettings(settings);
-}
-
-function showToast(message, isError = false, options = {}) {
-    if (!toastEl) {
-        return;
-    }
-    toastEl.textContent = '';
-    const text = document.createElement('span');
-    text.textContent = message;
-    toastEl.appendChild(text);
-    if (options.actionLabel && typeof options.onAction === 'function') {
-        const action = document.createElement('button');
-        action.type = 'button';
-        action.className = 'toast-action';
-        action.textContent = options.actionLabel;
-        action.addEventListener('click', () => {
-            toastEl.hidden = true;
-            options.onAction();
-        });
-        toastEl.appendChild(action);
-    }
-    toastEl.classList.toggle('error', !!isError);
-    toastEl.hidden = false;
-    if (toastTimer) {
-        clearTimeout(toastTimer);
-    }
-    toastTimer = setTimeout(() => {
-        toastEl.hidden = true;
-    }, Number(options.timeoutMs) || 4000);
 }
 
 const speakerLabelController = SpeakerLabelController.create({
@@ -902,36 +886,6 @@ function refreshOverlayState() {
 }
 
 void refreshOverlayState();
-
-function displayErrorMessage(message) {
-    const localizedMessage = localizeBackendMessage(message);
-    subtitleContainer.innerHTML = `
-        <div class="error-message-overlay">
-            <h2 class="error-title">${escapeHtml(t('error_title'))}</h2>
-            <p class="error-text">${escapeHtml(localizedMessage)}</p>
-            <p class="error-suggestion">${escapeHtml(t('error_suggestion_api'))}</p>
-        </div>
-    `;
-    subtitleContainer.scrollTop = 0; // Ensure error is visible
-}
-
-async function fetchApiKeyStatus() {
-    try {
-        const response = await fetch('/api-key-status');
-        if (!response.ok) {
-            console.error('Failed to fetch API key status:', response.statusText);
-            return;
-        }
-        const data = await response.json();
-        if (data.status === 'error' && data.message) {
-            displayErrorMessage(data.message);
-        }
-    } catch (error) {
-        console.error('Error fetching API key status:', error);
-        // Do not display a generic network error here, as it might be a temporary server startup issue.
-        // The WebSocket connection will eventually show the error if the API key is truly missing.
-    }
-}
 
 function fetchOscTranslationStatus() {
     return oscTranslationController.fetchStatus();
