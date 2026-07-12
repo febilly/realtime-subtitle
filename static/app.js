@@ -751,10 +751,14 @@ try {
 } catch (storageError) {
     console.warn('Unable to access sessionStorage for furigana preference:', storageError);
 }
-// 假名注音缓存（避免重复请求）
-let furiganaCache = new Map();
-const pendingFuriganaRequests = new Set();
-let kuromojiTokenizerPromise = null;
+const furiganaService = Furigana.createService({
+    kuromoji: window.kuromoji,
+    escapeHtml,
+    onReady: () => renderSubtitles(),
+});
+furiganaService.setEnabled(furiganaEnabled, { clearState: false });
+const furiganaCache = furiganaService.cache;
+const pendingFuriganaRequests = furiganaService.pending;
 
 // 移动端底部留白开关（默认关闭）
 let bottomSafeAreaEnabled = settingsStore.loadBottomSafeAreaEnabled();
@@ -905,18 +909,24 @@ function getSegmentModes() {
 }
 
 // 主题切换功能（默认深色）
-const ALL_THEMES = ['dark', 'light', 'chroma'];
-const THEME_ICONS = {
-    dark: 'moon',
-    light: 'sun',
-    chroma: 'sparkles',
-};
 let currentTheme = 'dark';
 let lastWindowOnTopState = null;
 let enableChromaTheme = false;
+const settingsUi = SettingsUI.create({
+    document,
+    window,
+    storage: localStorage,
+    actions: {
+        openSettings,
+        closeSettings,
+        returnToModeChooser,
+        handleResetAll,
+        handleSettingsSave,
+    },
+});
 
 function getAvailableThemes() {
-    return enableChromaTheme ? ALL_THEMES : ['dark', 'light'];
+    return settingsUi.getAvailableThemes(enableChromaTheme);
 }
 
 async function syncWindowOnTopByTheme(theme) {
@@ -939,23 +949,13 @@ async function syncWindowOnTopByTheme(theme) {
 }
 
 function applyTheme(theme) {
-    const available = getAvailableThemes();
-    const normalizedTheme = available.includes(theme) ? theme : 'dark';
-
-    currentTheme = normalizedTheme;
-
-    document.body.classList.remove('dark-theme', 'chroma-theme');
-
-    if (normalizedTheme === 'dark') {
-        document.body.classList.add('dark-theme');
-    } else if (normalizedTheme === 'chroma') {
-        document.body.classList.add('chroma-theme');
-    }
-
-    setControlIcon(themeIcon, THEME_ICONS[normalizedTheme]);
-    localStorage.setItem('theme', normalizedTheme);
+    currentTheme = settingsUi.applyTheme(theme, {
+        enableChromaTheme,
+        themeIcon,
+        setControlIcon,
+    });
     if (enableChromaTheme) {
-        void syncWindowOnTopByTheme(normalizedTheme);
+        void syncWindowOnTopByTheme(currentTheme);
     }
 }
 
@@ -1773,173 +1773,12 @@ function buildLangPicker(selectedCode, fallbackCode = 'en') {
 // Position a fixed-position dropdown menu relative to its trigger, flipping up
 // when there isn't enough room below. Shared by the generic custom select.
 function positionDropdownMenu(trigger, menu) {
-    const rect = trigger.getBoundingClientRect();
-    const gap = 6;
-    const viewportPadding = 8;
-    const menuWidth = Math.max(rect.width, 180);
-
-    menu.style.maxHeight = '';
-    const naturalHeight = menu.offsetHeight;
-
-    const maxHeight = Math.min(260, Math.max(160, window.innerHeight - 2 * viewportPadding));
-    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
-    const spaceAbove = rect.top - viewportPadding;
-    const openUp = spaceBelow < 170 && spaceAbove > spaceBelow;
-    const menuHeight = Math.min(maxHeight, openUp ? Math.max(120, spaceAbove - gap) : Math.max(120, spaceBelow - gap));
-    const actualHeight = Math.min(menuHeight, naturalHeight);
-
-    const left = Math.min(
-        Math.max(viewportPadding, rect.left),
-        Math.max(viewportPadding, window.innerWidth - viewportPadding - menuWidth)
-    );
-    const top = openUp
-        ? Math.max(viewportPadding, rect.top - gap - actualHeight)
-        : Math.min(window.innerHeight - viewportPadding - actualHeight, rect.bottom + gap);
-
-    menu.style.left = `${Math.round(left)}px`;
-    menu.style.top = `${Math.round(top)}px`;
-    menu.style.width = `${Math.round(menuWidth)}px`;
-    menu.style.maxHeight = `${Math.round(menuHeight)}px`;
+    return settingsUi.positionDropdownMenu(trigger, menu);
 }
 
-// Generic dark-themed custom <select> replacement. Reuses the language picker's
-// CSS classes for visual consistency. `options` is [{ value, label }].
-function buildCustomSelect(options, { value = null, onChange = null, disabled = false } = {}) {
-    const picker = document.createElement('div');
-    picker.className = 'lang-picker';
-    let currentValue = value;
-    let menuEl = null;
-
-    const trigger = document.createElement('button');
-    trigger.type = 'button';
-    trigger.className = 'lang-picker-button';
-    trigger.setAttribute('aria-haspopup', 'listbox');
-    trigger.setAttribute('aria-expanded', 'false');
-    if (disabled) {
-        trigger.disabled = true;
-        picker.classList.add('disabled');
-    }
-
-    const label = document.createElement('span');
-    label.className = 'lang-picker-label';
-    const chevron = document.createElement('span');
-    chevron.className = 'lang-picker-chevron';
-    chevron.setAttribute('aria-hidden', 'true');
-    trigger.appendChild(label);
-    trigger.appendChild(chevron);
-    picker.appendChild(trigger);
-
-    const labelFor = (val) => {
-        const opt = options.find((o) => o.value === val);
-        return opt ? opt.label : '';
-    };
-    const renderLabel = () => {
-        label.textContent = labelFor(currentValue);
-    };
-
-    const onScroll = (event) => {
-        if (menuEl && event && event.target && menuEl.contains(event.target)) {
-            return;
-        }
-        const target = event && event.target;
-        const scrollsPickerAncestor = target && typeof target.contains === 'function' && target.contains(picker);
-        const scrollsViewport = target === window
-            || target === document
-            || target === document.body
-            || target === document.documentElement;
-        if (scrollsPickerAncestor || scrollsViewport) {
-            reposition();
-        }
-    };
-    const close = () => {
-        if (!menuEl) {
-            return;
-        }
-        menuEl.remove();
-        menuEl = null;
-        picker.classList.remove('open');
-        trigger.setAttribute('aria-expanded', 'false');
-        document.removeEventListener('mousedown', onDocMouseDown, true);
-        document.removeEventListener('keydown', onKeyDown, true);
-        window.removeEventListener('resize', reposition, true);
-        window.removeEventListener('scroll', onScroll, true);
-    };
-    const onDocMouseDown = (event) => {
-        if (picker.contains(event.target) || (menuEl && menuEl.contains(event.target))) {
-            return;
-        }
-        close();
-    };
-    const onKeyDown = (event) => {
-        if (event.key === 'Escape') {
-            close();
-        }
-    };
-    const reposition = () => {
-        if (menuEl) {
-            positionDropdownMenu(trigger, menuEl);
-        }
-    };
-    const open = () => {
-        menuEl = document.createElement('div');
-        menuEl.className = 'lang-select-menu';
-        menuEl.setAttribute('role', 'listbox');
-        for (const opt of options) {
-            const optionEl = document.createElement('button');
-            optionEl.type = 'button';
-            optionEl.className = 'lang-select-option';
-            optionEl.setAttribute('role', 'option');
-            optionEl.textContent = opt.label;
-            const isSelected = opt.value === currentValue;
-            optionEl.classList.toggle('selected', isSelected);
-            optionEl.setAttribute('aria-selected', isSelected ? 'true' : 'false');
-            optionEl.addEventListener('click', () => {
-                const changed = currentValue !== opt.value;
-                currentValue = opt.value;
-                renderLabel();
-                close();
-                if (changed && typeof onChange === 'function') {
-                    onChange(currentValue);
-                }
-            });
-            menuEl.appendChild(optionEl);
-        }
-        document.body.appendChild(menuEl);
-        picker.classList.add('open');
-        trigger.setAttribute('aria-expanded', 'true');
-        positionDropdownMenu(trigger, menuEl);
-        const selectedOption = menuEl.querySelector('.lang-select-option.selected');
-        if (selectedOption) {
-            selectedOption.scrollIntoView({ block: 'nearest' });
-        }
-        document.addEventListener('mousedown', onDocMouseDown, true);
-        document.addEventListener('keydown', onKeyDown, true);
-        window.addEventListener('resize', reposition, true);
-        window.addEventListener('scroll', onScroll, true);
-    };
-
-    trigger.addEventListener('click', () => {
-        if (menuEl) {
-            close();
-        } else {
-            open();
-        }
-    });
-
-    Object.defineProperty(picker, 'value', {
-        get() {
-            return currentValue;
-        },
-        set(val) {
-            currentValue = val;
-            renderLabel();
-        },
-    });
-
-    renderLabel();
-    return picker;
+function buildCustomSelect(options, config = {}) {
+    return settingsUi.buildCustomSelect(options, config);
 }
-
 function normalizeTranslationMode(mode) {
     const value = (mode || '').toString().trim().toLowerCase();
     return ['none', 'one_way', 'two_way'].includes(value) ? value : 'one_way';
@@ -2875,8 +2714,7 @@ if (furiganaButton) {
         }
         updateFuriganaButton();
         // 清空缓存以便重新渲染
-        furiganaCache.clear();
-        pendingFuriganaRequests.clear();
+        furiganaService.setEnabled(furiganaEnabled);
         renderedSentences.clear();
         renderSubtitles();
         console.log(`Furigana ${furiganaEnabled ? 'enabled' : 'disabled'}`);
@@ -3253,9 +3091,7 @@ function handleMessageFrame(data) {
     if (data.type === 'recognition_paused') {
         isPaused = !!data.paused;
         updatePauseButtonUi();
-        if (isPaused) {
-            sessionCostPause();
-        }
+        hostedController.handleSessionFrame(data);
         return;
     }
     if (data.type === 'overlay_visibility') {
@@ -3340,21 +3176,16 @@ function handleMessageFrame(data) {
         return;
     }
     if (data.type === 'session_connected') {
-        // The billed relay link is live (first connect or wake from silence
-        // sleep); start counting this-session cost from now.
-        if (!isPaused) {
-            sessionCostResume();
-        }
+        hostedController.handleSessionFrame(data);
         return;
     }
     if (data.type === 'session_idle') {
-        // Relay link closed for silence sleep (no longer billed); pause the meter.
-        sessionCostPause();
+        hostedController.handleSessionFrame(data);
         return;
     }
     if (data.type === 'session_disconnected') {
         console.warn('Recognition session disconnected:', data.reason || 'unknown');
-        sessionCostPause();
+        hostedController.handleSessionFrame(data);
         // Relay (hosted) close codes: show a friendly message and, for terminal
         // ones, stop auto-restart (and re-prompt login when the token is bad).
         const relayKey = RELAY_ERROR_KEYS[data.code];
@@ -3540,134 +3371,9 @@ function restoreScrollState(state) {
     }
 }
 
-function getKuromojiTokenizer() {
-    if (kuromojiTokenizerPromise) {
-        return kuromojiTokenizerPromise;
-    }
-
-    if (!window.kuromoji || typeof window.kuromoji.builder !== 'function') {
-        kuromojiTokenizerPromise = Promise.resolve(null);
-        return kuromojiTokenizerPromise;
-    }
-
-    kuromojiTokenizerPromise = new Promise((resolve) => {
-        try {
-            window.kuromoji.builder({ dicPath: '/kuromoji/dict/' })
-                .build((err, tokenizer) => {
-                    if (err) {
-                        console.error('Failed to init kuromoji:', err);
-                        resolve(null);
-                        return;
-                    }
-                    resolve(tokenizer);
-                });
-        } catch (error) {
-            console.error('Failed to init kuromoji:', error);
-            resolve(null);
-        }
-    });
-
-    return kuromojiTokenizerPromise;
-}
-
-function toHiragana(katakana) {
-    const value = (katakana || '').toString();
-    let out = '';
-    for (let i = 0; i < value.length; i++) {
-        const code = value.charCodeAt(i);
-        if (code >= 0x30a1 && code <= 0x30f6) {
-            out += String.fromCharCode(code - 0x60);
-        } else {
-            out += value[i];
-        }
-    }
-    return out;
-}
-
-function hasKanji(text) {
-    return /[\u4e00-\u9fff]/.test(text || '');
-}
-
-function hasKatakana(text) {
-    return /[\u30a0-\u30ff]/.test(text || '');
-}
-
-function buildFuriganaHtml(tokens) {
-    if (!Array.isArray(tokens) || tokens.length === 0) {
-        return null;
-    }
-
-    const htmlParts = [];
-    tokens.forEach((token) => {
-        const surface = (token.surface_form || token.surface || token.basic_form || '').toString();
-        if (!surface) {
-            return;
-        }
-        const readingRaw = (token.reading || token.pronunciation || '').toString();
-        const reading = readingRaw ? toHiragana(readingRaw) : '';
-        const needsRuby = (hasKanji(surface) || hasKatakana(surface)) && reading && reading !== surface;
-        if (needsRuby) {
-            htmlParts.push(`<ruby>${escapeHtml(surface)}<rp>(</rp><rt>${escapeHtml(reading)}</rt><rp>)</rp></ruby>`);
-        } else {
-            htmlParts.push(escapeHtml(surface));
-        }
-    });
-
-    return htmlParts.join('');
-}
-
-// 异步获取假名注音
-async function getFuriganaHtml(text) {
-    if (!text || !furiganaEnabled) {
-        return null;
-    }
-    
-    // 检查缓存
-    if (furiganaCache.has(text)) {
-        return furiganaCache.get(text);
-    }
-
-    const tokenizer = await getKuromojiTokenizer();
-    if (!tokenizer) {
-        return null;
-    }
-
-    try {
-        const tokens = tokenizer.tokenize(text) || [];
-        const html = buildFuriganaHtml(tokens);
-        if (html) {
-            furiganaCache.set(text, html);
-            return html;
-        }
-    } catch (error) {
-        console.error('Failed to tokenize furigana:', error);
-    }
-
-    return null;
-}
-
 function requestFurigana(text) {
-    if (!text || !furiganaEnabled) {
-        return;
-    }
-
-    if (furiganaCache.has(text) || pendingFuriganaRequests.has(text)) {
-        return;
-    }
-
-    pendingFuriganaRequests.add(text);
-    getFuriganaHtml(text)
-        .then((html) => {
-            if (html) {
-                furiganaCache.set(text, html);
-                renderSubtitles();
-            }
-        })
-        .finally(() => {
-            pendingFuriganaRequests.delete(text);
-        });
+    return furiganaService.request(text);
 }
-
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function hasUsableWebSocket() {
@@ -4114,11 +3820,7 @@ function getProviderDisplayName(provider) {
 
 // Format a per-second rate with enough precision for small fractional values.
 function formatRate(value) {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return '—';
-    if (n === 0) return '0';
-    if (n < 1) return parseFloat(n.toPrecision(2)).toString();
-    return (Math.round(n * 100) / 100).toString();
+    return Hosted.Billing.formatRate(value);
 }
 
 // Provider description line. In relay mode show the server's unit price
@@ -4835,26 +4537,16 @@ function refreshPreopenedHostedLogin() {
     updateLoginSubmitState();
 }
 
-if (settingsButton) {
-    settingsButton.addEventListener('click', () => openSettings());
-}
-if (settingsCloseButton) {
-    settingsCloseButton.addEventListener('click', () => closeSettings());
-}
-if (settingsCancelButton) {
-    settingsCancelButton.addEventListener('click', () => closeSettings());
-}
-if (settingsModeBackButton) {
-    settingsModeBackButton.addEventListener('click', () => returnToModeChooser());
-}
-if (resetAllButton) {
-    resetAllButton.addEventListener('click', () => handleResetAll());
-}
-if (settingsOverlay) {
-    settingsOverlay.addEventListener('click', () => closeSettings());
-}
+settingsUi.init({
+    settingsButton,
+    closeButton: settingsCloseButton,
+    cancelButton: settingsCancelButton,
+    backButton: settingsModeBackButton,
+    resetButton: resetAllButton,
+    overlay: settingsOverlay,
+    form: settingsForm,
+});
 if (settingsForm) {
-    settingsForm.addEventListener('submit', handleSettingsSave);
     settingsForm.querySelectorAll('input[name="provider"]').forEach((radio) => {
         radio.addEventListener('change', () => {
             const provider = getSelectedProvider();
@@ -5009,29 +4701,11 @@ function clearConnectionModeChoice() {
 }
 
 function versionParts(version) {
-    const raw = String(version || '').trim().replace(/^v/i, '');
-    if (!raw) return null;
-    const parts = raw.split(/[.+_-]/).map((part) => {
-        const match = part.match(/^\d+/);
-        return match ? Number(match[0]) : 0;
-    });
-    if (!parts.length || parts.every((part) => part === 0) && !/^0(?:[.+_-]0)*$/.test(raw)) {
-        return null;
-    }
-    while (parts.length < 3) parts.push(0);
-    return parts;
+    return Hosted.Billing.versionParts(version);
 }
 
 function compareVersions(a, b) {
-    const left = versionParts(a);
-    const right = versionParts(b);
-    if (!left || !right) return 0;
-    const len = Math.max(left.length, right.length);
-    for (let i = 0; i < len; i++) {
-        const diff = (left[i] || 0) - (right[i] || 0);
-        if (diff !== 0) return diff < 0 ? -1 : 1;
-    }
-    return 0;
+    return Hosted.Billing.compareVersions(a, b);
 }
 
 function getClientUpdateState(mode = getConnectionMode()) {
@@ -5736,10 +5410,7 @@ async function handleLogout() {
 
 // ---- Balance bar + this-session cost ----
 function formatCredits(value) {
-    if (value === null || value === undefined) return '—';
-    const n = Number(value);
-    if (!Number.isFinite(n)) return '—';
-    return (Math.round(n * 100) / 100).toString();
+    return Hosted.Billing.formatCredits(value);
 }
 
 function balanceBarShouldShow() {
@@ -5869,37 +5540,26 @@ function renderFreePools(container, pools) {
 }
 
 function hasPositiveCredits(value) {
-    return Number(value || 0) > 0;
+    return Hosted.Billing.hasPositiveCredits(value);
 }
 
 function hasUsableFreePool(free) {
-    const pools = free && Array.isArray(free.pools) ? free.pools : [];
-    return pools.some((pool) => pool.unlimited || Number(pool.remaining || 0) > 0);
+    return Hosted.Billing.hasUsableFreePool(free);
 }
 
 function hasUsableSubscription(subscriptions) {
-    return Array.isArray(subscriptions) && subscriptions.some((sub) => Number(sub.remaining_credits || 0) > 0);
+    return Hosted.Billing.hasUsableSubscription(subscriptions);
 }
 
 function isAccountExhausted(data) {
-    if (!data) return false;
-    return !hasPositiveCredits(data.prepaid_balance)
-        && !hasUsableFreePool(data.free)
-        && !hasUsableSubscription(data.subscriptions);
+    return Hosted.Billing.isAccountExhausted(data);
 }
 
 // Total spendable credits in a payload (prepaid + finite free pools). Used only
 // to decide whether a fresh fetch went up (top-up / quota rollover) or down
 // (server billed a finished session) relative to the current baseline.
 function balanceTotalRemaining(data) {
-    if (!data) return 0;
-    let total = Math.max(0, Number(data.prepaid_balance || 0));
-    const pools = data.free && Array.isArray(data.free.pools) ? data.free.pools : [];
-    for (const pool of pools) {
-        if (pool.unlimited) continue;
-        total += Math.max(0, Number(pool.remaining || 0));
-    }
-    return total;
+    return Hosted.Billing.balanceTotalRemaining(data);
 }
 
 // Estimated in-flight consumption of the current session, in credits, rounded to
@@ -5909,22 +5569,20 @@ function balanceTotalRemaining(data) {
 // Server bills Soniox STT-only streams at a reduced rate. Mirror that factor
 // when built-in translation is disabled by either 翻译语言=关闭 or 准确 mode.
 function sttRateMultiplier() {
-    if (translationProvider === 'soniox' && (uiTranslationMode === 'none' || translationUiMode === 'accurate')) {
-        const f = Number(sonioxNoTranslationFactor);
-        if (Number.isFinite(f) && f > 0) return f;
-    }
-    return 1;
+    return Hosted.Billing.sttRateMultiplier({
+        translationProvider,
+        uiTranslationMode,
+        translationUiMode,
+        sonioxNoTranslationFactor,
+    });
 }
 
 function effectivePricePerSecond() {
-    return Number(pricePerSecond) * sttRateMultiplier();
+    return Hosted.Billing.effectivePricePerSecond(pricePerSecond, sttRateMultiplier());
 }
 
 function estimatedSessionCost() {
-    const p = effectivePricePerSecond();
-    if (!Number.isFinite(p) || p <= 0) return 0;
-    const seconds = sessionElapsedMs() / 1000;
-    return Math.max(0, Math.round(seconds) * p);
+    return Hosted.Billing.estimatedSessionCost(sessionElapsedMs(), pricePerSecond, sttRateMultiplier());
 }
 
 // Apply the estimated in-flight deduction to a copy of a balance payload,
@@ -5932,46 +5590,18 @@ function estimatedSessionCost() {
 // then prepaid. Subscriptions are never metered server-side, so they're left
 // untouched.
 function applyEstimatedDeduction(data, estCost) {
-    if (!data) return data;
-    let remaining = Math.max(0, Number(estCost) || 0);
-    const out = Object.assign({}, data);
-    if (data.free && Array.isArray(data.free.pools)) {
-        const pools = data.free.pools.map((pool) => Object.assign({}, pool));
-        for (const pool of pools) {
-            if (remaining <= 0) break;
-            if (pool.unlimited) {
-                // An unlimited pool absorbs the rest; nothing reaches prepaid.
-                remaining = 0;
-                break;
-            }
-            const avail = Math.max(0, Number(pool.remaining || 0));
-            const take = Math.min(avail, remaining);
-            if (take > 0) {
-                pool.remaining = avail - take;
-                remaining -= take;
-            }
-        }
-        out.free = Object.assign({}, data.free, { pools });
-    }
-    if (remaining > 0) {
-        const prepaid = Math.max(0, Number(data.prepaid_balance || 0));
-        out.prepaid_balance = Math.max(0, prepaid - remaining);
-    }
-    return out;
+    return Hosted.Billing.applyEstimatedDeduction(data, estCost);
 }
 
 // The balance to display right now: the baseline (last authoritative fetch that
 // wasn't superseded by our own estimate) minus the live in-flight estimate.
 function currentBalanceView() {
-    const base = balanceBaseline || lastBalanceData;
-    if (!base) return null;
-    const view = applyEstimatedDeduction(base, estimatedSessionCost());
-    // Hosted LLM spend is prepaid-only; deduct it after the STT free->prepaid split.
-    if (view && sessionLlmCost > 0) {
-        const prepaid = Math.max(0, Number(view.prepaid_balance || 0));
-        view.prepaid_balance = Math.max(0, prepaid - sessionLlmCost);
-    }
-    return view;
+    return Hosted.Billing.currentBalanceView({
+        balanceBaseline,
+        lastBalanceData,
+        estimatedCost: estimatedSessionCost(),
+        sessionLlmCost,
+    });
 }
 
 function renderBalance(data) {
@@ -6041,15 +5671,7 @@ function sessionElapsedMs() {
 }
 
 function formatSessionCost(cost, pricePerSecond) {
-    const p = Number(pricePerSecond);
-    if (!Number.isFinite(p) || p <= 0) {
-        return formatCredits(cost);
-    }
-    const roundedCost = Math.round(cost / p) * p;
-    const priceStr = p.toString();
-    const dotIdx = priceStr.indexOf('.');
-    const decimals = dotIdx >= 0 ? priceStr.length - dotIdx - 1 : 0;
-    return Number(roundedCost.toFixed(Math.max(decimals, 0))).toString();
+    return Hosted.Billing.formatSessionCost(cost, pricePerSecond);
 }
 
 function updateSessionCostDisplay() {
@@ -6118,20 +5740,24 @@ function sessionCostReset() {
     void fetchBalance();
 }
 
+const hostedController = Hosted.createController({
+    preopenHostedLoginIfNeeded,
+    fetchUiConfig,
+    refreshPreopenedHostedLogin,
+    maybeRunFirstLaunchFlow,
+    ensureHostedVersionAllowed,
+    syncProviderFromStorage,
+    fetchLlmRefineStatus,
+    fetchApiKeyStatus,
+    fetchOscTranslationStatus,
+    maybeForceOpenSettings,
+    updateBalanceBarVisibility,
+    connect,
+    sessionCostResume,
+    sessionCostPause,
+    isPaused: () => isPaused,
+});
+
 document.addEventListener('DOMContentLoaded', () => {
-    (async () => {
-        preopenHostedLoginIfNeeded();
-        await fetchUiConfig();
-        refreshPreopenedHostedLogin();
-        await maybeRunFirstLaunchFlow();
-        await ensureHostedVersionAllowed();
-        refreshPreopenedHostedLogin();
-        await syncProviderFromStorage();
-        await fetchLlmRefineStatus();
-        fetchApiKeyStatus();
-        fetchOscTranslationStatus();
-        maybeForceOpenSettings();
-        updateBalanceBarVisibility();
-        connect();
-    })();
+    void hostedController.startup();
 });
