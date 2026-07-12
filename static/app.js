@@ -567,6 +567,24 @@ const sessionFrameController = SessionFrameController.create({
         triggerAutoRestart,
     },
 });
+const runtimeFrameController = RuntimeFrameController.create({
+    t,
+    getState: () => ({ lockManualControls }),
+    actions: {
+        applyBundledCjkFontPreference,
+        syncOverlayState: runtimeControls.syncOverlayState,
+        syncIpcStatus: appShellController.syncIpcStatus,
+        displayErrorMessage,
+        openSettings,
+        addLlmCost: (credits) => hostedBalance.addLlmCost(credits),
+        setTranslationUiMode,
+        renderTranslationModePicker,
+        showToast,
+        restartRecognition,
+        handleSegmentModeChanged: segmentModeController.handleBackendChanged,
+        handleSpeakerLabelsChanged: speakerLabelController.handleBackendChanged,
+    },
+});
 
 runtimeControls.init({ refreshOverlay: false });
 recognitionControls.init();
@@ -768,10 +786,6 @@ function fetchLlmRefineStatus() {
     return translationModeController.fetchLlmRefineStatus();
 }
 
-function handleSegmentModeChanged(data) {
-    return segmentModeController.handleBackendChanged(data);
-}
-
 function setUiTranslationMode(mode, { persistOnly = false } = {}) {
     if (!['none', 'one_way', 'two_way'].includes(mode)) {
         return;
@@ -910,51 +924,7 @@ function handleMessage(data) {
 function handleMessageFrame(data) {
     if (subtitleFrameController.handle(data)) return;
     if (sessionFrameController.handle(data)) return;
-    if (data.type === 'subtitle_font_preference') {
-        const enabled = !!data.use_bundled_cjk_fonts;
-        applyBundledCjkFontPreference(enabled, { persist: true });
-        return;
-    }
-    if (data.type === 'overlay_visibility') {
-        runtimeControls.syncOverlayState(data.visible);
-        return;
-    }
-    if (data.type === 'ipc_status') {
-        appShellController.syncIpcStatus(data.connected);
-        return;
-    }
-    if (data.type === 'error') {
-        displayErrorMessage(data.message);
-        if (data.code === 'api_key' && !lockManualControls) {
-            openSettings({ forced: true });
-        }
-        return;
-    }
-    if (data.type === 'llm_cost') {
-        hostedBalance.addLlmCost(data.credits);
-        return;
-    }
-    if (data.type === 'translation_mode_fallback') {
-        // Prepaid exhausted: the backend session dropped to fast mode. Push
-        // 'fast' through the normal path so localStorage AND the backend
-        // manager stay in sync (a later session rebuild must not resurrect the
-        // old mode); the session-side set is idempotent.
-        void setTranslationUiMode('fast', { restartIfNeeded: false });
-        renderTranslationModePicker();
-        showToast(t('translation_mode_fallback_toast'), true);
-        if (data.needs_restart) {
-            void restartRecognition({ auto: true });
-        }
-        return;
-    }
-    if (data.type === 'segment_mode_changed') {
-        handleSegmentModeChanged(data);
-        return;
-    }
-    if (data.type === 'speaker_labels_changed') {
-        speakerLabelController.handleBackendChanged(data);
-        return;
-    }
+    runtimeFrameController.handle(data);
 }
 
 const joinTokenText = TokenStream.joinTokenText;
