@@ -341,6 +341,14 @@ const speakerLabelController = SpeakerLabelController.create({
     renderPicker: () => settingsRuntime.renderSpeakerLabelsPicker(),
     renderSubtitles,
 });
+const oscTranslationController = OscTranslationController.create({
+    fetch,
+    button: oscTranslationButton,
+    icon: oscTranslationIcon,
+    t,
+    console,
+});
+oscTranslationController.init();
 const segmentModeController = SegmentModeController.create({
     fetch,
     storage: localStorage,
@@ -432,9 +440,6 @@ let displayMode = settingsStore.loadDisplayMode();
 
 // 自动重启识别开关（默认开启；已有保存值优先）
 let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
-
-// OSC 翻译发送开关（默认关闭）
-let oscTranslationEnabled = false;
 
 // 日语假名注音开关（默认关闭）
 // 注意：使用 sessionStorage（按“标签页/客户端实例”隔离），避免同一设备多客户端互相影响。
@@ -699,17 +704,7 @@ function updateDisplayModeButton() {
 }
 
 function updateOscTranslationButton() {
-    if (!oscTranslationButton || !oscTranslationIcon) {
-        return;
-    }
-
-    if (oscTranslationEnabled) {
-        oscTranslationButton.classList.add('active');
-        oscTranslationButton.title = t('osc_on');
-    } else {
-        oscTranslationButton.classList.remove('active');
-        oscTranslationButton.title = t('osc_off');
-    }
+    return oscTranslationController.updateButton();
 }
 
 function updateBottomSafeAreaButton() {
@@ -928,36 +923,6 @@ function setSegmentMode(mode) {
     return segmentModeController.setMode(mode);
 }
 
-if (oscTranslationButton) {
-    oscTranslationButton.addEventListener('click', async () => {
-        const next = !oscTranslationEnabled;
-        try {
-            const response = await fetch('/osc-translation', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: next })
-            });
-
-            let data = null;
-            try {
-                data = await response.json();
-            } catch (parseError) {
-                console.error('Failed to parse OSC translation toggle response:', parseError);
-            }
-
-            if (response.ok && data) {
-                oscTranslationEnabled = !!data.enabled;
-                updateOscTranslationButton();
-                console.log(`OSC translation ${oscTranslationEnabled ? 'enabled' : 'disabled'}`);
-            } else {
-                console.error('Failed to toggle OSC translation:', response.status, data?.message);
-            }
-        } catch (error) {
-            console.error('Error toggling OSC translation:', error);
-        }
-    });
-}
-
 if (bottomSafeAreaButton) {
     bottomSafeAreaButton.addEventListener('click', () => {
         if (!isMobileBrowser) {
@@ -1056,26 +1021,8 @@ async function fetchApiKeyStatus() {
     }
 }
 
-async function fetchOscTranslationStatus() {
-    if (!oscTranslationButton) {
-        return;
-            if (lockManualControls) {
-                return;
-            }
-    }
-
-    try {
-        const response = await fetch('/osc-translation');
-        if (!response.ok) {
-            return;
-        }
-
-        const data = await response.json();
-        oscTranslationEnabled = !!data.enabled;
-        updateOscTranslationButton();
-    } catch (error) {
-        console.error('Error fetching OSC translation status:', error);
-    }
+function fetchOscTranslationStatus() {
+    return oscTranslationController.fetchStatus();
 }
 
 
