@@ -10,6 +10,7 @@
         const translationMode = options.translationModeController;
         const segmentMode = options.segmentModeController;
         const theme = options.themeController;
+        const speakerLabels = options.speakerLabelController;
         const actions = options.actions || {};
         const logger = options.console || root.console || { error() {} };
 
@@ -27,6 +28,13 @@
         }
         if (!theme || typeof theme.setChromaEnabled !== 'function') {
             throw new TypeError('UiConfigController.create requires theme controller');
+        }
+        if (
+            !speakerLabels
+            || typeof speakerLabels.applyBackendConfig !== 'function'
+            || typeof speakerLabels.applyVisibility !== 'function'
+        ) {
+            throw new TypeError('UiConfigController.create requires speaker label controller');
         }
 
         function state() {
@@ -166,32 +174,12 @@
             }
             call('renderBundledCjkFontPicker');
 
-            const speakerPatch = {};
-            if (typeof data.speaker_diarization_enabled === 'boolean') {
-                speakerPatch.speakerDiarizationEnabled = data.speaker_diarization_enabled;
-            }
-            if (typeof data.hide_speaker_labels === 'boolean') {
-                speakerPatch.hideSpeakerLabels = data.hide_speaker_labels;
-            }
-            updateState(speakerPatch);
-            const storedHideSpeakerLabels = call('getStoredHideSpeakerLabelsSetting');
-            const speakerState = state();
-            if (
-                !speakerState.lockManualControls
-                && speakerState.translationProvider === 'soniox'
-                && storedHideSpeakerLabels !== null
-            ) {
-                updateState({ hideSpeakerLabels: storedHideSpeakerLabels });
-                if (data.hide_speaker_labels !== storedHideSpeakerLabels) {
-                    void call('setSpeakerLabelsHidden', storedHideSpeakerLabels);
-                }
-            }
-            call('applySpeakerLabelVisibility');
+            speakerLabels.applyBackendConfig(data);
             call('renderRuntimeSettingsPickers');
             if (typeof data.enable_chroma_theme === 'boolean') {
                 theme.setChromaEnabled(data.enable_chroma_theme);
             }
-            call('applySpeakerLabelVisibility');
+            speakerLabels.applyVisibility();
             call('applyLockPauseRestartControlsUI');
             call('enforceTranslateSegmentMode');
             return data;

@@ -17,7 +17,6 @@ function createHarness(options = {}) {
         lockManualControls: false,
         segmentModeSupported: true,
         twoWaySupported: false,
-        hideSpeakerLabels: false,
         ...(options.state || {}),
     };
     const patches = [];
@@ -35,6 +34,10 @@ function createHarness(options = {}) {
     const themeController = {
         setChromaEnabled: vi.fn((...args) => events.push(['theme', ...args])),
     };
+    const speakerLabelController = {
+        applyBackendConfig: vi.fn((...args) => events.push(['speakerConfig', ...args])),
+        applyVisibility: vi.fn((...args) => events.push(['speakerVisibility', ...args])),
+    };
     const action = (name, result) => vi.fn((...args) => {
         events.push([name, ...args]);
         return typeof result === 'function' ? result(...args) : result;
@@ -48,12 +51,6 @@ function createHarness(options = {}) {
         updateSettingsButtonVisibility: action('settings'),
         applyBundledCjkFontPreference: action('disableFont'),
         renderBundledCjkFontPicker: action('renderFont'),
-        getStoredHideSpeakerLabelsSetting: action(
-            'storedSpeaker',
-            options.storedHideSpeakerLabels ?? null,
-        ),
-        setSpeakerLabelsHidden: action('setSpeaker'),
-        applySpeakerLabelVisibility: action('speakerVisibility'),
         renderRuntimeSettingsPickers: action('pickers'),
         applyLockPauseRestartControlsUI: action('lockUi'),
         enforceTranslateSegmentMode: action('enforceSegment'),
@@ -71,6 +68,7 @@ function createHarness(options = {}) {
         translationModeController,
         segmentModeController,
         themeController,
+        speakerLabelController,
         actions,
         console: logger,
     });
@@ -85,6 +83,7 @@ function createHarness(options = {}) {
         runtime,
         safeHttpUrl,
         segmentModeController,
+        speakerLabelController,
         themeController,
         translationModeController,
         updateState,
@@ -210,8 +209,6 @@ describe('UiConfigController state mapping and action order', () => {
             uiTranslationMode: 'none',
             suppressTranslationDisplay: true,
             customFontAvailable: false,
-            speakerDiarizationEnabled: false,
-            hideSpeakerLabels: true,
         });
         expect(page.translationModeController.applyBackendConfig)
             .toHaveBeenCalledWith(data, { currentBootId: 'boot-old' });
@@ -230,8 +227,7 @@ describe('UiConfigController state mapping and action order', () => {
             'segment',
             'disableFont',
             'renderFont',
-            'storedSpeaker',
-            'speakerVisibility',
+            'speakerConfig',
             'pickers',
             'theme',
             'speakerVisibility',
@@ -266,30 +262,6 @@ describe('UiConfigController state mapping and action order', () => {
         expect(page.actions.sessionCostReset).not.toHaveBeenCalled();
         expect(page.actions.applyBundledCjkFontPreference).not.toHaveBeenCalled();
         expect(page.actions.renderBundledCjkFontPicker).toHaveBeenCalledOnce();
-    });
-
-    it.each([
-        ['unlocked soniox', { lockManualControls: false, translationProvider: 'soniox' }, false, true],
-        ['locked soniox', { lockManualControls: true, translationProvider: 'soniox' }, true, false],
-        ['unlocked gemini', { lockManualControls: false, translationProvider: 'gemini' }, true, false],
-        ['no stored value', { lockManualControls: false, translationProvider: 'soniox' }, null, false],
-    ])('applies speaker preference matrix: %s', (
-        _label, state, storedValue, shouldSync,
-    ) => {
-        const page = createHarness({ state, storedHideSpeakerLabels: storedValue });
-        page.controller.apply({
-            lock_manual_controls: state.lockManualControls,
-            provider: state.translationProvider,
-            hide_speaker_labels: true,
-        });
-
-        if (storedValue === null || !shouldSync) {
-            expect(page.runtime.hideSpeakerLabels).toBe(true);
-            expect(page.actions.setSpeakerLabelsHidden).not.toHaveBeenCalled();
-        } else {
-            expect(page.runtime.hideSpeakerLabels).toBe(storedValue);
-            expect(page.actions.setSpeakerLabelsHidden).toHaveBeenCalledWith(storedValue);
-        }
     });
 
     it('does not reset session cost for the same provider or accept invalid billing factors', () => {

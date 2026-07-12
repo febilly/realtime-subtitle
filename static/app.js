@@ -101,10 +101,6 @@ const INITIAL_UI_CONFIG = (window.__INITIAL_UI_CONFIG__ && typeof window.__INITI
 // 由后端下发：锁定“手动控制”相关 UI
 let lockManualControls = !!INITIAL_UI_CONFIG.lock_manual_controls;
 
-// 由后端下发：是否启用说话人分离
-let speakerDiarizationEnabled = true;
-// 由后端下发：是否隐藏说话人标签
-let hideSpeakerLabels = false;
 // 由后端下发：当前 provider 及能力（segment_mode 等）。
 let translationProvider = 'soniox';
 let segmentModeSupported = true;
@@ -207,7 +203,7 @@ const settingsRuntime = SettingsRuntime.create({
         get selectedProvider() { return getSelectedProvider(); },
         get providerSettings() { return loadProviderSettings(); },
         get autoRestartEnabled() { return autoRestartEnabled; },
-        get hideSpeakerLabels() { return hideSpeakerLabels; },
+        get hideSpeakerLabels() { return speakerLabelController.isHidden(); },
         get customFontAvailable() { return customFontAvailable; },
         get useBundledCjkFont() { return useBundledCjkFont; },
         get llmRefineAvailable() { return translationModeController.isAvailable(); },
@@ -336,6 +332,15 @@ function showToast(message, isError = false, options = {}) {
     }, Number(options.timeoutMs) || 4000);
 }
 
+const speakerLabelController = SpeakerLabelController.create({
+    fetch,
+    container: subtitleContainer,
+    console,
+    getRuntimeState: () => ({ lockManualControls, translationProvider }),
+    getStoredPreference: () => settingsRuntime.getStoredHideSpeakerLabelsSetting(),
+    renderPicker: () => settingsRuntime.renderSpeakerLabelsPicker(),
+    renderSubtitles,
+});
 const segmentModeController = SegmentModeController.create({
     fetch,
     storage: localStorage,
@@ -463,8 +468,8 @@ const subtitleRenderer = SubtitleRenderer.create({
         translationUiMode: translationModeController.getTranslationUiMode(),
         currentTranslationTargetLang,
         furiganaEnabled,
-        speakerDiarizationEnabled,
-        hideSpeakerLabels,
+        speakerDiarizationEnabled: speakerLabelController.isDiarizationEnabled(),
+        hideSpeakerLabels: speakerLabelController.isHidden(),
     }),
 });
 
@@ -642,10 +647,7 @@ function applyStaticUiText() {
 }
 
 function applySpeakerLabelVisibility() {
-    if (!subtitleContainer) {
-        return;
-    }
-    subtitleContainer.classList.toggle('hide-speaker-labels', !!hideSpeakerLabels);
+    return speakerLabelController.applyVisibility();
 }
 
 function isLlmTranslateMode() {
@@ -789,8 +791,6 @@ function updateUiConfigState(patch) {
             case 'uiTranslationMode': uiTranslationMode = value; break;
             case 'suppressTranslationDisplay': suppressTranslationDisplay = value; break;
             case 'customFontAvailable': customFontAvailable = value; break;
-            case 'speakerDiarizationEnabled': speakerDiarizationEnabled = value; break;
-            case 'hideSpeakerLabels': hideSpeakerLabels = value; break;
             default: break;
         }
     }
@@ -803,6 +803,7 @@ const uiConfigController = UiConfigController.create({
     translationModeController,
     segmentModeController,
     themeController,
+    speakerLabelController,
     console,
     getState: () => ({
         backendBootId,
@@ -821,9 +822,6 @@ const uiConfigController = UiConfigController.create({
         updateSettingsButtonVisibility,
         applyBundledCjkFontPreference,
         renderBundledCjkFontPicker,
-        getStoredHideSpeakerLabelsSetting,
-        setSpeakerLabelsHidden,
-        applySpeakerLabelVisibility,
         renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI,
         enforceTranslateSegmentMode,
@@ -898,14 +896,6 @@ function renderAutoRestartPicker() {
     return settingsRuntime.renderAutoRestartPicker();
 }
 
-function getStoredHideSpeakerLabelsSetting() {
-    return settingsRuntime.getStoredHideSpeakerLabelsSetting();
-}
-
-function renderSpeakerLabelsPicker() {
-    return settingsRuntime.renderSpeakerLabelsPicker();
-}
-
 function renderBundledCjkFontPicker() {
     return settingsRuntime.renderBundledCjkFontPicker();
 }
@@ -930,34 +920,8 @@ function renderRuntimeSettingsPickers() {
     return settingsRuntime.renderRuntimeSettingsPickers();
 }
 
-async function setSpeakerLabelsHidden(hidden) {
-    if (lockManualControls) {
-        return false;
-    }
-    try {
-        const response = await fetch('/speaker-labels', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ hide_speaker_labels: !!hidden })
-        });
-        if (!response.ok) {
-            console.error('Failed to set speaker labels');
-            return false;
-        }
-        const data = await response.json().catch(() => ({}));
-        if (typeof data.hide_speaker_labels === 'boolean') {
-            hideSpeakerLabels = data.hide_speaker_labels;
-        } else {
-            hideSpeakerLabels = !!hidden;
-        }
-        applySpeakerLabelVisibility();
-        renderSpeakerLabelsPicker();
-        renderSubtitles();
-        return true;
-    } catch (error) {
-        console.error('Error setting speaker labels:', error);
-        return false;
-    }
+function setSpeakerLabelsHidden(hidden) {
+    return speakerLabelController.setHidden(hidden);
 }
 
 function setSegmentMode(mode) {
@@ -1229,14 +1193,7 @@ function handleMessageFrame(data) {
         return;
     }
     if (data.type === 'speaker_labels_changed') {
-        if (typeof data.hide_speaker_labels === 'boolean') {
-            hideSpeakerLabels = data.hide_speaker_labels;
-        } else if (typeof data.enabled === 'boolean') {
-            hideSpeakerLabels = !data.enabled;
-        }
-        applySpeakerLabelVisibility();
-        renderSpeakerLabelsPicker();
-        renderSubtitles();
+        speakerLabelController.handleBackendChanged(data);
         return;
     }
     if (data.type === 'session_connected') {
