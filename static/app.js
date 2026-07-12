@@ -820,6 +820,12 @@ let lastMergedIndex = 0;
 let renderedSentences = new Map();
 // 缓存已渲染的 speaker/块 HTML（用于按块增量渲染，键为 blockId）
 let renderedBlocks = new Map();
+const subtitleHtmlRenderer = RenderHtml.createRenderHtml({ document, escapeHtml, t });
+const subtitleDomPatcher = subtitleHtmlRenderer.createDomPatcher({
+    container: subtitleContainer,
+    renderedSentences,
+    renderedBlocks,
+});
 
 const SCROLL_STICKY_THRESHOLD = 50;
 let autoStickToBottom = true;
@@ -3593,21 +3599,7 @@ function mergeFinalTokens() {
     lastMergedIndex = TokenStream.mergeFinalTokens(allFinalTokens, lastMergedIndex);
 }
 
-const RTL_LANGUAGES = new Set(['ar', 'he', 'fa', 'ur', 'yi', 'ps', 'sd', 'ckb', 'dv']);
-
-function isRtlLanguage(langCode) {
-    if (!langCode) return false;
-    return RTL_LANGUAGES.has(langCode.toLowerCase());
-}
-
-function getLangDir(langCode) {
-    return isRtlLanguage(langCode) ? 'rtl' : 'ltr';
-}
-
-function getLanguageTag(language) {
-    if (!language) return '';
-    return `<span class="language-tag">${language.toUpperCase()}</span>`;
-}
+const { getLangDir, getLanguageTag, wrapSubtitleLineBody } = subtitleHtmlRenderer;
 
 // Pure sentence-boundary logic lives in segmentation.js and mirrors the
 // backend. These aliases keep the orchestration code readable.
@@ -3615,11 +3607,6 @@ const {
     endsWithSentenceEnding,
     splitIntoSentenceSegments,
 } = Segmentation;
-
-function wrapSubtitleLineBody(innerHtml, dir, lang) {
-    const langAttr = lang ? ` lang="${lang}"` : '';
-    return `<span class="subtitle-line-body"${langAttr} dir="${dir || 'auto'}">${innerHtml}</span>`;
-}
 
 function assignSequenceIndex(token) {
     tokenSequenceCounter = TokenStream.assignSequenceIndex(token, tokenSequenceCounter);
@@ -3684,20 +3671,6 @@ function restoreScrollState(state) {
     if (typeof state.scrollTop === 'number') {
         subtitleContainer.scrollTop = state.scrollTop;
     }
-}
-
-function getSpeakerClass(speaker) {
-    if (speaker === null || speaker === undefined || speaker === 'undefined') {
-        return 'speaker-undefined';
-    }
-
-    const parsed = Number.parseInt(String(speaker), 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-        const normalized = ((parsed - 1) % 15) + 1;
-        return `speaker-${normalized}`;
-    }
-
-    return `speaker-${speaker}`;
 }
 
 function getKuromojiTokenizer() {
@@ -3887,175 +3860,10 @@ function clearSubtitleState() {
     hybridInterimAfterSequence = translationUiMode === 'hybrid' ? tokenSequenceCounter : null;
 }
 
-function renderTokenSpan(token, useRubyHtml = null) {
-    const classes = ['subtitle-text'];
-    if (!token.is_final) {
-        classes.push('non-final');
-    }
-    
-    // 如果提供了 ruby HTML（假名注音），使用它
-    if (useRubyHtml) {
-        return `<span class="${classes.join(' ')}">${useRubyHtml}</span>`;
-    }
-    
-    return `<span class="${classes.join(' ')}">${escapeHtml(token.text)}</span>`;
-}
-
-function renderTokenSpanWithText(token, text, useRubyHtml = null) {
-    const classes = ['subtitle-text'];
-    if (token && token.is_final === false) {
-        classes.push('non-final');
-    }
-
-    if (useRubyHtml) {
-        return `<span class="${classes.join(' ')}">${useRubyHtml}</span>`;
-    }
-
-    return `<span class="${classes.join(' ')}">${escapeHtml(text)}</span>`;
-}
-
-const EAST_ASIAN_TIGHT_SPACING_CHAR_RE = /[\u3000-\u303F\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF01-\uFF60\uFF66-\uFF9D\uFFE0-\uFFEE]/u;
-
-function getFirstNonWhitespaceChar(text) {
-    for (const char of String(text || '')) {
-        if (!/\s/u.test(char)) {
-            return char;
-        }
-    }
-    return '';
-}
-
-function getLastNonWhitespaceChar(text) {
-    const chars = Array.from(String(text || ''));
-    for (let i = chars.length - 1; i >= 0; i--) {
-        if (!/\s/u.test(chars[i])) {
-            return chars[i];
-        }
-    }
-    return '';
-}
-
-function isEastAsianTightSpacingChar(char) {
-    return !!char && EAST_ASIAN_TIGHT_SPACING_CHAR_RE.test(char);
-}
-
-function normalizeTranslationTokenTexts(tokens) {
-    const texts = (Array.isArray(tokens) ? tokens : []).map((tok) => ((tok && tok.text) ? String(tok.text) : ''));
-    if (texts.length === 0) {
-        return texts;
-    }
-
-    const nextVisibleChars = new Array(texts.length).fill('');
-    let nextVisibleChar = '';
-    for (let i = texts.length - 1; i >= 0; i--) {
-        nextVisibleChars[i] = nextVisibleChar;
-        const firstChar = getFirstNonWhitespaceChar(texts[i]);
-        if (firstChar) {
-            nextVisibleChar = firstChar;
-        }
-    }
-
-    let prevVisibleChar = '';
-    for (let i = 0; i < texts.length; i++) {
-        let text = texts[i];
-        const firstChar = getFirstNonWhitespaceChar(text);
-        const nextChar = firstChar || nextVisibleChars[i];
-
-        if (
-            prevVisibleChar &&
-            nextChar &&
-            isEastAsianTightSpacingChar(prevVisibleChar) &&
-            isEastAsianTightSpacingChar(nextChar)
-        ) {
-            if (firstChar) {
-                text = text.replace(/^\s+/u, '');
-            } else if (/^\s+$/u.test(text)) {
-                text = '';
-            }
-            texts[i] = text;
-        }
-
-        const lastChar = getLastNonWhitespaceChar(texts[i]);
-        if (lastChar) {
-            prevVisibleChar = lastChar;
-        }
-    }
-
-    return texts;
-}
-
-function renderTokenSpansTrimmed(tokens, useRubyHtml = null, options = {}) {
-    // Render token spans but remove leading/trailing whitespace from the concatenated output.
-    // IMPORTANT: does NOT mutate token objects; trimming is display-only.
-    if (!Array.isArray(tokens) || tokens.length === 0) {
-        return '';
-    }
-
-    const normalizeTranslationSpacing = !!options.normalizeTranslationSpacing;
-    const texts = normalizeTranslationSpacing
-        ? normalizeTranslationTokenTexts(tokens)
-        : tokens.map((tok) => ((tok && tok.text) ? String(tok.text) : ''));
-    const getText = (index) => (texts[index] !== undefined ? texts[index] : '');
-
-    let start = 0;
-    let startText = '';
-    while (start < tokens.length) {
-        const raw = getText(start);
-        const trimmed = raw.replace(/^\s+/, '');
-        if (trimmed.length === 0 && /^\s*$/.test(raw)) {
-            start++;
-            continue;
-        }
-        startText = trimmed;
-        break;
-    }
-
-    let end = tokens.length - 1;
-    let endText = '';
-    while (end >= start) {
-        const raw = getText(end);
-        const trimmed = raw.replace(/\s+$/, '');
-        if (trimmed.length === 0 && /^\s*$/.test(raw)) {
-            end--;
-            continue;
-        }
-        endText = trimmed;
-        break;
-    }
-
-    if (start > end) {
-        return '';
-    }
-
-    // If a single token remains after trimming whitespace-only edges, trim both ends.
-    if (start === end) {
-        const raw = getText(start);
-        const both = raw.trim();
-        if (!both) {
-            return '';
-        }
-        return renderTokenSpanWithText(tokens[start], both, useRubyHtml);
-    }
-
-    const parts = [];
-    for (let i = start; i <= end; i++) {
-        const tok = tokens[i];
-        let txt = getText(i);
-        if (i === start) {
-            txt = startText;
-        }
-        if (i === end) {
-            txt = endText;
-        }
-        if (!txt) {
-            continue;
-        }
-        parts.push(renderTokenSpanWithText(tok, txt, useRubyHtml));
-    }
-
-    return parts.join('');
-}
-
+const {
+    renderTokenSpan,
+    renderTokenSpansTrimmed,
+} = subtitleHtmlRenderer;
 function getSentenceId(sentence, fallbackIndex) {
     return sentence.renderKey || RenderModel.getSentenceRenderKey(sentence, fallbackIndex);
 }
@@ -4105,9 +3913,6 @@ function renderSubtitles() {
     let html = '';
     let previousSpeaker = null;
     let fallbackCounter = 0;
-    const activeSentenceIds = new Set();
-    const pendingSentenceUpdates = [];
-    const sentencesToRemove = [];
     let blockingUpdate = false;
 
     for (const block of speakerBlocks) {
@@ -4115,18 +3920,11 @@ function renderSubtitles() {
             break;
         }
 
-        let blockHtml = '';
         const firstSentenceDir = block.sentences.length > 0 ? getLangDir(block.sentences[0].originalLang) : 'ltr';
-
-        if (speakerDiarizationEnabled && !hideSpeakerLabels && block.speaker !== previousSpeaker) {
-            blockHtml += `<div class="speaker-label ${getSpeakerClass(block.speaker)}">${escapeHtml(t('speaker_label', { speaker: block.speaker }))}</div>`;
-        }
-
         const sentencesHtml = [];
 
         for (const sentence of block.sentences) {
             const sentenceId = getSentenceId(sentence, fallbackCounter++);
-            activeSentenceIds.add(sentenceId);
 
             const sentenceParts = [];
             const sentenceDir = getLangDir(sentence.originalLang);
@@ -4291,26 +4089,26 @@ function renderSubtitles() {
             }
 
             if (sentenceParts.length === 0) {
-                sentencesToRemove.push(sentenceId);
                 continue;
             }
 
-            const sentenceHtml = `<div class="sentence-block" data-sentence-id="${sentenceId}">${sentenceParts.join('')}</div>`;
+            const sentenceHtml = subtitleHtmlRenderer.renderSentenceHtml(sentenceId, sentenceParts);
             sentencesHtml.push(sentenceHtml);
-            pendingSentenceUpdates.push({ id: sentenceId, html: sentenceHtml });
         }
 
         if (blockingUpdate) {
             break;
         }
 
-        if (sentencesHtml.length > 0) {
-            blockHtml += sentencesHtml.join('');
-        }
-
-        if (blockHtml.trim().length > 0) {
-            const blockClass = (block.speaker === previousSpeaker) ? 'subtitle-block same-speaker' : 'subtitle-block';
-            html += `<div class="${blockClass}" dir="${firstSentenceDir}">${blockHtml}</div>`;
+        const blockHtml = subtitleHtmlRenderer.renderSpeakerBlockHtml({
+            speaker: block.speaker,
+            sentenceHtml: sentencesHtml,
+            previousSpeaker,
+            direction: firstSentenceDir,
+            showSpeakerLabel: speakerDiarizationEnabled && !hideSpeakerLabels,
+        });
+        if (blockHtml) {
+            html += blockHtml;
             previousSpeaker = block.speaker;
         }
     }
@@ -4319,18 +4117,6 @@ function renderSubtitles() {
         return;
     }
 
-    const previousRenderedSentences = new Map(renderedSentences);
-    const previousRenderedBlocks = new Map(renderedBlocks);
-
-    pendingSentenceUpdates.forEach(({ id, html }) => renderedSentences.set(id, html));
-    sentencesToRemove.forEach(id => renderedSentences.delete(id));
-
-    renderedSentences.forEach((_, key) => {
-        if (!activeSentenceIds.has(key)) {
-            renderedSentences.delete(key);
-        }
-    });
-
     if (!html) {
         subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
         restoreScrollState(scrollState);
@@ -4338,242 +4124,7 @@ function renderSubtitles() {
         return;
     }
 
-    // 增量渲染：解析新生成的 html 到临时容器，然后只更新发生变化的 .sentence-block
-    const frag = document.createElement('div');
-    frag.innerHTML = html;
-
-    // 如果页面中存在占位 empty-state（"Subtitles will appear here..."），当有真实字幕时应移除
-    const emptyNodes = subtitleContainer.querySelectorAll('.empty-state');
-    emptyNodes.forEach(node => node.remove());
-
-    // 更通用的清理：移除 subtitleContainer 中所有非字幕占位元素（例如重启提示、Server Closed 等）
-    // 保留已有的 `.subtitle-block` 或包含 `.sentence-block` 的节点，删除其它直接子节点
-    Array.from(subtitleContainer.children).forEach(child => {
-        if (child.classList && child.classList.contains('subtitle-block')) {
-            return; // 保留 subtitle-block
-        }
-        if (child.querySelector && child.querySelector('.sentence-block')) {
-            return; // 保留包含句子块的容器
-        }
-        // 否则认为是占位/状态节点，移除
-        child.remove();
-    });
-
-    try {
-        // 以 subtitle-block 为结构单位，但尽量只更新/追加 sentence-block，避免替换历史 DOM（否则会打断文本选中）
-        const newBlocks = Array.from(frag.querySelectorAll('.subtitle-block'));
-        const existingBlocks = Array.from(subtitleContainer.querySelectorAll('.subtitle-block'));
-
-        // 索引现有块，键为 data-block-id（若不存在则使用首个 sentence 的 id 作为块 id）
-        const existingIndex = new Map();
-        existingBlocks.forEach((node, idx) => {
-            let id = node.dataset.blockId;
-            if (!id) {
-                const firstSent = node.querySelector('.sentence-block');
-                if (firstSent && firstSent.dataset.sentenceId) {
-                    id = `block-${firstSent.dataset.sentenceId}`;
-                } else {
-                    id = `block-fallback-${idx}`;
-                }
-                node.dataset.blockId = id;
-            }
-            existingIndex.set(id, node);
-            if (!renderedBlocks.has(id)) {
-                renderedBlocks.set(id, node.innerHTML);
-            }
-        });
-
-        const keepIds = new Set();
-
-        const syncSpeakerLabel = (existingBlock, newBlock) => {
-            const getDirectSpeakerLabel = (block) => {
-                const first = block ? block.firstElementChild : null;
-                if (first && first.classList && first.classList.contains('speaker-label')) {
-                    return first;
-                }
-                return null;
-            };
-
-            const newLabel = getDirectSpeakerLabel(newBlock);
-            const existingLabel = getDirectSpeakerLabel(existingBlock);
-
-            if (!newLabel && existingLabel) {
-                existingLabel.remove();
-                return;
-            }
-
-            if (newLabel && !existingLabel) {
-                existingBlock.insertBefore(newLabel.cloneNode(true), existingBlock.firstChild);
-                return;
-            }
-
-            if (newLabel && existingLabel) {
-                if (existingLabel.className !== newLabel.className) {
-                    existingLabel.className = newLabel.className;
-                }
-                if (existingLabel.textContent !== newLabel.textContent) {
-                    existingLabel.textContent = newLabel.textContent;
-                }
-            }
-        };
-
-        const updateSentenceBlocksInPlace = (existingBlock, newBlock) => {
-            const newSentences = Array.from(newBlock.querySelectorAll('.sentence-block'));
-            const newSentenceIds = new Set();
-
-            const existingSentenceNodes = Array.from(existingBlock.querySelectorAll('.sentence-block'));
-            const existingById = new Map();
-            existingSentenceNodes.forEach(node => {
-                if (node && node.dataset && node.dataset.sentenceId) {
-                    existingById.set(node.dataset.sentenceId, node);
-                }
-            });
-
-            for (let i = 0; i < newSentences.length; i++) {
-                const newSentence = newSentences[i];
-                const sentenceId = newSentence.dataset.sentenceId;
-                if (!sentenceId) {
-                    continue;
-                }
-                newSentenceIds.add(sentenceId);
-
-                const existingSentence = existingById.get(sentenceId);
-                const oldHtml = previousRenderedSentences.get(sentenceId);
-                const newHtml = renderedSentences.get(sentenceId) || newSentence.outerHTML;
-                const hasChanged = oldHtml !== newHtml;
-
-                if (existingSentence) {
-                    if (hasChanged) {
-                        if (existingSentence.className !== newSentence.className) {
-                            existingSentence.className = newSentence.className;
-                        }
-                        // 只更新句子内部内容，保留 sentence-block 节点本身，避免影响已渲染历史的 DOM 引用/选择范围
-                        if (existingSentence.innerHTML !== newSentence.innerHTML) {
-                            existingSentence.innerHTML = newSentence.innerHTML;
-                        }
-                    }
-                    continue;
-                }
-
-                // 新句子：尽量插入到正确的位置；若找不到插入点则追加到末尾
-                const clone = newSentence.cloneNode(true);
-                let inserted = false;
-                for (let j = i + 1; j < newSentences.length; j++) {
-                    const nextId = newSentences[j].dataset.sentenceId;
-                    if (!nextId) {
-                        continue;
-                    }
-                    const nextExisting = existingById.get(nextId);
-                    if (nextExisting && nextExisting.parentNode) {
-                        nextExisting.parentNode.insertBefore(clone, nextExisting);
-                        inserted = true;
-                        break;
-                    }
-                }
-
-                if (!inserted) {
-                    existingBlock.appendChild(clone);
-                }
-
-                existingById.set(sentenceId, clone);
-            }
-
-            // 删除不再存在的句子块（通常发生在切换显示模式/隐藏翻译等手动操作）
-            existingById.forEach((node, id) => {
-                if (!newSentenceIds.has(id)) {
-                    node.remove();
-                }
-            });
-        };
-
-        // 遍历新的 subtitle-block，进行就地更新/插入
-        for (let i = 0; i < newBlocks.length; i++) {
-            const newBlock = newBlocks[i];
-            let id = newBlock.dataset.blockId;
-            if (!id) {
-                const firstSent = newBlock.querySelector('.sentence-block');
-                if (firstSent && firstSent.dataset.sentenceId) {
-                    id = `block-${firstSent.dataset.sentenceId}`;
-                } else {
-                    id = `block-fallback-${i}`;
-                }
-                newBlock.dataset.blockId = id;
-            }
-
-            const existingNode = existingIndex.get(id);
-            const newInnerHtml = newBlock.innerHTML;
-
-            if (existingNode) {
-                // 结构块存在：尽量不替换节点，只更新 class/speaker label/发生变化的句子
-                if (existingNode.className !== newBlock.className) {
-                    existingNode.className = newBlock.className;
-                }
-
-                const oldBlockHtml = previousRenderedBlocks.get(id);
-                const hasBlockChanged = oldBlockHtml !== newInnerHtml;
-                if (hasBlockChanged) {
-                    syncSpeakerLabel(existingNode, newBlock);
-                    updateSentenceBlocksInPlace(existingNode, newBlock);
-                }
-
-                renderedBlocks.set(id, newInnerHtml);
-                keepIds.add(id);
-                continue;
-            }
-
-            // 新的 subtitle-block：插入完整节点（不会触碰历史块）
-            const wrapper = newBlock.cloneNode(true);
-            wrapper.dataset.blockId = id;
-
-            let inserted = false;
-            for (let j = i + 1; j < newBlocks.length; j++) {
-                const nextFirst = newBlocks[j].querySelector('.sentence-block');
-                const nextId = nextFirst && nextFirst.dataset.sentenceId ? `block-${nextFirst.dataset.sentenceId}` : newBlocks[j].dataset.blockId;
-                if (!nextId) {
-                    continue;
-                }
-                const nextExisting = subtitleContainer.querySelector(`.subtitle-block[data-block-id="${nextId}"]`);
-                if (nextExisting) {
-                    subtitleContainer.insertBefore(wrapper, nextExisting);
-                    inserted = true;
-                    break;
-                }
-            }
-            if (!inserted) {
-                subtitleContainer.appendChild(wrapper);
-            }
-
-            renderedBlocks.set(id, wrapper.innerHTML);
-            keepIds.add(id);
-        }
-
-        // 移除旧的、不再需要的块
-        existingBlocks.forEach(node => {
-            const id = node.dataset.blockId || (node.querySelector('.sentence-block') ? `block-${node.querySelector('.sentence-block').dataset.sentenceId}` : null);
-            if (id && !keepIds.has(id)) {
-                node.remove();
-                renderedBlocks.delete(id);
-            }
-        });
-
-    } catch (e) {
-        // 在任何异常情况下回退到全量替换，保证正确性
-        console.warn('Incremental render (block-level) failed, falling back to full render:', e);
-        subtitleContainer.innerHTML = html;
-        // 同步缓存为当前 DOM
-        renderedBlocks.clear();
-        const allBlocks = subtitleContainer.querySelectorAll('.subtitle-block');
-        allBlocks.forEach((node, idx) => {
-            let id = node.dataset.blockId;
-            if (!id) {
-                const first = node.querySelector('.sentence-block');
-                id = first && first.dataset.sentenceId ? `block-${first.dataset.sentenceId}` : `block-fallback-${idx}`;
-                node.dataset.blockId = id;
-            }
-            renderedBlocks.set(id, node.innerHTML);
-        });
-    }
-
+    subtitleDomPatcher.patch(html);
     // 恢复滚动状态并处理自动贴底
     restoreScrollState(scrollState);
     autoStickToBottom = scrollState ? scrollState.wasAtBottom : isCloseToBottom();
