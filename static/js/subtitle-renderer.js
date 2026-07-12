@@ -206,35 +206,40 @@
             if (override || !sourceText) return '';
 
             const parts = [];
-            let pending = false;
             let language = '';
             const whole = session.getSpecTranslation(sourceText);
             if (whole) {
-                parts.push(whole.text);
+                parts.push({ text: whole.text, pending: false });
                 language = whole.lang;
-            } else if (session.isSpecPending(sourceText)) {
-                pending = true;
-                language = session.getSpecPendingLanguage(sourceText) || '';
             } else {
+                const wholePending = session.isSpecPending(sourceText);
+                if (wholePending) {
+                    language = session.getSpecPendingLanguage(sourceText) || '';
+                }
                 for (const segment of splitIntoSentenceSegments(sourceText)) {
                     if (!endsWithSentenceEnding(segment)) continue;
                     const hit = session.getSpecTranslation(segment);
                     if (hit) {
-                        parts.push(hit.text);
+                        parts.push({ text: hit.text, pending: false });
                         if (!language) language = hit.lang;
-                    } else if (session.isSpecPending(segment)) {
-                        pending = true;
+                    } else if (wholePending || session.isSpecPending(segment)) {
+                        parts.push({ text: '', pending: true });
                         if (!language) language = session.getSpecPendingLanguage(segment) || '';
                     }
                 }
+                if (wholePending && !parts.length) {
+                    parts.push({ text: '', pending: true });
+                }
             }
-            if (!parts.length && !pending) return '';
+            if (!parts.length) return '';
             language = language || view.currentTranslationTargetLang || '';
             const direction = getLangDir(language);
             const languageTag = getLanguageTag(language);
-            const body = parts.length
-                ? `<span class="subtitle-text non-final" lang="${language}">${escapeHtml(parts.join(''))}</span>`
-                : `<span class="subtitle-text placeholder" lang="${language}">&nbsp;</span>`;
+            const body = parts.map((part) => (
+                part.pending
+                    ? `<span class="subtitle-text placeholder" lang="${language}">&nbsp;</span>`
+                    : `<span class="subtitle-text non-final" lang="${language}">${escapeHtml(part.text)}</span>`
+            )).join('');
             return `<div class="subtitle-line" lang="${language}" dir="${direction}">${languageTag}${wrapSubtitleLineBody(body, direction, language)}</div>`;
         }
 

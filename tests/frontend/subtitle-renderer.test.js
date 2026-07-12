@@ -269,6 +269,32 @@ describe('SubtitleRenderer dependency boundary', () => {
         expect(translated.querySelector('.language-tag').textContent).toBe('AR');
     });
 
+    it('keeps cached per-sentence translations visible while a combined source is pending', () => {
+        const source = 'First sentence. Second sentence.';
+        const page = createHarness({
+            tokens: [original(source)],
+            view: {
+                translateMode: true,
+                translationUiMode: 'accurate',
+                currentTranslationTargetLang: 'zh',
+            },
+        });
+        page.state.speculative.set('First sentence.', { text: '第一句。', lang: 'zh' });
+        page.state.speculative.set('Second sentence.', { text: '第二句。', lang: 'zh' });
+        page.state.pending.set(source, 'zh');
+
+        page.renderer.render();
+        let translated = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(translated.textContent).toContain('第一句。第二句。');
+        expect(translated.querySelector('.placeholder')).toBeNull();
+
+        page.state.speculative.delete('Second sentence.');
+        page.renderer.render();
+        translated = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(translated.textContent).toContain('第一句。');
+        expect(translated.querySelector('.placeholder')).not.toBeNull();
+    });
+
     it('blocks a first furigana cache miss without patching the current DOM', () => {
         const page = createHarness({
             containerHtml: '<p id="sentinel">keep this DOM</p>',
