@@ -386,12 +386,6 @@ let currentTranslationTargetLang = 'en';
 // coordinator. The backend remains authoritative for the provider-specific list.
 const languageCatalog = LanguageCatalog.create();
 
-function setLanguageListFromCodes(codes) {
-    if (languageCatalog.setCodes(codes)) {
-        languageUi.invalidate();
-    }
-}
-
 const languageUi = LanguageUI.create({
     document,
     window,
@@ -764,7 +758,7 @@ const uiConfigController = UiConfigController.create({
     updateState: updateUiConfigState,
     actions: {
         sessionCostReset: hostedPorts.sessionCostReset,
-        setLanguageListFromCodes,
+        setLanguageListFromCodes: languageUi.setLanguageCodes,
         resetFirstRedeemBonus: (value) => hostedBalance.resetFirstRedeemBonus(value),
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         updateAccountSection: hostedPorts.updateAccountSection,

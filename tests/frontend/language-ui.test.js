@@ -41,7 +41,6 @@ function setup(overrides = {}) {
         restartRecognition,
         setUiTranslationMode,
         renderSubtitles,
-        setLanguages: (value) => { catalog.setCodes(value); },
     };
 }
 
@@ -139,19 +138,19 @@ describe('LanguageUI', () => {
     });
 
     it('invalidates cached DOM and rebuilds it from the latest provider list', () => {
-        const { dom, controller, setLanguages } = setup();
+        const { dom, controller } = setup();
         controller.init();
         controller.show();
         dom.window.document.querySelector('.lang-picker-button').click();
         expect(dom.window.document.body.textContent).toContain('Japanese');
 
-        setLanguages(['fr']);
-        controller.invalidate();
+        expect(controller.setLanguageCodes(['fr'])).toBe(true);
         expect(dom.window.document.querySelector('.lang-popover')).toBeNull();
         controller.show();
         dom.window.document.querySelector('.lang-picker-button').click();
         expect(dom.window.document.body.textContent).toContain('French');
         expect(dom.window.document.body.textContent).not.toContain('Japanese');
+        expect(controller.setLanguageCodes([])).toBe(false);
         dom.window.close();
     });
 

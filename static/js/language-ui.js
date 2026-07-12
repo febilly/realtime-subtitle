@@ -19,7 +19,8 @@
             || typeof catalog.getLanguages !== 'function'
             || typeof catalog.displayName !== 'function'
             || typeof catalog.first !== 'function'
-            || typeof catalog.coerce !== 'function') {
+            || typeof catalog.coerce !== 'function'
+            || typeof catalog.setCodes !== 'function') {
             throw new TypeError('LanguageUI.create requires a language catalog');
         }
         const getState = typeof options.getState === 'function' ? options.getState : () => ({});
@@ -506,6 +507,12 @@
             draft = null;
         }
 
+        function setLanguageCodes(codes) {
+            if (!catalog.setCodes(codes)) return false;
+            invalidate();
+            return true;
+        }
+
         function destroy() {
             invalidate();
             if (button && buttonHandler) button.removeEventListener('click', buttonHandler);
@@ -522,6 +529,7 @@
             init,
             destroy,
             invalidate,
+            setLanguageCodes,
             show,
             hide,
             isOpen: () => popoverOpen,
