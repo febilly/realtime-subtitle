@@ -757,137 +757,81 @@ function applyLockPauseRestartControlsUI() {
     updateAutoRestartButton();
 }
 
-async function fetchUiConfig() {
-    try {
-        const response = await fetch('/ui-config');
-        if (!response.ok) {
-            return;
+function updateUiConfigState(patch) {
+    for (const [key, value] of Object.entries(patch || {})) {
+        switch (key) {
+            case 'lockManualControls': lockManualControls = value; break;
+            case 'sonioxNoTranslationFactor': sonioxNoTranslationFactor = value; break;
+            case 'defaultTranslationTargetLang': defaultTranslationTargetLang = value; break;
+            case 'currentTranslationTargetLang': currentTranslationTargetLang = value; break;
+            case 'translationProvider': translationProvider = value; break;
+            case 'segmentModeSupported': segmentModeSupported = value; break;
+            case 'twoWaySupported': twoWaySupported = value; break;
+            case 'backendBootId': backendBootId = value; break;
+            case 'setupRequired': setupRequired = value; break;
+            case 'envKeyPresent': envKeyPresent = value; break;
+            case 'backendKeySource': backendKeySource = value; break;
+            case 'backendSonioxRegion': backendSonioxRegion = value; break;
+            case 'backendSonioxCustomUrl': backendSonioxCustomUrl = value; break;
+            case 'relayAvailable': relayAvailable = value; break;
+            case 'relayServerUrl': relayServerUrl = value; break;
+            case 'creditsPurchaseUrl': creditsPurchaseUrl = value; break;
+            case 'clientVersion': clientVersion = value; break;
+            case 'clientLatestVersion': clientLatestVersion = value; break;
+            case 'clientMinimumVersion': clientMinimumVersion = value; break;
+            case 'clientUpdateUrl': clientUpdateUrl = value; break;
+            case 'clientUpdateNotes': clientUpdateNotes = value; break;
+            case 'backendMode': backendMode = value; break;
+            case 'backendLoggedIn': backendLoggedIn = value; break;
+            case 'backendTranslationMode': backendTranslationMode = value; break;
+            case 'backendTargetLang1': backendTargetLang1 = value; break;
+            case 'backendTargetLang2': backendTargetLang2 = value; break;
+            case 'uiTranslationMode': uiTranslationMode = value; break;
+            case 'suppressTranslationDisplay': suppressTranslationDisplay = value; break;
+            case 'customFontAvailable': customFontAvailable = value; break;
+            case 'speakerDiarizationEnabled': speakerDiarizationEnabled = value; break;
+            case 'hideSpeakerLabels': hideSpeakerLabels = value; break;
+            default: break;
         }
-        const data = await response.json();
-        lockManualControls = !!data.lock_manual_controls;
-        translationModeController.applyBackendConfig(data, { currentBootId: backendBootId });
-        if (data && Number.isFinite(Number(data.soniox_no_translation_factor)) && Number(data.soniox_no_translation_factor) > 0) {
-            sonioxNoTranslationFactor = Math.min(1, Number(data.soniox_no_translation_factor));
-        }
-        if (data && typeof data.translation_target_lang === 'string' && data.translation_target_lang.trim()) {
-            defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
-            currentTranslationTargetLang = defaultTranslationTargetLang;
-        }
-        if (data && typeof data.provider === 'string' && data.provider.trim()) {
-            const oldProvider = translationProvider;
-            translationProvider = data.provider.trim().toLowerCase();
-            if (translationProvider !== oldProvider) {
-                sessionCostReset();
-            }
-        }
-        // Backend-driven language dropdown (provider-specific subset).
-        if (data && Array.isArray(data.languages)) {
-            setLanguageListFromCodes(data.languages);
-        }
-        // Provider capability flags gate provider-specific controls.
-        if (data && data.capabilities && typeof data.capabilities === 'object') {
-            segmentModeSupported = data.capabilities.segment_mode !== false;
-            twoWaySupported = data.capabilities.two_way_translation === true;
-        }
-
-        // Runtime provider/key state (hot-switch).
-        if (typeof data.boot_id === 'string') {
-            backendBootId = data.boot_id;
-        }
-        setupRequired = !!data.setup_required;
-        if (data.env_key_present && typeof data.env_key_present === 'object') {
-            envKeyPresent = {
-                soniox: !!data.env_key_present.soniox,
-                gemini: !!data.env_key_present.gemini,
-            };
-        }
-        if (typeof data.key_source === 'string') {
-            backendKeySource = data.key_source;
-        }
-        if (typeof data.soniox_region === 'string' && data.soniox_region.trim()) {
-            backendSonioxRegion = normalizeSonioxRegion(data.soniox_region);
-        }
-        if (typeof data.soniox_custom_url === 'boolean') {
-            backendSonioxCustomUrl = data.soniox_custom_url;
-        }
-        // Subtitle-server relay (hosted mode) state.
-        if (typeof data.relay_available === 'boolean') {
-            relayAvailable = data.relay_available;
-        }
-        if (typeof data.server_url === 'string') {
-            relayServerUrl = data.server_url;
-        }
-        creditsPurchaseUrl = safeHttpUrl(data && data.credits_purchase_url);
-        hostedBalance.resetFirstRedeemBonus(data && data.first_redeem_bonus_credits);
-        if (typeof data.client_version === 'string' && data.client_version.trim()) {
-            clientVersion = data.client_version.trim();
-        }
-        if (typeof data.client_latest_version === 'string') {
-            clientLatestVersion = data.client_latest_version.trim();
-        }
-        if (typeof data.client_minimum_version === 'string') {
-            clientMinimumVersion = data.client_minimum_version.trim();
-        }
-        clientUpdateUrl = safeHttpUrl(data && data.client_update_url);
-        if (typeof data.client_update_notes === 'string') {
-            clientUpdateNotes = data.client_update_notes.trim();
-        }
-        if (typeof data.mode === 'string') {
-            backendMode = data.mode;
-        }
-        if (typeof data.logged_in === 'boolean') {
-            backendLoggedIn = data.logged_in;
-        }
-        updateBalanceBarVisibility();
-        updateAccountSection();
-        if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
-            backendTranslationMode = data.translation_mode.trim().toLowerCase();
-        }
-        if (typeof data.target_lang_1 === 'string' && data.target_lang_1.trim()) {
-            backendTargetLang1 = data.target_lang_1.trim().toLowerCase();
-        }
-        if (typeof data.target_lang_2 === 'string' && data.target_lang_2.trim()) {
-            backendTargetLang2 = data.target_lang_2.trim().toLowerCase();
-        }
-        if (!uiTranslationMode) {
-            uiTranslationMode = backendTranslationMode || 'one_way';
-        }
-        // Gemini "no translation" is a pure frontend suppression of the translation text.
-        suppressTranslationDisplay = (translationProvider === 'gemini' && uiTranslationMode === 'none');
-        updateSettingsButtonVisibility();
-        segmentModeController.applyBackendConfig(data);
-        if (data && typeof data.custom_font_available === 'boolean') {
-            customFontAvailable = data.custom_font_available;
-            if (!customFontAvailable) {
-                applyBundledCjkFontPreference(false, { persist: false, sync: false });
-            }
-        }
-        renderBundledCjkFontPicker();
-
-        if (data && typeof data.speaker_diarization_enabled === 'boolean') {
-            speakerDiarizationEnabled = data.speaker_diarization_enabled;
-        }
-        if (data && typeof data.hide_speaker_labels === 'boolean') {
-            hideSpeakerLabels = data.hide_speaker_labels;
-        }
-        const storedHideSpeakerLabels = getStoredHideSpeakerLabelsSetting();
-        if (!lockManualControls && translationProvider === 'soniox' && storedHideSpeakerLabels !== null) {
-            hideSpeakerLabels = storedHideSpeakerLabels;
-            if (data && data.hide_speaker_labels !== storedHideSpeakerLabels) {
-                void setSpeakerLabelsHidden(storedHideSpeakerLabels);
-            }
-        }
-        applySpeakerLabelVisibility();
-        renderRuntimeSettingsPickers();
-        if (data && typeof data.enable_chroma_theme === 'boolean') {
-            themeController.setChromaEnabled(data.enable_chroma_theme);
-        }
-        applySpeakerLabelVisibility();
-        applyLockPauseRestartControlsUI();
-        enforceTranslateSegmentMode();
-    } catch (error) {
-        console.error('Error fetching UI config:', error);
     }
+}
+
+const uiConfigController = UiConfigController.create({
+    fetch,
+    safeHttpUrl,
+    normalizeSonioxRegion: SettingsPolicy.normalizeSonioxRegion,
+    translationModeController,
+    segmentModeController,
+    themeController,
+    console,
+    getState: () => ({
+        backendBootId,
+        translationProvider,
+        backendTranslationMode,
+        uiTranslationMode,
+        lockManualControls,
+    }),
+    updateState: updateUiConfigState,
+    actions: {
+        sessionCostReset,
+        setLanguageListFromCodes,
+        resetFirstRedeemBonus: (value) => hostedBalance.resetFirstRedeemBonus(value),
+        updateBalanceBarVisibility,
+        updateAccountSection,
+        updateSettingsButtonVisibility,
+        applyBundledCjkFontPreference,
+        renderBundledCjkFontPicker,
+        getStoredHideSpeakerLabelsSetting,
+        setSpeakerLabelsHidden,
+        applySpeakerLabelVisibility,
+        renderRuntimeSettingsPickers,
+        applyLockPauseRestartControlsUI,
+        enforceTranslateSegmentMode,
+    },
+});
+
+function fetchUiConfig() {
+    return uiConfigController.fetch();
 }
 
 function fetchLlmRefineStatus() {
