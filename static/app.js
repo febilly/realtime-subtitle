@@ -38,6 +38,7 @@ const t = (key, vars) => {
     }
     return key;
 };
+const escapeHtml = RenderHtml.createEscapeHtml(document);
 
 const localizeBackendMessage = BackendMessage.createLocalizer({ t });
 
@@ -89,7 +90,7 @@ const resetAllController = ResetAllController.create({
     localStorage,
     sessionStorage,
     t,
-    showConfirm,
+    showConfirm: confirmController.show,
 });
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeySourceHint = document.getElementById('apiKeySourceHint');
@@ -792,12 +793,6 @@ function handleMessageFrame(data) {
     runtimeFrameController.handle(data);
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 // ===================== Settings panel (provider + API key) =====================
 
 const settingsPanelController = SettingsPanel.create({
@@ -914,11 +909,6 @@ const settingsSaveController = SettingsSave.create({
     },
 });
 
-// 自定义确认对话框，替代浏览器自带的 confirm()。
-function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
-    return confirmController.show(message, { okLabel, cancelLabel, danger });
-}
-
 settingsUi.init({
     settingsButton,
     closeButton: settingsCloseButton,
@@ -953,7 +943,7 @@ const hostedUpdate = HostedUpdate.create({
     window,
     storage: localStorage,
     t,
-    showConfirm,
+    showConfirm: confirmController.show,
     getState: () => ({
         relayAvailable,
         connectionMode: settingsPorts.getConnectionMode(),
@@ -1109,7 +1099,7 @@ hostedAccount = HostedAccount.create({
     fetch,
     t,
     localizeBackendMessage,
-    showConfirm,
+    showConfirm: confirmController.show,
     rankLabel: hostedLogin.rankLabel,
     getRuntimeState: () => ({
         backendLoggedIn,
