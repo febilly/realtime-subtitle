@@ -877,12 +877,7 @@ const settingsSaveController = SettingsSave.create({
     setup: settingsSetup,
     t,
     localizeBackendMessage,
-    getDraft: () => ({
-        provider: settingsPanelController.getSelectedProvider(),
-        region: settingsPanelController.getSelectedSonioxRegion(),
-        mode: settingsPanelController.getMode(),
-        apiKey: apiKeyInput ? apiKeyInput.value : '',
-    }),
+    getDraft: settingsPanelController.getDraft,
     getState: () => ({ envKeyPresent }),
     loadProviderSettings: settingsPorts.loadProviderSettings,
     saveProviderSettings: settingsPorts.saveProviderSettings,

@@ -232,6 +232,15 @@
             return current.connectionMode === 'relay' ? 'relay' : 'direct';
         }
 
+        function getDraft() {
+            return {
+                provider: getSelectedProvider(),
+                region: getSelectedSonioxRegion(),
+                mode: getMode(),
+                apiKey: elements.apiKeyInput ? elements.apiKeyInput.value : '',
+            };
+        }
+
         function applyModeVisibility(mode) {
             const current = state();
             if (elements.modeSection) elements.modeSection.hidden = !current.relayAvailable;
@@ -429,6 +438,7 @@
             destroy,
             fetchRelayPricing,
             getDebugState,
+            getDraft,
             getMode,
             getProviderDescription,
             getSelectedProvider,

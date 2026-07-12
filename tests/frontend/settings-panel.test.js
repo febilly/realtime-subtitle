@@ -209,6 +209,22 @@ describe('SettingsPanel provider and mode drafts', () => {
         expect(page.controller.getSelectedSonioxRegion()).toBeNull();
         page.dom.window.close();
     });
+
+    it('owns the complete untrimmed save draft from its form controls', () => {
+        const page = setup();
+        page.controller.setProvider('soniox');
+        page.controller.setMode('direct');
+        page.controller.renderSonioxRegionPicker('eu');
+        page.document.getElementById('apiKeyInput').value = '  draft-key  ';
+
+        expect(page.controller.getDraft()).toEqual({
+            provider: 'soniox',
+            region: 'eu',
+            mode: 'direct',
+            apiKey: '  draft-key  ',
+        });
+        page.dom.window.close();
+    });
 });
 
 describe('SettingsPanel pricing and lifecycle', () => {
