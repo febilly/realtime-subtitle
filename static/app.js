@@ -28,21 +28,6 @@ const translationLangButton = document.getElementById('translationLangButton');
 const translationLangIcon = document.getElementById('translationLangIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
-const ICON_SPRITE_URL = 'icons/lucide-sprite.svg';
-
-function setControlIcon(iconEl, iconName) {
-    if (!iconEl || !iconName) {
-        return;
-    }
-    const useEl = iconEl.querySelector('use');
-    if (!useEl) {
-        return;
-    }
-    const href = `${ICON_SPRITE_URL}#${iconName}`;
-    useEl.setAttribute('href', href);
-    useEl.setAttributeNS('http://www.w3.org/1999/xlink', 'href', href);
-}
-
 const t = (key, vars) => {
     try {
         if (window.I18N && typeof window.I18N.t === 'function') {
@@ -340,7 +325,7 @@ const mobileSafeAreaController = MobileSafeAreaController.create({
     container: subtitleContainer,
     userAgent: navigator.userAgent,
     t,
-    setControlIcon,
+    setControlIcon: ControlIcon.set,
     console,
 });
 mobileSafeAreaController.init();
@@ -522,7 +507,7 @@ const runtimeControls = RuntimeControls.create({
     fetch,
     storage: localStorage,
     t,
-    setControlIcon,
+    setControlIcon: ControlIcon.set,
     renderSubtitles: subtitleRuntimeController.render,
     sessionCostPause: hostedPorts.sessionCostPause,
     console,
@@ -719,7 +704,7 @@ const themeController = ThemeController.create({
     storage: localStorage,
     toggle: themeToggle,
     themeIcon,
-    setControlIcon,
+    setControlIcon: ControlIcon.set,
 });
 themeController.init();
 
