@@ -4,7 +4,9 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "golden": "node scripts/generate-frontend-golden.js"
+    "golden": "node scripts/generate-frontend-golden.js",
+    "golden:compare": "node scripts/generate-frontend-golden.js compare",
+    "golden:check": "node scripts/generate-frontend-golden.js check"
   },
   "devDependencies": {
     "jsdom": "^26.1.0",

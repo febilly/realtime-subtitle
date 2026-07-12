@@ -45,7 +45,22 @@ class FakeXMLHttpRequest {
     }
 }
 
-function defaultFetchResponse(url) {
+function normalizeTranslationUiMode(value) {
+    const mode = String(value || 'hybrid').trim().toLowerCase();
+    if (!['fast', 'hybrid', 'accurate'].includes(mode)) {
+        throw new Error(`Unsupported harness translationUiMode: ${value}`);
+    }
+    return mode;
+}
+
+function llmModeForTranslationUiMode(mode) {
+    if (mode === 'accurate') return 'translate';
+    return mode === 'hybrid' ? 'refine' : 'off';
+}
+
+function defaultFetchResponse(url, options = {}) {
+    const translationUiMode = normalizeTranslationUiMode(options.translationUiMode);
+    const llmMode = llmModeForTranslationUiMode(translationUiMode);
     const pathname = new URL(String(url), 'http://localhost/').pathname;
     const payloads = {
         '/local-store': { store: {} },
@@ -53,16 +68,19 @@ function defaultFetchResponse(url) {
             provider: 'soniox',
             segment_mode: 'punctuation',
             translation_mode: 'one_way',
-            translation_ui_mode: 'hybrid',
-            supported_translation_languages: ['en', 'zh', 'ja'],
+            translation_ui_mode: translationUiMode,
+            llm_refine_available: true,
+            llm_refine_default_mode: llmMode,
+            languages: ['en', 'zh', 'ja'],
             relay_available: false,
             lock_manual_controls: false,
         },
         '/api-key-status': { status: 'ok' },
         '/osc-translation': { enabled: false },
         '/audio-source': { source: 'system' },
-        '/microphone-devices': { available: false, devices: [] },
-        '/llm-refine': { enabled: false, mode: 'off' },
+        '/microphones': { available: false, devices: [] },
+        '/llm-refine': { enabled: true, mode: llmMode },
+        '/translation-mode': { mode: translationUiMode, needs_restart: false },
     };
     const body = payloads[pathname] || {};
     return {
@@ -74,11 +92,16 @@ function defaultFetchResponse(url) {
     };
 }
 
-function installBrowserStubs(window, fetchImpl) {
+function installBrowserStubs(window, fetchImpl, options) {
     FakeWebSocket.instances = [];
     window.WebSocket = FakeWebSocket;
     window.XMLHttpRequest = FakeXMLHttpRequest;
-    window.fetch = fetchImpl || (async (url) => defaultFetchResponse(url));
+    const fetchCalls = [];
+    const resolvedFetch = fetchImpl || (async (url) => defaultFetchResponse(url, options));
+    window.fetch = async (...args) => {
+        fetchCalls.push(args);
+        return resolvedFetch(...args);
+    };
     window.open = () => null;
     window.scrollTo = () => {};
     window.matchMedia = () => ({ matches: false, addListener() {}, removeListener() {} });
@@ -87,6 +110,7 @@ function installBrowserStubs(window, fetchImpl) {
             build: (callback) => callback(null, { tokenize: () => [] }),
         }),
     };
+    return fetchCalls;
 }
 
 function resolveScriptPath(src) {
@@ -112,6 +136,10 @@ async function flushTasks(turns = 12) {
 }
 
 async function createPageHarness(options = {}) {
+    const translationUiMode = normalizeTranslationUiMode(
+        options.translationUiMode || (options.localStorage && options.localStorage.translationUiMode)
+    );
+    const llmMode = llmModeForTranslationUiMode(translationUiMode);
     const html = fs.readFileSync(path.join(STATIC_ROOT, 'index.html'), 'utf8');
     const virtualConsole = new VirtualConsole();
     if (options.forwardConsole) virtualConsole.sendTo(console);
@@ -121,22 +149,38 @@ async function createPageHarness(options = {}) {
         pretendToBeVisual: true,
         virtualConsole,
     });
-    installBrowserStubs(dom.window, options.fetch);
-    if (options.localStorage) {
-        for (const [key, value] of Object.entries(options.localStorage)) {
-            dom.window.localStorage.setItem(key, String(value));
-        }
+    const fetchCalls = installBrowserStubs(dom.window, options.fetch, { translationUiMode });
+    const storedValues = Object.assign({
+        autoRestartEnabled: String(options.autoRestartEnabled === true),
+        translationUiMode,
+        llmTranslationMode: llmMode,
+        llmRefineMode: llmMode,
+        llmRefineEnabled: String(llmMode !== 'off'),
+    }, options.localStorage || {});
+    if (options.translationUiMode) {
+        Object.assign(storedValues, {
+            translationUiMode,
+            llmTranslationMode: llmMode,
+            llmRefineMode: llmMode,
+            llmRefineEnabled: String(llmMode !== 'off'),
+        });
+    }
+    for (const [key, value] of Object.entries(storedValues)) {
+        dom.window.localStorage.setItem(key, String(value));
     }
     loadPageScripts(dom.window);
     await flushTasks();
+    const sockets = FakeWebSocket.instances;
 
     return {
         dom,
         window: dom.window,
         document: dom.window.document,
-        sockets: FakeWebSocket.instances,
+        sockets,
+        fetchCalls,
+        translationUiMode,
         async emitFrame(frame) {
-            const socket = FakeWebSocket.instances.at(-1);
+            const socket = sockets.at(-1);
             if (!socket || typeof socket.onmessage !== 'function') {
                 throw new Error('The page has no active WebSocket');
             }
@@ -150,6 +194,13 @@ async function createPageHarness(options = {}) {
             await flushTasks(turns);
         },
         close() {
+            for (const socket of sockets) {
+                socket.onopen = null;
+                socket.onmessage = null;
+                socket.onerror = null;
+                socket.onclose = null;
+                socket.readyState = FakeWebSocket.CLOSED;
+            }
             dom.window.close();
         },
     };
@@ -160,4 +211,5 @@ module.exports = {
     createPageHarness,
     defaultFetchResponse,
     flushTasks,
+    normalizeTranslationUiMode,
 };

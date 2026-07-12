@@ -73,12 +73,14 @@ class WebServer:
         self.use_bundled_cjk_fonts = False
         self._frontend_frame_log = None
         if os.getenv("FRONTEND_FRAME_LOG") == "1":
-            frame_dir = os.path.join("logs", "frontend-frames")
-            os.makedirs(frame_dir, exist_ok=True)
-            frame_name = time.strftime("frames_%Y%m%d_%H%M%S.jsonl")
-            self._frontend_frame_log = open(
-                os.path.join(frame_dir, frame_name), "a", encoding="utf-8"
-            )
+            try:
+                os.makedirs(os.path.join("logs", "frontend-frames"), exist_ok=True)
+                frame_name = f"frames_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{time.time_ns()}_{secrets.token_hex(4)}.jsonl"
+                self._frontend_frame_log = open(
+                    os.path.join("logs", "frontend-frames", frame_name), "x", encoding="utf-8"
+                )
+            except Exception:
+                pass
         # Pending hosted-login handshakes keyed by a one-time state nonce. Each
         # entry: {"status": "pending"|"done"|"error", "result": {...}, "ts": float}.
         # The web page bounces the login code back to /account/login-callback and
@@ -134,8 +136,15 @@ class WebServer:
     async def broadcast_to_clients(self, data: dict):
         """向所有连接的客户端广播数据"""
         if self._frontend_frame_log:
-            self._frontend_frame_log.write(json.dumps(data, ensure_ascii=False) + "\n")
-            self._frontend_frame_log.flush()
+            try:
+                self._frontend_frame_log.write(json.dumps(data, ensure_ascii=False) + "\n")
+                self._frontend_frame_log.flush()
+            except Exception:
+                try:
+                    self._frontend_frame_log.close()
+                except Exception:
+                    pass
+                self._frontend_frame_log = None
         if self.websocket_clients:
             # 创建消息
             message = json.dumps(data)
