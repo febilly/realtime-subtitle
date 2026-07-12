@@ -222,14 +222,9 @@ function applyBundledCjkFontPreference(enabled, { persist = false, sync = false 
     return settingsRuntime.applyBundledCjkFontPreference(enabled, { persist, sync });
 }
 
-function syncBundledCjkFontPreference(enabled) {
-    return settingsRuntime.syncBundledCjkFontPreference(enabled);
-}
-
 applyBundledCjkFontPreference(useBundledCjkFont, { sync: true });
 
 // ---- Subtitle-server relay (hosted mode) state ----
-const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
 let relayAvailable = !!INITIAL_UI_CONFIG.relay_available;
 let relayServerUrl = typeof INITIAL_UI_CONFIG.server_url === 'string' ? INITIAL_UI_CONFIG.server_url : '';
 const settingsStore = SettingsStore.create({
@@ -247,11 +242,7 @@ let backendLoggedIn = false;
 // STT billing factor for soniox 准确 mode (built-in translation off), delivered by
 // the server via /ui-config. 1 = no discount; applied to the live cost estimate.
 let sonioxNoTranslationFactor = 1;
-const { safeHttpUrl, normalizeServerUrl } = SettingsStore;
-
-function loadServerSettingsRaw() {
-    return settingsStore.loadServerSettingsRaw();
-}
+const { safeHttpUrl } = SettingsStore;
 
 function loadServerSettings() {
     return settingsStore.loadServerSettings();
@@ -260,8 +251,6 @@ function loadServerSettings() {
 function saveServerSettings(settings) {
     settingsStore.saveServerSettings(settings);
 }
-const { hasExplicitConnectionMode } = SettingsPolicy;
-
 // Resolved connection mode: 'relay' | 'direct' | null (undecided / first launch).
 function getConnectionMode() {
     return SettingsPolicy.resolveConnectionMode({
@@ -808,10 +797,6 @@ function setUiTranslationMode(mode, { persistOnly = false } = {}) {
 }
 
 // Generic settings dropdown primitives remain available to the settings form.
-function positionDropdownMenu(trigger, menu) {
-    return settingsUi.positionDropdownMenu(trigger, menu);
-}
-
 function buildCustomSelect(options, config = {}) {
     return settingsUi.buildCustomSelect(options, config);
 }
@@ -820,19 +805,12 @@ function updateAudioSourceButton() {
     runtimeControls.updateAudioSourceButton();
 }
 
-function fetchInitialAudioSource() {
-    return runtimeControls.fetchInitialAudioSource();
-}
 function renderMicrophoneDevicePicker() {
     return settingsRuntime.renderMicrophoneDevicePicker();
 }
 
 function fetchMicrophoneDevices() {
     return settingsRuntime.fetchMicrophoneDevices();
-}
-
-function renderAutoRestartPicker() {
-    return settingsRuntime.renderAutoRestartPicker();
 }
 
 function renderBundledCjkFontPicker() {
@@ -936,7 +914,6 @@ function handleMessageFrame(data) {
     runtimeFrameController.handle(data);
 }
 
-const joinTokenText = TokenStream.joinTokenText;
 function hasUsableWebSocket() {
     return wsClient
         ? wsClient.isUsable()
@@ -1076,16 +1053,8 @@ function getSelectedProvider() {
     return settingsPanelController.getSelectedProvider();
 }
 
-function getSelectedSonioxRegion() {
-    return settingsPanelController.getSelectedSonioxRegion();
-}
-
 function setModeRadio(mode) {
     settingsPanelController.setMode(mode);
-}
-
-function getSettingsMode() {
-    return settingsPanelController.getMode();
 }
 
 function applyModeSectionsVisibility(mode) {
@@ -1148,10 +1117,6 @@ function maybeForceOpenSettings() {
     });
     if (action === 'login') openLogin({ forced: true });
     if (action === 'settings') openSettings({ forced: true });
-}
-
-function shouldPreopenHostedLogin() {
-    return hostedMode.shouldPreopenHostedLogin();
 }
 
 function preopenHostedLoginIfNeeded() {
@@ -1392,18 +1357,6 @@ if (balanceOpenSettingsButton) {
 }
 
 // ---- First-launch mode chooser ----
-function applyChooserI18n() {
-    hostedMode.applyChooserI18n();
-}
-
-function openModeChooser() {
-    return hostedMode.openModeChooser();
-}
-
-function clearConnectionModeChoice() {
-    hostedMode.clearConnectionModeChoice();
-}
-
 function ensureHostedVersionAllowed(options = {}) {
     return hostedUpdate.ensure(options);
 }
@@ -1438,10 +1391,6 @@ function hideLogin() {
 }
 
 // ---- Balance bar + this-session cost ----
-function formatCredits(value) {
-    return hostedBalance.formatCredits(value);
-}
-
 function updateBalanceBarVisibility() {
     hostedBalance.updateBalanceBarVisibility();
 }
@@ -1452,18 +1401,6 @@ function fetchBalance(options = {}) {
 
 function freePoolsSummary(pools) {
     return hostedBalance.freePoolsSummary(pools);
-}
-
-function renderFreePools(container, pools) {
-    hostedBalance.renderFreePools(container, pools);
-}
-
-function currentBalanceView() {
-    return hostedBalance.currentBalanceView();
-}
-
-function renderBalanceView() {
-    hostedBalance.renderBalanceView();
 }
 
 function sessionCostResume() {
