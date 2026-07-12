@@ -159,6 +159,29 @@ let pushedOverrideBootId = null;
 let useBundledCjkFont = localStorage.getItem(BUNDLED_CJK_FONT_STORAGE_KEY) === 'true';
 let customFontAvailable = false;
 
+const controlPorts = {
+    applySpeakerLabelVisibility: () => speakerLabelController.applyVisibility(),
+    isLlmTranslateMode: () => translationModeController.isTranslateMode(),
+    enforceTranslateSegmentMode: () => segmentModeController.enforceTranslateMode(),
+    getSegmentModes: () => segmentModeController.getAvailableModes(),
+    updatePauseButtonUi: () => { runtimeControls.updatePauseButtonUi(); },
+    updateSegmentModeButton: () => segmentModeController.updateButton(),
+    updateDisplayModeButton: () => { runtimeControls.updateDisplayModeButton(); },
+    updateOscTranslationButton: () => oscTranslationController.updateButton(),
+    updateBottomSafeAreaButton: () => mobileSafeAreaController.updateButton(),
+    applyBottomSafeArea: () => mobileSafeAreaController.apply(),
+    updateAutoRestartButton: () => { recognitionControls.updateAutoRestartButton(); },
+    updateAudioSourceButton: () => { runtimeControls.updateAudioSourceButton(); },
+    setTranslationUiMode: (mode, options = {}) => translationModeController.setTranslationUiMode(mode, options),
+    setSpeakerLabelsHidden: (hidden) => speakerLabelController.setHidden(hidden),
+    setSegmentMode: (mode) => segmentModeController.setMode(mode),
+    updateFuriganaButton: () => furiganaToggleController.updateButton(),
+    restartRecognition: (options = {}) => recognitionControls.restartRecognition(options),
+    triggerAutoRestart: () => recognitionControls.triggerAutoRestart(),
+    refreshOverlayState: () => runtimeControls.refreshOverlayState(),
+    fetchOscTranslationStatus: () => oscTranslationController.fetchStatus(),
+};
+
 const settingsRuntime = SettingsRuntime.create({
     document,
     fetch,
@@ -198,7 +221,7 @@ const settingsRuntime = SettingsRuntime.create({
         get translationUiModes() { return translationModeController.getAvailableTranslationModes(); },
         get segmentModeSupported() { return segmentModeSupported; },
         get segmentMode() { return segmentModeController.getMode(); },
-        get segmentModes() { return getSegmentModes(); },
+        get segmentModes() { return controlPorts.getSegmentModes(); },
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
@@ -209,10 +232,10 @@ const settingsRuntime = SettingsRuntime.create({
         }
     },
     actions: {
-        updateAutoRestartButton,
-        setSpeakerLabelsHidden,
-        setSegmentMode,
-        setTranslationUiMode,
+        updateAutoRestartButton: controlPorts.updateAutoRestartButton,
+        setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
+        setSegmentMode: controlPorts.setSegmentMode,
+        setTranslationUiMode: controlPorts.setTranslationUiMode,
     },
 });
 
@@ -356,7 +379,7 @@ const translationModeController = TranslationModeController.create({
         renderSubtitles,
         updateTranslationModeHint,
         renderTranslationModePicker,
-        restartRecognition,
+        restartRecognition: controlPorts.restartRecognition,
     },
 });
 const subtitleSession = SubtitleSession.create({
@@ -412,7 +435,7 @@ const languageUi = LanguageUI.create({
         }
     },
     setUiTranslationMode,
-    restartRecognition,
+    restartRecognition: controlPorts.restartRecognition,
     renderSubtitles,
 });
 languageUi.init();
@@ -443,7 +466,7 @@ const subtitleRenderer = SubtitleRenderer.create({
     getViewState: () => ({
         displayMode,
         suppressTranslationDisplay,
-        translateMode: isLlmTranslateMode(),
+        translateMode: controlPorts.isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
         currentTranslationTargetLang,
         furiganaEnabled: furiganaToggleController.isEnabled(),
@@ -455,7 +478,7 @@ const subtitleFrameController = SubtitleFrameController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
     console,
-    getState: () => ({ translateMode: isLlmTranslateMode() }),
+    getState: () => ({ translateMode: controlPorts.isLlmTranslateMode() }),
     renderSubtitles,
     finalizeCurrentNonFinalTokens,
     clearSubtitleState,
@@ -473,7 +496,7 @@ const webSocketController = WebSocketController.create({
     logger: console,
     getState: () => ({ autoRestartEnabled, shouldReconnect, isRestarting }),
     onFrame: handleMessageFrame,
-    onAutoRestart: triggerAutoRestart,
+    onAutoRestart: controlPorts.triggerAutoRestart,
 });
 
 const runtimeControls = RuntimeControls.create({
@@ -590,7 +613,7 @@ const sessionFrameController = SessionFrameController.create({
         saveServerSettings,
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         openLogin: hostedPorts.openLogin,
-        triggerAutoRestart,
+        triggerAutoRestart: controlPorts.triggerAutoRestart,
     },
 });
 const runtimeFrameController = RuntimeFrameController.create({
@@ -603,10 +626,10 @@ const runtimeFrameController = RuntimeFrameController.create({
         displayErrorMessage,
         openSettings: (options) => settingsFlowController.open(options),
         addLlmCost: (credits) => hostedBalance.addLlmCost(credits),
-        setTranslationUiMode,
+        setTranslationUiMode: controlPorts.setTranslationUiMode,
         renderTranslationModePicker,
         showToast,
-        restartRecognition,
+        restartRecognition: controlPorts.restartRecognition,
         handleSegmentModeChanged: segmentModeController.handleBackendChanged,
         handleSpeakerLabelsChanged: speakerLabelController.handleBackendChanged,
     },
@@ -653,35 +676,19 @@ const settingsSetup = SettingsSetup.create({
 });
 
 // 初始化按钮文本
-updateSegmentModeButton();
-updateDisplayModeButton();
-updatePauseButtonUi();
-updateAudioSourceButton();
-updateFuriganaButton();
-updateOscTranslationButton();
-updateAutoRestartButton();
-updateBottomSafeAreaButton();
-enforceTranslateSegmentMode();
-applySpeakerLabelVisibility();
-applyBottomSafeArea();
+controlPorts.updateSegmentModeButton();
+controlPorts.updateDisplayModeButton();
+controlPorts.updatePauseButtonUi();
+controlPorts.updateAudioSourceButton();
+controlPorts.updateFuriganaButton();
+controlPorts.updateOscTranslationButton();
+controlPorts.updateAutoRestartButton();
+controlPorts.updateBottomSafeAreaButton();
+controlPorts.enforceTranslateSegmentMode();
+controlPorts.applySpeakerLabelVisibility();
+controlPorts.applyBottomSafeArea();
 appShellController.applyManualControlPolicy();
 appShellController.applyStaticText();
-
-function applySpeakerLabelVisibility() {
-    return speakerLabelController.applyVisibility();
-}
-
-function isLlmTranslateMode() {
-    return translationModeController.isTranslateMode();
-}
-
-function enforceTranslateSegmentMode() {
-    return segmentModeController.enforceTranslateMode();
-}
-
-function getSegmentModes() {
-    return segmentModeController.getAvailableModes();
-}
 
 const settingsUi = SettingsUI.create({
     document,
@@ -704,36 +711,6 @@ const themeController = ThemeController.create({
     setControlIcon,
 });
 themeController.init();
-
-function updatePauseButtonUi() {
-    runtimeControls.updatePauseButtonUi();
-}
-
-// 更新分段模式按钮文本
-function updateSegmentModeButton() {
-    return segmentModeController.updateButton();
-}
-
-// 更新显示模式按钮文本
-function updateDisplayModeButton() {
-    runtimeControls.updateDisplayModeButton();
-}
-
-function updateOscTranslationButton() {
-    return oscTranslationController.updateButton();
-}
-
-function updateBottomSafeAreaButton() {
-    return mobileSafeAreaController.updateButton();
-}
-
-function applyBottomSafeArea() {
-    return mobileSafeAreaController.apply();
-}
-
-function updateAutoRestartButton() {
-    recognitionControls.updateAutoRestartButton();
-}
 
 function updateUiConfigState(patch) {
     for (const [key, value] of Object.entries(patch || {})) {
@@ -800,7 +777,7 @@ const uiConfigController = UiConfigController.create({
         renderBundledCjkFontPicker,
         renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,
-        enforceTranslateSegmentMode,
+        enforceTranslateSegmentMode: controlPorts.enforceTranslateSegmentMode,
     },
 });
 
@@ -829,10 +806,6 @@ function buildCustomSelect(options, config = {}) {
     return settingsUi.buildCustomSelect(options, config);
 }
 
-function updateAudioSourceButton() {
-    runtimeControls.updateAudioSourceButton();
-}
-
 function renderMicrophoneDevicePicker() {
     return settingsRuntime.renderMicrophoneDevicePicker();
 }
@@ -853,10 +826,6 @@ function renderTranslationModePicker() {
     return settingsRuntime.renderTranslationModePicker();
 }
 
-function setTranslationUiMode(mode, options = {}) {
-    return translationModeController.setTranslationUiMode(mode, options);
-}
-
 function renderSegmentModePicker() {
     return settingsRuntime.renderSegmentModePicker();
 }
@@ -865,37 +834,7 @@ function renderRuntimeSettingsPickers() {
     return settingsRuntime.renderRuntimeSettingsPickers();
 }
 
-function setSpeakerLabelsHidden(hidden) {
-    return speakerLabelController.setHidden(hidden);
-}
-
-function setSegmentMode(mode) {
-    return segmentModeController.setMode(mode);
-}
-
-// 假名注音开关
-function updateFuriganaButton() {
-    return furiganaToggleController.updateButton();
-}
-
-function restartRecognition(options = {}) {
-    return recognitionControls.restartRecognition(options);
-}
-
-function triggerAutoRestart() {
-    return recognitionControls.triggerAutoRestart();
-}
-
-// --- 原生字幕悬浮窗（PySide6）开关 ---
-function refreshOverlayState() {
-    return runtimeControls.refreshOverlayState();
-}
-
-void refreshOverlayState();
-
-function fetchOscTranslationStatus() {
-    return oscTranslationController.fetchStatus();
-}
+void controlPorts.refreshOverlayState();
 
 
 function handleMessageFrame(data) {
@@ -914,7 +853,7 @@ function finalizeCurrentNonFinalTokens({ render = true } = {}) {
 
 function clearSubtitleState() {
     subtitleSession.clear({
-        translateMode: isLlmTranslateMode(),
+        translateMode: controlPorts.isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
     });
     subtitleRenderer.clearSession();
@@ -1314,7 +1253,7 @@ const hostedController = Hosted.createController({
     syncProviderFromStorage,
     fetchLlmRefineStatus,
     fetchApiKeyStatus,
-    fetchOscTranslationStatus,
+    fetchOscTranslationStatus: controlPorts.fetchOscTranslationStatus,
     maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
     updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
     connect: webSocketController.connect,
