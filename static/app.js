@@ -355,7 +355,6 @@ if (!llmRefineMode) {
     llmRefineMode = 'off';
 }
 let llmRefineEnabled = llmRefineMode !== 'off';
-let llmTranslateHideAfterSequence = llmRefineMode === 'translate' ? 0 : null;
 
 // Unified 翻译模式 (fast/accurate/hybrid/refine). This is the single control in
 // Settings; it drives llmRefineMode for display and is pushed to the backend via
@@ -379,14 +378,13 @@ function getStoredTranslationUiMode() {
     return DEFAULT_TRANSLATION_UI_MODE;
 }
 let translationUiMode = getStoredTranslationUiMode();
-// 混合 mode: token-sequence threshold at/after which STT translations are shown
-// muted (gray) as provisional, awaiting their LLM replacement. Sentences from
-// before switching into 混合 are never grayed (no LLM result is coming for them).
-// null = not in 混合. See setTranslationUiMode / clearSubtitleState.
-let hybridInterimAfterSequence = translationUiMode === 'hybrid' ? 0 : null;
-// Refine/retraction/speculative-translation caches are private to their state
-// module; app.js only coordinates their effects with token and DOM state.
-const refineState = RefineState.createRefineState();
+const subtitleSession = SubtitleSession.create({
+    TokenStream,
+    RenderModel,
+    RefineState,
+    translateMode: llmRefineMode === 'translate',
+    translationUiMode,
+});
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
 let defaultTranslationTargetLang = 'en';
@@ -438,13 +436,6 @@ const languageUi = LanguageUI.create({
 });
 languageUi.init();
 
-// 存储所有已确认的tokens
-let allFinalTokens = [];
-// 存储当前未确认的tokens
-let currentNonFinalTokens = [];
-// 记录已合并到的位置（allFinalTokens 中的索引）
-let lastMergedIndex = 0;
-
 // 缓存已渲染的句子 HTML（用于增量渲染，键为 sentenceId）
 let renderedSentences = new Map();
 // 缓存已渲染的 speaker/块 HTML（用于按块增量渲染，键为 blockId）
@@ -455,8 +446,6 @@ const subtitleDomPatcher = subtitleHtmlRenderer.createDomPatcher({
     renderedSentences,
     renderedBlocks,
 });
-
-let tokenSequenceCounter = 0;
 
 // 分段模式: 'translation' | 'endpoint' | 'punctuation'
 let segmentMode = settingsStore.loadSegmentMode();
@@ -701,15 +690,9 @@ function applyLlmRefineMode(mode, options = {}) {
         }
     }
 
+    subtitleSession.applyLlmMode(llmRefineMode, previous);
     if (llmRefineMode === 'translate') {
-        if (previous !== 'translate') {
-            llmTranslateHideAfterSequence = tokenSequenceCounter + 1;
-        } else if (llmTranslateHideAfterSequence === null) {
-            llmTranslateHideAfterSequence = tokenSequenceCounter + 1;
-        }
         enforceTranslateSegmentMode();
-    } else {
-        llmTranslateHideAfterSequence = null;
     }
 
     updateSegmentModeButton();
@@ -899,7 +882,7 @@ async function fetchUiConfig() {
             // 不读取也不修改保存的 LLM 翻译模式（localStorage）。
             llmRefineMode = 'off';
             llmRefineEnabled = false;
-            llmTranslateHideAfterSequence = null;
+            subtitleSession.disableLlmBoundary();
         }
         if (data && Number.isFinite(Number(data.soniox_no_translation_factor)) && Number(data.soniox_no_translation_factor) > 0) {
             sonioxNoTranslationFactor = Math.min(1, Number(data.soniox_no_translation_factor));
@@ -1095,7 +1078,7 @@ async function fetchLlmRefineStatus() {
     if (!llmRefineAvailable) {
         llmRefineMode = 'off';
         llmRefineEnabled = false;
-        llmTranslateHideAfterSequence = null;
+        subtitleSession.disableLlmBoundary();
         enforceTranslateSegmentMode();
         return;
     }
@@ -1137,7 +1120,7 @@ function getLlmSentenceId(sentence) {
 
 function getDisplayTranslationForSentence(sentence, source, originalTranslation) {
     const sentenceId = getLlmSentenceId(sentence);
-    return (sentenceId && refineState.getRefinedTranslation(sentenceId)) || originalTranslation;
+    return (sentenceId && subtitleSession.getRefinedTranslation(sentenceId)) || originalTranslation;
 }
 
 function shouldHideBuiltinTranslation(sentence, sourceText, hasRefined) {
@@ -1155,7 +1138,10 @@ function shouldHideBuiltinTranslation(sentence, sourceText, hasRefined) {
     if (hasRefined) {
         return false;
     }
-    return sentenceHasTranslationTokenAtOrAfter(sentence, llmTranslateHideAfterSequence);
+    return sentenceHasTranslationTokenAtOrAfter(
+        sentence,
+        subtitleSession.getLlmTranslateHideAfterSequence(),
+    );
 }
 
 // True when any of the sentence's translation tokens carries a sequence index
@@ -1182,34 +1168,19 @@ function sentenceHasNonFinalTranslation(sentence) {
 }
 
 function handleBackendRefineResult(data) {
-    if (refineState.applyRefineResult(data, { translateMode: isLlmTranslateMode() })) {
+    if (subtitleSession.applyRefineResult(data, {
+        translateMode: isLlmTranslateMode(),
+    }).changed) {
         renderSubtitles();
     }
 }
 
-function cleanupSentenceCaches(sentenceId) {
-    refineState.cleanupSentenceCaches(sentenceId);
-}
-
 function handleSubtitleRetract(data) {
     const sentenceId = data && data.sentence_id ? String(data.sentence_id).trim() : '';
-    if (!sentenceId) {
-        return;
-    }
-
-    cleanupSentenceCaches(sentenceId);
-
-    const removal = refineState.removeSentenceTokens(allFinalTokens, sentenceId);
-    if (!removal.removed) {
-        return;
-    }
-
-    allFinalTokens = removal.tokens;
-
-    lastMergedIndex = Math.max(0, allFinalTokens.length - 1);
+    const result = subtitleSession.retract(sentenceId);
+    if (!result.removed) return;
     renderedSentences.clear();
     renderedBlocks.clear();
-    mergeFinalTokens();
     renderSubtitles();
 }
 
@@ -1292,13 +1263,7 @@ function renderTranslationModePicker() {
 // translations arriving afterwards are shown as provisional (gray). Switching
 // away clears the marker. Called on both the forward apply and the error rollback.
 function noteHybridInterimBoundary(mode, previous) {
-    if (mode === 'hybrid') {
-        if (previous !== 'hybrid') {
-            hybridInterimAfterSequence = tokenSequenceCounter + 1;
-        }
-    } else {
-        hybridInterimAfterSequence = null;
-    }
+    subtitleSession.noteHybridBoundary(mode, previous);
 }
 
 async function setTranslationUiMode(mode, options = {}) {
@@ -1645,13 +1610,13 @@ function handleMessageFrame(data) {
     }
     if (data.type === 'spec_translation_pending') {
         const src = (data.source || '').toString().trim();
-        if (refineState.markSpecPending(src, data.target_lang)) {
+        if (subtitleSession.markSpecPending(src, data.target_lang).changed) {
             renderSubtitles();
         }
         return;
     }
     if (data.type === 'spec_translation') {
-        if (refineState.applySpecTranslation(data)) renderSubtitles();
+        if (subtitleSession.applySpecTranslation(data).changed) renderSubtitles();
         return;
     }
     if (data.type === 'refine_result') {
@@ -1748,20 +1713,14 @@ function handleMessageFrame(data) {
             // translations hidden awaiting an LLM replacement may never get one
             // (the old stream's LLM calls die with it) — reveal them instead of
             // leaving a permanently empty translation line. Their override still
-            // applies if the LLM result does arrive late. The next assigned
-            // sequence index is exactly tokenSequenceCounter, so this reveals
-            // everything already displayed and hides anything newer.
-            if (llmTranslateHideAfterSequence !== null) {
-                llmTranslateHideAfterSequence = tokenSequenceCounter;
-                renderSubtitles();
-            }
+            // applies if the LLM result does arrive late. The session advances
+            // both boundaries to its next sequence, revealing existing tokens.
+            const revealed = subtitleSession.revealPendingForRestart();
+            if (revealed.translateChanged) renderSubtitles();
             // Same reasoning for 混合: STT translations already shown as provisional
             // (gray) won't get their LLM replacement from the dying stream — reveal
             // them as normal text and only gray translations from the new stream.
-            if (hybridInterimAfterSequence !== null) {
-                hybridInterimAfterSequence = tokenSequenceCounter;
-                renderSubtitles();
-            }
+            if (revealed.hybridChanged) renderSubtitles();
         } else {
             // 清空所有数据
             console.log('Clearing all subtitles...');
@@ -1772,49 +1731,12 @@ function handleMessageFrame(data) {
     }
     
     if (data.type === 'update') {
-        let hasNewFinalContent = false;
-        if (data.final_tokens && data.final_tokens.length > 0) {
-            data.final_tokens.forEach(token => {
-                if (token.text === '<end>') {
-                    return;
-                }
-                hasNewFinalContent = true;
-                insertFinalToken(token);
-            });
-        }
-
-        // 更新non-final tokens并过滤 <end>
-        // 注意：即使本帧带有 separator（断句）也不要清空 non-final tail。
-        // separator 现在由后端在句号处即时下发，而 non_final_tokens 是后端权威的
-        // 当前进行中尾巴（属于下一句），与已确定 final token 不重叠。清空它只会让
-        // 这段预览消失一帧、等下一帧再出现，造成界面闪烁。
-        currentNonFinalTokens = (data.non_final_tokens || []).filter(token => token.text !== '<end>');
-        currentNonFinalTokens.forEach((token) => assignSequenceIndex(token));
-
-        // 合并新增的final tokens
-        if (hasNewFinalContent) {
-            mergeFinalTokens();
-        }
-
-        // 重新渲染
+        subtitleSession.applyUpdateFrame(data);
         renderSubtitles();
     }
 }
 
-function insertFinalToken(token) {
-    tokenSequenceCounter = TokenStream.insertFinalToken(allFinalTokens, token, tokenSequenceCounter);
-}
-
 const joinTokenText = TokenStream.joinTokenText;
-
-/**
- * 合并连续的final tokens以减少token数量
- * 只合并从lastMergedIndex开始的新tokens
- * 合并条件：相同speaker、相同language、相同translation_status、is_final=true、非分隔符
- */
-function mergeFinalTokens() {
-    lastMergedIndex = TokenStream.mergeFinalTokens(allFinalTokens, lastMergedIndex);
-}
 
 const { getLangDir, getLanguageTag, wrapSubtitleLineBody } = subtitleHtmlRenderer;
 
@@ -1824,10 +1746,6 @@ const {
     endsWithSentenceEnding,
     splitIntoSentenceSegments,
 } = Segmentation;
-
-function assignSequenceIndex(token) {
-    tokenSequenceCounter = TokenStream.assignSequenceIndex(token, tokenSequenceCounter);
-}
 
 function requestFurigana(text) {
     return furiganaService.request(text);
@@ -1839,56 +1757,22 @@ function hasUsableWebSocket() {
 }
 
 function finalizeCurrentNonFinalTokens({ render = true } = {}) {
-    const pendingTokens = (currentNonFinalTokens || [])
-        .filter(token => token && token.text && token.text !== '<end>');
-
-    if (pendingTokens.length === 0) {
-        return false;
-    }
-
-    pendingTokens.forEach(token => {
-        insertFinalToken({
-            ...token,
-            is_final: true
-        });
-    });
-
-    insertFinalToken({
-        is_separator: true,
-        is_final: true,
-        separator_type: 'reconnect'
-    });
-
-    currentNonFinalTokens = [];
+    const result = subtitleSession.finalizeCurrentNonFinalTokens();
+    if (!result.changed) return false;
     renderedSentences.clear();
     renderedBlocks.clear();
-    mergeFinalTokens();
-
-    if (render) {
-        renderSubtitles();
-    }
-
+    if (render) renderSubtitles();
     return true;
 }
 
 function clearSubtitleState() {
-    allFinalTokens = [];
-    currentNonFinalTokens = [];
-    lastMergedIndex = 0;
+    subtitleSession.clear({
+        translateMode: isLlmTranslateMode(),
+        translationUiMode,
+    });
     renderedSentences.clear();
     renderedBlocks.clear();
-    tokenSequenceCounter = 0;
     pendingFuriganaRequests.clear();
-
-    refineState.clear();
-
-    if (isLlmTranslateMode()) {
-        llmTranslateHideAfterSequence = tokenSequenceCounter;
-    } else {
-        llmTranslateHideAfterSequence = null;
-    }
-    // Fresh session: any 混合 STT translation from here on is provisional.
-    hybridInterimAfterSequence = translationUiMode === 'hybrid' ? tokenSequenceCounter : null;
 }
 
 const {
@@ -1912,13 +1796,13 @@ function getSentenceId(sentence, fallbackIndex) {
  * case), to avoid disturbing original/translation pairing.
  */
 function buildRenderTokens() {
-    return RenderModel.buildRenderTokens({ allFinalTokens, currentNonFinalTokens });
+    return subtitleSession.buildRenderTokens();
 }
 
 function renderSubtitles() {
     const scrollState = subtitleScroll.capture();
     const tokens = buildRenderTokens();
-    tokens.forEach((token) => assignSequenceIndex(token));
+    subtitleSession.assignRenderTokenSequences(tokens);
 
     if (tokens.length === 0) {
         subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
@@ -2009,15 +1893,19 @@ function renderSubtitles() {
                 const sourceText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
                 const sentenceLlmId = getLlmSentenceId(sentence);
                 const overrideTranslation = sentenceLlmId
-                    ? refineState.getTranslationOverride(sentenceLlmId)
+                    ? subtitleSession.getTranslationOverride(sentenceLlmId)
                     : null;
                 if (overrideTranslation) {
                     baseTranslationNormalized = overrideTranslation;
                 }
-                const hasRefined = !!(sentenceLlmId && refineState.getRefinedTranslation(sentenceLlmId));
+                const hasRefined = !!(
+                    sentenceLlmId && subtitleSession.getRefinedTranslation(sentenceLlmId)
+                );
                 // The LLM reviewed this sentence and left it unchanged: treat it
                 // as resolved so the STT translation is revealed as final text.
-                const isLlmConfirmed = !!(sentenceLlmId && refineState.isConfirmed(sentenceLlmId));
+                const isLlmConfirmed = !!(
+                    sentenceLlmId && subtitleSession.getConfirmed(sentenceLlmId)
+                );
                 const shouldHide = shouldHideBuiltinTranslation(sentence, sourceText, hasRefined || isLlmConfirmed);
 
                 if (!shouldHide) {
@@ -2042,7 +1930,10 @@ function renderSubtitles() {
                         // get no LLM result, so they render as normal final text.
                         const afterHybridBoundary = translationUiMode === 'hybrid'
                             && !isLlmConfirmed
-                            && sentenceHasTranslationTokenAtOrAfter(sentence, hybridInterimAfterSequence);
+                    && sentenceHasTranslationTokenAtOrAfter(
+                        sentence,
+                        subtitleSession.getHybridInterimAfterSequence(),
+                    );
 
                         // 混合 mode should surface STT/Soniox's provisional
                         // translation as soon as it arrives, including the first
@@ -2066,11 +1957,13 @@ function renderSubtitles() {
                 // LLM result once it arrives (matched by sentence id).
                 const sentenceLlmId = getLlmSentenceId(sentence);
                 const overrideTranslation = sentenceLlmId
-                    ? (refineState.getTranslationOverride(sentenceLlmId) || '').trim()
+                    ? (subtitleSession.getTranslationOverride(sentenceLlmId) || '').trim()
                     : '';
                 const srcText = sentence.originalTokens.map(t => (t && t.text) ? String(t.text) : '').join('').trim();
                 if (overrideTranslation && overrideTranslation !== srcText) {
-                    const lang = refineState.getTranslationLanguage(sentenceLlmId) || currentTranslationTargetLang || '';
+                    const lang = subtitleSession.getTranslationLanguage(sentenceLlmId)
+                        || currentTranslationTargetLang
+                        || '';
                     const translationDir = getLangDir(lang);
                     const langTag = getLanguageTag(lang);
                     sentenceParts.push(`<div class="subtitle-line" lang="${lang}" dir="${translationDir}">${langTag}${wrapSubtitleLineBody(`<span class="subtitle-text" lang="${lang}">${escapeHtml(overrideTranslation)}</span>`, translationDir, lang)}</div>`);
@@ -2084,24 +1977,24 @@ function renderSubtitles() {
                     // Whole-sentence key first: the finalize-path pending
                     // marker uses the full source (which may lack ending
                     // punctuation when the sentence was endpoint-split).
-                    const whole = refineState.getSpecTranslation(srcText);
+                        const whole = subtitleSession.getSpecTranslation(srcText);
                     if (whole) {
                         parts.push(whole.text);
                         lang = whole.lang;
-                    } else if (refineState.isSpecPending(srcText)) {
+                        } else if (subtitleSession.isSpecPending(srcText)) {
                         pending = true;
-                        lang = refineState.getSpecPendingLanguage(srcText) || '';
+                            lang = subtitleSession.getSpecPendingLanguage(srcText) || '';
                     } else {
                         // Per-segment speculative results from the non-final text.
                         for (const seg of splitIntoSentenceSegments(srcText)) {
                             if (!endsWithSentenceEnding(seg)) continue; // partial tail
-                            const hit = refineState.getSpecTranslation(seg);
+                                const hit = subtitleSession.getSpecTranslation(seg);
                             if (hit) {
                                 parts.push(hit.text);
                                 if (!lang) lang = hit.lang;
-                            } else if (refineState.isSpecPending(seg)) {
+                                } else if (subtitleSession.isSpecPending(seg)) {
                                 pending = true;
-                                if (!lang) lang = refineState.getSpecPendingLanguage(seg) || '';
+                                    if (!lang) lang = subtitleSession.getSpecPendingLanguage(seg) || '';
                             }
                         }
                     }
