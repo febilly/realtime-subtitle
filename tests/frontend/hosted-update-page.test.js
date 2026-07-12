@@ -1,6 +1,44 @@
 const { createPageHarness } = require('./helpers/page-harness');
 
 describe('full-page hosted update wiring', () => {
+    it('confirms a forced update escape and delegates the direct-mode transition', async () => {
+        const page = await createPageHarness({
+            uiConfig: {
+                relay_available: true,
+                server_url: 'https://relay.example',
+                mode: 'relay',
+                logged_in: true,
+                client_version: '1.0.0',
+                client_latest_version: '1.1.0',
+                client_minimum_version: '1.1.0',
+            },
+            localStorage: {
+                'subtitleServer.v1': JSON.stringify({
+                    mode: 'relay',
+                    modeChosen: true,
+                    token: 'relay-token',
+                }),
+            },
+        });
+        try {
+            expect(page.document.getElementById('clientUpdateDirectButton').hidden).toBe(false);
+            page.document.getElementById('clientUpdateDirectButton').click();
+            await page.flush(2);
+            expect(page.document.getElementById('confirmDialog').hidden).toBe(false);
+
+            page.document.getElementById('confirmOkButton').click();
+            await page.flush(4);
+
+            const server = JSON.parse(page.window.localStorage.getItem('subtitleServer.v1'));
+            expect(server).toMatchObject({ mode: 'direct', modeChosen: true });
+            expect(page.document.querySelector('input[name="connmode"][value="direct"]').checked)
+                .toBe(true);
+            expect(page.document.getElementById('accountSection').hidden).toBe(true);
+        } finally {
+            page.close();
+        }
+    });
+
     it('shows and dismisses an optional relay update reminder', async () => {
         const page = await createPageHarness({
             uiConfig: {

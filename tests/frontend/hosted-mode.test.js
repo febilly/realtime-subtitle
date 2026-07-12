@@ -117,6 +117,20 @@ describe('HostedMode chooser and startup', () => {
 });
 
 describe('HostedMode transitions', () => {
+    it('switches a forced-update escape to direct mode without opening settings', () => {
+        const page = setup({ state: { connectionMode: 'relay' }, server: { mode: 'relay' } });
+        page.controller.switchToDirectMode();
+
+        expect(page.getServer()).toMatchObject({ mode: 'direct', modeChosen: true });
+        expect(page.events).toEqual([
+            ['setModeRadio', 'direct'],
+            ['applyModeSectionsVisibility', 'direct'],
+            ['updateAccountSection'],
+        ]);
+        expect(page.actions.openSettings).not.toHaveBeenCalled();
+        page.dom.window.close();
+    });
+
     it('returns to the chooser and resumes startup effects in order', async () => {
         const page = setup({ state: { connectionMode: 'relay' }, server: { mode: 'relay', token: 'token' } });
         const operation = page.controller.returnToModeChooser();

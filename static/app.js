@@ -282,6 +282,7 @@ const hostedPorts = {
     updateAccountBalance: () => { if (hostedAccount) hostedAccount.updateBalance(); },
     ensureHostedVersionAllowed: (options = {}) => hostedUpdate.ensure(options),
     returnToModeChooser: () => hostedMode.returnToModeChooser(),
+    switchToDirectMode: () => hostedMode.switchToDirectMode(),
     switchToOwnKeyMode: () => hostedMode.switchToOwnKeyMode(),
     maybeRunFirstLaunchFlow: () => hostedMode.maybeRunFirstLaunchFlow(),
     preopenHostedLoginIfNeeded: () => hostedMode.preopenHostedLoginIfNeeded(),
@@ -944,15 +945,7 @@ const hostedUpdate = HostedUpdate.create({
         updateUrl: clientUpdateUrl,
         notes: clientUpdateNotes,
     }),
-    onSwitchDirect: () => {
-        const settings = settingsPorts.loadServerSettings();
-        settings.mode = 'direct';
-        settings.modeChosen = true;
-        settingsPorts.saveServerSettings(settings);
-        settingsPorts.setModeRadio('direct');
-        settingsPorts.applyModeSectionsVisibility('direct');
-        hostedPorts.updateAccountSection();
-    },
+    onSwitchDirect: hostedPorts.switchToDirectMode,
     elements: {
         overlay: clientUpdateOverlay,
         dialog: clientUpdateDialog,

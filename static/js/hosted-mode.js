@@ -68,6 +68,20 @@
             saveServerSettings(server);
         }
 
+        function persistDirectMode() {
+            const server = loadServerSettings();
+            server.mode = 'direct';
+            server.modeChosen = true;
+            saveServerSettings(server);
+        }
+
+        function switchToDirectMode() {
+            persistDirectMode();
+            call('setModeRadio', 'direct');
+            call('applyModeSectionsVisibility', 'direct');
+            call('updateAccountSection');
+        }
+
         function shouldPreopenHostedLogin() {
             const current = state();
             return policy.shouldPreopenHostedLogin({
@@ -122,10 +136,7 @@
         async function switchToOwnKeyMode() {
             const current = state();
             if (current.lockManualControls || !current.relayAvailable) return;
-            const server = loadServerSettings();
-            server.mode = 'direct';
-            server.modeChosen = true;
-            saveServerSettings(server);
+            persistDirectMode();
             call('resetBootGuard');
             call('hideLogin');
             call('setModeRadio', 'direct');
@@ -163,6 +174,7 @@
             refreshPreopenedHostedLogin,
             returnToModeChooser,
             shouldPreopenHostedLogin,
+            switchToDirectMode,
             switchToOwnKeyMode,
         };
     }
