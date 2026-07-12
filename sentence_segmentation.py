@@ -7,6 +7,14 @@ from collections.abc import Callable
 # is_sentence_ender_at never lets it END a sentence.
 SENTENCE_END_CHARS = {"。", "！", "？", ".", "!", "?", "︒", "︕", "︖", "…"}
 CLOSING_QUOTE_CHARS = "\"'”’»›」』》"
+# Unambiguous open/close quote-bracket pairs. A sentence ender INSIDE an
+# unclosed pair does not end the sentence: the quoted passage is one unit
+# (both to the reader and to the translator — live 2026-07-12,
+# llm_20260712_083348: 「だめ、だめ、だめ。それ、スズメバチ。」 split at the
+# inner 。 while its translation arrived as one quoted block, starting a
+# ten-sentence pairing shift run). ASCII "/' are ambiguous (no open/close
+# distinction) and ASCII parens appear in emoticons; both are excluded.
+QUOTE_PAIRS = {"「": "」", "『": "』", "“": "”", "（": "）", "【": "】", "《": "》"}
 SENTENCE_END_ABBREVIATION_EXCEPTIONS = {
     "a.m.",
     "p.m.",
@@ -46,6 +54,15 @@ def text_ends_with_ellipsis(text: str) -> bool:
     while value and value[-1] in CLOSING_QUOTE_CHARS:
         value = value[:-1].rstrip()
     return value.endswith("…") or value.endswith("..")
+
+
+def text_has_unclosed_quote(text: str) -> bool:
+    """Whether an unambiguous quote/bracket pair is still open in `text`."""
+    value = str(text or "")
+    for opener, closer in QUOTE_PAIRS.items():
+        if value.count(opener) > value.count(closer):
+            return True
+    return False
 
 
 def text_ends_with_abbreviation_segment(text: str, segment: str) -> bool:
@@ -112,18 +129,34 @@ def is_sentence_ending_punctuation(text: str) -> bool:
     return False
 
 
-def split_into_sentence_lines(text: str) -> list[str]:
+def split_text_at_sentence_boundaries(text: str) -> list[str]:
+    """Split at sentence boundaries preserving the text exactly: the pieces
+    concatenate back to `text` unchanged (no trimming). Boundaries inside an
+    unclosed quote pair do not split."""
     value = text or ""
     if not value:
         return []
 
-    lines: list[str] = []
+    segments: list[str] = []
+    quote_depth = {opener: 0 for opener in QUOTE_PAIRS}
+    closer_to_opener = {closer: opener for opener, closer in QUOTE_PAIRS.items()}
     start = 0
     length = len(value)
     i = 0
     while i < length:
         ch = value[i]
+        if ch in quote_depth:
+            quote_depth[ch] += 1
+            i += 1
+            continue
+        if ch in closer_to_opener:
+            opener = closer_to_opener[ch]
+            quote_depth[opener] = max(0, quote_depth[opener] - 1)
+            # fall through: a closer can also sit right after an ender
         if ch not in SENTENCE_END_CHARS or not is_sentence_ender_at(value, i):
+            i += 1
+            continue
+        if any(quote_depth.values()):
             i += 1
             continue
         if i + 1 < length and value[i + 1] in SENTENCE_END_CHARS:
@@ -139,13 +172,23 @@ def split_into_sentence_lines(text: str) -> list[str]:
             i += 1
             continue
 
-        lines.append(segment)
+        segments.append(segment)
         start = end
         i = end
 
     if start < length:
-        lines.append(value[start:])
-    return [segment for segment in (line.strip() for line in lines) if segment]
+        segments.append(value[start:])
+    return segments
+
+
+def split_into_sentence_lines(text: str) -> list[str]:
+    return [
+        segment
+        for segment in (
+            piece.strip() for piece in split_text_at_sentence_boundaries(text)
+        )
+        if segment
+    ]
 
 
 class PendingBoundaryState:
@@ -223,6 +266,11 @@ class PendingBoundaryState:
         # context_text ends with this token's text: a lone "." whose buffered
         # context already ends with "." is part of an ellipsis, not a boundary.
         if text_ends_with_ellipsis(context_text):
+            return False
+        # An ender inside a still-open 「」-style quote does not end the
+        # sentence: the quoted passage is one unit and its translation arrives
+        # as one block (splitting there started a live pairing shift run).
+        if text_has_unclosed_quote(context_text):
             return False
         if text_ends_with_abbreviation_exception(context_text):
             return False

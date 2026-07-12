@@ -46,6 +46,71 @@ def test_text_ends_with_ellipsis():
     assert not seg.text_ends_with_ellipsis("")
 
 
+def test_split_text_at_sentence_boundaries_is_exact():
+    """The exact splitter never trims: pieces concatenate back unchanged.
+    soniox can finalize a token whose text spans a boundary ("Japanese. It's",
+    live llm_20260712_083058) — the session pre-splits such tokens and the
+    display must not lose the original spacing."""
+    cases = [
+        "we all know how to say \"no\" in Japanese. It's",
+        "甲。乙丙！丁",
+        " leading space. kept ",
+        "no boundary here",
+        "「だめ、だめ、だめ。それ、スズメバチ。」",
+        "",
+    ]
+    for text in cases:
+        pieces = seg.split_text_at_sentence_boundaries(text)
+        assert "".join(pieces) == text, (text, pieces)
+
+    assert seg.split_text_at_sentence_boundaries(
+        "we all know how to say \"no\" in Japanese. It's"
+    ) == ["we all know how to say \"no\" in Japanese.", " It's"]
+
+
+def test_no_split_inside_unclosed_quote_pairs():
+    """Live 2026-07-12 (llm_20260712_083348 ids 30-31): 「だめ、だめ、だめ。
+    それ、スズメバチ。」 was split at the inner 。 while soniox translated the
+    whole quotation as one block — the pairing then shifted for ten sentences.
+    An ender inside an unclosed 「」-style pair is not a boundary."""
+    assert seg.split_text_at_sentence_boundaries(
+        "「だめ、だめ、だめ。それ、スズメバチ。」"
+    ) == ["「だめ、だめ、だめ。それ、スズメバチ。」"]
+    assert seg.split_into_sentence_lines("「だめ。それ。」だめだって。") == [
+        "「だめ。それ。」だめだって。"
+    ]
+    # Balanced pairs still split normally after the quote closes.
+    assert seg.split_into_sentence_lines("「だめ。」と言った。次の話。") == [
+        "「だめ。」と言った。",
+        "次の話。",
+    ]
+
+    assert seg.text_has_unclosed_quote("「だめ、だめ、だめ。")
+    assert not seg.text_has_unclosed_quote("「だめ。それ。」")
+    assert not seg.text_has_unclosed_quote('say, "No thanks,"')  # ASCII: ambiguous, ignored
+
+
+def test_token_ender_inside_open_quote_context_is_not_a_boundary():
+    state = seg.PendingBoundaryState()
+
+    def check(tokens, index, context_text):
+        return state.is_token_sentence_ending(
+            tokens,
+            index,
+            context_text=context_text,
+            is_internal_token=lambda _t: False,
+            source_as_output=False,
+        )
+
+    def tok(text):
+        return {"text": text, "speaker": "1", "translation_status": "translation"}
+
+    # The quote opened earlier in the sentence and has not closed yet.
+    assert not check([tok("だめ。")], 0, "「だめ、だめ、だめ。")
+    # Once the quote closes, the ender behind it is a boundary again.
+    assert check([tok("スズメバチ。」")], 0, "「だめ、だめ、だめ。それ、スズメバチ。」")
+
+
 def test_streamed_ellipsis_dots_do_not_close_mid_run():
     """A lone "." token whose buffered context already ends with "." is part
     of a streamed ASCII ellipsis, not a boundary — in both directions."""
