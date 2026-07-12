@@ -47,6 +47,12 @@ function setup(overrides = {}) {
     };
     const dependencies = {
         clearSubtitleState: vi.fn(() => calls.push('clear')),
+        closeSocket: vi.fn(() => {
+            if (!socket) return false;
+            socket.close();
+            socket = null;
+            return true;
+        }),
         connect: vi.fn(() => calls.push('connect')),
         finalizeCurrentNonFinalTokens: vi.fn(() => calls.push('finalize')),
         hasUsableWebSocket: vi.fn(() => false),
@@ -72,8 +78,6 @@ function setup(overrides = {}) {
         escapeHtml: (value) => value,
         getState: () => state,
         updateState,
-        getSocket: () => socket,
-        setSocket: (value) => { socket = value; },
         ...dependencies,
     });
 
@@ -127,6 +131,7 @@ describe('RecognitionControls payloads', () => {
         expect(env.state.isRestarting).toBe(true);
         expect(env.state.shouldReconnect).toBe(false);
         expect(env.dependencies.sessionCostReset).toHaveBeenCalledOnce();
+        expect(env.dependencies.closeSocket).toHaveBeenCalledOnce();
         expect(env.dependencies.clearSubtitleState).toHaveBeenCalledOnce();
         expect(env.getSocket()).toBeNull();
         expect(env.document.getElementById('restart').classList.contains('restarting')).toBe(true);
@@ -176,6 +181,7 @@ describe('RecognitionControls payloads', () => {
         })).toBe(true);
 
         expect(env.dependencies.finalizeCurrentNonFinalTokens).toHaveBeenCalledOnce();
+        expect(env.dependencies.closeSocket).not.toHaveBeenCalled();
         expect(env.dependencies.sessionCostReset).not.toHaveBeenCalled();
         expect(env.dependencies.clearSubtitleState).not.toHaveBeenCalled();
         expect(env.getSocket()).not.toBeNull();
@@ -197,6 +203,21 @@ describe('RecognitionControls payloads', () => {
 });
 
 describe('RecognitionControls recovery and events', () => {
+    it('continues a manual restart when the connection close raises', async () => {
+        const closeError = new Error('close failed');
+        const closeSocket = vi.fn(() => { throw closeError; });
+        const env = setup({ dependencies: { closeSocket } });
+
+        expect(await env.controller.restartRecognition()).toBe(true);
+        expect(closeSocket).toHaveBeenCalledOnce();
+        expect(env.logger.warn).toHaveBeenCalledWith(
+            'WebSocket close during restart raised an error:',
+            closeError
+        );
+        expect(env.fetchImpl).toHaveBeenCalledOnce();
+        env.dom.window.close();
+    });
+
     it('restores reconnect/restart state and retains the HTTP failure message', async () => {
         const fetchImpl = vi.fn(async () => ({
             ok: false,

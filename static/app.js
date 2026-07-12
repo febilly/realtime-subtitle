@@ -1,8 +1,6 @@
 const customTooltip = CustomTooltip.create({ document, window });
 customTooltip.init();
 
-let ws;
-let wsClient = null;
 const subtitleContainer = document.getElementById('subtitleContainer');
 const subtitleScroll = SubtitleScroll.create({ container: subtitleContainer, window });
 subtitleScroll.init();
@@ -447,6 +445,15 @@ let isRestarting = false;    // 是否正在重启中
 let isPaused = false;        // 是否暂停中
 let audioSource = 'system';  // 音频输入来源
 
+const webSocketController = WebSocketController.create({
+    window,
+    wsClient: WsClient,
+    logger: console,
+    getState: () => ({ autoRestartEnabled, shouldReconnect, isRestarting }),
+    onFrame: handleMessageFrame,
+    onAutoRestart: triggerAutoRestart,
+});
+
 const runtimeControls = RuntimeControls.create({
     elements: {
         displayModeButton,
@@ -505,14 +512,13 @@ const recognitionControls = RecognitionControls.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'isRestarting')) isRestarting = patch.isRestarting;
         if (Object.prototype.hasOwnProperty.call(patch, 'shouldReconnect')) shouldReconnect = patch.shouldReconnect;
     },
-    getSocket: () => ws,
-    setSocket: (value) => { ws = value; },
+    closeSocket: webSocketController.close,
     finalizeCurrentNonFinalTokens,
     clearSubtitleState,
     sessionCostReset,
     updatePauseButtonUi: () => runtimeControls.updatePauseButtonUi(),
-    hasUsableWebSocket,
-    connect,
+    hasUsableWebSocket: webSocketController.isUsable,
+    connect: webSocketController.connect,
 });
 
 const appShellController = AppShellController.create({
@@ -870,54 +876,10 @@ function fetchOscTranslationStatus() {
 }
 
 
-function connect() {
-    if (!wsClient) {
-        wsClient = WsClient.createClient({
-            WebSocketImpl: window.WebSocket,
-            getUrl: () => {
-                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-                return `${protocol}://${window.location.host}/ws${window.location.search}`;
-            },
-            onSocketChange: (socket) => { ws = socket; },
-            onOpen: () => console.log('WebSocket connected'),
-            onFrame: handleMessage,
-            onError: (error) => console.error('WebSocket error:', error),
-            onClose: () => console.log('WebSocket closed'),
-            getAutoRestartEnabled: () => autoRestartEnabled,
-            onAutoRestart: triggerAutoRestart,
-            getShouldReconnect: () => shouldReconnect,
-            getIsRestarting: () => isRestarting,
-            reconnectDelayMs: 2000,
-        });
-    }
-    return wsClient.connect();
-}
-
-const MESSAGE_TYPES = [
-    'subtitle_font_preference', 'recognition_paused', 'overlay_visibility', 'ipc_status', 'error',
-    'spec_translation_pending', 'spec_translation', 'refine_result', 'subtitle_retract', 'llm_cost',
-    'translation_mode_fallback', 'segment_mode_changed', 'speaker_labels_changed',
-    'session_connected', 'session_idle', 'session_disconnected', 'clear', 'update',
-];
-const MESSAGE_HANDLERS = Object.fromEntries(
-    MESSAGE_TYPES.map((type) => [type, handleMessageFrame])
-);
-MESSAGE_HANDLERS.default = handleMessageFrame;
-
-function handleMessage(data) {
-    return WsClient.dispatchFrame(data, MESSAGE_HANDLERS);
-}
-
 function handleMessageFrame(data) {
     if (subtitleFrameController.handle(data)) return;
     if (sessionFrameController.handle(data)) return;
     runtimeFrameController.handle(data);
-}
-
-function hasUsableWebSocket() {
-    return wsClient
-        ? wsClient.isUsable()
-        : !!ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
 }
 
 function finalizeCurrentNonFinalTokens({ render = true } = {}) {
@@ -1427,7 +1389,7 @@ const hostedController = Hosted.createController({
     fetchOscTranslationStatus,
     maybeForceOpenSettings,
     updateBalanceBarVisibility,
-    connect,
+    connect: webSocketController.connect,
     sessionCostResume,
     sessionCostPause,
     isPaused: () => isPaused,

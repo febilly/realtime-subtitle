@@ -1,16 +1,6 @@
 (function (root) {
     'use strict';
 
-    function dispatchFrame(frame, handlers = {}) {
-        if (!frame || typeof frame.type !== 'string') {
-            return typeof handlers.default === 'function' ? handlers.default(frame) : undefined;
-        }
-        const handler = handlers[frame.type];
-        return typeof handler === 'function'
-            ? handler(frame)
-            : (typeof handlers.default === 'function' ? handlers.default(frame) : undefined);
-    }
-
     function createClient(options = {}) {
         const WebSocketImpl = options.WebSocketImpl || root.WebSocket;
         const getUrl = options.getUrl || (() => '');
@@ -67,7 +57,7 @@
         return { connect, close, getSocket: () => socket, isUsable };
     }
 
-    const api = { createClient, dispatchFrame };
+    const api = { createClient };
     root.WsClient = api;
     if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

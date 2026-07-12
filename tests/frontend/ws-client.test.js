@@ -1,4 +1,4 @@
-const { createClient, dispatchFrame } = require('../../static/js/ws-client');
+const { createClient } = require('../../static/js/ws-client');
 
 class Socket {
     static CONNECTING = 0;
@@ -21,34 +21,6 @@ class Socket {
         this.onmessage({ data: JSON.stringify(frame) });
     }
 }
-
-describe('WsClient frame dispatch', () => {
-    it.each([
-        'subtitle_font_preference', 'recognition_paused', 'overlay_visibility', 'ipc_status', 'error',
-        'spec_translation_pending', 'spec_translation', 'refine_result', 'subtitle_retract', 'llm_cost',
-        'translation_mode_fallback', 'segment_mode_changed', 'speaker_labels_changed',
-        'session_connected', 'session_idle', 'session_disconnected', 'clear', 'update',
-    ])('routes %s to exactly its registered handler', (type) => {
-        const handlers = Object.fromEntries([
-            'subtitle_font_preference', 'recognition_paused', 'overlay_visibility', 'ipc_status', 'error',
-            'spec_translation_pending', 'spec_translation', 'refine_result', 'subtitle_retract', 'llm_cost',
-            'translation_mode_fallback', 'segment_mode_changed', 'speaker_labels_changed',
-            'session_connected', 'session_idle', 'session_disconnected', 'clear', 'update',
-        ].map((name) => [name, vi.fn()]));
-        const frame = { type };
-        dispatchFrame(frame, handlers);
-        expect(handlers[type]).toHaveBeenCalledOnce();
-        expect(handlers[type]).toHaveBeenCalledWith(frame);
-        expect(Object.values(handlers).filter((handler) => handler.mock.calls.length)).toHaveLength(1);
-    });
-
-    it('uses the default handler for malformed and unknown frames', () => {
-        const fallback = vi.fn();
-        dispatchFrame({ type: 'unknown' }, { default: fallback });
-        dispatchFrame(null, { default: fallback });
-        expect(fallback).toHaveBeenCalledTimes(2);
-    });
-});
 
 describe('WsClient socket lifecycle', () => {
     beforeEach(() => {

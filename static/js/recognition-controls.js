@@ -56,8 +56,7 @@
             ? options.updateState
             : (patch) => { localState = { ...localState, ...patch }; };
 
-        const getSocket = typeof options.getSocket === 'function' ? options.getSocket : () => null;
-        const setSocket = typeof options.setSocket === 'function' ? options.setSocket : () => {};
+        const closeSocket = typeof options.closeSocket === 'function' ? options.closeSocket : () => false;
         const finalizeCurrentNonFinalTokens = typeof options.finalizeCurrentNonFinalTokens === 'function'
             ? options.finalizeCurrentNonFinalTokens
             : () => {};
@@ -128,15 +127,10 @@
                 if (auto) {
                     finalizeCurrentNonFinalTokens();
                 } else {
-                    const socket = getSocket();
-                    if (socket) {
-                        logger.log('Closing old WebSocket connection...');
-                        try {
-                            socket.close();
-                        } catch (closeError) {
-                            logger.warn('WebSocket close during restart raised an error:', closeError);
-                        }
-                        setSocket(null);
+                    try {
+                        closeSocket();
+                    } catch (closeError) {
+                        logger.warn('WebSocket close during restart raised an error:', closeError);
                     }
                 }
 
