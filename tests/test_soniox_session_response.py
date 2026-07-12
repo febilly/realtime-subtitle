@@ -883,6 +883,31 @@ def test_accurate_mode_cross_language_source_segments_in_translation_mode(monkey
     assert _separator_in_updates(updates)
 
 
+def test_accurate_translation_mode_forces_punctuation_segmentation(monkeypatch):
+    """Live 2026-07-12 regression (llm_20260712_080912): set_translation_mode
+    assigns the internal LLM mode directly, bypassing set_llm_refine_mode's
+    punctuation-forcing guard. 准确 left in "translation" segment mode closes
+    the pairer once per BATCH, so a batch carrying four complete sentences
+    dispatched them as one blob (and re-translated it despite per-sentence
+    speculative results)."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), MagicMock())
+    session._segment_mode = "translation"
+
+    ok, normalized, needs_restart = session.set_translation_mode("accurate")
+    assert ok and normalized == "accurate" and needs_restart
+    assert session.get_segment_mode() == "punctuation"
+
+    # Hybrid keeps the soniox translation stream, so a translation segment
+    # mode remains legal and must be left alone.
+    session._segment_mode = "translation"
+    ok, normalized, needs_restart = session.set_translation_mode("hybrid")
+    assert ok and normalized == "hybrid"
+    assert session.get_segment_mode() == "translation"
+
+
 def test_outgoing_final_tokens_carry_llm_sentence_id_in_punctuation_mode(monkeypatch):
     """Regression: in interleaved punctuation mode the outgoing token copies are
     minified before finalization runs, so the sentence id must be assigned when

@@ -1150,6 +1150,19 @@ class SonioxSession:
     def _clear_pending_boundaries_for_speaker(self, speaker: str) -> None:
         self._pending_boundaries.clear_speaker(speaker)
 
+    def _open_source_in_unclosed_quote(self, speaker: str) -> bool:
+        """Whether the speaker's open paired sentence is inside an unclosed
+        「」-style quote. Deferred display boundaries (quote/period pendings)
+        and translation-punctuation closes must not end such a sentence: the
+        quotation is one unit, and closing it mid-quote paired live sentences
+        against wrong translations (llm_20260712_083348 ids 30-39, 41)."""
+        entry = self._pairer.open_entry(str(speaker))
+        if entry is None or not entry.source_tokens:
+            return False
+        return sentence_segmentation.text_has_unclosed_quote(
+            self._join_token_texts(entry.source_tokens)
+        )
+
     def _flush_pending_boundary(
         self,
         token: dict,
@@ -1160,6 +1173,8 @@ class SonioxSession:
             return
         speaker = str(token.get("speaker", "?"))
         if speaker in finalized_speakers:
+            return
+        if self._open_source_in_unclosed_quote(speaker):
             return
         self._pairing_close_source(speaker)
         if self._trigger_sentence_finalization(speaker):
@@ -1178,6 +1193,8 @@ class SonioxSession:
     ) -> None:
         for speaker in self._pending_boundaries.flush_stale_quote_boundaries_before_incompatible_token(token):
             if speaker in finalized_speakers:
+                continue
+            if self._open_source_in_unclosed_quote(speaker):
                 continue
             self._pairing_close_source(speaker)
             if self._trigger_sentence_finalization(speaker):
@@ -1739,6 +1756,15 @@ class SonioxSession:
         prev_suppress = self._suppress_soniox_translation
         self._llm_refine_mode = llm_mode
         self._suppress_soniox_translation = bool(suppress)
+        if suppress and self._segment_mode == "translation":
+            # 准确 mode has no soniox translation stream to segment on. Left in
+            # "translation" segment mode the pairer closes once per BATCH, so
+            # every complete sentence a batch carries glues into one entry
+            # (live 2026-07-12, llm_20260712_080912: four sentences dispatched
+            # as one blob, re-translated despite per-sentence spec results).
+            # set_llm_refine_mode has the same guard, but this path assigns
+            # the mode directly and used to bypass it.
+            self.set_segment_mode("punctuation")
         # Re-selecting an LLM mode clears any prepaid-exhausted lock from before.
         if llm_mode != "off":
             self._hosted_llm.reset()
@@ -2122,6 +2148,24 @@ class SonioxSession:
         except Exception as error:
             print(f"⚠️  Failed to notify clients about stream rollover: {error}")
 
+    def _split_final_token(self, token: dict) -> list[dict]:
+        """One token per sentence piece for a final token whose text spans a
+        sentence boundary. Internal tokens (<end> etc.) and single-piece texts
+        pass through unchanged; split pieces are clones sharing the original's
+        metadata, and their texts concatenate back to the original exactly."""
+        text = str(token.get("text") or "")
+        if self._is_internal_soniox_token(text):
+            return [token]
+        pieces = sentence_segmentation.split_text_at_sentence_boundaries(text)
+        if len(pieces) <= 1:
+            return [token]
+        clones = []
+        for piece in pieces:
+            clone = dict(token)
+            clone["text"] = piece
+            clones.append(clone)
+        return clones
+
     def _process_soniox_response(
         self,
         res: dict,
@@ -2143,8 +2187,13 @@ class SonioxSession:
             text = token.get("text")
             if text:
                 if token.get("is_final"):
-                    # Final tokens累积添加
-                    all_final_tokens.append(token)
+                    # Final tokens累积添加. A final token can carry a sentence
+                    # boundary INSIDE its text ("...in Japanese. It's") — the
+                    # interleaved boundary scan only looks at token ends, so an
+                    # unsplit token glues two sentences into one pairing entry
+                    # (live 2026-07-12, llm_20260712_083058). Pre-split it into
+                    # one token per sentence piece (exact text, no trimming).
+                    all_final_tokens.extend(self._split_final_token(token))
                 elif not self._is_internal_soniox_token(text):
                     # Non-final tokens每次重置
                     non_final_tokens.append(token)
@@ -2266,6 +2315,11 @@ class SonioxSession:
                         and token_sentence_id
                         and open_entry.sentence_id == str(token_sentence_id)
                         and open_entry.source_tokens
+                        # A source still inside an unclosed 「」-style quote is
+                        # not done even if its translation-so-far ends a
+                        # sentence: the quotation's remaining source (and its
+                        # translation tail) still belongs to this entry.
+                        and not self._open_source_in_unclosed_quote(token_speaker)
                     ):
                         self._pairing_close_source(
                             token_speaker,
