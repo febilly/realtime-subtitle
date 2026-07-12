@@ -773,6 +773,43 @@ const recognitionControls = RecognitionControls.create({
 runtimeControls.init({ refreshOverlay: false });
 recognitionControls.init();
 
+const settingsSetup = SettingsSetup.create({
+    policy: SettingsPolicy,
+    fetch,
+    t,
+    getState: () => ({
+        translationProvider,
+        backendBootId,
+        setupRequired,
+        backendMode,
+        backendLoggedIn,
+        backendSonioxCustomUrl,
+        backendSonioxRegion,
+        backendKeySource,
+        pushedOverrideBootId,
+        uiTranslationMode,
+        lockManualControls,
+        providerSettings: loadProviderSettings(),
+        connectionMode: getConnectionMode(),
+        serverSettings: loadServerSettings(),
+    }),
+    updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'translationProvider')) translationProvider = patch.translationProvider;
+        if (Object.prototype.hasOwnProperty.call(patch, 'backendBootId')) backendBootId = patch.backendBootId;
+        if (Object.prototype.hasOwnProperty.call(patch, 'setupRequired')) setupRequired = patch.setupRequired;
+        if (Object.prototype.hasOwnProperty.call(patch, 'backendMode')) backendMode = patch.backendMode;
+        if (Object.prototype.hasOwnProperty.call(patch, 'backendLoggedIn')) backendLoggedIn = patch.backendLoggedIn;
+        if (Object.prototype.hasOwnProperty.call(patch, 'pushedOverrideBootId')) pushedOverrideBootId = patch.pushedOverrideBootId;
+        if (Object.prototype.hasOwnProperty.call(patch, 'uiTranslationMode')) uiTranslationMode = patch.uiTranslationMode;
+    },
+    actions: {
+        sessionCostReset,
+        showToast,
+        setUiTranslationMode,
+        fetchUiConfig,
+    },
+});
+
 // 初始化按钮文本
 updateSegmentModeButton();
 updateDisplayModeButton();
@@ -2806,71 +2843,16 @@ function closeSettings() {
     hideSettingsPanel();
 }
 
-async function pushSetup(provider, apiKey, { silent = false, region = null, mode = null, token = null } = {}) {
-    try {
-        const body = SettingsPolicy.buildSetupBody(provider, apiKey, { region, mode, token });
-        const resp = await fetch('/setup', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-            return { ok: false, data };
-        }
-        const oldProvider = translationProvider;
-        translationProvider = data.provider || provider;
-        if (translationProvider !== oldProvider) {
-            sessionCostReset();
-        }
-        backendBootId = data.boot_id || backendBootId;
-        setupRequired = !!data.setup_required;
-        if (typeof data.mode === 'string') {
-            backendMode = data.mode;
-        }
-        if (typeof data.logged_in === 'boolean') {
-            backendLoggedIn = !!data.logged_in;
-        }
-        pushedOverrideBootId = backendBootId;
-        if (data.downgraded_two_way) {
-            showToast(t('gemini_no_two_way_warning'), true);
-            uiTranslationMode = 'one_way';
-            setUiTranslationMode('one_way', { persistOnly: true });
-        }
-        await fetchUiConfig();
-        if (!silent && !data.setup_required) {
-            showToast(t('settings_saved'));
-        }
-        return { ok: true, data };
-    } catch (err) {
-        return { ok: false, data: { message: String(err) } };
-    }
+function pushSetup(provider, apiKey, options = {}) {
+    return settingsSetup.push(provider, apiKey, options);
 }
 
-function directSettingsNeedSetup({ provider, region, apiKeyToPush, previousKey }) {
-    return SettingsPolicy.directSettingsNeedSetup({
-        provider,
-        region,
-        apiKeyToPush,
-        previousKey,
-        translationProvider,
-        backendMode,
-        backendSonioxCustomUrl,
-        backendSonioxRegion,
-        backendKeySource,
-        setupRequired,
-    });
+function directSettingsNeedSetup(input) {
+    return settingsSetup.directNeedsSetup(input);
 }
 
-function relaySettingsNeedSetup({ provider, token }) {
-    return SettingsPolicy.relaySettingsNeedSetup({
-        provider,
-        token,
-        translationProvider,
-        backendMode,
-        backendLoggedIn,
-        setupRequired,
-    });
+function relaySettingsNeedSetup(input) {
+    return settingsSetup.relayNeedsSetup(input);
 }
 
 function finishHotSettingsSave() {
@@ -3099,24 +3081,7 @@ async function handleSettingsSave(event) {
 }
 
 async function syncProviderFromStorage() {
-    if (lockManualControls) return;
-    const plan = SettingsPolicy.buildProviderSyncPlan({
-        lockManualControls,
-        providerSettings: loadProviderSettings(),
-        translationProvider,
-        backendSonioxCustomUrl,
-        backendSonioxRegion,
-        connectionMode: getConnectionMode(),
-        serverSettings: loadServerSettings(),
-        backendMode,
-        backendLoggedIn,
-        backendKeySource,
-        pushedOverrideBootId,
-        backendBootId,
-    });
-    if (plan) {
-        await pushSetup(plan.provider, plan.apiKey, plan.options);
-    }
+    await settingsSetup.syncFromStorage();
 }
 
 function maybeForceOpenSettings() {
