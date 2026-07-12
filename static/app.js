@@ -563,7 +563,7 @@ const sessionFrameController = SessionFrameController.create({
         syncPauseState: runtimeControls.syncPauseState,
         handleHostedSessionFrame: (frame) => hostedController.handleSessionFrame(frame),
         showToast,
-        openSettings,
+        openSettings: (options) => settingsFlowController.open(options),
         loadServerSettings,
         saveServerSettings,
         updateBalanceBarVisibility,
@@ -579,7 +579,7 @@ const runtimeFrameController = RuntimeFrameController.create({
         syncOverlayState: runtimeControls.syncOverlayState,
         syncIpcStatus: appShellController.syncIpcStatus,
         displayErrorMessage,
-        openSettings,
+        openSettings: (options) => settingsFlowController.open(options),
         addLlmCost: (credits) => hostedBalance.addLlmCost(credits),
         setTranslationUiMode,
         renderTranslationModePicker,
@@ -666,11 +666,11 @@ const settingsUi = SettingsUI.create({
     window,
     storage: localStorage,
     actions: {
-        openSettings,
-        closeSettings,
+        openSettings: (options) => settingsFlowController.open(options),
+        closeSettings: () => settingsFlowController.close(),
         returnToModeChooser,
         handleResetAll: resetAllController.handle,
-        handleSettingsSave,
+        handleSettingsSave: (event) => settingsFlowController.handleSubmit(event),
     },
 });
 const themeController = ThemeController.create({
@@ -969,6 +969,24 @@ const settingsPanelController = SettingsPanel.create({
     },
 });
 settingsPanelController.init();
+const settingsFlowController = SettingsFlowController.create({
+    panel: settingsPanelController,
+    policy: SettingsPolicy,
+    t,
+    getState: () => ({
+        lockManualControls,
+        connectionMode: getConnectionMode(),
+        serverSettings: loadServerSettings(),
+        setupRequired,
+    }),
+    updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'setupRequired')) {
+            setupRequired = patch.setupRequired;
+        }
+    },
+    submit: (event) => settingsSaveController.handleSubmit(event),
+    actions: { openLogin, showToast },
+});
 const settingsSaveController = SettingsSave.create({
     runtime: settingsRuntime,
     setup: settingsSetup,
@@ -999,9 +1017,9 @@ const settingsSaveController = SettingsSave.create({
             settingsPanelController.updateApiKeyField(provider);
             settingsPanelController.updateSonioxRegion(provider);
         },
-        hideSettingsPanel,
+        hideSettingsPanel: settingsFlowController.hide,
         openLogin,
-        finishHotSettingsSave,
+        finishHotSettingsSave: settingsFlowController.finishHotSave,
         clearSubtitleState,
         populateSettingsForm: () => settingsPanelController.populate(),
     },
@@ -1035,26 +1053,8 @@ function updateAccountBalance() {
     if (hostedAccount) hostedAccount.updateBalance();
 }
 
-function openSettings({ forced = false } = {}) {
-    return settingsPanelController.open({ forced });
-}
-
-function hideSettingsPanel() {
-    settingsPanelController.hide();
-}
-
-function closeSettings() {
-    return settingsPanelController.close();
-}
-
 function pushSetup(provider, apiKey, options = {}) {
     return settingsSetup.push(provider, apiKey, options);
-}
-
-function finishHotSettingsSave() {
-    setupRequired = false;
-    hideSettingsPanel();
-    showToast(t('settings_saved'));
 }
 
 // 自定义确认对话框，替代浏览器自带的 confirm()。
@@ -1062,23 +1062,8 @@ function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
     return confirmController.show(message, { okLabel, cancelLabel, danger });
 }
 
-function handleSettingsSave(event) {
-    return settingsSaveController.handleSubmit(event);
-}
-
 async function syncProviderFromStorage() {
     await settingsSetup.syncFromStorage();
-}
-
-function maybeForceOpenSettings() {
-    const action = SettingsPolicy.resolveForceOpenAction({
-        lockManualControls,
-        connectionMode: getConnectionMode(),
-        serverSettings: loadServerSettings(),
-        setupRequired,
-    });
-    if (action === 'login') openLogin({ forced: true });
-    if (action === 'settings') openSettings({ forced: true });
 }
 
 function preopenHostedLoginIfNeeded() {
@@ -1189,15 +1174,15 @@ const hostedMode = HostedMode.create({
         applyLoginI18n,
         updateLoginSubmitState,
         resetBootGuard: () => { pushedOverrideBootId = null; },
-        hideSettingsPanel,
+        hideSettingsPanel: settingsFlowController.hide,
         ensureHostedVersionAllowed,
         syncProviderFromStorage,
-        maybeForceOpenSettings,
+        maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
         updateBalanceBarVisibility,
         setModeRadio,
         applyModeSectionsVisibility,
         updateAccountSection,
-        openSettings,
+        openSettings: settingsFlowController.open,
     },
     elements: {
         chooserOverlay: modeChooserOverlay,
@@ -1293,7 +1278,7 @@ hostedAccount = HostedAccount.create({
         showToast,
         setBackendLoggedIn: (value) => { backendLoggedIn = !!value; },
         resetBootGuard: () => { pushedOverrideBootId = null; },
-        hideSettingsPanel,
+        hideSettingsPanel: settingsFlowController.hide,
         openLogin,
     },
     elements: {
@@ -1315,7 +1300,7 @@ hostedAccount = HostedAccount.create({
 });
 hostedAccount.init();
 if (balanceOpenSettingsButton) {
-    balanceOpenSettingsButton.addEventListener('click', () => openSettings({ forced: false }));
+    balanceOpenSettingsButton.addEventListener('click', () => settingsFlowController.open({ forced: false }));
 }
 
 // ---- First-launch mode chooser ----
@@ -1387,7 +1372,7 @@ const hostedController = Hosted.createController({
     fetchLlmRefineStatus,
     fetchApiKeyStatus,
     fetchOscTranslationStatus,
-    maybeForceOpenSettings,
+    maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
     updateBalanceBarVisibility,
     connect: webSocketController.connect,
     sessionCostResume,
