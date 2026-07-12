@@ -1441,10 +1441,6 @@ function fetchMicrophoneDevices() {
     return settingsRuntime.fetchMicrophoneDevices();
 }
 
-function saveMicrophoneDeviceSelection() {
-    return settingsRuntime.saveMicrophoneDeviceSelection();
-}
-
 function renderAutoRestartPicker() {
     return settingsRuntime.renderAutoRestartPicker();
 }
@@ -1530,10 +1526,6 @@ function renderSegmentModePicker() {
 
 function renderRuntimeSettingsPickers() {
     return settingsRuntime.renderRuntimeSettingsPickers();
-}
-
-function applyRuntimeControlSettings() {
-    return settingsRuntime.applyRuntimeControlSettings();
 }
 
 async function setSpeakerLabelsHidden(hidden) {
@@ -2490,37 +2482,54 @@ const settingsPanelController = SettingsPanel.create({
     },
 });
 settingsPanelController.init();
+const settingsSaveController = SettingsSave.create({
+    runtime: settingsRuntime,
+    setup: settingsSetup,
+    t,
+    localizeBackendMessage,
+    getDraft: () => ({
+        provider: settingsPanelController.getSelectedProvider(),
+        region: settingsPanelController.getSelectedSonioxRegion(),
+        mode: settingsPanelController.getMode(),
+        apiKey: apiKeyInput ? apiKeyInput.value : '',
+    }),
+    getState: () => ({ envKeyPresent }),
+    loadProviderSettings,
+    saveProviderSettings,
+    loadServerSettings,
+    saveServerSettings,
+    ensureHostedVersionAllowed,
+    actions: {
+        setSaving: (saving) => {
+            if (!settingsSaveButton) return;
+            settingsSaveButton.disabled = saving;
+            settingsSaveButton.textContent = t(saving ? 'saving' : 'save');
+        },
+        setError: (message) => {
+            if (settingsErrorEl) settingsErrorEl.textContent = message;
+        },
+        refreshProviderFields: (provider) => {
+            settingsPanelController.updateApiKeyField(provider);
+            settingsPanelController.updateSonioxRegion(provider);
+        },
+        hideSettingsPanel,
+        openLogin,
+        finishHotSettingsSave,
+        clearSubtitleState,
+        populateSettingsForm: () => settingsPanelController.populate(),
+    },
+});
 
 function updateSettingsButtonVisibility() {
     settingsPanelController.updateButtonVisibility();
-}
-
-function applySettingsI18n() {
-    settingsPanelController.applyI18n();
 }
 
 function getSelectedProvider() {
     return settingsPanelController.getSelectedProvider();
 }
 
-function fetchRelayPricing() {
-    return settingsPanelController.fetchRelayPricing();
-}
-
 function getSelectedSonioxRegion() {
     return settingsPanelController.getSelectedSonioxRegion();
-}
-
-function updateSonioxRegionForProvider(provider) {
-    settingsPanelController.updateSonioxRegion(provider);
-}
-
-function updateApiKeyFieldForProvider(provider) {
-    settingsPanelController.updateApiKeyField(provider);
-}
-
-function populateSettingsForm() {
-    settingsPanelController.populate();
 }
 
 function setModeRadio(mode) {
@@ -2561,14 +2570,6 @@ function closeSettings() {
 
 function pushSetup(provider, apiKey, options = {}) {
     return settingsSetup.push(provider, apiKey, options);
-}
-
-function directSettingsNeedSetup(input) {
-    return settingsSetup.directNeedsSetup(input);
-}
-
-function relaySettingsNeedSetup(input) {
-    return settingsSetup.relayNeedsSetup(input);
 }
 
 function finishHotSettingsSave() {
@@ -2616,134 +2617,8 @@ async function handleResetAll() {
         + t('reset_all_done') + '</div>';
 }
 
-async function handleSettingsSave(event) {
-    if (event) {
-        event.preventDefault();
-    }
-    settingsRuntime.applyBundledCjkFontDraft();
-    const provider = getSelectedProvider();
-    const region = getSelectedSonioxRegion();
-    const mode = getSettingsMode();
-    const settings = loadProviderSettings();
-    const previousProviderKey = settings.keys && settings.keys[provider] ? String(settings.keys[provider]) : '';
-    settings.providerOverride = provider;
-    if (region) {
-        settings.sonioxRegion = region;
-    }
-    settings.keys = settings.keys || {};
-    settingsRuntime.writeProviderSettingsDraft(settings, provider);
-
-    if (mode === 'relay') {
-        const allowed = await ensureHostedVersionAllowed({ candidateMode: 'relay' });
-        if (!allowed) {
-            updateApiKeyFieldForProvider(provider);
-            updateSonioxRegionForProvider(provider);
-            return;
-        }
-    }
-
-    const server = loadServerSettings();
-    server.mode = mode;
-    server.modeChosen = true;
-    saveServerSettings(server);
-
-    const runtimeResult = await applyRuntimeControlSettings();
-    if (!runtimeResult.ok) {
-        if (settingsErrorEl) settingsErrorEl.textContent = runtimeResult.message || t('backend_segment_mode_disabled');
-        return;
-    }
-
-    if (mode === 'relay') {
-        // Hosted mode: no provider key needed; sign-in supplies the token.
-        if (!server.token) {
-            saveProviderSettings(settings);
-            hideSettingsPanel();
-            openLogin({ forced: false });
-            return;
-        }
-        if (settingsSaveButton) { settingsSaveButton.disabled = true; settingsSaveButton.textContent = t('saving'); }
-        if (settingsErrorEl) settingsErrorEl.textContent = '';
-        const micResult = await saveMicrophoneDeviceSelection();
-        if (!micResult.ok) {
-            if (settingsSaveButton) { settingsSaveButton.disabled = false; settingsSaveButton.textContent = t('save'); }
-            if (settingsErrorEl) settingsErrorEl.textContent = micResult.message || t('validation_error');
-            return;
-        }
-        saveProviderSettings(settings);
-        if (!relaySettingsNeedSetup({ provider, token: server.token })) {
-            if (settingsSaveButton) { settingsSaveButton.disabled = false; settingsSaveButton.textContent = t('save'); }
-            finishHotSettingsSave();
-            return;
-        }
-        const result = await pushSetup(provider, null, {
-            silent: false, mode: 'relay', token: server.token, region,
-        });
-        if (settingsSaveButton) { settingsSaveButton.disabled = false; settingsSaveButton.textContent = t('save'); }
-        if (!result.ok) {
-            const msg = (result.data && result.data.message) || t('validation_api_key');
-            if (settingsErrorEl) settingsErrorEl.textContent = localizeBackendMessage(msg);
-            return;
-        }
-        if (result.data && result.data.setup_required) {
-            hideSettingsPanel();
-            openLogin({ forced: true });
-            return;
-        }
-        hideSettingsPanel();
-        clearSubtitleState();
-        return;
-    }
-
-    // ----- direct mode (user's own provider key) -----
-    const key = (apiKeyInput && apiKeyInput.value || '').trim();
-    if (key) {
-        settings.keys[provider] = key;
-    } else {
-        delete settings.keys[provider];
-    }
-    const hasOverride = !!(settings.keys && settings.keys[provider]);
-    if (!hasOverride && !envKeyPresent[provider]) {
-        if (settingsErrorEl) settingsErrorEl.textContent = t('api_key_required');
-        return;
-    }
-    saveProviderSettings(settings);
-
-    if (settingsSaveButton) settingsSaveButton.disabled = true;
-    if (settingsSaveButton) settingsSaveButton.textContent = t('saving');
-    if (settingsErrorEl) settingsErrorEl.textContent = '';
-
-    const micResult = await saveMicrophoneDeviceSelection();
-    if (!micResult.ok) {
-        if (settingsSaveButton) settingsSaveButton.disabled = false;
-        if (settingsSaveButton) settingsSaveButton.textContent = t('save');
-        if (settingsErrorEl) settingsErrorEl.textContent = micResult.message || t('validation_error');
-        return;
-    }
-
-    const apiKeyToPush = (settings.keys && settings.keys[provider]) || null;
-    if (!directSettingsNeedSetup({ provider, region, apiKeyToPush, previousKey: previousProviderKey })) {
-        if (settingsSaveButton) settingsSaveButton.disabled = false;
-        if (settingsSaveButton) settingsSaveButton.textContent = t('save');
-        finishHotSettingsSave();
-        return;
-    }
-    const result = await pushSetup(provider, apiKeyToPush, { silent: false, region, mode: 'direct' });
-
-    if (settingsSaveButton) settingsSaveButton.disabled = false;
-    if (settingsSaveButton) settingsSaveButton.textContent = t('save');
-
-    if (!result.ok) {
-        const msg = (result.data && result.data.message) || t('validation_api_key');
-        if (settingsErrorEl) settingsErrorEl.textContent = localizeBackendMessage(msg);
-        return;
-    }
-    if (result.data && result.data.setup_required) {
-        if (settingsErrorEl) settingsErrorEl.textContent = t('setup_required_hint');
-        populateSettingsForm();
-        return;
-    }
-    hideSettingsPanel();
-    clearSubtitleState();
+function handleSettingsSave(event) {
+    return settingsSaveController.handleSubmit(event);
 }
 
 async function syncProviderFromStorage() {
