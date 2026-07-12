@@ -2712,72 +2712,16 @@ function applyModeSectionsVisibility(mode) {
     if (modeDesc) modeDesc.textContent = t(relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc');
 }
 
+let hostedAccount = null;
+
 function updateAccountSection() {
-    const serverHint = document.getElementById('accountServerHint');
-    const identityHint = document.getElementById('accountIdentityHint');
-    const purchaseHint = document.getElementById('purchaseCreditsHint');
-    const purchaseLink = document.getElementById('purchaseCreditsLink');
-    const firstBonusHint = document.getElementById('firstRedeemBonusHint');
-    const firstBonus = hostedBalance.getFirstRedeemBonus();
-    if (serverHint) {
-        serverHint.textContent = relayServerUrl ? t('account_server', { url: relayServerUrl }) : '';
-    }
-    if (identityHint) {
-        const server = loadServerSettings();
-        if (backendLoggedIn || server.token) {
-            const name = server.displayName || '—';
-            const rank = rankLabel(server.trustRank) || '—';
-            identityHint.textContent = t('account_identity', { name, rank });
-        } else {
-            identityHint.textContent = t('account_not_signed_in');
-        }
-    }
-    if (purchaseHint && purchaseLink) {
-        if (creditsPurchaseUrl) {
-            purchaseLink.href = creditsPurchaseUrl;
-            purchaseLink.textContent = t('account_purchase_credits');
-            purchaseHint.hidden = false;
-        } else {
-            purchaseLink.removeAttribute('href');
-            purchaseHint.hidden = true;
-        }
-    }
-    if (firstBonusHint) {
-        const showFirstBonus = (backendLoggedIn || !!loadServerSettings().token)
-            && firstBonus.eligible
-            && Number(firstBonus.credits) > 0;
-        firstBonusHint.textContent = showFirstBonus
-            ? t('account_first_redeem_bonus', { credits: formatCredits(firstBonus.credits) })
-            : '';
-        firstBonusHint.hidden = !showFirstBonus;
-    }
-    updateAccountBalance();
+    if (hostedAccount) hostedAccount.updateSection();
 }
 
 // Show the signed-in user's current balance and free pools inside the account
 // panel (requirement: account info also shows the current quota balance).
 function updateAccountBalance() {
-    const balanceHint = document.getElementById('accountBalanceHint');
-    const poolsBox = document.getElementById('accountFreePools');
-    const server = loadServerSettings();
-    const signedIn = backendLoggedIn || !!server.token;
-    // Mirror the same live (estimate-adjusted) view the balance bar shows.
-    const view = currentBalanceView();
-    if (balanceHint) {
-        if (signedIn && view && view.prepaid_balance != null) {
-            balanceHint.textContent = t('account_balance', {
-                balance: formatCredits(view.prepaid_balance),
-            });
-            balanceHint.hidden = false;
-        } else {
-            balanceHint.textContent = '';
-            balanceHint.hidden = true;
-        }
-    }
-    if (poolsBox) {
-        const pools = (signedIn && view && view.free) ? view.free.pools : null;
-        renderFreePools(poolsBox, pools);
-    }
+    if (hostedAccount) hostedAccount.updateBalance();
 }
 
 function openSettings({ forced = false } = {}) {
@@ -3122,47 +3066,6 @@ if (settingsForm) {
     });
 }
 
-// Account actions (relay/hosted mode).
-const redeemButton = document.getElementById('redeemButton');
-const redeemInput = document.getElementById('redeemInput');
-const redeemPasteButton = document.getElementById('redeemPasteButton');
-const reLoginButton = document.getElementById('reLoginButton');
-const logoutButton = document.getElementById('logoutButton');
-const copyInviteButton = document.getElementById('copyInviteButton');
-const openUserWebButton = document.getElementById('openUserWebButton');
-if (redeemButton) {
-    redeemButton.addEventListener('click', () => handleRedeem());
-}
-if (redeemPasteButton) {
-    redeemPasteButton.addEventListener('click', async (event) => {
-        event.preventDefault();
-        try {
-            const text = await navigator.clipboard.readText();
-            if (redeemInput) {
-                redeemInput.value = (text || '').trim();
-                redeemInput.focus();
-            }
-        } catch (e) {
-            // Clipboard read may be unavailable/denied; user can paste manually.
-        }
-    });
-}
-if (copyInviteButton) {
-    copyInviteButton.addEventListener('click', () => handleCopyInvite());
-}
-if (openUserWebButton) {
-    openUserWebButton.addEventListener('click', () => handleOpenUserWeb());
-}
-if (reLoginButton) {
-    reLoginButton.addEventListener('click', () => {
-        hideSettingsPanel();
-        openLogin({ forced: false });
-    });
-}
-if (logoutButton) {
-    logoutButton.addEventListener('click', () => handleLogout());
-}
-
 // ===================== Relay (hosted) client: chooser / login / account / balance =====================
 
 const modeChooserOverlay = document.getElementById('modeChooserOverlay');
@@ -3336,13 +3239,50 @@ const hostedBalance = HostedBalance.create({
         balanceOpenSettingsButton,
     },
 });
+hostedAccount = HostedAccount.create({
+    document,
+    window,
+    navigator,
+    fetch,
+    t,
+    localizeBackendMessage,
+    showConfirm,
+    rankLabel: hostedLogin.rankLabel,
+    getRuntimeState: () => ({
+        backendLoggedIn,
+        relayServerUrl,
+        creditsPurchaseUrl,
+    }),
+    loadServerSettings,
+    saveServerSettings,
+    balance: hostedBalance,
+    actions: {
+        showToast,
+        setBackendLoggedIn: (value) => { backendLoggedIn = !!value; },
+        resetBootGuard: () => { pushedOverrideBootId = null; },
+        hideSettingsPanel,
+        openLogin,
+    },
+    elements: {
+        serverHint: document.getElementById('accountServerHint'),
+        identityHint: document.getElementById('accountIdentityHint'),
+        purchaseHint: document.getElementById('purchaseCreditsHint'),
+        purchaseLink: document.getElementById('purchaseCreditsLink'),
+        firstBonusHint: document.getElementById('firstRedeemBonusHint'),
+        balanceHint: document.getElementById('accountBalanceHint'),
+        freePools: document.getElementById('accountFreePools'),
+        redeemButton: document.getElementById('redeemButton'),
+        redeemInput: document.getElementById('redeemInput'),
+        redeemPasteButton: document.getElementById('redeemPasteButton'),
+        reLoginButton: document.getElementById('reLoginButton'),
+        logoutButton: document.getElementById('logoutButton'),
+        copyInviteButton: document.getElementById('copyInviteButton'),
+        openUserWebButton: document.getElementById('openUserWebButton'),
+    },
+});
+hostedAccount.init();
 if (balanceOpenSettingsButton) {
     balanceOpenSettingsButton.addEventListener('click', () => openSettings({ forced: false }));
-}
-
-function setElText(id, text) {
-    const el = document.getElementById(id);
-    if (el) el.textContent = text;
 }
 
 // ---- First-launch mode chooser ----
@@ -3383,120 +3323,12 @@ function updateLoginSubmitState() {
     hostedLogin.updateSubmitState();
 }
 
-function rankLabel(rank) {
-    return hostedLogin.rankLabel(rank);
-}
-
 function openLogin(options = {}) {
     hostedLogin.open(options);
 }
 
 function hideLogin() {
     hostedLogin.hide();
-}
-
-// ---- Account actions ----
-async function handleRedeem() {
-    const input = document.getElementById('redeemInput');
-    const code = (input && input.value || '').trim();
-    if (!code) return;
-    try {
-        const resp = await fetch('/account/redeem', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code }),
-        });
-        const data = await resp.json().catch(() => ({}));
-        if (resp.ok && data && data.success) {
-            if (input) input.value = '';
-            showToast(t('account_redeem_success', {
-                credits: formatCredits(data.granted_credits),
-                balance: formatCredits(data.new_balance),
-            }));
-            hostedBalance.resetFirstRedeemBonus(data.first_redeem_bonus_credits);
-            updateAccountSection();
-            void fetchBalance();
-        } else {
-            showToast(localizeBackendMessage((data && (data.detail || data.message)) || t('connection_error_try_again')), true);
-        }
-    } catch (e) {
-        showToast(String(e), true);
-    }
-}
-
-async function handleCopyInvite() {
-    if (copyInviteButton) copyInviteButton.disabled = true;
-    try {
-        const resp = await fetch('/account/invite');
-        const data = await resp.json().catch(() => ({}));
-        const link = data && data.invite_link;
-        if (!resp.ok || !link) {
-            showToast(localizeBackendMessage((data && (data.detail || data.message)) || t('account_invite_failed')), true);
-            return;
-        }
-        try {
-            await navigator.clipboard.writeText(link);
-            showToast(t('account_invite_copied'));
-        } catch (e) {
-            // Clipboard may be unavailable; show the link so the user can copy it manually.
-            showToast(link);
-        }
-    } catch (e) {
-        showToast(String(e), true);
-    } finally {
-        if (copyInviteButton) copyInviteButton.disabled = false;
-    }
-}
-
-async function handleOpenUserWeb() {
-    if (openUserWebButton) openUserWebButton.disabled = true;
-    try {
-        const resp = await fetch('/account/web-login-url');
-        const data = await resp.json().catch(() => ({}));
-        const url = data && data.url;
-        if (!resp.ok || !url) {
-            showToast(localizeBackendMessage((data && (data.detail || data.message)) || t('account_open_web_failed')), true);
-            return;
-        }
-        // In the desktop webview, window.open hands the URL to the system browser
-        // and returns null. Do NOT fall back to location.href — that would navigate
-        // the app's own window. If opening is blocked, copy the URL instead.
-        try {
-            window.open(url, '_blank', 'noopener,noreferrer');
-        } catch (e) {
-            if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
-            showToast(url);
-        }
-    } catch (e) {
-        showToast(String(e), true);
-    } finally {
-        if (openUserWebButton) openUserWebButton.disabled = false;
-    }
-}
-
-async function handleLogout() {
-    const confirmed = await showConfirm(t('account_logout_confirm'), {
-        okLabel: t('account_logout'),
-        cancelLabel: t('cancel'),
-        danger: true,
-    });
-    if (!confirmed) return;
-    try {
-        await fetch('/account/logout', { method: 'POST' });
-    } catch (e) {
-        // ignore
-    }
-    const server = loadServerSettings();
-    server.token = '';
-    server.displayName = '';
-    server.trustRank = '';
-    saveServerSettings(server);
-    backendLoggedIn = false;
-    pushedOverrideBootId = null;
-    updateAccountSection();
-    updateBalanceBarVisibility();
-    hideSettingsPanel();
-    openLogin({ forced: true });
 }
 
 // ---- Balance bar + this-session cost ----
