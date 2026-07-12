@@ -101,9 +101,6 @@ const INITIAL_UI_CONFIG = (window.__INITIAL_UI_CONFIG__ && typeof window.__INITI
 // 由后端下发：锁定“手动控制”相关 UI
 let lockManualControls = !!INITIAL_UI_CONFIG.lock_manual_controls;
 
-// 由后端下发：LLM 译文修复能力是否可用（缺少 API key 时为 false）
-let llmRefineAvailable = false;
-
 // 由后端下发：是否启用说话人分离
 let speakerDiarizationEnabled = true;
 // 由后端下发：是否隐藏说话人标签
@@ -213,11 +210,11 @@ const settingsRuntime = SettingsRuntime.create({
         get hideSpeakerLabels() { return hideSpeakerLabels; },
         get customFontAvailable() { return customFontAvailable; },
         get useBundledCjkFont() { return useBundledCjkFont; },
-        get llmRefineAvailable() { return llmRefineAvailable; },
+        get llmRefineAvailable() { return translationModeController.isAvailable(); },
         get lockManualControls() { return lockManualControls; },
-        get translationUiMode() { return translationUiMode; },
-        get defaultTranslationUiMode() { return DEFAULT_TRANSLATION_UI_MODE; },
-        get translationUiModes() { return TRANSLATION_UI_MODES; },
+        get translationUiMode() { return translationModeController.getTranslationUiMode(); },
+        get defaultTranslationUiMode() { return TranslationModeController.DEFAULT_TRANSLATION_UI_MODE; },
+        get translationUiModes() { return translationModeController.getAvailableTranslationModes(); },
         get segmentModeSupported() { return segmentModeSupported; },
         get segmentMode() { return segmentMode; },
         get segmentModes() { return getSegmentModes(); },
@@ -339,51 +336,33 @@ function showToast(message, isError = false, options = {}) {
     }, Number(options.timeoutMs) || 4000);
 }
 
-const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
-const LLM_REFINE_MODE_STORAGE_KEY = 'llmRefineMode';
-const LLM_TRANSLATION_MODE_STORAGE_KEY = 'llmTranslationMode';
-let defaultLlmRefineMode = null;
-
 function normalizeSegmentMode(mode) {
     const value = (mode || '').toString().trim();
     return SEGMENT_MODES.includes(value) ? value : null;
 }
 
-// 译文自动修复开关（默认关闭）
-let llmRefineMode = getStoredLlmRefineMode();
-if (!llmRefineMode) {
-    llmRefineMode = 'off';
-}
-let llmRefineEnabled = llmRefineMode !== 'off';
-
-// Unified 翻译模式 (fast/accurate/hybrid/refine). This is the single control in
-// Settings; it drives llmRefineMode for display and is pushed to the backend via
-// /translation-mode (which owns soniox-translation suppression + billing factor).
-const TRANSLATION_UI_MODE_STORAGE_KEY = 'translationUiMode';
-// 混合 now shows the STT draft immediately and refines it in place, so it maps
-// to the internal 'refine' LLM mode. The old separate 改进 UI mode is gone.
-const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid'];
-const DEFAULT_TRANSLATION_UI_MODE = 'hybrid';
-const TRANSLATION_UI_MODE_TO_LLM = { fast: 'off', accurate: 'translate', hybrid: 'refine' };
-let translationModeSynced = false; // pushed the stored mode to the backend once
-function readStoredTranslationUiMode() {
-    return settingsStore.readTranslationUiMode();
-}
-
-function getStoredTranslationUiMode() {
-    const stored = readStoredTranslationUiMode();
-    if (stored) return stored;
-    // Transient default before the backend's authoritative translation_ui_mode
-    // (fast/accurate/hybrid) arrives. Default 翻译模式 is 混合 (hybrid).
-    return DEFAULT_TRANSLATION_UI_MODE;
-}
-let translationUiMode = getStoredTranslationUiMode();
+const translationModeController = TranslationModeController.create({
+    fetch,
+    storage: localStorage,
+    settingsStore,
+    console,
+    getSession: () => subtitleSession,
+    getRuntimeState: () => ({ lockManualControls }),
+    actions: {
+        enforceTranslateSegmentMode,
+        updateSegmentModeButton,
+        renderSubtitles,
+        updateTranslationModeHint,
+        renderTranslationModePicker,
+        restartRecognition,
+    },
+});
 const subtitleSession = SubtitleSession.create({
     TokenStream,
     RenderModel,
     RefineState,
-    translateMode: llmRefineMode === 'translate',
-    translationUiMode,
+    translateMode: translationModeController.isTranslateMode(),
+    translationUiMode: translationModeController.getTranslationUiMode(),
 });
 
 // 由后端下发：默认翻译目标语言（ISO 639-1）
@@ -481,7 +460,7 @@ const subtitleRenderer = SubtitleRenderer.create({
         displayMode,
         suppressTranslationDisplay,
         translateMode: isLlmTranslateMode(),
-        translationUiMode,
+        translationUiMode: translationModeController.getTranslationUiMode(),
         currentTranslationTargetLang,
         furiganaEnabled,
         speakerDiarizationEnabled,
@@ -669,46 +648,8 @@ function applySpeakerLabelVisibility() {
     subtitleContainer.classList.toggle('hide-speaker-labels', !!hideSpeakerLabels);
 }
 
-function normalizeLlmRefineMode(mode) {
-    const value = (mode || '').toString().trim().toLowerCase();
-    if (LLM_REFINE_MODES.includes(value)) {
-        return value;
-    }
-    return 'off';
-}
-
-function getStoredLlmRefineMode() {
-    return settingsStore.loadLlmRefineMode();
-}
-
 function isLlmTranslateMode() {
-    return llmRefineMode === 'translate';
-}
-
-function applyLlmRefineMode(mode, options = {}) {
-    const normalized = normalizeLlmRefineMode(mode);
-    const previous = llmRefineMode;
-    const wasTranslate = previous === 'translate';
-    llmRefineMode = normalized;
-    llmRefineEnabled = llmRefineMode !== 'off';
-
-    const shouldPersist = options.persist !== false;
-    if (shouldPersist) {
-        if (!settingsStore.saveLlmRefineMode(llmRefineMode)) {
-            console.warn('Unable to persist LLM refine mode');
-        }
-    }
-
-    subtitleSession.applyLlmMode(llmRefineMode, previous);
-    if (llmRefineMode === 'translate') {
-        enforceTranslateSegmentMode();
-    }
-
-    updateSegmentModeButton();
-
-    if (wasTranslate && llmRefineMode !== 'translate') {
-        renderSubtitles();
-    }
+    return translationModeController.isTranslateMode();
 }
 
 function enforceTranslateSegmentMode() {
@@ -885,41 +826,9 @@ async function fetchUiConfig() {
         }
         const data = await response.json();
         lockManualControls = !!data.lock_manual_controls;
-        llmRefineAvailable = !!data.llm_refine_available;
-        if (!llmRefineAvailable) {
-            // LLM 环境变量缺失时，忽略前端记忆的 LLM 模式，直接禁用 LLM。
-            // 不读取也不修改保存的 LLM 翻译模式（localStorage）。
-            llmRefineMode = 'off';
-            llmRefineEnabled = false;
-            subtitleSession.disableLlmBoundary();
-        }
+        translationModeController.applyBackendConfig(data, { currentBootId: backendBootId });
         if (data && Number.isFinite(Number(data.soniox_no_translation_factor)) && Number(data.soniox_no_translation_factor) > 0) {
             sonioxNoTranslationFactor = Math.min(1, Number(data.soniox_no_translation_factor));
-        }
-        // 翻译模式: localStorage is the source of truth when the user has made a
-        // choice. Without a saved choice, default to 混合; an unavailable LLM only
-        // hides the Settings control and must not poison the later login default.
-        translationUiMode = readStoredTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE;
-        if (!availableTranslationModes().includes(translationUiMode)) {
-            translationUiMode = DEFAULT_TRANSLATION_UI_MODE;
-        }
-        renderTranslationModePicker();
-        // Backend restarted (new boot id): its in-memory translation mode reset
-        // to the default, so the stored mode must be re-pushed.
-        if (typeof data.boot_id === 'string' && backendBootId && data.boot_id !== backendBootId) {
-            translationModeSynced = false;
-        }
-        // Push the stored mode to the backend session once per backend boot.
-        // restartIfNeeded: the boot stream opens before this push lands, so 准确
-        // needs a reopen to actually run soniox with translation disabled (and
-        // bill at the reduced factor); needs_restart is false when nothing
-        // changed, so ordinary page reloads never trigger a restart here.
-        if (llmRefineAvailable && !translationModeSynced) {
-            translationModeSynced = true;
-            void setTranslationUiMode(translationUiMode, { restartIfNeeded: true });
-        }
-        if (data && typeof data.llm_refine_default_mode === 'string') {
-            defaultLlmRefineMode = normalizeLlmRefineMode(data.llm_refine_default_mode);
         }
         if (data && typeof data.translation_target_lang === 'string' && data.translation_target_lang.trim()) {
             defaultTranslationTargetLang = data.translation_target_lang.trim().toLowerCase();
@@ -1081,46 +990,8 @@ async function fetchUiConfig() {
     }
 }
 
-async function fetchLlmRefineStatus() {
-    // LLM 环境变量缺失时，忽略前端记忆的 LLM 模式，直接禁用 LLM。
-    // 不读取也不修改保存的 LLM 翻译模式（localStorage）。
-    if (!llmRefineAvailable) {
-        llmRefineMode = 'off';
-        llmRefineEnabled = false;
-        subtitleSession.disableLlmBoundary();
-        enforceTranslateSegmentMode();
-        return;
-    }
-
-    // The unified 翻译模式 sync (fetchUiConfig -> setTranslationUiMode) owns
-    // pushing the stored mode now; a second push through the legacy /llm-refine
-    // endpoint would race it. Keep this endpoint only for locked (env-driven)
-    // setups where the unified sync is skipped.
-    if (!lockManualControls) {
-        return;
-    }
-
-    try {
-        const response = await fetch('/llm-refine');
-        if (!response.ok) {
-            return;
-        }
-        const data = await response.json();
-        if (!data) {
-            return;
-        }
-
-        const serverMode = normalizeLlmRefineMode(
-            typeof data.mode === 'string'
-                ? data.mode
-                : (data.enabled ? 'refine' : 'off')
-        );
-
-        const preferredDefault = normalizeLlmRefineMode(defaultLlmRefineMode || serverMode);
-        applyLlmRefineMode(preferredDefault, { persist: false });
-    } catch (error) {
-        console.error('Error fetching LLM refine status:', error);
-    }
+function fetchLlmRefineStatus() {
+    return translationModeController.fetchLlmRefineStatus();
 }
 
 function handleBackendRefineResult(data) {
@@ -1202,10 +1073,6 @@ function renderBundledCjkFontPicker() {
     return settingsRuntime.renderBundledCjkFontPicker();
 }
 
-function availableTranslationModes() {
-    return [...SettingsRuntime.TRANSLATION_UI_MODES];
-}
-
 function updateTranslationModeHint() {
     settingsRuntime.updateTranslationModeHint();
 }
@@ -1214,49 +1081,8 @@ function renderTranslationModePicker() {
     return settingsRuntime.renderTranslationModePicker();
 }
 
-// Record the token-sequence boundary when 混合 mode is entered so only STT
-// translations arriving afterwards are shown as provisional (gray). Switching
-// away clears the marker. Called on both the forward apply and the error rollback.
-function noteHybridInterimBoundary(mode, previous) {
-    subtitleSession.noteHybridBoundary(mode, previous);
-}
-
-async function setTranslationUiMode(mode, options = {}) {
-    const normalized = TRANSLATION_UI_MODES.includes(mode) ? mode : DEFAULT_TRANSLATION_UI_MODE;
-    const previous = translationUiMode;
-    translationUiMode = normalized;
-    noteHybridInterimBoundary(normalized, previous);
-    try { localStorage.setItem(TRANSLATION_UI_MODE_STORAGE_KEY, normalized); } catch (e) { /* ignore */ }
-    // Keep local display state (llmRefineMode) in sync without hitting the legacy
-    // /llm-refine endpoint.
-    applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[normalized], { persist: true });
-    updateTranslationModeHint();
-    if (options.silent) return true;
-    try {
-        const resp = await fetch('/translation-mode', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode: normalized }),
-        });
-        if (!resp.ok) {
-            throw new Error(`translation-mode returned ${resp.status}`);
-        }
-        const data = await resp.json().catch(() => ({}));
-        if (data && data.needs_restart && options.restartIfNeeded) {
-            // Reopen the stream so soniox translation on/off takes effect.
-            void restartRecognition({ auto: true });
-        }
-        return true;
-    } catch (e) {
-        console.warn('Failed to set translation mode:', e);
-        // Roll back so the UI doesn't claim a mode the backend never applied.
-        translationUiMode = previous;
-        noteHybridInterimBoundary(previous, normalized);
-        try { localStorage.setItem(TRANSLATION_UI_MODE_STORAGE_KEY, previous); } catch (err) { /* ignore */ }
-        applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[previous], { persist: true });
-        renderTranslationModePicker();
-        return false;
-    }
+function setTranslationUiMode(mode, options = {}) {
+    return translationModeController.setTranslationUiMode(mode, options);
 }
 
 function renderSegmentModePicker() {
@@ -1709,7 +1535,7 @@ function finalizeCurrentNonFinalTokens({ render = true } = {}) {
 function clearSubtitleState() {
     subtitleSession.clear({
         translateMode: isLlmTranslateMode(),
-        translationUiMode,
+        translationUiMode: translationModeController.getTranslationUiMode(),
     });
     subtitleRenderer.clearSession();
 }
@@ -2089,7 +1915,7 @@ const hostedLogin = HostedLogin.create({
         updateBalanceBarVisibility,
         fetchBalance,
         clearSubtitleState,
-        setTranslationModeSynced: (value) => { translationModeSynced = !!value; },
+        setTranslationModeSynced: translationModeController.setTranslationModeSynced,
         pushSetup,
         switchToOwnKeyMode,
     },
@@ -2123,7 +1949,7 @@ const hostedBalance = HostedBalance.create({
         hasToken: !!loadServerSettings().token,
         translationProvider,
         uiTranslationMode,
-        translationUiMode,
+        translationUiMode: translationModeController.getTranslationUiMode(),
         sonioxNoTranslationFactor,
     }),
     onAccountSectionChanged: updateAccountSection,
