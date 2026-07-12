@@ -64,12 +64,14 @@ describe('TokenStream', () => {
         expect(tokens.map((value) => value.text)).toEqual(['ab']);
     });
 
-    it('locks the current cross-id merge behavior and removes an ambiguous id', () => {
+    it('keeps adjacent tokens with different sentence ids separate', () => {
         const tokens = [token('first', { llm_sentence_id: 'a' }), token('second', { llm_sentence_id: 'b' })];
         TokenStream.mergeFinalTokens(tokens, 0);
-        expect(tokens).toHaveLength(1);
-        expect(tokens[0].text).toBe('firstsecond');
-        expect(tokens[0]).not.toHaveProperty('llm_sentence_id');
+        expect(tokens).toHaveLength(2);
+        expect(tokens).toEqual([
+            expect.objectContaining({ text: 'first', llm_sentence_id: 'a' }),
+            expect.objectContaining({ text: 'second', llm_sentence_id: 'b' }),
+        ]);
     });
 
     it('looks back one token when merging an incremental tail', () => {

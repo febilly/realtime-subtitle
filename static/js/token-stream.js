@@ -36,9 +36,15 @@
 
             let mergedText = currentToken.text || '';
             const mergedToken = { ...currentToken };
+            let mergedSentenceId = currentToken.llm_sentence_id
+                ? String(currentToken.llm_sentence_id)
+                : '';
             let nextIndex = readIndex + 1;
             while (nextIndex < tokens.length) {
                 const nextToken = tokens[nextIndex];
+                const nextSentenceId = nextToken && nextToken.llm_sentence_id
+                    ? String(nextToken.llm_sentence_id)
+                    : '';
                 if (
                     !nextToken.is_separator
                     && nextToken.is_final
@@ -46,8 +52,10 @@
                     && nextToken.language === currentToken.language
                     && (nextToken.translation_status || 'original') === (currentToken.translation_status || 'original')
                     && nextToken.source_language === currentToken.source_language
+                    && (!mergedSentenceId || !nextSentenceId || nextSentenceId === mergedSentenceId)
                 ) {
                     mergedText += nextToken.text || '';
+                    if (!mergedSentenceId && nextSentenceId) mergedSentenceId = nextSentenceId;
                     nextIndex += 1;
                 } else {
                     break;
