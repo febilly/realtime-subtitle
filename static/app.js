@@ -240,6 +240,28 @@ let backendLoggedIn = false;
 // STT billing factor for soniox 准确 mode (built-in translation off), delivered by
 // the server via /ui-config. 1 = no discount; applied to the live cost estimate.
 let sonioxNoTranslationFactor = 1;
+let hostedAccount = null;
+
+const hostedPorts = {
+    updateAccountSection: () => { if (hostedAccount) hostedAccount.updateSection(); },
+    updateAccountBalance: () => { if (hostedAccount) hostedAccount.updateBalance(); },
+    ensureHostedVersionAllowed: (options = {}) => hostedUpdate.ensure(options),
+    returnToModeChooser: () => hostedMode.returnToModeChooser(),
+    switchToOwnKeyMode: () => hostedMode.switchToOwnKeyMode(),
+    maybeRunFirstLaunchFlow: () => hostedMode.maybeRunFirstLaunchFlow(),
+    preopenHostedLoginIfNeeded: () => hostedMode.preopenHostedLoginIfNeeded(),
+    refreshPreopenedHostedLogin: () => hostedMode.refreshPreopenedHostedLogin(),
+    applyLoginI18n: () => hostedLogin.applyI18n(),
+    updateLoginSubmitState: () => hostedLogin.updateSubmitState(),
+    openLogin: (options = {}) => hostedLogin.open(options),
+    hideLogin: () => hostedLogin.hide(),
+    updateBalanceBarVisibility: () => hostedBalance.updateBalanceBarVisibility(),
+    fetchBalance: (options = {}) => hostedBalance.fetchBalance(options),
+    freePoolsSummary: (pools) => hostedBalance.freePoolsSummary(pools),
+    sessionCostResume: () => hostedBalance.sessionCostResume(),
+    sessionCostPause: () => hostedBalance.sessionCostPause(),
+    sessionCostReset: () => hostedBalance.sessionCostReset(),
+};
 const { safeHttpUrl } = SettingsStore;
 
 function loadServerSettings() {
@@ -468,7 +490,7 @@ const runtimeControls = RuntimeControls.create({
     t,
     setControlIcon,
     renderSubtitles,
-    sessionCostPause,
+    sessionCostPause: hostedPorts.sessionCostPause,
     console,
     getState: () => ({
         displayMode,
@@ -515,7 +537,7 @@ const recognitionControls = RecognitionControls.create({
     closeSocket: webSocketController.close,
     finalizeCurrentNonFinalTokens,
     clearSubtitleState,
-    sessionCostReset,
+    sessionCostReset: hostedPorts.sessionCostReset,
     updatePauseButtonUi: () => runtimeControls.updatePauseButtonUi(),
     hasUsableWebSocket: webSocketController.isUsable,
     connect: webSocketController.connect,
@@ -566,8 +588,8 @@ const sessionFrameController = SessionFrameController.create({
         openSettings: (options) => settingsFlowController.open(options),
         loadServerSettings,
         saveServerSettings,
-        updateBalanceBarVisibility,
-        openLogin,
+        updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
+        openLogin: hostedPorts.openLogin,
         triggerAutoRestart,
     },
 });
@@ -623,7 +645,7 @@ const settingsSetup = SettingsSetup.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'uiTranslationMode')) uiTranslationMode = patch.uiTranslationMode;
     },
     actions: {
-        sessionCostReset,
+        sessionCostReset: hostedPorts.sessionCostReset,
         showToast,
         setUiTranslationMode,
         fetchUiConfig,
@@ -668,7 +690,7 @@ const settingsUi = SettingsUI.create({
     actions: {
         openSettings: (options) => settingsFlowController.open(options),
         closeSettings: () => settingsFlowController.close(),
-        returnToModeChooser,
+        returnToModeChooser: hostedPorts.returnToModeChooser,
         handleResetAll: resetAllController.handle,
         handleSettingsSave: (event) => settingsFlowController.handleSubmit(event),
     },
@@ -768,11 +790,11 @@ const uiConfigController = UiConfigController.create({
     }),
     updateState: updateUiConfigState,
     actions: {
-        sessionCostReset,
+        sessionCostReset: hostedPorts.sessionCostReset,
         setLanguageListFromCodes,
         resetFirstRedeemBonus: (value) => hostedBalance.resetFirstRedeemBonus(value),
-        updateBalanceBarVisibility,
-        updateAccountSection,
+        updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
+        updateAccountSection: hostedPorts.updateAccountSection,
         updateSettingsButtonVisibility,
         applyBundledCjkFontPreference,
         renderBundledCjkFontPicker,
@@ -919,7 +941,7 @@ const settingsPanelController = SettingsPanel.create({
     t,
     buildCustomSelect,
     loadProviderSettings,
-    freePoolsSummary,
+    freePoolsSummary: hostedPorts.freePoolsSummary,
     getState: () => ({
         lockManualControls,
         relayAvailable,
@@ -938,8 +960,8 @@ const settingsPanelController = SettingsPanel.create({
         renderBundledCjkFontPicker,
         renderTranslationModePicker,
         fetchMicrophoneDevices,
-        fetchBalance,
-        updateAccountSection,
+        fetchBalance: hostedPorts.fetchBalance,
+        updateAccountSection: hostedPorts.updateAccountSection,
     },
     elements: {
         settingsButton,
@@ -985,7 +1007,7 @@ const settingsFlowController = SettingsFlowController.create({
         }
     },
     submit: (event) => settingsSaveController.handleSubmit(event),
-    actions: { openLogin, showToast },
+    actions: { openLogin: hostedPorts.openLogin, showToast },
 });
 const settingsSaveController = SettingsSave.create({
     runtime: settingsRuntime,
@@ -1003,7 +1025,7 @@ const settingsSaveController = SettingsSave.create({
     saveProviderSettings,
     loadServerSettings,
     saveServerSettings,
-    ensureHostedVersionAllowed,
+    ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
     actions: {
         setSaving: (saving) => {
             if (!settingsSaveButton) return;
@@ -1018,7 +1040,7 @@ const settingsSaveController = SettingsSave.create({
             settingsPanelController.updateSonioxRegion(provider);
         },
         hideSettingsPanel: settingsFlowController.hide,
-        openLogin,
+        openLogin: hostedPorts.openLogin,
         finishHotSettingsSave: settingsFlowController.finishHotSave,
         clearSubtitleState,
         populateSettingsForm: () => settingsPanelController.populate(),
@@ -1041,18 +1063,6 @@ function applyModeSectionsVisibility(mode) {
     settingsPanelController.applyModeVisibility(mode);
 }
 
-let hostedAccount = null;
-
-function updateAccountSection() {
-    if (hostedAccount) hostedAccount.updateSection();
-}
-
-// Show the signed-in user's current balance and free pools inside the account
-// panel (requirement: account info also shows the current quota balance).
-function updateAccountBalance() {
-    if (hostedAccount) hostedAccount.updateBalance();
-}
-
 function pushSetup(provider, apiKey, options = {}) {
     return settingsSetup.push(provider, apiKey, options);
 }
@@ -1064,14 +1074,6 @@ function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
 
 async function syncProviderFromStorage() {
     await settingsSetup.syncFromStorage();
-}
-
-function preopenHostedLoginIfNeeded() {
-    return hostedMode.preopenHostedLoginIfNeeded();
-}
-
-function refreshPreopenedHostedLogin() {
-    hostedMode.refreshPreopenedHostedLogin();
 }
 
 settingsUi.init({
@@ -1125,7 +1127,7 @@ const hostedUpdate = HostedUpdate.create({
         saveServerSettings(settings);
         setModeRadio('direct');
         applyModeSectionsVisibility('direct');
-        updateAccountSection();
+        hostedPorts.updateAccountSection();
     },
     elements: {
         overlay: clientUpdateOverlay,
@@ -1169,19 +1171,19 @@ const hostedMode = HostedMode.create({
         connectionMode: getConnectionMode(),
     }),
     actions: {
-        openLogin,
-        hideLogin,
-        applyLoginI18n,
-        updateLoginSubmitState,
+        openLogin: hostedPorts.openLogin,
+        hideLogin: hostedPorts.hideLogin,
+        applyLoginI18n: hostedPorts.applyLoginI18n,
+        updateLoginSubmitState: hostedPorts.updateLoginSubmitState,
         resetBootGuard: () => { pushedOverrideBootId = null; },
         hideSettingsPanel: settingsFlowController.hide,
-        ensureHostedVersionAllowed,
+        ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
         syncProviderFromStorage,
         maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
-        updateBalanceBarVisibility,
+        updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         setModeRadio,
         applyModeSectionsVisibility,
-        updateAccountSection,
+        updateAccountSection: hostedPorts.updateAccountSection,
         openSettings: settingsFlowController.open,
     },
     elements: {
@@ -1209,12 +1211,12 @@ const hostedLogin = HostedLogin.create({
     loadProviderSettings,
     actions: {
         showToast,
-        updateBalanceBarVisibility,
-        fetchBalance,
+        updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
+        fetchBalance: hostedPorts.fetchBalance,
         clearSubtitleState,
         setTranslationModeSynced: translationModeController.setTranslationModeSynced,
         pushSetup,
-        switchToOwnKeyMode,
+        switchToOwnKeyMode: hostedPorts.switchToOwnKeyMode,
     },
     elements: {
         overlay: loginOverlay,
@@ -1249,8 +1251,8 @@ const hostedBalance = HostedBalance.create({
         translationUiMode: translationModeController.getTranslationUiMode(),
         sonioxNoTranslationFactor,
     }),
-    onAccountSectionChanged: updateAccountSection,
-    onAccountBalanceChanged: updateAccountBalance,
+    onAccountSectionChanged: hostedPorts.updateAccountSection,
+    onAccountBalanceChanged: hostedPorts.updateAccountBalance,
     elements: {
         balanceBar,
         balanceActionItem,
@@ -1279,7 +1281,7 @@ hostedAccount = HostedAccount.create({
         setBackendLoggedIn: (value) => { backendLoggedIn = !!value; },
         resetBootGuard: () => { pushedOverrideBootId = null; },
         hideSettingsPanel: settingsFlowController.hide,
-        openLogin,
+        openLogin: hostedPorts.openLogin,
     },
     elements: {
         serverHint: document.getElementById('accountServerHint'),
@@ -1303,80 +1305,21 @@ if (balanceOpenSettingsButton) {
     balanceOpenSettingsButton.addEventListener('click', () => settingsFlowController.open({ forced: false }));
 }
 
-// ---- First-launch mode chooser ----
-function ensureHostedVersionAllowed(options = {}) {
-    return hostedUpdate.ensure(options);
-}
-
-function returnToModeChooser() {
-    return hostedMode.returnToModeChooser();
-}
-
-function switchToOwnKeyMode() {
-    return hostedMode.switchToOwnKeyMode();
-}
-
-function maybeRunFirstLaunchFlow() {
-    return hostedMode.maybeRunFirstLaunchFlow();
-}
-
-// ---- Login overlay (web-generated one-time code only) ----
-function applyLoginI18n() {
-    hostedLogin.applyI18n();
-}
-
-function updateLoginSubmitState() {
-    hostedLogin.updateSubmitState();
-}
-
-function openLogin(options = {}) {
-    hostedLogin.open(options);
-}
-
-function hideLogin() {
-    hostedLogin.hide();
-}
-
-// ---- Balance bar + this-session cost ----
-function updateBalanceBarVisibility() {
-    hostedBalance.updateBalanceBarVisibility();
-}
-
-function fetchBalance(options = {}) {
-    return hostedBalance.fetchBalance(options);
-}
-
-function freePoolsSummary(pools) {
-    return hostedBalance.freePoolsSummary(pools);
-}
-
-function sessionCostResume() {
-    hostedBalance.sessionCostResume();
-}
-
-function sessionCostPause() {
-    hostedBalance.sessionCostPause();
-}
-
-function sessionCostReset() {
-    hostedBalance.sessionCostReset();
-}
-
 const hostedController = Hosted.createController({
-    preopenHostedLoginIfNeeded,
+    preopenHostedLoginIfNeeded: hostedPorts.preopenHostedLoginIfNeeded,
     fetchUiConfig,
-    refreshPreopenedHostedLogin,
-    maybeRunFirstLaunchFlow,
-    ensureHostedVersionAllowed,
+    refreshPreopenedHostedLogin: hostedPorts.refreshPreopenedHostedLogin,
+    maybeRunFirstLaunchFlow: hostedPorts.maybeRunFirstLaunchFlow,
+    ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
     syncProviderFromStorage,
     fetchLlmRefineStatus,
     fetchApiKeyStatus,
     fetchOscTranslationStatus,
     maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
-    updateBalanceBarVisibility,
+    updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
     connect: webSocketController.connect,
-    sessionCostResume,
-    sessionCostPause,
+    sessionCostResume: hostedPorts.sessionCostResume,
+    sessionCostPause: hostedPorts.sessionCostPause,
     isPaused: () => isPaused,
 });
 
