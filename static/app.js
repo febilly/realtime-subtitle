@@ -238,15 +238,6 @@ let backendLoggedIn = false;
 // STT billing factor for soniox 准确 mode (built-in translation off), delivered by
 // the server via /ui-config. 1 = no discount; applied to the live cost estimate.
 let sonioxNoTranslationFactor = 1;
-// Maps backend relay close-code tags to localized message keys.
-const RELAY_ERROR_KEYS = {
-    billing_exhausted: 'relay_err_billing_exhausted',
-    upstream_key_error: 'relay_err_upstream_key_error',
-    forbidden: 'relay_err_forbidden',
-    model_not_allowed: 'relay_err_model_not_allowed',
-    concurrency_limit: 'relay_err_concurrency_limit',
-};
-
 const { safeHttpUrl, normalizeServerUrl } = SettingsStore;
 
 function loadServerSettingsRaw() {
@@ -553,6 +544,27 @@ const appShellController = AppShellController.create({
         updatePauseButtonUi: runtimeControls.updatePauseButtonUi,
         updateOverlayButton: runtimeControls.updateOverlayButton,
         updateAutoRestartButton: recognitionControls.updateAutoRestartButton,
+    },
+});
+const sessionFrameController = SessionFrameController.create({
+    t,
+    console,
+    getState: () => ({ lockManualControls, autoRestartEnabled, isRestarting }),
+    updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'backendLoggedIn')) {
+            backendLoggedIn = patch.backendLoggedIn;
+        }
+    },
+    actions: {
+        syncPauseState: runtimeControls.syncPauseState,
+        handleHostedSessionFrame: (frame) => hostedController.handleSessionFrame(frame),
+        showToast,
+        openSettings,
+        loadServerSettings,
+        saveServerSettings,
+        updateBalanceBarVisibility,
+        openLogin,
+        triggerAutoRestart,
     },
 });
 
@@ -897,14 +909,10 @@ function handleMessage(data) {
 
 function handleMessageFrame(data) {
     if (subtitleFrameController.handle(data)) return;
+    if (sessionFrameController.handle(data)) return;
     if (data.type === 'subtitle_font_preference') {
         const enabled = !!data.use_bundled_cjk_fonts;
         applyBundledCjkFontPreference(enabled, { persist: true });
-        return;
-    }
-    if (data.type === 'recognition_paused') {
-        runtimeControls.syncPauseState(data.paused);
-        hostedController.handleSessionFrame(data);
         return;
     }
     if (data.type === 'overlay_visibility') {
@@ -945,52 +953,6 @@ function handleMessageFrame(data) {
     }
     if (data.type === 'speaker_labels_changed') {
         speakerLabelController.handleBackendChanged(data);
-        return;
-    }
-    if (data.type === 'session_connected') {
-        hostedController.handleSessionFrame(data);
-        return;
-    }
-    if (data.type === 'session_idle') {
-        hostedController.handleSessionFrame(data);
-        return;
-    }
-    if (data.type === 'session_disconnected') {
-        console.warn('Recognition session disconnected:', data.reason || 'unknown');
-        hostedController.handleSessionFrame(data);
-        // Relay (hosted) close codes: show a friendly message and, for terminal
-        // ones, stop auto-restart (and re-prompt login when the token is bad).
-        const relayKey = RELAY_ERROR_KEYS[data.code];
-        if (relayKey) {
-            if (data.code === 'billing_exhausted') {
-                showToast(t(relayKey), true, {
-                    timeoutMs: 8000,
-                    actionLabel: t('open_settings'),
-                    onAction: () => openSettings({ forced: false }),
-                });
-            } else {
-                showToast(t(relayKey), true);
-            }
-            if (data.code === 'forbidden' && !lockManualControls) {
-                const server = loadServerSettings();
-                server.token = '';
-                saveServerSettings(server);
-                backendLoggedIn = false;
-                updateBalanceBarVisibility();
-                openLogin({ forced: true });
-                return;
-            }
-            if (data.relay_terminal) {
-                return; // do not auto-restart on terminal relay errors
-            }
-        }
-        if (data.code === 'api_key' && !lockManualControls) {
-            openSettings({ forced: true });
-            return;
-        }
-        if (autoRestartEnabled && !isRestarting) {
-            triggerAutoRestart();
-        }
         return;
     }
 }
