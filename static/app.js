@@ -689,18 +689,77 @@ let shouldReconnect = true;  // 是否应该自动重连
 let isRestarting = false;    // 是否正在重启中
 let isPaused = false;        // 是否暂停中
 let audioSource = 'system';  // 音频输入来源
-const AUDIO_SOURCES = ['system', 'microphone', 'mix'];
 
-function normalizeAudioSource(source) {
-    const value = (source || '').toString().trim().toLowerCase();
-    return AUDIO_SOURCES.includes(value) ? value : 'system';
-}
+const runtimeControls = RuntimeControls.create({
+    elements: {
+        displayModeButton,
+        pauseButton,
+        pauseIcon,
+        audioSourceButton,
+        audioSourceIcon,
+        overlayButton,
+    },
+    fetch,
+    storage: localStorage,
+    t,
+    setControlIcon,
+    renderSubtitles,
+    sessionCostPause,
+    console,
+    getState: () => ({
+        displayMode,
+        isPaused,
+        audioSource,
+        overlayOpen,
+        lockManualControls,
+    }),
+    updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'displayMode')) displayMode = patch.displayMode;
+        if (Object.prototype.hasOwnProperty.call(patch, 'isPaused')) isPaused = patch.isPaused;
+        if (Object.prototype.hasOwnProperty.call(patch, 'audioSource')) audioSource = patch.audioSource;
+        if (Object.prototype.hasOwnProperty.call(patch, 'overlayOpen')) overlayOpen = patch.overlayOpen;
+    },
+});
 
-function getNextAudioSource(source) {
-    const current = normalizeAudioSource(source);
-    const index = AUDIO_SOURCES.indexOf(current);
-    return AUDIO_SOURCES[(index + 1) % AUDIO_SOURCES.length];
-}
+const recognitionControls = RecognitionControls.create({
+    elements: {
+        restartButton,
+        autoRestartButton,
+        autoRestartIcon,
+        subtitleContainer,
+    },
+    fetch,
+    storage: localStorage,
+    t,
+    escapeHtml,
+    logger: console,
+    getState: () => ({
+        autoRestartEnabled,
+        currentTranslationTargetLang,
+        isPaused,
+        isRestarting,
+        lockManualControls,
+        segmentModeSupported,
+        shouldReconnect,
+    }),
+    updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) autoRestartEnabled = patch.autoRestartEnabled;
+        if (Object.prototype.hasOwnProperty.call(patch, 'isPaused')) isPaused = patch.isPaused;
+        if (Object.prototype.hasOwnProperty.call(patch, 'isRestarting')) isRestarting = patch.isRestarting;
+        if (Object.prototype.hasOwnProperty.call(patch, 'shouldReconnect')) shouldReconnect = patch.shouldReconnect;
+    },
+    getSocket: () => ws,
+    setSocket: (value) => { ws = value; },
+    finalizeCurrentNonFinalTokens,
+    clearSubtitleState,
+    sessionCostReset,
+    updatePauseButtonUi: () => runtimeControls.updatePauseButtonUi(),
+    hasUsableWebSocket,
+    connect,
+});
+
+runtimeControls.init({ refreshOverlay: false });
+recognitionControls.init();
 
 // 初始化按钮文本
 updateSegmentModeButton();
@@ -893,12 +952,7 @@ themeToggle.addEventListener('click', () => {
 });
 
 function updatePauseButtonUi() {
-    if (!pauseButton || !pauseIcon) {
-        return;
-    }
-    setControlIcon(pauseIcon, isPaused ? 'play' : 'pause');
-    pauseButton.title = isPaused ? t('resume') : t('pause');
-    pauseButton.classList.toggle('is-paused', isPaused);
+    runtimeControls.updatePauseButtonUi();
 }
 
 // 更新分段模式按钮文本
@@ -920,25 +974,7 @@ function updateSegmentModeButton() {
 
 // 更新显示模式按钮文本
 function updateDisplayModeButton() {
-    if (!displayModeButton) {
-        return;
-    }
-
-    let nextKey, currentKey;
-    if (displayMode === 'both') {
-        nextKey = 'display_mode_original';
-        currentKey = 'display_mode_both';
-    } else if (displayMode === 'original') {
-        nextKey = 'display_mode_translation';
-        currentKey = 'display_mode_original';
-    } else {
-        nextKey = 'display_mode_both';
-        currentKey = 'display_mode_translation';
-    }
-
-    const currentName = t(currentKey);
-    const nextName = t(nextKey);
-    displayModeButton.title = t('display_mode_format', { current: currentName, next: nextName });
+    runtimeControls.updateDisplayModeButton();
 }
 
 function updateOscTranslationButton() {
@@ -986,51 +1022,19 @@ function applyBottomSafeArea() {
 }
 
 function updateAutoRestartButton() {
-    if (!autoRestartButton || !autoRestartIcon) {
-        return;
-    }
-
-    // UI 锁定时：隐藏按钮并强制开启
-    if (lockManualControls) {
-        autoRestartButton.style.display = 'none';
-        autoRestartEnabled = true;
-        return;
-    }
-
-    autoRestartButton.style.display = '';
-
-    if (autoRestartEnabled) {
-        autoRestartButton.classList.add('active');
-        autoRestartButton.title = t('auto_restart_on');
-    } else {
-        autoRestartButton.classList.remove('active');
-        autoRestartButton.title = t('auto_restart_off');
-    }
+    recognitionControls.updateAutoRestartButton();
 }
 
 function applyLockPauseRestartControlsUI() {
-    if (restartButton) {
-        restartButton.style.display = lockManualControls ? 'none' : '';
-    }
-    if (pauseButton) {
-        pauseButton.style.display = lockManualControls ? 'none' : '';
-    }
-    if (audioSourceButton) {
-        audioSourceButton.style.display = lockManualControls ? 'none' : '';
-    }
-    if (oscTranslationButton) {
-        oscTranslationButton.style.display = lockManualControls ? 'none' : '';
-    }
-    if (translationLangButton) {
-        translationLangButton.style.display = lockManualControls ? 'none' : '';
-    }
+    if (restartButton) restartButton.style.display = lockManualControls ? 'none' : '';
+    if (pauseButton) pauseButton.style.display = lockManualControls ? 'none' : '';
+    if (audioSourceButton) audioSourceButton.style.display = lockManualControls ? 'none' : '';
+    if (oscTranslationButton) oscTranslationButton.style.display = lockManualControls ? 'none' : '';
+    if (translationLangButton) translationLangButton.style.display = lockManualControls ? 'none' : '';
     if (segmentModeButton) {
-        // Hidden when locked or when the active provider has no segmentation control.
         segmentModeButton.style.display = (lockManualControls || !segmentModeSupported) ? 'none' : '';
     }
-    if (lockManualControls) {
-        autoRestartEnabled = true;
-    }
+    if (lockManualControls) autoRestartEnabled = true;
     updateAutoRestartButton();
 }
 
@@ -1396,62 +1400,12 @@ function buildCustomSelect(options, config = {}) {
 }
 
 function updateAudioSourceButton() {
-    if (!audioSourceButton || !audioSourceIcon) {
-        return;
-    }
-
-    audioSource = normalizeAudioSource(audioSource);
-
-    let nextKey, currentKey;
-    if (audioSource === 'microphone') {
-        setControlIcon(audioSourceIcon, 'mic');
-        nextKey = 'audio_to_mix_val';
-        currentKey = 'audio_source_microphone';
-    } else if (audioSource === 'mix') {
-        setControlIcon(audioSourceIcon, 'blend');
-        nextKey = 'audio_to_system_val';
-        currentKey = 'audio_source_mix';
-    } else {
-        setControlIcon(audioSourceIcon, 'volume-2');
-        nextKey = 'audio_to_mic_val';
-        currentKey = 'audio_source_system';
-    }
-
-    const currentName = t(currentKey);
-    const nextName = t(nextKey);
-    audioSourceButton.title = t('audio_source_format', { current: currentName, next: nextName });
+    runtimeControls.updateAudioSourceButton();
 }
 
-async function fetchInitialAudioSource() {
-    try {
-        const stored = localStorage.getItem('audioSource');
-        audioSource = normalizeAudioSource(stored);
-        updateAudioSourceButton();
-    } catch (storageError) {
-        console.warn('Unable to access stored audio source preference:', storageError);
-    }
-
-    try {
-        const response = await fetch('/audio-source');
-        if (!response.ok) {
-            return;
-        }
-
-        const data = await response.json();
-        if (data && typeof data.source === 'string') {
-            audioSource = normalizeAudioSource(data.source);
-            updateAudioSourceButton();
-            try {
-                localStorage.setItem('audioSource', audioSource);
-            } catch (persistError) {
-                console.warn('Unable to persist audio source preference:', persistError);
-            }
-        }
-    } catch (error) {
-        console.error('Failed to fetch current audio source:', error);
-    }
+function fetchInitialAudioSource() {
+    return runtimeControls.fetchInitialAudioSource();
 }
-
 function microphoneDefaultLabel() {
     const defaultName = microphoneDeviceData && microphoneDeviceData.default && microphoneDeviceData.default.name;
     if (defaultName) {
@@ -1901,21 +1855,6 @@ if (segmentModeButton) {
     });
 }
 
-// 显示模式切换
-displayModeButton.addEventListener('click', () => {
-    if (displayMode === 'both') {
-        displayMode = 'original';
-    } else if (displayMode === 'original') {
-        displayMode = 'translation';
-    } else {
-        displayMode = 'both';
-    }
-    localStorage.setItem('displayMode', displayMode);
-    updateDisplayModeButton();
-    renderSubtitles();  // 立即重新渲染
-    console.log(`Display mode switched to: ${displayMode}`);
-});
-
 if (oscTranslationButton) {
     oscTranslationButton.addEventListener('click', async () => {
         const next = !oscTranslationEnabled;
@@ -1963,18 +1902,6 @@ if (bottomSafeAreaButton) {
     });
 }
 
-if (autoRestartButton) {
-    autoRestartButton.addEventListener('click', () => {
-        if (lockManualControls) {
-            return;
-        }
-        autoRestartEnabled = !autoRestartEnabled;
-        localStorage.setItem('autoRestartEnabled', autoRestartEnabled);
-        updateAutoRestartButton();
-        console.log(`Auto restart ${autoRestartEnabled ? 'enabled' : 'disabled'}`);
-    });
-}
-
 // 假名注音开关
 function updateFuriganaButton() {
     if (!furiganaButton || !furiganaIcon) {
@@ -2007,275 +1934,24 @@ if (furiganaButton) {
     });
 }
 
-async function restartRecognition({ auto = false, targetLang = null, translationMode = null, targetLang1 = null, targetLang2 = null } = {}) {
-    if (isRestarting) {
-        return false;
-    }
-
-    // A manual restart begins a fresh recognition session; reset the
-    // this-session cost meter so it counts from zero again.
-    if (!auto) {
-        sessionCostReset();
-    }
-    isRestarting = true;
-    shouldReconnect = false;
-
-    if (!auto && restartButton) {
-        restartButton.classList.add('restarting');
-    }
-
-    const manualStatusHtml = `<div style="text-align: center; padding: 40px; color: #6b7280;">${escapeHtml(t('restarting'))}</div>`;
-    const manualErrorHtml = `<div style="text-align: center; padding: 40px; color: #ef4444;">${escapeHtml(t('connection_error_try_again'))}</div>`;
-    const manualFailureHtml = `<div style="text-align: center; padding: 40px; color: #ef4444;">${escapeHtml(t('restart_failed_try_again'))}</div>`;
-
-    try {
-        if (auto) {
-            finalizeCurrentNonFinalTokens();
-        } else if (ws) {
-            console.log('Closing old WebSocket connection...');
-            try {
-                ws.close();
-            } catch (closeError) {
-                console.warn('WebSocket close during restart raised an error:', closeError);
-            }
-            ws = null;
-        }
-
-        if (!auto) {
-            clearSubtitleState();
-            subtitleContainer.innerHTML = manualStatusHtml;
-        }
-
-        await delay(500);
-
-        const payload = { auto: !!auto };
-        const lang = (targetLang || currentTranslationTargetLang || '').toString().trim().toLowerCase();
-        if (lang) {
-            payload.target_lang = lang;
-        }
-        if (translationMode) {
-            payload.translation_mode = translationMode;
-        }
-        if (targetLang1) {
-            payload.target_lang_1 = String(targetLang1).trim().toLowerCase();
-        }
-        if (targetLang2) {
-            payload.target_lang_2 = String(targetLang2).trim().toLowerCase();
-        }
-
-        const response = await fetch('/restart', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) {
-            if (!auto) {
-                subtitleContainer.innerHTML = manualFailureHtml;
-            }
-            throw new Error(`Restart failed with status ${response.status}`);
-        }
-
-        const result = await response.json().catch(() => ({}));
-        if (!auto) {
-            isPaused = false;
-            updatePauseButtonUi();
-        }
-        console.log(auto ? 'Auto restart: new recognition session requested.' : 'Recognition restarted successfully');
-
-        await delay(1500);
-
-        // Restart is done: swap the "restarting…" placeholder for the waiting
-        // state (matches the Qt overlay's "等待字幕…") until real subtitles
-        // arrive. Guard so we don't clobber subtitles that already streamed in.
-        if (!auto && subtitleContainer.innerHTML === manualStatusHtml) {
-            subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
-            subtitleContainer.scrollTop = 0;
-        }
-
-        shouldReconnect = true;
-        if (!auto || !hasUsableWebSocket()) {
-            connect();
-        }
-        return true;
-    } catch (error) {
-        console.error(`${auto ? 'Auto restart' : 'Restart'} error:`, error);
-        if (!auto) {
-            if (subtitleContainer.innerHTML === manualStatusHtml) {
-                subtitleContainer.innerHTML = manualErrorHtml;
-            }
-        }
-        shouldReconnect = true;
-        return false;
-    } finally {
-        if (!auto && restartButton) {
-            setTimeout(() => restartButton.classList.remove('restarting'), 1500);
-        }
-        isRestarting = false;
-    }
+function restartRecognition(options = {}) {
+    return recognitionControls.restartRecognition(options);
 }
 
 function triggerAutoRestart() {
-    if (!autoRestartEnabled) {
-        return;
-    }
-
-    if (isRestarting) {
-        console.log('Restart already in progress; skipping auto restart trigger.');
-        return;
-    }
-
-    restartRecognition({ auto: true })
-        .then((success) => {
-            if (!success && autoRestartEnabled && shouldReconnect && !isRestarting) {
-                console.log('Auto restart failed; retrying in 2 seconds...');
-                setTimeout(triggerAutoRestart, 2000);
-            }
-        })
-        .catch((error) => {
-            console.error('Auto restart promise rejected:', error);
-            if (autoRestartEnabled && shouldReconnect && !isRestarting) {
-                console.log('Auto restart failed; retrying in 2 seconds...');
-                setTimeout(triggerAutoRestart, 2000);
-            }
-        });
+    return recognitionControls.triggerAutoRestart();
 }
-
-// 重启识别功能
-restartButton.addEventListener('click', () => {
-    if (lockManualControls) {
-        return;
-    }
-    void restartRecognition();
-});
-
-// 暂停/恢复识别功能
-pauseButton.addEventListener('click', async () => {
-    if (lockManualControls) {
-        return;
-    }
-    try {
-        if (isPaused) {
-            // 恢复识别
-            const response = await fetch('/resume', { method: 'POST' });
-            if (response.ok) {
-                isPaused = false;
-                updatePauseButtonUi();
-                console.log('Recognition resumed');
-            }
-        } else {
-            // 暂停识别
-            const response = await fetch('/pause', { method: 'POST' });
-            if (response.ok) {
-                isPaused = true;
-                updatePauseButtonUi();
-                console.log('Recognition paused');
-                sessionCostPause();
-            }
-        }
-    } catch (error) {
-        console.error('Error toggling pause state:', error);
-    }
-});
-
-if (audioSourceButton) {
-    audioSourceButton.addEventListener('click', async () => {
-        if (lockManualControls) {
-            return;
-        }
-        const nextSource = getNextAudioSource(audioSource);
-
-        try {
-            const response = await fetch('/audio-source', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ source: nextSource })
-            });
-
-            let result = null;
-            try {
-                result = await response.json();
-            } catch (parseError) {
-                console.error('Failed to parse audio source response:', parseError);
-            }
-
-            if (response.ok && result && result.source) {
-                audioSource = normalizeAudioSource(result.source);
-                updateAudioSourceButton();
-                localStorage.setItem('audioSource', audioSource);
-                if (result.message) {
-                    console.log(result.message);
-                } else {
-                    console.log(`Audio source switched to ${audioSource}`);
-                }
-            } else {
-                const message = result?.message || `Server responded with status ${response.status}`;
-                console.error('Failed to switch audio source:', message);
-            }
-        } catch (error) {
-            console.error('Error switching audio source:', error);
-        }
-    });
-}
-
 
 // --- 原生字幕悬浮窗（PySide6）开关 ---
 function updateOverlayButton() {
-    if (!overlayButton) {
-        return;
-    }
-    overlayButton.title = overlayOpen ? t('overlay_close') : t('overlay_open');
-    overlayButton.classList.toggle('active', overlayOpen);
+    runtimeControls.updateOverlayButton();
 }
 
-async function refreshOverlayState() {
-    if (!overlayButton) {
-        return;
-    }
-    try {
-        const response = await fetch('/overlay');
-        const result = await response.json();
-        if (!result || result.available === false) {
-            // 该平台/模式不支持原生悬浮窗，隐藏按钮。
-            overlayButton.style.display = 'none';
-            return;
-        }
-        overlayOpen = !!result.open;
-        updateOverlayButton();
-    } catch (error) {
-        console.error('Failed to query overlay state:', error);
-    }
+function refreshOverlayState() {
+    return runtimeControls.refreshOverlayState();
 }
 
-if (overlayButton) {
-    overlayButton.addEventListener('click', async () => {
-        if (lockManualControls) {
-            return;
-        }
-        try {
-            const response = await fetch('/overlay', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'toggle' })
-            });
-            const result = await response.json();
-            if (result && result.available === false) {
-                overlayButton.style.display = 'none';
-                return;
-            }
-            overlayOpen = !!(result && result.open);
-            updateOverlayButton();
-        } catch (error) {
-            console.error('Error toggling subtitle overlay:', error);
-        }
-    });
-    refreshOverlayState();
-}
-
-
-
+void refreshOverlayState();
 
 function displayErrorMessage(message) {
     const localizedMessage = localizeBackendMessage(message);
@@ -2375,14 +2051,12 @@ function handleMessageFrame(data) {
         return;
     }
     if (data.type === 'recognition_paused') {
-        isPaused = !!data.paused;
-        updatePauseButtonUi();
+        runtimeControls.syncPauseState(data.paused);
         hostedController.handleSessionFrame(data);
         return;
     }
     if (data.type === 'overlay_visibility') {
-        overlayOpen = !!data.visible;
-        updateOverlayButton();
+        runtimeControls.syncOverlayState(data.visible);
         return;
     }
     if (data.type === 'ipc_status') {
@@ -2660,8 +2334,6 @@ function restoreScrollState(state) {
 function requestFurigana(text) {
     return furiganaService.request(text);
 }
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 function hasUsableWebSocket() {
     return wsClient
         ? wsClient.isUsable()

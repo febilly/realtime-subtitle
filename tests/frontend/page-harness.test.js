@@ -71,6 +71,29 @@ describe('full-page frontend harness', () => {
         expect(requestedPaths).not.toContain('/restart');
     });
 
+    it('wires backend control locking through every extracted controller', async () => {
+        const page = await createPageHarness({ uiConfig: { lock_manual_controls: true } });
+        pages.push(page);
+
+        for (const id of [
+            'restartButton',
+            'pauseButton',
+            'audioSourceButton',
+            'oscTranslationButton',
+            'translationLangButton',
+        ]) {
+            expect(page.document.getElementById(id).style.display).toBe('none');
+        }
+
+        const callCount = page.fetchCalls.length;
+        for (const id of ['restartButton', 'pauseButton', 'audioSourceButton', 'translationLangButton']) {
+            page.document.getElementById(id).click();
+        }
+        await page.flush(2);
+        expect(page.fetchCalls).toHaveLength(callCount);
+        expect(page.document.querySelector('.lang-popover')).toBeNull();
+    });
+
     it('compares and checks golden files byte-for-byte', async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'frontend-golden-compare-'));
         const expected = path.join(tempDir, 'expected.jsonl');

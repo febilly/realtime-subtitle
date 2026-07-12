@@ -62,19 +62,21 @@ function defaultFetchResponse(url, options = {}) {
     const translationUiMode = normalizeTranslationUiMode(options.translationUiMode);
     const llmMode = llmModeForTranslationUiMode(translationUiMode);
     const pathname = new URL(String(url), 'http://localhost/').pathname;
+    const uiConfig = {
+        provider: 'soniox',
+        segment_mode: 'punctuation',
+        translation_mode: 'one_way',
+        translation_ui_mode: translationUiMode,
+        llm_refine_available: true,
+        llm_refine_default_mode: llmMode,
+        languages: ['en', 'zh', 'ja'],
+        relay_available: false,
+        lock_manual_controls: false,
+        ...(options.uiConfig || {}),
+    };
     const payloads = {
         '/local-store': { store: {} },
-        '/ui-config': {
-            provider: 'soniox',
-            segment_mode: 'punctuation',
-            translation_mode: 'one_way',
-            translation_ui_mode: translationUiMode,
-            llm_refine_available: true,
-            llm_refine_default_mode: llmMode,
-            languages: ['en', 'zh', 'ja'],
-            relay_available: false,
-            lock_manual_controls: false,
-        },
+        '/ui-config': uiConfig,
         '/api-key-status': { status: 'ok' },
         '/osc-translation': { enabled: false },
         '/audio-source': { source: 'system' },
@@ -149,7 +151,10 @@ async function createPageHarness(options = {}) {
         pretendToBeVisual: true,
         virtualConsole,
     });
-    const fetchCalls = installBrowserStubs(dom.window, options.fetch, { translationUiMode });
+    const fetchCalls = installBrowserStubs(dom.window, options.fetch, {
+        translationUiMode,
+        uiConfig: options.uiConfig,
+    });
     const storedValues = Object.assign({
         autoRestartEnabled: String(options.autoRestartEnabled === true),
         translationUiMode,
