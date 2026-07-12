@@ -21,6 +21,15 @@ describe('full-page settings and controls smoke', () => {
             page.document.getElementById('settingsCancelButton').click();
             expect(settingsPanel.hidden).toBe(true);
 
+            const translationButton = page.document.getElementById('translationLangButton');
+            translationButton.click();
+            const languagePopover = page.document.querySelector('.lang-popover');
+            expect(languagePopover).not.toBeNull();
+            expect(languagePopover.style.display).toBe('block');
+            expect(languagePopover.querySelectorAll('.translation-mode-control .segmented-option')).toHaveLength(3);
+            translationButton.click();
+            expect(languagePopover.style.display).toBe('none');
+
             expect(page.document.body.classList.contains('dark-theme')).toBe(true);
             page.document.getElementById('themeToggle').click();
             expect(page.document.body.classList.contains('dark-theme')).toBe(false);
