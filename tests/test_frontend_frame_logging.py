@@ -1,4 +1,5 @@
 import json
+import importlib
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
@@ -7,12 +8,21 @@ import pytest
 
 @pytest.fixture
 def web_server_class():
-    from web_server import WebServer
-
-    yield WebServer
-    # Some legacy security tests import this module under patched dependencies.
-    # Do not let this integration-style import make those tests order-dependent.
-    sys.modules.pop("web_server", None)
+    previous_config = sys.modules.pop("config", None)
+    previous_web_server = sys.modules.pop("web_server", None)
+    try:
+        # Several legacy unit modules install a minimal top-level `config` stub.
+        # This integration fixture needs the real module regardless of test order.
+        importlib.import_module("config")
+        WebServer = importlib.import_module("web_server").WebServer
+        yield WebServer
+    finally:
+        sys.modules.pop("web_server", None)
+        sys.modules.pop("config", None)
+        if previous_web_server is not None:
+            sys.modules["web_server"] = previous_web_server
+        if previous_config is not None:
+            sys.modules["config"] = previous_config
 
 
 @pytest.mark.asyncio
