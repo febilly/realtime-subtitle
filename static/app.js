@@ -330,7 +330,7 @@ const translationModePickerHost = document.getElementById('translationModePicker
 const translationModeHintEl = document.getElementById('translationModeHint');
 const toastEl = document.getElementById('toast');
 
-const SONIOX_REGIONS = ['us', 'eu', 'jp'];
+const SONIOX_REGIONS = SettingsPolicy.SONIOX_REGIONS;
 // Custom-select element (built lazily); mirrors the language picker styling.
 let sonioxRegionPickerEl = null;
 let microphoneDevicePickerEl = null;
@@ -454,34 +454,14 @@ function loadServerSettings() {
 function saveServerSettings(settings) {
     settingsStore.saveServerSettings(settings);
 }
-function hasExplicitConnectionMode(settings) {
-    if (!settings || typeof settings !== 'object') {
-        return false;
-    }
-    if (settings.modeChosen === true) {
-        return true;
-    }
-    // A saved direct/own-key mode is also an explicit choice. Older settings may
-    // not have modeChosen yet; do not reinterpret them as hosted mode just
-    // because a subtitle-server URL is configured.
-    if (settings.mode === 'direct') {
-        return true;
-    }
-    // Backwards-compatible migration for users who already completed hosted
-    // login before this flag existed.
-    return settings.mode === 'relay' && !!settings.token;
-}
+const { hasExplicitConnectionMode } = SettingsPolicy;
 
 // Resolved connection mode: 'relay' | 'direct' | null (undecided / first launch).
 function getConnectionMode() {
-    if (!relayAvailable) {
-        return 'direct';
-    }
-    const s = loadServerSettings();
-    if ((s.mode === 'relay' || s.mode === 'direct') && hasExplicitConnectionMode(s)) {
-        return s.mode;
-    }
-    return null;
+    return SettingsPolicy.resolveConnectionMode({
+        relayAvailable,
+        serverSettings: loadServerSettings(),
+    });
 }
 
 let uiTranslationMode = settingsStore.loadUiTranslationMode();
@@ -2820,10 +2800,7 @@ async function fetchRelayPricing() {
     }
 }
 
-function normalizeSonioxRegion(region) {
-    const r = String(region || '').trim().toLowerCase();
-    return SONIOX_REGIONS.includes(r) ? r : 'us';
-}
+const { normalizeSonioxRegion } = SettingsPolicy;
 
 function getDesiredSonioxRegion() {
     const settings = loadProviderSettings();
@@ -3073,20 +3050,7 @@ function closeSettings() {
 
 async function pushSetup(provider, apiKey, { silent = false, region = null, mode = null, token = null } = {}) {
     try {
-        const body = { provider };
-        if (mode) {
-            body.mode = mode;
-        }
-        if (mode === 'relay') {
-            if (token) {
-                body.token = token;
-            }
-        } else if (apiKey) {
-            body.api_key = apiKey;
-        }
-        if (provider === 'soniox' && region) {
-            body.soniox_region = region;
-        }
+        const body = SettingsPolicy.buildSetupBody(provider, apiKey, { region, mode, token });
         const resp = await fetch('/setup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3126,30 +3090,29 @@ async function pushSetup(provider, apiKey, { silent = false, region = null, mode
 }
 
 function directSettingsNeedSetup({ provider, region, apiKeyToPush, previousKey }) {
-    const desiredKeySource = apiKeyToPush ? 'localstorage' : 'env';
-    const keyChanged = String(previousKey || '') !== String(apiKeyToPush || '');
-    const providerMismatch = provider !== translationProvider;
-    const modeMismatch = backendMode !== 'direct';
-    const regionMismatch = !backendSonioxCustomUrl
-        && provider === 'soniox'
-        && region
-        && normalizeSonioxRegion(region) !== backendSonioxRegion;
-    const keySourceMismatch = backendKeySource !== desiredKeySource;
-
-    return setupRequired
-        || providerMismatch
-        || modeMismatch
-        || regionMismatch
-        || keyChanged
-        || keySourceMismatch;
+    return SettingsPolicy.directSettingsNeedSetup({
+        provider,
+        region,
+        apiKeyToPush,
+        previousKey,
+        translationProvider,
+        backendMode,
+        backendSonioxCustomUrl,
+        backendSonioxRegion,
+        backendKeySource,
+        setupRequired,
+    });
 }
 
 function relaySettingsNeedSetup({ provider, token }) {
-    const providerMismatch = provider !== translationProvider;
-    const modeMismatch = backendMode !== 'relay';
-    const needsLoginPush = !!token && !backendLoggedIn;
-
-    return setupRequired || providerMismatch || modeMismatch || needsLoginPush;
+    return SettingsPolicy.relaySettingsNeedSetup({
+        provider,
+        token,
+        translationProvider,
+        backendMode,
+        backendLoggedIn,
+        setupRequired,
+    });
 }
 
 function finishHotSettingsSave() {
@@ -3384,88 +3347,46 @@ async function handleSettingsSave(event) {
 }
 
 async function syncProviderFromStorage() {
-    if (lockManualControls) {
-        return;
+    if (lockManualControls) return;
+    const plan = SettingsPolicy.buildProviderSyncPlan({
+        lockManualControls,
+        providerSettings: loadProviderSettings(),
+        translationProvider,
+        backendSonioxCustomUrl,
+        backendSonioxRegion,
+        connectionMode: getConnectionMode(),
+        serverSettings: loadServerSettings(),
+        backendMode,
+        backendLoggedIn,
+        backendKeySource,
+        pushedOverrideBootId,
+        backendBootId,
+    });
+    if (plan) {
+        await pushSetup(plan.provider, plan.apiKey, plan.options);
     }
-    const settings = loadProviderSettings();
-    const desiredProvider = settings.providerOverride || translationProvider || 'soniox';
-    // When the backend pins a custom endpoint, never push a region (it would override the URL).
-    const desiredRegion = backendSonioxCustomUrl ? null : getDesiredSonioxRegion();
-    const providerMismatch = settings.providerOverride && desiredProvider !== translationProvider;
-    const mode = getConnectionMode();
-
-    if (mode === 'relay') {
-        const server = loadServerSettings();
-        const token = server.token || '';
-        if (!token) {
-            return;
-        }
-        const modeMismatch = backendMode !== 'relay';
-        const needTokenPush = token && !backendLoggedIn;
-        if (!providerMismatch && !modeMismatch && !needTokenPush) {
-            return;
-        }
-        if (pushedOverrideBootId === backendBootId) {
-            return;
-        }
-        await pushSetup(desiredProvider, null, {
-            silent: true, mode: 'relay', token, region: desiredRegion,
-        });
-        return;
-    }
-
-    if (mode === 'direct') {
-        const overrideKey = settings.keys && settings.keys[desiredProvider];
-        const needKeyPush = overrideKey && backendKeySource !== 'localstorage';
-        const regionMismatch = !backendSonioxCustomUrl
-            && desiredProvider === 'soniox'
-            && settings.sonioxRegion
-            && desiredRegion !== backendSonioxRegion;
-        const modeMismatch = backendMode !== 'direct';
-        if (!providerMismatch && !needKeyPush && !regionMismatch && !modeMismatch) {
-            return;
-        }
-        if (pushedOverrideBootId === backendBootId) {
-            return;
-        }
-        await pushSetup(desiredProvider, overrideKey || null, {
-            silent: true, mode: 'direct', region: desiredRegion,
-        });
-    }
-    // mode === null (undecided) is handled by the first-launch chooser.
 }
 
 function maybeForceOpenSettings() {
-    if (lockManualControls) {
-        return;
-    }
-    const mode = getConnectionMode();
-    if (mode === 'relay') {
-        const hasToken = !!loadServerSettings().token;
-        if (!hasToken || setupRequired) {
-            openLogin({ forced: true });
-        }
-        return;
-    }
-    if (mode === 'direct' && setupRequired) {
-        openSettings({ forced: true });
-    }
+    const action = SettingsPolicy.resolveForceOpenAction({
+        lockManualControls,
+        connectionMode: getConnectionMode(),
+        serverSettings: loadServerSettings(),
+        setupRequired,
+    });
+    if (action === 'login') openLogin({ forced: true });
+    if (action === 'settings') openSettings({ forced: true });
 }
 
 let startupLoginPreopened = false;
 
 function shouldPreopenHostedLogin() {
-    if (lockManualControls || !relayAvailable || !relayServerUrl) {
-        return false;
-    }
-    const server = loadServerSettings();
-    if (server.token) {
-        return false;
-    }
-    if (server.mode === 'direct' && hasExplicitConnectionMode(server)) {
-        return false;
-    }
-    return server.mode === 'relay' || !hasExplicitConnectionMode(server);
+    return SettingsPolicy.shouldPreopenHostedLogin({
+        lockManualControls,
+        relayAvailable,
+        relayServerUrl,
+        serverSettings: loadServerSettings(),
+    });
 }
 
 function preopenHostedLoginIfNeeded() {
