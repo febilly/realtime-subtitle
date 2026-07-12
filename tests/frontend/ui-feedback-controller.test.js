@@ -73,6 +73,7 @@ describe('UiFeedbackController toast lifecycle', () => {
         expect(page.toast.classList.contains('error')).toBe(true);
         expect(page.toast.textContent).toBe('<strong>unsafe</strong>');
         expect(page.toast.querySelector('strong')).toBeNull();
+        expect(page.toast.querySelector('.toast-close')).not.toBeNull();
         expect(page.schedule).toHaveBeenCalledWith(expect.any(Function), 4000);
 
         page.timerTokens[0].callback();
@@ -118,6 +119,17 @@ describe('UiFeedbackController toast lifecycle', () => {
 
         expect(page.controller.showToast('ignored', true)).toBeUndefined();
         expect(page.schedule).not.toHaveBeenCalled();
+    });
+
+    it('closes a toast immediately and cancels its timeout', () => {
+        const page = createHarness();
+        page.controller.showToast('dismiss me');
+        const timer = page.timerTokens[0];
+
+        page.toast.querySelector('.toast-close').click();
+
+        expect(page.toast.hidden).toBe(true);
+        expect(page.cancel).toHaveBeenCalledWith(timer);
     });
 });
 

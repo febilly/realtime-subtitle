@@ -37,6 +37,7 @@ function setup(overrides = {}) {
     };
     const openWindow = vi.fn();
     dom.window.open = openWindow;
+    const storage = overrides.storage || dom.window.localStorage;
     const balance = {
         formatCredits: vi.fn((value) => `C${value}`),
         getFirstRedeemBonus: vi.fn(() => ({ eligible: true, credits: 25 })),
@@ -58,6 +59,7 @@ function setup(overrides = {}) {
         resetBootGuard: vi.fn(),
         hideSettingsPanel: vi.fn(),
         openLogin: vi.fn(),
+        openSettings: vi.fn(),
         ...overrides.actions,
     };
     const showConfirm = overrides.showConfirm || vi.fn().mockResolvedValue(true);
@@ -66,6 +68,9 @@ function setup(overrides = {}) {
         document,
         window: dom.window,
         navigator: { clipboard },
+        storage,
+        now: overrides.now,
+        signedInAtLaunch: !!overrides.signedInAtLaunch,
         fetch,
         t: (key, vars = {}) => [key, ...Object.entries(vars).map(([name, value]) => `${name}=${value}`)].join('|'),
         localizeBackendMessage: (message) => `localized:${message}`,
@@ -104,10 +109,56 @@ function setup(overrides = {}) {
         getServer: () => server,
         openWindow,
         runtime,
+        storage,
         saveServerSettings,
         showConfirm,
     };
 }
+
+describe('HostedAccount invite reward reminder', () => {
+    it('shows only for a user who was already signed in at launch and has no successful invites', async () => {
+        const fetch = vi.fn().mockResolvedValue(response({
+            invite_link: 'https://invite.example/code',
+            invited_users_count: 0,
+        }));
+        const page = setup({ fetch, signedInAtLaunch: true, now: () => 1_000_000_000 });
+
+        await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(true);
+        expect(page.actions.showToast).toHaveBeenCalledWith(
+            'invite_reward_reminder',
+            false,
+            expect.objectContaining({ timeoutMs: 12000, actionLabel: 'open_settings' }),
+        );
+        expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_STORAGE_KEY)).toBe('1000000000');
+        page.actions.showToast.mock.calls[0][2].onAction();
+        expect(page.actions.openSettings).toHaveBeenCalledWith({ forced: false });
+        page.dom.window.close();
+    });
+
+    it('does not remind on the login launch, during cooldown, or after a successful invite', async () => {
+        const notSignedInAtLaunch = setup({ signedInAtLaunch: false });
+        await expect(notSignedInAtLaunch.controller.maybeShowInviteReminder()).resolves.toBe(false);
+        expect(notSignedInAtLaunch.fetch).not.toHaveBeenCalled();
+        notSignedInAtLaunch.dom.window.close();
+
+        const coolingDown = setup({ signedInAtLaunch: true, now: () => 2_000_000_000 });
+        coolingDown.storage.setItem(
+            HostedAccount.INVITE_REMINDER_STORAGE_KEY,
+            String(2_000_000_000 - HostedAccount.INVITE_REMINDER_COOLDOWN_MS + 1),
+        );
+        await expect(coolingDown.controller.maybeShowInviteReminder()).resolves.toBe(false);
+        expect(coolingDown.fetch).not.toHaveBeenCalled();
+        coolingDown.dom.window.close();
+
+        const invited = setup({
+            signedInAtLaunch: true,
+            fetch: vi.fn().mockResolvedValue(response({ successful_invites: 1 })),
+        });
+        await expect(invited.controller.maybeShowInviteReminder()).resolves.toBe(false);
+        expect(invited.actions.showToast).not.toHaveBeenCalled();
+        invited.dom.window.close();
+    });
+});
 
 describe('HostedAccount presentation', () => {
     it('renders the signed-in identity, purchase link, bonus, balance, and pools', () => {

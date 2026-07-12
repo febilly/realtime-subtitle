@@ -152,6 +152,21 @@ describe('SessionFrameController disconnect policy', () => {
         expect(page.actions.openSettings).toHaveBeenCalledWith({ forced: false });
     });
 
+    it('delegates billing exhaustion when a provider-switch offer handler is available', () => {
+        const handleBillingExhausted = vi.fn();
+        const page = createHarness({ actions: { handleBillingExhausted } });
+        const frame = {
+            type: 'session_disconnected',
+            code: 'billing_exhausted',
+            relay_terminal: true,
+        };
+
+        page.controller.handle(frame);
+
+        expect(handleBillingExhausted).toHaveBeenCalledWith(frame);
+        expect(page.actions.showToast).not.toHaveBeenCalled();
+    });
+
     it.each([
         ['upstream_key_error', 'relay_err_upstream_key_error'],
         ['model_not_allowed', 'relay_err_model_not_allowed'],

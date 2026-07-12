@@ -18,6 +18,15 @@
         const cancel = options.clearTimeout || ((...args) => root.clearTimeout(...args));
         let toastTimer = null;
 
+        function hideToast() {
+            if (!toast) return;
+            toast.hidden = true;
+            if (toastTimer) {
+                cancel(toastTimer);
+                toastTimer = null;
+            }
+        }
+
         function showToast(message, isError = false, toastOptions = {}) {
             if (!toast) return;
             toast.textContent = '';
@@ -34,12 +43,25 @@
                     toastOptions.onAction();
                 });
                 toast.appendChild(action);
+                if (toastOptions.actionSuffix) {
+                    const suffix = documentRef.createElement('span');
+                    suffix.textContent = toastOptions.actionSuffix;
+                    toast.appendChild(suffix);
+                }
             }
+            const close = documentRef.createElement('button');
+            close.type = 'button';
+            close.className = 'toast-close';
+            close.setAttribute('aria-label', t('close'));
+            close.setAttribute('title', t('close'));
+            close.addEventListener('click', hideToast);
+            toast.appendChild(close);
             toast.classList.toggle('error', !!isError);
             toast.hidden = false;
             if (toastTimer) cancel(toastTimer);
             toastTimer = schedule(() => {
                 toast.hidden = true;
+                toastTimer = null;
             }, Number(toastOptions.timeoutMs) || 4000);
         }
 
@@ -75,6 +97,7 @@
         return {
             displayErrorMessage,
             fetchApiKeyStatus,
+            hideToast,
             showToast,
         };
     }

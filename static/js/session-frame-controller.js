@@ -46,11 +46,15 @@
             const relayKey = RELAY_ERROR_KEYS[frame.code];
             if (relayKey) {
                 if (frame.code === 'billing_exhausted') {
-                    call('showToast', t(relayKey), true, {
-                        timeoutMs: 8000,
-                        actionLabel: t('open_settings'),
-                        onAction: () => call('openSettings', { forced: false }),
-                    });
+                    if (typeof actions.handleBillingExhausted === 'function') {
+                        call('handleBillingExhausted', frame);
+                    } else {
+                        call('showToast', t(relayKey), true, {
+                            timeoutMs: 8000,
+                            actionLabel: t('open_settings'),
+                            onAction: () => call('openSettings', { forced: false }),
+                        });
+                    }
                 } else {
                     call('showToast', t(relayKey), true);
                 }

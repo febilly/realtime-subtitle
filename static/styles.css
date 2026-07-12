@@ -1040,6 +1040,7 @@ body.dark-theme .confirm-dialog {
     color: #f9fafb;
     font-size: 14px;
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+    padding-right: 38px;
 }
 
 .toast.error {
@@ -1060,6 +1061,33 @@ body.dark-theme .confirm-dialog {
 
 .toast .toast-action {
     margin-left: 8px;
+}
+
+.toast .toast-close {
+    position: absolute;
+    top: 4px;
+    right: 5px;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font-size: 22px;
+    line-height: 28px;
+    cursor: pointer;
+    opacity: 0.8;
+}
+
+.toast .toast-close:hover,
+.toast .toast-close:focus-visible {
+    background: rgba(255, 255, 255, 0.16);
+    opacity: 1;
+}
+
+.toast .toast-close::before {
+    content: "\00d7";
 }
 
 .lang-popover-title {

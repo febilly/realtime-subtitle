@@ -163,6 +163,23 @@ describe('HostedBalance polling and fetching', () => {
         expect(fetch).toHaveBeenCalledOnce();
         page.dom.window.close();
     });
+
+    it('checks another provider without replacing the displayed balance state', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response(balance({ prepaid_balance: 10 })))
+            .mockResolvedValueOnce(response(balance({
+                prepaid_balance: 0,
+                free: { pools: [{ remaining: 5 }] },
+            })));
+        const page = setup({ fetch });
+        await page.controller.fetchBalance({ force: true });
+        const gemini = await page.controller.fetchProviderBalance('gemini');
+
+        expect(gemini.free.pools[0].remaining).toBe(5);
+        expect(page.controller.getLastBalanceData().prepaid_balance).toBe(10);
+        expect(fetch).toHaveBeenLastCalledWith('/account/balance?provider=gemini');
+        page.dom.window.close();
+    });
 });
 
 describe('HostedBalance rendering and metering', () => {

@@ -277,6 +277,17 @@
             }
         }
 
+        async function fetchProviderBalance(provider) {
+            if (!fetchRef || !['soniox', 'gemini'].includes(provider)) return null;
+            try {
+                const response = await fetchRef(`/account/balance?provider=${encodeURIComponent(provider)}`);
+                if (!response.ok) return null;
+                return await response.json();
+            } catch (error) {
+                return null;
+            }
+        }
+
         function sessionCostResume() {
             if (runtimeState().connectionMode !== 'relay') return;
             if (sessionRunSince == null) sessionRunSince = now();
@@ -386,6 +397,7 @@
             currentBalanceView,
             destroy,
             fetchBalance,
+            fetchProviderBalance,
             formatCredits,
             freePoolsSummary,
             getDebugState,

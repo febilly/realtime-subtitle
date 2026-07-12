@@ -1,10 +1,16 @@
 (function (root) {
     'use strict';
 
+    const INVITE_REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+    const INVITE_REMINDER_STORAGE_KEY = 'inviteRewardReminderLastShown';
+
     function create(options = {}) {
         const documentRef = options.document || root.document;
         const windowRef = options.window || root;
         const navigatorRef = options.navigator || root.navigator || {};
+        const storage = options.storage || root.localStorage;
+        const now = typeof options.now === 'function' ? options.now : () => Date.now();
+        const signedInAtLaunch = !!options.signedInAtLaunch;
         const fetchRef = typeof options.fetch === 'function'
             ? options.fetch
             : (typeof root.fetch === 'function' ? root.fetch.bind(root) : null);
@@ -57,6 +63,60 @@
 
         function isSignedIn(server = loadServerSettings()) {
             return !!runtimeState().backendLoggedIn || !!server.token;
+        }
+
+        function successfulInviteCount(data) {
+            if (!data || typeof data !== 'object') return null;
+            const numericKeys = [
+                'successful_invite_count', 'successful_invites', 'invite_count',
+                'invited_count', 'invited_users_count', 'referral_count',
+                'referred_users_count', 'registered_invitees', 'invitee_count',
+            ];
+            for (const key of numericKeys) {
+                const value = data[key];
+                if ((typeof value === 'number' || typeof value === 'string')
+                    && value !== '' && Number.isFinite(Number(value))) {
+                    return Math.max(0, Number(value));
+                }
+            }
+            const arrayKeys = [
+                'successful_invites', 'invited_users', 'referred_users', 'referrals', 'invitees',
+            ];
+            for (const key of arrayKeys) {
+                if (Array.isArray(data[key])) return data[key].length;
+            }
+            if (data.stats && typeof data.stats === 'object') return successfulInviteCount(data.stats);
+            return null;
+        }
+
+        async function maybeShowInviteReminder() {
+            if (!signedInAtLaunch || !isSignedIn()) return false;
+            let lastShown = 0;
+            try {
+                lastShown = Number(storage && storage.getItem(INVITE_REMINDER_STORAGE_KEY)) || 0;
+            } catch (error) {
+                lastShown = 0;
+            }
+            if (now() - lastShown < INVITE_REMINDER_COOLDOWN_MS) return false;
+            try {
+                const response = await fetchRef('/account/invite');
+                if (!response.ok) return false;
+                const data = await response.json().catch(() => ({}));
+                if (successfulInviteCount(data) !== 0) return false;
+                call('showToast', t('invite_reward_reminder'), false, {
+                    timeoutMs: 12000,
+                    actionLabel: t('open_settings'),
+                    onAction: () => call('openSettings', { forced: false }),
+                });
+                try {
+                    if (storage) storage.setItem(INVITE_REMINDER_STORAGE_KEY, String(now()));
+                } catch (error) {
+                    // The reminder still works for this launch when storage is unavailable.
+                }
+                return true;
+            } catch (error) {
+                return false;
+            }
         }
 
         function updateBalance() {
@@ -278,12 +338,14 @@
             handleRedeem,
             init,
             isSignedIn,
+            maybeShowInviteReminder,
+            successfulInviteCount,
             updateBalance,
             updateSection,
         };
     }
 
-    const api = { create };
+    const api = { INVITE_REMINDER_COOLDOWN_MS, INVITE_REMINDER_STORAGE_KEY, create };
     root.HostedAccount = api;
     if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

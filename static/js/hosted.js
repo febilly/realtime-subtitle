@@ -171,6 +171,7 @@
             call('fetchOscTranslationStatus');
             call('maybeForceOpenSettings');
             call('updateBalanceBarVisibility');
+            await call('maybeShowInviteReminder');
             call('connect');
         }
 

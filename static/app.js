@@ -264,6 +264,7 @@ const settingsStore = SettingsStore.create({
     storage: localStorage,
     getRelayServerUrl: () => relayServerUrl,
 });
+const signedInAtLaunch = !!settingsStore.loadServerSettings().token;
 let creditsPurchaseUrl = '';
 let clientVersion = '0.1.0';
 let clientLatestVersion = '';
@@ -587,6 +588,69 @@ const appShellController = AppShellController.create({
         updateAutoRestartButton: recognitionControls.updateAutoRestartButton,
     },
 });
+
+let checkingGeminiQuota = false;
+
+function showStandardBillingExhaustedToast() {
+    showToast(t('relay_err_billing_exhausted'), true, {
+        timeoutMs: 8000,
+        actionLabel: t('open_settings'),
+        onAction: () => settingsFlowController.open({ forced: false }),
+    });
+}
+
+async function switchToGeminiAfterQuotaExhaustion() {
+    const server = settingsPorts.loadServerSettings();
+    if (!server.token) {
+        showStandardBillingExhaustedToast();
+        return false;
+    }
+    const fastModeApplied = await translationModeController.setTranslationUiMode('fast', {
+        restartIfNeeded: false,
+    });
+    settingsPorts.renderTranslationModePicker();
+    if (!fastModeApplied) {
+        showToast(t('connection_error_try_again'), true);
+        return false;
+    }
+    const result = await settingsSetup.push('gemini', null, {
+        silent: true,
+        mode: 'relay',
+        token: server.token,
+    });
+    if (!result || !result.ok || (result.data && result.data.setup_required)) {
+        showToast(t('connection_error_try_again'), true);
+        return false;
+    }
+    const providerSettings = settingsPorts.loadProviderSettings();
+    providerSettings.providerOverride = 'gemini';
+    settingsPorts.saveProviderSettings(providerSettings);
+    subtitleRuntimeController.clear();
+    void controlPorts.restartRecognition({ auto: true });
+    return true;
+}
+
+async function handleBillingExhausted() {
+    if (checkingGeminiQuota) return;
+    if (translationProvider !== 'soniox' || settingsPorts.getConnectionMode() !== 'relay') {
+        showStandardBillingExhaustedToast();
+        return;
+    }
+    checkingGeminiQuota = true;
+    const geminiBalance = await hostedBalance.fetchProviderBalance('gemini');
+    checkingGeminiQuota = false;
+    if (!geminiBalance || !Hosted.Billing.hasUsableFreePool(geminiBalance.free)) {
+        showStandardBillingExhaustedToast();
+        return;
+    }
+    showToast(t('billing_gemini_offer_before'), true, {
+        timeoutMs: 12000,
+        actionLabel: t('billing_gemini_offer_action'),
+        actionSuffix: t('billing_gemini_offer_after'),
+        onAction: () => { void switchToGeminiAfterQuotaExhaustion(); },
+    });
+}
+
 const sessionFrameController = SessionFrameController.create({
     t,
     console,
@@ -605,6 +669,7 @@ const sessionFrameController = SessionFrameController.create({
         saveServerSettings: settingsPorts.saveServerSettings,
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         openLogin: hostedPorts.openLogin,
+        handleBillingExhausted,
         triggerAutoRestart: controlPorts.triggerAutoRestart,
     },
 });
@@ -1077,6 +1142,8 @@ hostedAccount = HostedAccount.create({
     document,
     window,
     navigator,
+    storage: localStorage,
+    signedInAtLaunch,
     fetch,
     t,
     localizeBackendMessage,
@@ -1096,6 +1163,7 @@ hostedAccount = HostedAccount.create({
         resetBootGuard: () => { pushedOverrideBootId = null; },
         hideSettingsPanel: settingsFlowController.hide,
         openLogin: hostedPorts.openLogin,
+        openSettings: settingsFlowController.open,
     },
     elements: {
         serverHint: document.getElementById('accountServerHint'),
@@ -1128,6 +1196,7 @@ const hostedController = Hosted.createController({
     fetchOscTranslationStatus: controlPorts.fetchOscTranslationStatus,
     maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
     updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
+    maybeShowInviteReminder: () => hostedAccount.maybeShowInviteReminder(),
     connect: webSocketController.connect,
     sessionCostResume: hostedPorts.sessionCostResume,
     sessionCostPause: hostedPorts.sessionCostPause,
