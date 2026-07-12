@@ -81,6 +81,7 @@ function defaultFetchResponse(url, options = {}) {
         '/osc-translation': { enabled: false },
         '/audio-source': { source: 'system' },
         '/microphones': { available: false, devices: [] },
+        '/account/balance': options.balancePayload || {},
         '/llm-refine': { enabled: true, mode: llmMode },
         '/translation-mode': { mode: translationUiMode, needs_restart: false },
     };
@@ -154,6 +155,7 @@ async function createPageHarness(options = {}) {
     const fetchCalls = installBrowserStubs(dom.window, options.fetch, {
         translationUiMode,
         uiConfig: options.uiConfig,
+        balancePayload: options.balancePayload,
     });
     const storedValues = Object.assign({
         autoRestartEnabled: String(options.autoRestartEnabled === true),
