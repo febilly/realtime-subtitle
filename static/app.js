@@ -360,6 +360,19 @@ const mobileSafeAreaController = MobileSafeAreaController.create({
     console,
 });
 mobileSafeAreaController.init();
+const furiganaToggleController = FuriganaToggleController.create({
+    storage: sessionStorage,
+    button: furiganaButton,
+    icon: furiganaIcon,
+    t,
+    console,
+    onChange: (enabled) => {
+        furiganaService.setEnabled(enabled);
+        subtitleRenderer.invalidateSentences();
+        renderSubtitles();
+    },
+});
+furiganaToggleController.init();
 const segmentModeController = SegmentModeController.create({
     fetch,
     storage: localStorage,
@@ -452,20 +465,12 @@ let displayMode = settingsStore.loadDisplayMode();
 // 自动重启识别开关（默认开启；已有保存值优先）
 let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
 
-// 日语假名注音开关（默认关闭）
-// 注意：使用 sessionStorage（按“标签页/客户端实例”隔离），避免同一设备多客户端互相影响。
-let furiganaEnabled = false;
-try {
-    furiganaEnabled = sessionStorage.getItem('furiganaEnabled') === 'true';
-} catch (storageError) {
-    console.warn('Unable to access sessionStorage for furigana preference:', storageError);
-}
 const furiganaService = Furigana.createService({
     kuromoji: window.kuromoji,
     escapeHtml,
     onReady: () => renderSubtitles(),
 });
-furiganaService.setEnabled(furiganaEnabled, { clearState: false });
+furiganaService.setEnabled(furiganaToggleController.isEnabled(), { clearState: false });
 const subtitleRenderer = SubtitleRenderer.create({
     document,
     container: subtitleContainer,
@@ -483,7 +488,7 @@ const subtitleRenderer = SubtitleRenderer.create({
         translateMode: isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
         currentTranslationTargetLang,
-        furiganaEnabled,
+        furiganaEnabled: furiganaToggleController.isEnabled(),
         speakerDiarizationEnabled: speakerLabelController.isDiarizationEnabled(),
         hideSpeakerLabels: speakerLabelController.isHidden(),
     }),
@@ -911,34 +916,7 @@ function setSegmentMode(mode) {
 
 // 假名注音开关
 function updateFuriganaButton() {
-    if (!furiganaButton || !furiganaIcon) {
-        return;
-    }
-    
-    if (furiganaEnabled) {
-        furiganaButton.classList.add('active');
-        furiganaButton.title = t('furigana_on');
-    } else {
-        furiganaButton.classList.remove('active');
-        furiganaButton.title = t('furigana_off');
-    }
-}
-
-if (furiganaButton) {
-    furiganaButton.addEventListener('click', () => {
-        furiganaEnabled = !furiganaEnabled;
-        try {
-            sessionStorage.setItem('furiganaEnabled', furiganaEnabled);
-        } catch (persistError) {
-            console.warn('Unable to persist furigana preference:', persistError);
-        }
-        updateFuriganaButton();
-        // 清空缓存以便重新渲染
-        furiganaService.setEnabled(furiganaEnabled);
-        subtitleRenderer.invalidateSentences();
-        renderSubtitles();
-        console.log(`Furigana ${furiganaEnabled ? 'enabled' : 'disabled'}`);
-    });
+    return furiganaToggleController.updateButton();
 }
 
 function restartRecognition(options = {}) {

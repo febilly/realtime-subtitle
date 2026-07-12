@@ -183,6 +183,9 @@ async function createPageHarness(options = {}) {
     for (const [key, value] of Object.entries(storedValues)) {
         dom.window.localStorage.setItem(key, String(value));
     }
+    for (const [key, value] of Object.entries(options.sessionStorage || {})) {
+        dom.window.sessionStorage.setItem(key, String(value));
+    }
     dom.window.__INITIAL_UI_CONFIG__ = options.initialUiConfig || {};
     loadPageScripts(dom.window);
     await flushTasks();
