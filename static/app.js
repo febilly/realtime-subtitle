@@ -517,6 +517,36 @@ const recognitionControls = RecognitionControls.create({
     connect,
 });
 
+const appShellController = AppShellController.create({
+    document,
+    window,
+    t,
+    elements: {
+        themeToggle,
+        restartButton,
+        pauseButton,
+        audioSourceButton,
+        overlayButton,
+        settingsButton,
+        translationLangButton,
+        segmentModeButton,
+        oscTranslationButton,
+        subtitleContainer,
+        ipcStatusButton: document.getElementById('ipcStatusButton'),
+    },
+    getState: () => ({ lockManualControls, segmentModeSupported }),
+    updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
+            autoRestartEnabled = patch.autoRestartEnabled;
+        }
+    },
+    actions: {
+        updatePauseButtonUi: runtimeControls.updatePauseButtonUi,
+        updateOverlayButton: runtimeControls.updateOverlayButton,
+        updateAutoRestartButton: recognitionControls.updateAutoRestartButton,
+    },
+});
+
 runtimeControls.init({ refreshOverlay: false });
 recognitionControls.init();
 
@@ -569,49 +599,8 @@ updateBottomSafeAreaButton();
 enforceTranslateSegmentMode();
 applySpeakerLabelVisibility();
 applyBottomSafeArea();
-applyLockPauseRestartControlsUI();
-applyStaticUiText();
-
-function applyStaticUiText() {
-    if (document && document.documentElement) {
-        try {
-            document.documentElement.lang = (window.I18N && window.I18N.lang) ? window.I18N.lang : 'en';
-        } catch (error) {
-            // ignore
-        }
-    }
-
-    if (themeToggle) {
-        themeToggle.title = t('theme_toggle');
-    }
-
-    if (restartButton) {
-        restartButton.title = t('restart');
-    }
-
-    if (translationLangButton) {
-        translationLangButton.title = t('translation_language');
-    }
-
-    if (pauseButton) {
-        updatePauseButtonUi();
-    }
-
-    if (overlayButton) {
-        updateOverlayButton();
-    }
-
-    if (settingsButton) {
-        settingsButton.title = t('settings');
-    }
-
-    if (subtitleContainer) {
-        const emptyNode = subtitleContainer.querySelector('.empty-state');
-        if (emptyNode) {
-            emptyNode.textContent = t('empty_state');
-        }
-    }
-}
+appShellController.applyManualControlPolicy();
+appShellController.applyStaticText();
 
 function applySpeakerLabelVisibility() {
     return speakerLabelController.applyVisibility();
@@ -681,19 +670,6 @@ function updateAutoRestartButton() {
     recognitionControls.updateAutoRestartButton();
 }
 
-function applyLockPauseRestartControlsUI() {
-    if (restartButton) restartButton.style.display = lockManualControls ? 'none' : '';
-    if (pauseButton) pauseButton.style.display = lockManualControls ? 'none' : '';
-    if (audioSourceButton) audioSourceButton.style.display = lockManualControls ? 'none' : '';
-    if (oscTranslationButton) oscTranslationButton.style.display = lockManualControls ? 'none' : '';
-    if (translationLangButton) translationLangButton.style.display = lockManualControls ? 'none' : '';
-    if (segmentModeButton) {
-        segmentModeButton.style.display = (lockManualControls || !segmentModeSupported) ? 'none' : '';
-    }
-    if (lockManualControls) autoRestartEnabled = true;
-    updateAutoRestartButton();
-}
-
 function updateUiConfigState(patch) {
     for (const [key, value] of Object.entries(patch || {})) {
         switch (key) {
@@ -758,7 +734,7 @@ const uiConfigController = UiConfigController.create({
         applyBundledCjkFontPreference,
         renderBundledCjkFontPicker,
         renderRuntimeSettingsPickers,
-        applyLockPauseRestartControlsUI,
+        applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,
         enforceTranslateSegmentMode,
     },
 });
@@ -877,10 +853,6 @@ function triggerAutoRestart() {
 }
 
 // --- 原生字幕悬浮窗（PySide6）开关 ---
-function updateOverlayButton() {
-    runtimeControls.updateOverlayButton();
-}
-
 function refreshOverlayState() {
     return runtimeControls.refreshOverlayState();
 }
@@ -946,16 +918,7 @@ function handleMessageFrame(data) {
         return;
     }
     if (data.type === 'ipc_status') {
-        const btn = document.getElementById('ipcStatusButton');
-        if (btn) {
-            if (data.connected) {
-                btn.style.display = 'flex';
-                btn.classList.add('ipc-connected');
-            } else {
-                btn.style.display = 'none';
-                btn.classList.remove('ipc-connected');
-            }
-        }
+        appShellController.syncIpcStatus(data.connected);
         return;
     }
     if (data.type === 'error') {
