@@ -99,6 +99,15 @@ const confirmController = ConfirmDialog.create({
     },
 });
 confirmController.init();
+const resetAllController = ResetAllController.create({
+    document,
+    window,
+    fetch,
+    localStorage,
+    sessionStorage,
+    t,
+    showConfirm,
+});
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeySourceHint = document.getElementById('apiKeySourceHint');
 const providerDescription = document.getElementById('providerDescription');
@@ -665,7 +674,7 @@ const settingsUi = SettingsUI.create({
         openSettings,
         closeSettings,
         returnToModeChooser,
-        handleResetAll,
+        handleResetAll: resetAllController.handle,
         handleSettingsSave,
     },
 });
@@ -1120,40 +1129,6 @@ function finishHotSettingsSave() {
 // 自定义确认对话框，替代浏览器自带的 confirm()。
 function showConfirm(message, { okLabel, cancelLabel, danger = false } = {}) {
     return confirmController.show(message, { okLabel, cancelLabel, danger });
-}
-
-async function handleResetAll() {
-    const confirmed = await showConfirm(t('reset_all_confirm'), {
-        okLabel: t('reset_all'),
-        cancelLabel: t('cancel'),
-        danger: true,
-    });
-    if (!confirmed) {
-        return;
-    }
-    // 清除前端保存的所有数据（包括 API 配置、主题、各类开关偏好）。
-    try {
-        localStorage.clear();
-    } catch (_) {}
-    try {
-        sessionStorage.clear();
-    } catch (_) {}
-    // 请求应用退出（在 WebView 桌面模式下生效）。服务器会先返回响应再延迟退出。
-    try {
-        await fetch('/shutdown', { method: 'POST' });
-    } catch (_) {
-        // 服务器正在关闭，请求可能无法完成，忽略即可。
-    }
-    try {
-        window.close();
-    } catch (_) {}
-    // 浏览器模式下脚本通常无法关闭窗口，显示已退出提示作为兜底。
-    const doneColor = document.body.classList.contains('dark-theme') ? '#e5e7eb' : '#1f2937';
-    document.body.innerHTML =
-        '<div style="display:flex;align-items:center;justify-content:center;'
-        + 'height:100vh;font-size:15px;opacity:0.7;text-align:center;padding:24px;'
-        + 'color:' + doneColor + ';">'
-        + t('reset_all_done') + '</div>';
 }
 
 function handleSettingsSave(event) {
