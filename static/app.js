@@ -333,13 +333,6 @@ const toastEl = document.getElementById('toast');
 const SONIOX_REGIONS = SettingsPolicy.SONIOX_REGIONS;
 // Custom-select element (built lazily); mirrors the language picker styling.
 let sonioxRegionPickerEl = null;
-let microphoneDevicePickerEl = null;
-let autoRestartPickerEl = null;
-let speakerLabelsPickerEl = null;
-let segmentModePickerEl = null;
-let translationModePickerEl = null;
-let bundledCjkFontPickerEl = null;
-let microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
 
 // Where users obtain an API key for each provider (shown as a link in Settings).
 const PROVIDER_KEY_URLS = {
@@ -347,8 +340,6 @@ const PROVIDER_KEY_URLS = {
     gemini: 'https://aistudio.google.com/apikey',
 };
 
-const PROVIDER_SETTINGS_STORAGE_KEY = 'providerSettings.v1';
-const UI_TRANSLATION_MODE_STORAGE_KEY = 'uiTranslationMode';
 const BUNDLED_CJK_FONT_STORAGE_KEY = 'useBundledCjkFont';
 
 let backendBootId = '';
@@ -367,28 +358,69 @@ let settingsForcedOpen = false;
 let useBundledCjkFont = localStorage.getItem(BUNDLED_CJK_FONT_STORAGE_KEY) === 'true';
 let customFontAvailable = false;
 
+const settingsRuntime = SettingsRuntime.create({
+    document,
+    fetch,
+    storage: localStorage,
+    t,
+    localizeBackendMessage,
+    buildCustomSelect,
+    console,
+    elements: {
+        runtimeControlsSection,
+        microphoneDeviceSection,
+        microphoneDevicePickerHost,
+        microphoneDeviceHint,
+        autoRestartPickerHost,
+        speakerLabelsSettingField,
+        speakerLabelsPickerHost,
+        bundledCjkFontPickerHost,
+        bundledCjkFontHint: document.getElementById('bundledCjkFontHint'),
+        translationModeSection,
+        translationModeSettingField,
+        translationModePickerHost,
+        translationModeHint: translationModeHintEl,
+        segmentModeSettingField,
+        segmentModePickerHost,
+    },
+    getState: () => ({
+        get selectedProvider() { return getSelectedProvider(); },
+        get providerSettings() { return loadProviderSettings(); },
+        get autoRestartEnabled() { return autoRestartEnabled; },
+        get hideSpeakerLabels() { return hideSpeakerLabels; },
+        get customFontAvailable() { return customFontAvailable; },
+        get useBundledCjkFont() { return useBundledCjkFont; },
+        get llmRefineAvailable() { return llmRefineAvailable; },
+        get lockManualControls() { return lockManualControls; },
+        get translationUiMode() { return translationUiMode; },
+        get defaultTranslationUiMode() { return DEFAULT_TRANSLATION_UI_MODE; },
+        get translationUiModes() { return TRANSLATION_UI_MODES; },
+        get segmentModeSupported() { return segmentModeSupported; },
+        get segmentMode() { return segmentMode; },
+        get segmentModes() { return getSegmentModes(); },
+    }),
+    updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
+            autoRestartEnabled = patch.autoRestartEnabled;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'useBundledCjkFont')) {
+            useBundledCjkFont = patch.useBundledCjkFont;
+        }
+    },
+    actions: {
+        updateAutoRestartButton,
+        setSpeakerLabelsHidden,
+        setSegmentMode,
+        setTranslationUiMode,
+    },
+});
+
 function applyBundledCjkFontPreference(enabled, { persist = false, sync = false } = {}) {
-    useBundledCjkFont = !!enabled;
-    document.body.classList.toggle('use-bundled-cjk-fonts', useBundledCjkFont);
-    renderBundledCjkFontPicker();
-    if (persist) {
-        localStorage.setItem(BUNDLED_CJK_FONT_STORAGE_KEY, useBundledCjkFont ? 'true' : 'false');
-    }
-    if (sync) {
-        void syncBundledCjkFontPreference(useBundledCjkFont);
-    }
+    return settingsRuntime.applyBundledCjkFontPreference(enabled, { persist, sync });
 }
 
-async function syncBundledCjkFontPreference(enabled) {
-    try {
-        await fetch('/subtitle-font', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ use_bundled_cjk_fonts: !!enabled }),
-        });
-    } catch (error) {
-        console.warn('Failed to sync subtitle font preference:', error);
-    }
+function syncBundledCjkFontPreference(enabled) {
+    return settingsRuntime.syncBundledCjkFontPreference(enabled);
 }
 
 applyBundledCjkFontPreference(useBundledCjkFont, { sync: true });
@@ -1386,257 +1418,44 @@ function updateAudioSourceButton() {
 function fetchInitialAudioSource() {
     return runtimeControls.fetchInitialAudioSource();
 }
-function microphoneDefaultLabel() {
-    const defaultName = microphoneDeviceData && microphoneDeviceData.default && microphoneDeviceData.default.name;
-    if (defaultName) {
-        return t('microphone_device_default', { name: defaultName });
-    }
-    return t('microphone_device_default_unknown');
-}
-
-function getSelectedMicrophoneDeviceId() {
-    if (microphoneDevicePickerEl && typeof microphoneDevicePickerEl.value === 'string') {
-        return microphoneDevicePickerEl.value;
-    }
-    return String((microphoneDeviceData && microphoneDeviceData.selected_id) || '');
-}
-
 function renderMicrophoneDevicePicker() {
-    if (!microphoneDevicePickerHost) {
-        return;
-    }
-    microphoneDevicePickerHost.innerHTML = '';
-    const devices = Array.isArray(microphoneDeviceData.devices) ? microphoneDeviceData.devices : [];
-    const options = [
-        { value: '', label: microphoneDefaultLabel() },
-        ...devices.filter((device) => !device.is_default).map((device) => ({
-            value: String(device.id || ''),
-            label: String(device.name || device.id || ''),
-        })).filter((option) => option.value && option.label),
-    ];
-    const selected = options.some((option) => option.value === microphoneDeviceData.selected_id)
-        ? microphoneDeviceData.selected_id
-        : '';
-    microphoneDevicePickerEl = buildCustomSelect(options, {
-        value: selected,
-        disabled: !microphoneDeviceData.available,
-    });
-    microphoneDevicePickerHost.appendChild(microphoneDevicePickerEl);
-    if (microphoneDeviceHint) {
-        microphoneDeviceHint.textContent = microphoneDeviceData.available
-            ? t('microphone_device_hint')
-            : t('microphone_device_unavailable');
-    }
+    return settingsRuntime.renderMicrophoneDevicePicker();
 }
 
-async function fetchMicrophoneDevices() {
-    if (!microphoneDeviceSection) {
-        return;
-    }
-    try {
-        const response = await fetch('/microphones');
-        if (!response.ok) {
-            microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
-            renderMicrophoneDevicePicker();
-            return;
-        }
-        const data = await response.json();
-        microphoneDeviceData = {
-            available: !!(data && data.available),
-            default: (data && data.default) || null,
-            devices: Array.isArray(data && data.devices) ? data.devices : [],
-            selected_id: String((data && data.selected_id) || ''),
-        };
-        renderMicrophoneDevicePicker();
-    } catch (error) {
-        console.error('Failed to fetch microphone devices:', error);
-        microphoneDeviceData = { available: false, default: null, devices: [], selected_id: '' };
-        renderMicrophoneDevicePicker();
-    }
+function fetchMicrophoneDevices() {
+    return settingsRuntime.fetchMicrophoneDevices();
 }
 
-async function saveMicrophoneDeviceSelection() {
-    if (!microphoneDeviceSection || !microphoneDeviceData.available) {
-        return { ok: true };
-    }
-    try {
-        const response = await fetch('/microphone-device', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: getSelectedMicrophoneDeviceId() }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-            return {
-                ok: false,
-                message: localizeBackendMessage(data && data.message) || `HTTP ${response.status}`,
-            };
-        }
-        microphoneDeviceData.selected_id = String((data && data.id) || getSelectedMicrophoneDeviceId() || '');
-        return { ok: true };
-    } catch (error) {
-        return { ok: false, message: String(error) };
-    }
-}
-
-function segmentModeLabel(mode) {
-    if (mode === 'translation') {
-        return t('segment_mode_translation');
-    }
-    if (mode === 'endpoint') {
-        return t('segment_mode_endpoint');
-    }
-    return t('segment_mode_punctuation');
+function saveMicrophoneDeviceSelection() {
+    return settingsRuntime.saveMicrophoneDeviceSelection();
 }
 
 function renderAutoRestartPicker() {
-    if (!autoRestartPickerHost) {
-        return;
-    }
-    autoRestartPickerHost.innerHTML = '';
-    autoRestartPickerEl = buildCustomSelect([
-        { value: 'true', label: t('auto_restart_enabled') },
-        { value: 'false', label: t('auto_restart_disabled') },
-    ], {
-        value: autoRestartEnabled ? 'true' : 'false',
-    });
-    autoRestartPickerHost.appendChild(autoRestartPickerEl);
+    return settingsRuntime.renderAutoRestartPicker();
 }
 
 function getStoredHideSpeakerLabelsSetting() {
-    const settings = loadProviderSettings();
-    return typeof settings.hideSpeakerLabels === 'boolean' ? settings.hideSpeakerLabels : null;
-}
-
-function getDesiredHideSpeakerLabels() {
-    const stored = getStoredHideSpeakerLabelsSetting();
-    return stored === null ? !!hideSpeakerLabels : stored;
+    return settingsRuntime.getStoredHideSpeakerLabelsSetting();
 }
 
 function renderSpeakerLabelsPicker() {
-    const provider = getSelectedProvider();
-    const supported = provider === 'soniox';
-    if (speakerLabelsSettingField) {
-        speakerLabelsSettingField.hidden = !supported;
-    }
-    if (!speakerLabelsPickerHost) {
-        return;
-    }
-    speakerLabelsPickerHost.innerHTML = '';
-    if (!supported) {
-        speakerLabelsPickerEl = null;
-        return;
-    }
-    speakerLabelsPickerEl = buildCustomSelect([
-        { value: 'show', label: t('speaker_labels_enabled') },
-        { value: 'hide', label: t('speaker_labels_disabled') },
-    ], {
-        value: getDesiredHideSpeakerLabels() ? 'hide' : 'show',
-    });
-    speakerLabelsPickerHost.appendChild(speakerLabelsPickerEl);
+    return settingsRuntime.renderSpeakerLabelsPicker();
 }
 
 function renderBundledCjkFontPicker() {
-    if (!bundledCjkFontPickerHost) {
-        return;
-    }
-    bundledCjkFontPickerHost.innerHTML = '';
-    
-    const hintEl = document.getElementById('bundledCjkFontHint');
-    
-    if (!customFontAvailable) {
-        const statusSpan = document.createElement('span');
-        statusSpan.className = 'font-not-detected-status';
-        statusSpan.style.color = '#ef4444';
-        statusSpan.style.fontSize = '0.95em';
-        statusSpan.style.fontWeight = '500';
-        statusSpan.textContent = t('custom_font_not_detected') || 'Not detected';
-        bundledCjkFontPickerHost.appendChild(statusSpan);
-        
-        if (hintEl) {
-            hintEl.textContent = t('custom_font_missing_hint');
-        }
-        return;
-    }
-    
-    bundledCjkFontPickerEl = buildCustomSelect([
-        { value: 'true', label: t('bundled_cjk_font_enabled') },
-        { value: 'false', label: t('bundled_cjk_font_disabled') },
-    ], {
-        value: useBundledCjkFont ? 'true' : 'false',
-    });
-    bundledCjkFontPickerHost.appendChild(bundledCjkFontPickerEl);
-    
-    if (hintEl) {
-        hintEl.textContent = t('bundled_cjk_font_hint');
-    }
-}
-
-function translationModeLabel(mode) {
-    return t('translation_mode_' + mode) || mode;
+    return settingsRuntime.renderBundledCjkFontPicker();
 }
 
 function availableTranslationModes() {
-    return ['fast', 'accurate', 'hybrid'];
-}
-
-function translationModeCostHint(mode) {
-    // 快速(fast) uses no LLM, so no hint. 准确/混合 both call the LLM and show
-    // the same note.
-    if (mode === 'fast') return '';
-    return t('translation_cost_llm');
+    return [...SettingsRuntime.TRANSLATION_UI_MODES];
 }
 
 function updateTranslationModeHint() {
-    if (!translationModeHintEl) return;
-    // Preview the currently-highlighted (possibly unsaved) dropdown option so the
-    // hint tracks the selection; fall back to the applied mode before the picker
-    // is built.
-    const mode = (translationModePickerEl && typeof translationModePickerEl.value === 'string')
-        ? translationModePickerEl.value
-        : translationUiMode;
-    const hint = translationModeCostHint(mode);
-    if (hint) {
-        translationModeHintEl.textContent = hint;
-        translationModeHintEl.hidden = false;
-    } else {
-        translationModeHintEl.textContent = '';
-        translationModeHintEl.hidden = true;
-    }
+    settingsRuntime.updateTranslationModeHint();
 }
 
 function renderTranslationModePicker() {
-    const shown = llmRefineAvailable && !lockManualControls;
-    // The mode field now lives in its own section (above 账户); hide the whole
-    // section when unavailable so it doesn't leave an empty flex gap.
-    if (translationModeSection) {
-        translationModeSection.hidden = !shown;
-    }
-    if (translationModeSettingField) {
-        translationModeSettingField.hidden = !shown;
-    }
-    if (!translationModePickerHost) return;
-    translationModePickerHost.innerHTML = '';
-    if (!shown) {
-        translationModePickerEl = null;
-        if (translationModeHintEl) translationModeHintEl.hidden = true;
-        return;
-    }
-    const modes = availableTranslationModes();
-    let selected = translationUiMode;
-    if (!modes.includes(selected)) selected = DEFAULT_TRANSLATION_UI_MODE;
-    translationModePickerEl = buildCustomSelect(modes.map((mode) => ({
-        value: mode,
-        label: translationModeLabel(mode),
-    })), {
-        value: selected,
-        // Don't apply on change — like every other setting, 翻译模式 is applied
-        // only when the user clicks 保存 (applyRuntimeControlSettings). Here we
-        // just preview the cost hint for the highlighted option.
-        onChange: () => { updateTranslationModeHint(); },
-    });
-    translationModePickerHost.appendChild(translationModePickerEl);
-    updateTranslationModeHint();
+    return settingsRuntime.renderTranslationModePicker();
 }
 
 // Record the token-sequence boundary when 混合 mode is entered so only STT
@@ -1691,76 +1510,15 @@ async function setTranslationUiMode(mode, options = {}) {
 }
 
 function renderSegmentModePicker() {
-    if (segmentModeSettingField) {
-        segmentModeSettingField.hidden = !segmentModeSupported;
-    }
-    if (!segmentModePickerHost) {
-        return;
-    }
-    segmentModePickerHost.innerHTML = '';
-    if (!segmentModeSupported) {
-        segmentModePickerEl = null;
-        return;
-    }
-    const availableModes = getSegmentModes();
-    const selected = availableModes.includes(segmentMode) ? segmentMode : availableModes[0];
-    segmentModePickerEl = buildCustomSelect(availableModes.map((mode) => ({
-        value: mode,
-        label: segmentModeLabel(mode),
-    })), {
-        value: selected,
-    });
-    segmentModePickerHost.appendChild(segmentModePickerEl);
+    return settingsRuntime.renderSegmentModePicker();
 }
 
 function renderRuntimeSettingsPickers() {
-    if (runtimeControlsSection) {
-        runtimeControlsSection.hidden = false;
-    }
-    renderAutoRestartPicker();
-    renderSpeakerLabelsPicker();
-    renderSegmentModePicker();
+    return settingsRuntime.renderRuntimeSettingsPickers();
 }
 
-async function applyRuntimeControlSettings() {
-    if (autoRestartPickerEl && typeof autoRestartPickerEl.value === 'string') {
-        autoRestartEnabled = autoRestartPickerEl.value !== 'false';
-        localStorage.setItem('autoRestartEnabled', autoRestartEnabled ? 'true' : 'false');
-        updateAutoRestartButton();
-    }
-
-    if (speakerLabelsPickerEl && getSelectedProvider() === 'soniox') {
-        const requestedHideSpeakerLabels = speakerLabelsPickerEl.value === 'hide';
-        if (requestedHideSpeakerLabels !== hideSpeakerLabels) {
-            const ok = await setSpeakerLabelsHidden(requestedHideSpeakerLabels);
-            if (!ok) {
-                return { ok: false, message: t('backend_speaker_labels_disabled') };
-            }
-        }
-    }
-
-    const requestedSegmentMode = normalizeSegmentMode(segmentModePickerEl && segmentModePickerEl.value);
-    if (requestedSegmentMode && requestedSegmentMode !== segmentMode) {
-        const ok = await setSegmentMode(requestedSegmentMode);
-        if (!ok) {
-            return { ok: false, message: t('backend_segment_mode_disabled') };
-        }
-    }
-
-    // 翻译模式: applied here on Save (not on dropdown change). setTranslationUiMode
-    // persists + pushes to the backend, and reopens the stream when soniox's
-    // built-in translation on/off changed (准确 toggled).
-    if (translationModePickerEl && typeof translationModePickerEl.value === 'string') {
-        const requestedMode = translationModePickerEl.value;
-        if (TRANSLATION_UI_MODES.includes(requestedMode) && requestedMode !== translationUiMode) {
-            const ok = await setTranslationUiMode(requestedMode, { restartIfNeeded: true });
-            if (!ok) {
-                return { ok: false, message: t('validation_error') };
-            }
-        }
-    }
-
-    return { ok: true };
+function applyRuntimeControlSettings() {
+    return settingsRuntime.applyRuntimeControlSettings();
 }
 
 async function setSpeakerLabelsHidden(hidden) {
@@ -3214,11 +2972,7 @@ async function handleSettingsSave(event) {
     if (event) {
         event.preventDefault();
     }
-    const targetCjkFontValue = customFontAvailable && bundledCjkFontPickerEl ? (bundledCjkFontPickerEl.value === 'true') : false;
-    applyBundledCjkFontPreference(targetCjkFontValue, {
-        persist: true,
-        sync: true,
-    });
+    settingsRuntime.applyBundledCjkFontDraft();
     const provider = getSelectedProvider();
     const region = getSelectedSonioxRegion();
     const mode = getSettingsMode();
@@ -3229,9 +2983,7 @@ async function handleSettingsSave(event) {
         settings.sonioxRegion = region;
     }
     settings.keys = settings.keys || {};
-    if (speakerLabelsPickerEl && provider === 'soniox') {
-        settings.hideSpeakerLabels = speakerLabelsPickerEl.value === 'hide';
-    }
+    settingsRuntime.writeProviderSettingsDraft(settings, provider);
 
     if (mode === 'relay') {
         const allowed = await ensureHostedVersionAllowed({ candidateMode: 'relay' });
