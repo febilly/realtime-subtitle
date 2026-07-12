@@ -428,9 +428,6 @@ let toastTimer = null;
 
 // ---- Subtitle-server relay (hosted mode) state ----
 const SUBTITLE_SERVER_STORAGE_KEY = 'subtitleServer.v1';
-// Optional client-update reminders throttle: at least this many ms between popups.
-const CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
-const CLIENT_UPDATE_REMINDER_KEY = 'clientUpdateReminderLastShown';
 let relayAvailable = !!INITIAL_UI_CONFIG.relay_available;
 let relayServerUrl = typeof INITIAL_UI_CONFIG.server_url === 'string' ? INITIAL_UI_CONFIG.server_url : '';
 const settingsStore = SettingsStore.create({
@@ -3215,6 +3212,48 @@ const clientUpdateNoUrl = document.getElementById('clientUpdateNoUrl');
 const clientUpdateDirectButton = document.getElementById('clientUpdateDirectButton');
 const clientUpdateLaterButton = document.getElementById('clientUpdateLaterButton');
 const clientUpdateButton = document.getElementById('clientUpdateButton');
+const hostedUpdate = HostedUpdate.create({
+    Billing: Hosted.Billing,
+    window,
+    storage: localStorage,
+    t,
+    showConfirm,
+    getState: () => ({
+        relayAvailable,
+        connectionMode: getConnectionMode(),
+        currentVersion: clientVersion,
+        latestVersion: clientLatestVersion,
+        minimumVersion: clientMinimumVersion,
+        updateUrl: clientUpdateUrl,
+        notes: clientUpdateNotes,
+    }),
+    onSwitchDirect: () => {
+        const settings = loadServerSettings();
+        settings.mode = 'direct';
+        settings.modeChosen = true;
+        saveServerSettings(settings);
+        setModeRadio('direct');
+        applyModeSectionsVisibility('direct');
+        updateAccountSection();
+    },
+    elements: {
+        overlay: clientUpdateOverlay,
+        dialog: clientUpdateDialog,
+        title: clientUpdateTitle,
+        body: clientUpdateBody,
+        currentLabel: clientUpdateCurrentLabel,
+        latestLabel: clientUpdateLatestLabel,
+        minimumLabel: clientUpdateMinimumLabel,
+        currentValue: clientUpdateCurrent,
+        latestValue: clientUpdateLatest,
+        minimumValue: clientUpdateMinimum,
+        notes: clientUpdateNotesEl,
+        noUrl: clientUpdateNoUrl,
+        directButton: clientUpdateDirectButton,
+        laterButton: clientUpdateLaterButton,
+        updateButton: clientUpdateButton,
+    },
+});
 const loginOverlay = document.getElementById('loginOverlay');
 const loginPanel = document.getElementById('loginPanel');
 const loginForm = document.getElementById('loginForm');
@@ -3298,150 +3337,8 @@ function clearConnectionModeChoice() {
     saveServerSettings(s);
 }
 
-function versionParts(version) {
-    return Hosted.Billing.versionParts(version);
-}
-
-function compareVersions(a, b) {
-    return Hosted.Billing.compareVersions(a, b);
-}
-
-function getClientUpdateState(mode = getConnectionMode()) {
-    if (!relayAvailable || mode !== 'relay') {
-        return { needed: false, forced: false };
-    }
-    const current = clientVersion || '0.1.0';
-    const latest = clientLatestVersion || '';
-    const minimum = clientMinimumVersion || '';
-    const belowMinimum = !!minimum && compareVersions(current, minimum) < 0;
-    const belowLatest = !!latest && compareVersions(current, latest) < 0;
-    return {
-        needed: belowMinimum || belowLatest,
-        forced: belowMinimum,
-        current,
-        latest: latest || minimum || '',
-        minimum,
-        updateUrl: clientUpdateUrl,
-        notes: clientUpdateNotes,
-    };
-}
-
-let clientUpdateResolve = null;
-
-function closeClientUpdateDialog(result) {
-    if (clientUpdateOverlay) clientUpdateOverlay.hidden = true;
-    if (clientUpdateDialog) clientUpdateDialog.hidden = true;
-    if (clientUpdateResolve) {
-        const resolve = clientUpdateResolve;
-        clientUpdateResolve = null;
-        resolve(result);
-    }
-}
-
-function showClientUpdateDialog(state) {
-    if (!clientUpdateDialog || !clientUpdateOverlay) {
-        if (state.forced) {
-            return Promise.resolve('direct');
-        }
-        return Promise.resolve('later');
-    }
-    if (clientUpdateResolve) {
-        closeClientUpdateDialog('later');
-    }
-    if (clientUpdateTitle) clientUpdateTitle.textContent = t(state.forced ? 'client_update_title_required' : 'client_update_title_optional');
-    if (clientUpdateBody) clientUpdateBody.textContent = t(state.forced ? 'client_update_body_required' : 'client_update_body_optional');
-    if (clientUpdateCurrentLabel) clientUpdateCurrentLabel.textContent = t('client_update_current');
-    if (clientUpdateLatestLabel) clientUpdateLatestLabel.textContent = t('client_update_latest');
-    if (clientUpdateMinimumLabel) clientUpdateMinimumLabel.textContent = t('client_update_minimum');
-    if (clientUpdateCurrent) clientUpdateCurrent.textContent = state.current || '—';
-    if (clientUpdateLatest) clientUpdateLatest.textContent = state.latest || '—';
-    if (clientUpdateMinimum) clientUpdateMinimum.textContent = state.minimum || '—';
-    if (clientUpdateNotesEl) {
-        clientUpdateNotesEl.textContent = state.notes || '';
-        clientUpdateNotesEl.hidden = !state.notes;
-    }
-    if (clientUpdateNoUrl) {
-        clientUpdateNoUrl.textContent = state.updateUrl ? '' : t('client_update_no_url');
-        clientUpdateNoUrl.hidden = !!state.updateUrl;
-    }
-    if (clientUpdateButton) {
-        clientUpdateButton.textContent = t('client_update_button');
-        clientUpdateButton.disabled = !state.updateUrl;
-        clientUpdateButton.onclick = () => {
-            if (state.updateUrl) {
-                window.open(state.updateUrl, '_blank', 'noopener,noreferrer');
-            }
-        };
-    }
-    if (clientUpdateLaterButton) {
-        clientUpdateLaterButton.textContent = t('client_update_later');
-        clientUpdateLaterButton.hidden = !!state.forced;
-        clientUpdateLaterButton.onclick = () => closeClientUpdateDialog('later');
-    }
-    if (clientUpdateDirectButton) {
-        clientUpdateDirectButton.textContent = t('client_update_direct');
-        clientUpdateDirectButton.hidden = !state.forced;
-        clientUpdateDirectButton.onclick = async () => {
-            clientUpdateOverlay.hidden = true;
-            clientUpdateDialog.hidden = true;
-            const confirmed = await showConfirm(t('client_update_direct_confirm'), {
-                okLabel: t('client_update_direct_confirm_ok'),
-                cancelLabel: t('client_update_direct_confirm_cancel'),
-                danger: true,
-            });
-            if (confirmed) {
-                closeClientUpdateDialog('direct');
-                return;
-            }
-            clientUpdateOverlay.hidden = false;
-            clientUpdateDialog.hidden = false;
-        };
-    }
-    clientUpdateOverlay.hidden = false;
-    clientUpdateDialog.hidden = false;
-    return new Promise((resolve) => {
-        clientUpdateResolve = resolve;
-    });
-}
-
-function switchToDirectModeForUpdate() {
-    const s = loadServerSettings();
-    s.mode = 'direct';
-    s.modeChosen = true;
-    saveServerSettings(s);
-    setModeRadio('direct');
-    applyModeSectionsVisibility('direct');
-    updateAccountSection();
-}
-
-async function ensureHostedVersionAllowed({ candidateMode = null } = {}) {
-    const mode = candidateMode || getConnectionMode();
-    const state = getClientUpdateState(mode);
-    if (!state.needed) {
-        return true;
-    }
-    // Throttle optional (non-forced) update reminders so we don't nag on every page load.
-    if (!state.forced) {
-        let lastShown = 0;
-        try {
-            lastShown = parseInt(localStorage.getItem(CLIENT_UPDATE_REMINDER_KEY) || '0', 10) || 0;
-        } catch (_) { /* ignore */ }
-        const elapsed = Date.now() - lastShown;
-        if (lastShown && elapsed < CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS) {
-            return true;
-        }
-    }
-    const action = await showClientUpdateDialog(state);
-    if (!state.forced) {
-        try {
-            localStorage.setItem(CLIENT_UPDATE_REMINDER_KEY, String(Date.now()));
-        } catch (_) { /* ignore */ }
-    }
-    if (state.forced && action === 'direct') {
-        switchToDirectModeForUpdate();
-        return false;
-    }
-    return !state.forced;
+function ensureHostedVersionAllowed(options = {}) {
+    return hostedUpdate.ensure(options);
 }
 
 async function returnToModeChooser() {
