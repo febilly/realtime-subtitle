@@ -39,6 +39,8 @@ Thumbs.db
 
 # Test cache
 .pytest_cache/
+node_modules/
+coverage/
 
 # *.spec
 

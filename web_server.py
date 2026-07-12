@@ -71,6 +71,14 @@ class WebServer:
         # Lazy aiohttp client for proxying REST calls to the subtitle-server.
         self._http = None
         self.use_bundled_cjk_fonts = False
+        self._frontend_frame_log = None
+        if os.getenv("FRONTEND_FRAME_LOG") == "1":
+            frame_dir = os.path.join("logs", "frontend-frames")
+            os.makedirs(frame_dir, exist_ok=True)
+            frame_name = time.strftime("frames_%Y%m%d_%H%M%S.jsonl")
+            self._frontend_frame_log = open(
+                os.path.join(frame_dir, frame_name), "a", encoding="utf-8"
+            )
         # Pending hosted-login handshakes keyed by a one-time state nonce. Each
         # entry: {"status": "pending"|"done"|"error", "result": {...}, "ts": float}.
         # The web page bounces the login code back to /account/login-callback and
@@ -125,6 +133,9 @@ class WebServer:
     
     async def broadcast_to_clients(self, data: dict):
         """向所有连接的客户端广播数据"""
+        if self._frontend_frame_log:
+            self._frontend_frame_log.write(json.dumps(data, ensure_ascii=False) + "\n")
+            self._frontend_frame_log.flush()
         if self.websocket_clients:
             # 创建消息
             message = json.dumps(data)

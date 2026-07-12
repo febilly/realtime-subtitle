@@ -1,0 +1,13 @@
+{
+  "name": "realtime-subtitle-frontend",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "golden": "node scripts/generate-frontend-golden.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0",
+    "vitest": "^3.2.4"
+  }
+}

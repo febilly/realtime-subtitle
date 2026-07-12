@@ -1,0 +1,3 @@
+{"type":"update","final_tokens":[{"text":"Hello.","is_final":true,"translation_status":"original","language":"en","speaker":"1","llm_sentence_id":"smoke-1"},{"text":"你好。","is_final":true,"translation_status":"translation","language":"zh","speaker":"1","llm_sentence_id":"smoke-1"}],"non_final_tokens":[]}
+{"type":"refine_result","sentence_id":"smoke-1","source":"Hello.","original_translation":"你好。","refined_translation":"您好。","target_lang":"zh","no_change":false}
+{"type":"clear","preserve_existing":false}
