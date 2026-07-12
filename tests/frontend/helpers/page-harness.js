@@ -153,6 +153,12 @@ async function createPageHarness(options = {}) {
         pretendToBeVisual: true,
         virtualConsole,
     });
+    if (options.userAgent) {
+        Object.defineProperty(dom.window.navigator, 'userAgent', {
+            configurable: true,
+            value: String(options.userAgent),
+        });
+    }
     const fetchCalls = installBrowserStubs(dom.window, options.fetch, {
         translationUiMode,
         uiConfig: options.uiConfig,

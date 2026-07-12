@@ -30,7 +30,6 @@ const translationLangButton = document.getElementById('translationLangButton');
 const translationLangIcon = document.getElementById('translationLangIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
-const isMobileBrowser = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
 const ICON_SPRITE_URL = 'icons/lucide-sprite.svg';
 
 function setControlIcon(iconEl, iconName) {
@@ -349,6 +348,18 @@ const oscTranslationController = OscTranslationController.create({
     console,
 });
 oscTranslationController.init();
+const mobileSafeAreaController = MobileSafeAreaController.create({
+    settingsStore,
+    storage: localStorage,
+    button: bottomSafeAreaButton,
+    icon: bottomSafeAreaIcon,
+    container: subtitleContainer,
+    userAgent: navigator.userAgent,
+    t,
+    setControlIcon,
+    console,
+});
+mobileSafeAreaController.init();
 const segmentModeController = SegmentModeController.create({
     fetch,
     storage: localStorage,
@@ -477,9 +488,6 @@ const subtitleRenderer = SubtitleRenderer.create({
         hideSpeakerLabels: speakerLabelController.isHidden(),
     }),
 });
-
-// 移动端底部留白开关（默认关闭）
-let bottomSafeAreaEnabled = settingsStore.loadBottomSafeAreaEnabled();
 
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
@@ -708,33 +716,11 @@ function updateOscTranslationButton() {
 }
 
 function updateBottomSafeAreaButton() {
-    if (!bottomSafeAreaButton || !bottomSafeAreaIcon) {
-        return;
-    }
-
-    // 仅在移动端显示按钮
-    bottomSafeAreaButton.style.display = isMobileBrowser ? '' : 'none';
-    if (!isMobileBrowser) {
-        return;
-    }
-
-    if (bottomSafeAreaEnabled) {
-        bottomSafeAreaButton.classList.add('active');
-        bottomSafeAreaButton.title = t('bottom_safe_area_on');
-        setControlIcon(bottomSafeAreaIcon, 'arrow-up-from-line');
-    } else {
-        bottomSafeAreaButton.classList.remove('active');
-        bottomSafeAreaButton.title = t('bottom_safe_area_off');
-        setControlIcon(bottomSafeAreaIcon, 'arrow-down-to-line');
-    }
+    return mobileSafeAreaController.updateButton();
 }
 
 function applyBottomSafeArea() {
-    if (!subtitleContainer) {
-        return;
-    }
-    const shouldAdd = isMobileBrowser && bottomSafeAreaEnabled;
-    subtitleContainer.classList.toggle('mobile-bottom-safe-area', shouldAdd);
+    return mobileSafeAreaController.apply();
 }
 
 function updateAutoRestartButton() {
@@ -921,23 +907,6 @@ function setSpeakerLabelsHidden(hidden) {
 
 function setSegmentMode(mode) {
     return segmentModeController.setMode(mode);
-}
-
-if (bottomSafeAreaButton) {
-    bottomSafeAreaButton.addEventListener('click', () => {
-        if (!isMobileBrowser) {
-            return;
-        }
-        bottomSafeAreaEnabled = !bottomSafeAreaEnabled;
-        try {
-            localStorage.setItem('bottomSafeAreaEnabled', bottomSafeAreaEnabled);
-        } catch (persistError) {
-            console.warn('Unable to persist bottom safe area preference:', persistError);
-        }
-        applyBottomSafeArea();
-        updateBottomSafeAreaButton();
-        console.log(`Mobile bottom safe area ${bottomSafeAreaEnabled ? 'enabled' : 'disabled'}`);
-    });
 }
 
 // 假名注音开关
