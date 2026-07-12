@@ -82,6 +82,7 @@ function defaultFetchResponse(url, options = {}) {
         '/audio-source': { source: 'system' },
         '/microphones': { available: false, devices: [] },
         '/account/balance': options.balancePayload || {},
+        '/account/login-code': options.loginCodePayload || {},
         '/llm-refine': { enabled: true, mode: llmMode },
         '/translation-mode': { mode: translationUiMode, needs_restart: false },
     };
@@ -156,6 +157,7 @@ async function createPageHarness(options = {}) {
         translationUiMode,
         uiConfig: options.uiConfig,
         balancePayload: options.balancePayload,
+        loginCodePayload: options.loginCodePayload,
     });
     const storedValues = Object.assign({
         autoRestartEnabled: String(options.autoRestartEnabled === true),

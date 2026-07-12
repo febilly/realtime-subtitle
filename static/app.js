@@ -442,11 +442,7 @@ let clientUpdateUrl = '';
 let clientUpdateNotes = '';
 let backendMode = 'direct';
 let backendLoggedIn = false;
-let loginForcedOpen = false;
 let relayPricing = null; // { soniox: {price_per_second, free_*}, gemini: {...} }
-let loginRegistrationInfo = null; // { bonuses: [...], registration_threshold }
-let loginSubmitBusy = false;
-let loginWaitingForBrowser = false;
 // STT billing factor for soniox 准确 mode (built-in translation off), delivered by
 // the server via /ui-config. 1 = no discount; applied to the live cost estimate.
 let sonioxNoTranslationFactor = 1;
@@ -3274,6 +3270,47 @@ const hostedMode = HostedMode.create({
         directButton: document.getElementById('modeChooserDirect'),
     },
 });
+const hostedLogin = HostedLogin.create({
+    document,
+    window,
+    navigator,
+    fetch,
+    t,
+    localizeBackendMessage,
+    getRuntimeState: () => ({
+        lockManualControls,
+        relayAvailable,
+        relayServerUrl,
+        translationProvider,
+    }),
+    loadServerSettings,
+    saveServerSettings,
+    loadProviderSettings,
+    actions: {
+        showToast,
+        updateBalanceBarVisibility,
+        fetchBalance,
+        clearSubtitleState,
+        setTranslationModeSynced: (value) => { translationModeSynced = !!value; },
+        pushSetup,
+        switchToOwnKeyMode,
+    },
+    elements: {
+        overlay: loginOverlay,
+        panel: loginPanel,
+        form: loginForm,
+        closeButton: loginCloseButton,
+        userInput: loginUserInput,
+        primaryButton: loginPrimaryButton,
+        modeBackButton: loginModeBackButton,
+        backButton: loginBackButton,
+        pasteButton: loginPasteButton,
+        codeLink: loginCodeLink,
+        errorElement: loginErrorEl,
+        manualToggle: document.getElementById('loginManualToggle'),
+    },
+});
+hostedLogin.init();
 const balanceBar = document.getElementById('balanceBar');
 const balanceActionItem = document.getElementById('balanceActionItem');
 const balanceOpenSettingsButton = document.getElementById('balanceOpenSettingsButton');
@@ -3339,400 +3376,23 @@ function maybeRunFirstLaunchFlow() {
 
 // ---- Login overlay (web-generated one-time code only) ----
 function applyLoginI18n() {
-    setElText('loginTitle', t('login_hosted_title'));
-    setElText('loginUserInputLabel', t('login_code_input_label'));
-    const loginPasteEl = document.getElementById('loginPasteButton');
-    if (loginPasteEl) {
-        const pasteLabel = t('login_paste');
-        loginPasteEl.setAttribute('aria-label', pasteLabel);
-        loginPasteEl.setAttribute('title', pasteLabel);
-    }
-    setElText('loginModeBackButton', t('use_own_key_mode'));
-    setElText('loginBackButton', t('login_back'));
-    setElText('loginCodeLink', t('login_vrchat_button'));
-    setElText('loginManualToggle', t('login_manual_toggle'));
-    setElText('loginWaitingHint', t('login_waiting'));
-    const serverHint = document.getElementById('loginServerHint');
-    if (serverHint) serverHint.textContent = relayServerUrl ? t('login_server', { url: relayServerUrl }) : '';
-    const codeHint = document.getElementById('loginCodeHint');
-    if (codeHint) codeHint.hidden = !relayServerUrl;
-}
-
-function loginPrimaryLabel(step) {
-    return t('login_submit_code');
-}
-
-function setLoginStep(step) {
-    const inputStep = document.getElementById('loginStepInput');
-    const methodStep = document.getElementById('loginStepMethod');
-    const challengeStep = document.getElementById('loginStepChallenge');
-    if (inputStep) inputStep.hidden = (step !== 'input');
-    if (methodStep) methodStep.hidden = (step !== 'method');
-    if (challengeStep) challengeStep.hidden = (step !== 'challenge');
-    if (loginBackButton) loginBackButton.hidden = true;
-    if (loginPrimaryButton) loginPrimaryButton.textContent = loginPrimaryLabel(step);
-    loginForm && loginForm.setAttribute('data-step', step);
-}
-
-function hasLoginCodeInput() {
-    return !!((loginUserInput && loginUserInput.value || '').trim());
+    hostedLogin.applyI18n();
 }
 
 function updateLoginSubmitState() {
-    if (!loginPrimaryButton) return;
-    loginPrimaryButton.hidden = !loginManualShown;
-    loginPrimaryButton.disabled = loginSubmitBusy || loginWaitingForBrowser || !hasLoginCodeInput();
-    if (!loginSubmitBusy) {
-        loginPrimaryButton.textContent = loginPrimaryLabel(loginForm && loginForm.getAttribute('data-step'));
-    }
-    if (loginCodeLink) {
-        loginCodeLink.disabled = loginSubmitBusy || loginWaitingForBrowser;
-        if (!loginSubmitBusy) loginCodeLink.textContent = t('login_vrchat_button');
-    }
-}
-
-function setLoginBusy(busy) {
-    loginSubmitBusy = !!busy;
-    if (loginSubmitBusy && loginPrimaryButton) {
-        loginPrimaryButton.disabled = true;
-        loginPrimaryButton.textContent = t('login_verifying');
-    }
-    if (loginCodeLink) {
-        loginCodeLink.disabled = loginSubmitBusy || loginWaitingForBrowser;
-        loginCodeLink.textContent = loginSubmitBusy ? t('login_verifying') : t('login_vrchat_button');
-    }
-    if (loginSubmitBusy) return;
-    updateLoginSubmitState();
-}
-
-function resetLoginToInput() {
-    if (loginErrorEl) loginErrorEl.textContent = '';
-    setLoginStep('input');
-    updateLoginSubmitState();
-}
-
-async function fetchRegistrationInfo() {
-    const section = document.getElementById('loginBonusSection');
-    try {
-        const resp = await fetch('/account/registration-info');
-        if (!resp.ok) {
-            if (section) section.hidden = true;
-            return;
-        }
-        loginRegistrationInfo = await resp.json();
-        renderBonusLadder();
-    } catch (e) {
-        if (section) section.hidden = true;
-    }
+    hostedLogin.updateSubmitState();
 }
 
 function rankLabel(rank) {
-    const key = String(rank || '').toLowerCase();
-    const labels = {
-        zh: {
-            visitor: '游客 (Visitor)',
-            new_user: '萌新 (New User)',
-            user: '玩家 (User)',
-            known_user: '长期玩家 (Known User)',
-            trusted_user: '资深玩家 (Trusted User)',
-        },
-        en: {
-            visitor: 'Visitor',
-            new_user: 'New User',
-            user: 'User',
-            known_user: 'Known User',
-            trusted_user: 'Trusted User',
-        },
-        ja: {
-            visitor: 'Visitor',
-            new_user: 'New User',
-            user: 'User',
-            known_user: 'Known User',
-            trusted_user: 'Trusted User',
-        },
-    };
-    const lang = (window.I18N && window.I18N.lang) || 'en';
-    return (labels[lang] && labels[lang][key]) || labels.en[key] || String(rank || '').replace(/_/g, ' ');
+    return hostedLogin.rankLabel(rank);
 }
 
-function renderBonusLadder() {
-    const section = document.getElementById('loginBonusSection');
-    const thresholdHint = document.getElementById('loginThresholdHint');
-    if (!section || !thresholdHint) return;
-    const info = loginRegistrationInfo;
-    const threshold = info && info.registration_threshold;
-    if (threshold) {
-        thresholdHint.hidden = false;
-        thresholdHint.textContent = t('login_threshold', { rank: rankLabel(threshold) });
-        section.hidden = false;
-    } else {
-        thresholdHint.hidden = true;
-        thresholdHint.textContent = '';
-        section.hidden = true;
-    }
-}
-
-let loginManualShown = false;
-let loginPollTimer = null;
-let loginPollState = null;
-let loginPollDeadline = 0;
-
-function setLoginManualShown(show) {
-    loginManualShown = !!show;
-    const field = document.getElementById('loginManualField');
-    if (field) field.hidden = !loginManualShown;
-    if (loginManualShown) {
-        if (loginUserInput) loginUserInput.focus();
-    }
-    updateLoginSubmitState();
-}
-
-function setLoginWaiting(waiting) {
-    loginWaitingForBrowser = !!waiting;
-    const hint = document.getElementById('loginWaitingHint');
-    if (hint) hint.hidden = !waiting;
-    if (loginCodeLink) loginCodeLink.disabled = loginSubmitBusy || loginWaitingForBrowser;
-    updateLoginSubmitState();
-}
-
-function openLogin({ forced = false } = {}) {
-    if (lockManualControls) return;
-    loginForcedOpen = !!forced;
-    applyLoginI18n();
-    resetLoginToInput();
-    if (loginUserInput) loginUserInput.value = '';
-    setLoginManualShown(false);
-    setLoginWaiting(false);
-    updateLoginSubmitState();
-    void fetchRegistrationInfo();
-    if (loginOverlay) loginOverlay.hidden = false;
-    if (loginPanel) loginPanel.hidden = false;
-    const manualToggle = document.getElementById('loginManualToggle');
-    if (manualToggle) manualToggle.hidden = false;
-    if (loginCloseButton) loginCloseButton.style.display = loginForcedOpen ? 'none' : '';
-    if (loginModeBackButton) loginModeBackButton.hidden = !relayAvailable;
+function openLogin(options = {}) {
+    hostedLogin.open(options);
 }
 
 function hideLogin() {
-    if (loginOverlay) loginOverlay.hidden = true;
-    if (loginPanel) loginPanel.hidden = true;
-    loginForcedOpen = false;
-    stopLoginPolling();
-    setLoginWaiting(false);
-    setLoginBusy(false);
-}
-
-function stopLoginPolling() {
-    if (loginPollTimer) {
-        clearTimeout(loginPollTimer);
-        loginPollTimer = null;
-    }
-    loginPollState = null;
-}
-
-// Primary hosted-login path: open the web verification page in the system
-// browser with a loopback callback, then poll our own backend until the web
-// page bounces the one-time code back — no manual copy/paste needed.
-async function startHostedLogin() {
-    const base = (relayServerUrl || '').replace(/\/+$/, '');
-    if (!base) {
-        showToast(t('server_not_configured'), true);
-        return;
-    }
-    if (loginErrorEl) loginErrorEl.textContent = '';
-    let state = '';
-    try {
-        const resp = await fetch('/account/login-begin', { method: 'POST' });
-        const data = await resp.json().catch(() => ({}));
-        state = data && data.state;
-    } catch (e) {
-        // ignore — fall back to opening without a callback (manual paste)
-    }
-    const origin = window.location.origin;
-    let url = base + '/app/#/login?next=' + encodeURIComponent('/login-code');
-    if (state) {
-        const cb = origin + '/account/login-callback';
-        url += '&client_callback=' + encodeURIComponent(cb) + '&state=' + encodeURIComponent(state);
-    }
-    try {
-        window.open(url, '_blank', 'noopener,noreferrer');
-    } catch (e) {
-        if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
-        showToast(url);
-    }
-    if (state) {
-        loginPollState = state;
-        loginPollDeadline = Date.now() + 5 * 60 * 1000;
-        setLoginWaiting(true);
-        scheduleLoginPoll();
-    }
-}
-
-function scheduleLoginPoll() {
-    if (loginPollTimer) clearTimeout(loginPollTimer);
-    loginPollTimer = setTimeout(() => { void pollLoginCallback(); }, 1500);
-}
-
-async function pollLoginCallback() {
-    const state = loginPollState;
-    if (!state) return;
-    if (Date.now() > loginPollDeadline) {
-        stopLoginPolling();
-        setLoginWaiting(false);
-        return;
-    }
-    try {
-        const resp = await fetch('/account/login-poll?state=' + encodeURIComponent(state));
-        const data = await resp.json().catch(() => ({}));
-        if (data && data.status === 'done' && data.api_key) {
-            stopLoginPolling();
-            setLoginBusy(true);
-            setLoginWaiting(false);
-            try {
-                await onLoginSuccess(data);
-            } catch (e) {
-                if (loginErrorEl) loginErrorEl.textContent = String(e);
-                setLoginBusy(false);
-            }
-            return;
-        }
-        if (data && data.status === 'error') {
-            stopLoginPolling();
-            setLoginWaiting(false);
-            if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
-            return;
-        }
-    } catch (e) {
-        // transient — keep polling
-    }
-    if (loginPollState === state) scheduleLoginPoll();
-}
-
-function closeLogin() {
-    if (loginForcedOpen) return;
-    hideLogin();
-}
-
-// Redeem the one-time login code generated by the user web page.
-async function handleLoginInput() {
-    const raw = (loginUserInput && loginUserInput.value || '').trim();
-    if (!raw) {
-        if (loginErrorEl) loginErrorEl.textContent = t('login_code_required');
-        updateLoginSubmitState();
-        return;
-    }
-    setLoginBusy(true);
-    if (loginErrorEl) loginErrorEl.textContent = '';
-    try {
-        await tryLoginCode(raw);
-    } catch (e) {
-        if (loginErrorEl) loginErrorEl.textContent = String(e);
-    } finally {
-        setLoginBusy(false);
-    }
-}
-
-async function tryLoginCode(code) {
-    const resp = await fetch('/account/login-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (resp.ok && data && data.success && data.api_key) {
-        await onLoginSuccess(data);
-        return 'success';
-    }
-    if (loginErrorEl) loginErrorEl.textContent = mapVerifyError(resp.status, data);
-    return 'error';
-}
-
-// Shared on successful sign-in via a one-time login code.
-async function onLoginSuccess(data) {
-    const server = loadServerSettings();
-    server.mode = 'relay';
-    server.modeChosen = true;
-    server.token = data.api_key;
-    server.displayName = data.display_name || '';
-    server.trustRank = data.trust_rank || '';
-    saveServerSettings(server);
-    showToast(t('login_success', { name: server.displayName || data.display_name || '' }));
-    hideLogin();
-    updateBalanceBarVisibility();
-    void fetchBalance();
-    clearSubtitleState();
-
-    // Persist provider override and start a relay session after the login UI is gone.
-    const settings = loadProviderSettings();
-    const provider = settings.providerOverride || translationProvider || 'soniox';
-    translationModeSynced = false;
-    try {
-        await pushSetup(provider, null, { silent: true, mode: 'relay', token: data.api_key });
-    } catch (e) {
-        showToast(String(e), true);
-    }
-}
-
-function mapVerifyError(status, data) {
-    if (status === 429) return t('login_rate_limited');
-    const msg = data && (data.detail || data.message);
-    return localizeBackendMessage(msg || t('connection_error_try_again'));
-}
-
-function openExternalUrl(url) {
-    if (!url) return;
-    try {
-        window.open(url, '_blank', 'noopener,noreferrer');
-    } catch (e) {
-        if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
-        showToast(url);
-    }
-}
-
-if (loginForm) {
-    loginForm.addEventListener('submit', (event) => {
-        event.preventDefault();
-        void handleLoginInput();
-    });
-}
-if (loginBackButton) {
-    loginBackButton.addEventListener('click', () => resetLoginToInput());
-}
-if (loginUserInput) {
-    loginUserInput.addEventListener('input', () => updateLoginSubmitState());
-}
-if (loginCodeLink) {
-    loginCodeLink.addEventListener('click', (event) => {
-        event.preventDefault();
-        void startHostedLogin();
-    });
-}
-const loginManualToggle = document.getElementById('loginManualToggle');
-if (loginManualToggle) {
-    loginManualToggle.addEventListener('click', () => setLoginManualShown(!loginManualShown));
-}
-if (loginModeBackButton) {
-    loginModeBackButton.addEventListener('click', () => switchToOwnKeyMode());
-}
-if (loginCloseButton) {
-    loginCloseButton.addEventListener('click', () => closeLogin());
-}
-if (loginOverlay) {
-    loginOverlay.addEventListener('click', () => closeLogin());
-}
-if (loginPasteButton) {
-    loginPasteButton.addEventListener('click', async () => {
-        try {
-            const text = await navigator.clipboard.readText();
-            if (loginUserInput) {
-                loginUserInput.value = (text || '').trim();
-                loginUserInput.focus();
-                updateLoginSubmitState();
-            }
-        } catch (e) {
-            // Clipboard read may be unavailable/denied; user can paste manually.
-        }
-    });
+    hostedLogin.hide();
 }
 
 // ---- Account actions ----
