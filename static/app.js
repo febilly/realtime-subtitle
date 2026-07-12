@@ -4,6 +4,8 @@ customTooltip.init();
 let ws;
 let wsClient = null;
 const subtitleContainer = document.getElementById('subtitleContainer');
+const subtitleScroll = SubtitleScroll.create({ container: subtitleContainer, window });
+subtitleScroll.init();
 const themeToggle = document.getElementById('themeToggle');
 const themeIcon = document.getElementById('themeIcon');
 const restartButton = document.getElementById('restartButton');
@@ -454,8 +456,6 @@ const subtitleDomPatcher = subtitleHtmlRenderer.createDomPatcher({
     renderedBlocks,
 });
 
-const SCROLL_STICKY_THRESHOLD = 50;
-let autoStickToBottom = true;
 let tokenSequenceCounter = 0;
 
 // 分段模式: 'translation' | 'endpoint' | 'punctuation'
@@ -1829,67 +1829,6 @@ function assignSequenceIndex(token) {
     tokenSequenceCounter = TokenStream.assignSequenceIndex(token, tokenSequenceCounter);
 }
 
-function isCloseToBottom() {
-    return (subtitleContainer.scrollTop + subtitleContainer.clientHeight) >= (subtitleContainer.scrollHeight - SCROLL_STICKY_THRESHOLD);
-}
-
-function captureScrollState() {
-    const wasAtBottom = isCloseToBottom();
-
-    if (wasAtBottom) {
-        return { wasAtBottom: true };
-    }
-
-    const sentenceBlocks = subtitleContainer.querySelectorAll('.sentence-block');
-    const currentScrollTop = subtitleContainer.scrollTop;
-    let anchor = null;
-
-    for (const block of sentenceBlocks) {
-        const blockTop = block.offsetTop;
-        const blockBottom = blockTop + block.offsetHeight;
-        if (blockBottom > currentScrollTop) {
-            anchor = block;
-            break;
-        }
-    }
-
-    if (anchor) {
-        return {
-            wasAtBottom: false,
-            sentenceId: anchor.dataset.sentenceId,
-            offset: currentScrollTop - anchor.offsetTop
-        };
-    }
-
-    return {
-        wasAtBottom: false,
-        scrollTop: currentScrollTop
-    };
-}
-
-function restoreScrollState(state) {
-    if (!state) {
-        return;
-    }
-
-    if (state.wasAtBottom) {
-        subtitleContainer.scrollTop = subtitleContainer.scrollHeight;
-        return;
-    }
-
-    if (state.sentenceId) {
-        const anchor = subtitleContainer.querySelector(`.sentence-block[data-sentence-id="${state.sentenceId}"]`);
-        if (anchor) {
-            subtitleContainer.scrollTop = anchor.offsetTop + (state.offset || 0);
-            return;
-        }
-    }
-
-    if (typeof state.scrollTop === 'number') {
-        subtitleContainer.scrollTop = state.scrollTop;
-    }
-}
-
 function requestFurigana(text) {
     return furiganaService.request(text);
 }
@@ -1977,14 +1916,13 @@ function buildRenderTokens() {
 }
 
 function renderSubtitles() {
-    const scrollState = captureScrollState();
+    const scrollState = subtitleScroll.capture();
     const tokens = buildRenderTokens();
     tokens.forEach((token) => assignSequenceIndex(token));
 
     if (tokens.length === 0) {
         subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
-        subtitleContainer.scrollTop = 0;
-        autoStickToBottom = true;
+        subtitleScroll.reset();
         return;
     }
 
@@ -1997,8 +1935,7 @@ function renderSubtitles() {
 
     if (speakerBlocks.length === 0) {
         subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
-        restoreScrollState(scrollState);
-        autoStickToBottom = scrollState ? scrollState.wasAtBottom : true;
+        subtitleScroll.restoreAfterEmpty(scrollState);
         return;
     }
 
@@ -2211,29 +2148,14 @@ function renderSubtitles() {
 
     if (!html) {
         subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
-        restoreScrollState(scrollState);
-        autoStickToBottom = scrollState ? scrollState.wasAtBottom : true;
+        subtitleScroll.restoreAfterEmpty(scrollState);
         return;
     }
 
     subtitleDomPatcher.patch(html);
     // 恢复滚动状态并处理自动贴底
-    restoreScrollState(scrollState);
-    autoStickToBottom = scrollState ? scrollState.wasAtBottom : isCloseToBottom();
-    if (autoStickToBottom) {
-        subtitleContainer.scrollTop = subtitleContainer.scrollHeight;
-    }
+    subtitleScroll.completeRender(scrollState);
 }
-
-subtitleContainer.addEventListener('scroll', () => {
-    autoStickToBottom = isCloseToBottom();
-});
-
-window.addEventListener('resize', () => {
-    if (autoStickToBottom) {
-        subtitleContainer.scrollTop = subtitleContainer.scrollHeight;
-    }
-});
 
 function escapeHtml(text) {
     const div = document.createElement('div');
