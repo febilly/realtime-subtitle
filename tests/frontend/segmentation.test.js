@@ -17,6 +17,7 @@ const functions = {
     text_ends_with_closing_quote_after_sentence_punctuation: (
         Segmentation.textEndsWithClosingQuoteAfterSentencePunctuation
     ),
+    has_sentence_ending_punctuation: Segmentation.hasSentenceEndingPunctuation,
     is_sentence_ending_punctuation: Segmentation.isSentenceEndingPunctuation,
     split_text_at_sentence_boundaries: Segmentation.splitTextAtSentenceBoundaries,
     split_into_sentence_lines: Segmentation.splitIntoSentenceLines,

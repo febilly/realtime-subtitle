@@ -95,20 +95,33 @@
         return index >= 0 && isSentenceEnderAt(value, index);
     }
 
-    function isSentenceEndingPunctuation(text) {
+    // Token fragments only answer the punctuation-shape question here.
+    // Abbreviation exceptions belong to the accumulated context: Soniox can
+    // stream an ordinary word as "her" + "e.", where token-only handling
+    // otherwise mistakes e. for the beginning of e.g.
+    function hasSentenceEndingPunctuation(text) {
         let value = String(text || '').trim();
         if (!value) return false;
+        while (value && CLOSING_QUOTE_CHARS.has(value.at(-1))) {
+            value = value.slice(0, -1).trimEnd();
+        }
+        if (!value) return false;
+        for (let index = value.length - 1; index >= 0; index -= 1) {
+            if (SENTENCE_END_CHARS.has(value[index])) return isSentenceEnderAt(value, index);
+            if (!/\s/u.test(value[index])) return false;
+        }
+        return false;
+    }
+
+    function isSentenceEndingPunctuation(text) {
+        let value = String(text || '').trim();
         while (value && CLOSING_QUOTE_CHARS.has(value.at(-1))) {
             value = value.slice(0, -1).trimEnd();
         }
         if (!value || textEndsWithAbbreviationException(value) || textEndsWithAbbreviationPrefix(value)) {
             return false;
         }
-        for (let index = value.length - 1; index >= 0; index -= 1) {
-            if (SENTENCE_END_CHARS.has(value[index])) return isSentenceEnderAt(value, index);
-            if (!/\s/u.test(value[index])) return false;
-        }
-        return false;
+        return hasSentenceEndingPunctuation(value);
     }
 
     function splitTextAtSentenceBoundaries(text) {
@@ -177,6 +190,7 @@
         tokenTextContinuesDecimal,
         tokenTextStartsWithClosingQuote,
         textEndsWithClosingQuoteAfterSentencePunctuation,
+        hasSentenceEndingPunctuation,
         isSentenceEndingPunctuation,
         endsWithSentenceEnding: isSentenceEndingPunctuation,
         splitTextAtSentenceBoundaries,

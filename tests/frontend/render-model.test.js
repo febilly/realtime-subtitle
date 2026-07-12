@@ -172,6 +172,33 @@ describe('RenderModel speculative token stream', () => {
         ]);
     });
 
+    it('splits after a period on a fragmented word suffix using full context', () => {
+        const first = original(' her', { is_final: false });
+        const suffix = original('e.', { is_final: false });
+        const next = original(' So', { is_final: false });
+        const tokens = RenderModel.buildRenderTokens({
+            currentNonFinalTokens: [first, suffix, next],
+        });
+
+        expect(tokens).toEqual([
+            first,
+            suffix,
+            { is_separator: true, is_final: false, separator_type: 'speculative' },
+            next,
+        ]);
+    });
+
+    it('keeps a streamed e.g. abbreviation together', () => {
+        const values = [
+            original('For e.', { is_final: false }),
+            original('g.', { is_final: false }),
+            original(' example', { is_final: false }),
+        ];
+        const tokens = RenderModel.buildRenderTokens({ currentNonFinalTokens: values });
+
+        expect(tokens).toEqual(values);
+    });
+
     it('does not split punctuation inside an opener from an earlier token', () => {
         const values = [
             original('「だめ、', { is_final: false, language: 'ja' }),

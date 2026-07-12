@@ -891,6 +891,68 @@ def test_accurate_mode_cross_language_source_segments_in_punctuation_mode(monkey
     assert _separator_in_updates(updates)
 
 
+def test_accurate_mode_segments_period_on_fragmented_word_suffix(monkeypatch):
+    """Raw-token regression from responses_20260713_011610: Soniox emitted
+    here. as " her" + "e." before the next sentence."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._suppress_soniox_translation = True
+    session._llm_refine_mode = "translate"
+
+    session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": "And there's a couple of candidate ideas her",
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": "en",
+                },
+                {
+                    "text": "e.",
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": "en",
+                },
+                {
+                    "text": " So",
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": "en",
+                },
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+    final_tokens = [token for update in updates for token in update.get("final_tokens", [])]
+    rendered = ["SEP" if token.get("is_separator") else token.get("text") for token in final_tokens]
+    assert rendered == [
+        "And there's a couple of candidate ideas her",
+        "e.",
+        "SEP",
+        " So",
+    ]
+
+
 def test_accurate_mode_cross_language_source_segments_in_translation_mode(monkeypatch):
     """Same as above but in translation segment mode: the source-punctuation
     fallback must fire in accurate mode even though the source is cross-language."""

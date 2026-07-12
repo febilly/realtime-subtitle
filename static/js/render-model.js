@@ -62,7 +62,7 @@
         const following = String(nextText || '');
         const context = String(contextText || '');
 
-        if (!Segmentation.isSentenceEndingPunctuation(value)) return false;
+        if (!Segmentation.hasSentenceEndingPunctuation(value)) return false;
 
         // The backend makes these decisions against the accumulated sentence,
         // not only the latest token. This matters when an opener or the first

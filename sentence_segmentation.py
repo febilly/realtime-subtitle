@@ -111,7 +111,15 @@ def text_ends_with_closing_quote_after_sentence_punctuation(text: str) -> bool:
     return index >= 0 and is_sentence_ender_at(value, index)
 
 
-def is_sentence_ending_punctuation(text: str) -> bool:
+def has_sentence_ending_punctuation(text: str) -> bool:
+    """Whether ``text`` is shaped like it ends in sentence punctuation.
+
+    Abbreviation exceptions deliberately are not checked here. Streaming
+    recognizers can split an ordinary word as ``"her"`` + ``"e."``; applying
+    abbreviation-prefix rules to the token fragment alone mistakes ``e.`` for
+    the start of ``e.g.``. Callers with accumulated text apply those rules to
+    the full context instead.
+    """
     value = (text or "").strip()
     if not value:
         return False
@@ -119,14 +127,23 @@ def is_sentence_ending_punctuation(text: str) -> bool:
         value = value[:-1].rstrip()
     if not value:
         return False
-    if text_ends_with_abbreviation_exception(value) or text_ends_with_abbreviation_prefix(value):
-        return False
     for index in range(len(value) - 1, -1, -1):
         if value[index] in SENTENCE_END_CHARS:
             return is_sentence_ender_at(value, index)
         if not value[index].isspace():
             return False
     return False
+
+
+def is_sentence_ending_punctuation(text: str) -> bool:
+    value = (text or "").strip()
+    while value and value[-1] in CLOSING_QUOTE_CHARS:
+        value = value[:-1].rstrip()
+    if not value:
+        return False
+    if text_ends_with_abbreviation_exception(value) or text_ends_with_abbreviation_prefix(value):
+        return False
+    return has_sentence_ending_punctuation(value)
 
 
 def split_text_at_sentence_boundaries(text: str) -> list[str]:
@@ -261,7 +278,7 @@ class PendingBoundaryState:
     ) -> bool:
         token = tokens[index]
         text = str(token.get("text") or "")
-        if not is_sentence_ending_punctuation(text):
+        if not has_sentence_ending_punctuation(text):
             return False
         # context_text ends with this token's text: a lone "." whose buffered
         # context already ends with "." is part of an ellipsis, not a boundary.
@@ -382,7 +399,7 @@ class PendingBoundaryState:
         if text_ends_with_abbreviation_exception(context_text) or text_ends_with_abbreviation_prefix(context_text):
             return None
         text = str(token.get("text") or "")
-        if not is_sentence_ending_punctuation(text):
+        if not has_sentence_ending_punctuation(text):
             return None
         stripped = text.strip()
         if stripped.endswith("."):

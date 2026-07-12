@@ -30,6 +30,7 @@ def test_shared_sentence_segmentation_cases(case):
         "text_ends_with_closing_quote_after_sentence_punctuation": (
             seg.text_ends_with_closing_quote_after_sentence_punctuation
         ),
+        "has_sentence_ending_punctuation": seg.has_sentence_ending_punctuation,
         "is_sentence_ending_punctuation": seg.is_sentence_ending_punctuation,
         "split_text_at_sentence_boundaries": seg.split_text_at_sentence_boundaries,
         "split_into_sentence_lines": seg.split_into_sentence_lines,
@@ -166,3 +167,26 @@ def test_streamed_ellipsis_dots_do_not_close_mid_run():
     assert not check([trans("."), trans("..")], 0, "方に.")
     # An ordinary sentence-ending period is unaffected.
     assert check([trans("好。"), trans("下一句")], 0, "很好。")
+
+
+def test_fragmented_word_suffix_period_uses_full_context_for_abbreviations():
+    """Live 2026-07-13: Soniox finalized here. as "her" + "e."."""
+    state = seg.PendingBoundaryState()
+
+    def trans(text):
+        return {"text": text, "speaker": "1", "translation_status": "translation"}
+
+    assert state.is_token_sentence_ending(
+        [trans("e."), trans(" So")],
+        0,
+        context_text="And there's a couple of candidate ideas here.",
+        is_internal_token=lambda _t: False,
+        source_as_output=False,
+    )
+    assert not state.is_token_sentence_ending(
+        [trans("e."), trans("g.")],
+        0,
+        context_text="For e.",
+        is_internal_token=lambda _t: False,
+        source_as_output=False,
+    )
