@@ -668,10 +668,6 @@ function getSegmentModes() {
     return isLlmTranslateMode() ? ['endpoint', 'punctuation'] : SEGMENT_MODES;
 }
 
-// 主题切换功能（默认深色）
-let currentTheme = 'dark';
-let lastWindowOnTopState = null;
-let enableChromaTheme = false;
 const settingsUi = SettingsUI.create({
     document,
     window,
@@ -684,52 +680,15 @@ const settingsUi = SettingsUI.create({
         handleSettingsSave,
     },
 });
-
-function getAvailableThemes() {
-    return settingsUi.getAvailableThemes(enableChromaTheme);
-}
-
-async function syncWindowOnTopByTheme(theme) {
-    const shouldOnTop = theme !== 'chroma';
-    if (lastWindowOnTopState === shouldOnTop) {
-        return;
-    }
-
-    lastWindowOnTopState = shouldOnTop;
-
-    try {
-        await fetch('/window-on-top', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ on_top: shouldOnTop }),
-        });
-    } catch (error) {
-        // 浏览器模式或接口不可用时静默忽略。
-    }
-}
-
-function applyTheme(theme) {
-    currentTheme = settingsUi.applyTheme(theme, {
-        enableChromaTheme,
-        themeIcon,
-        setControlIcon,
-    });
-    if (enableChromaTheme) {
-        void syncWindowOnTopByTheme(currentTheme);
-    }
-}
-
-// 从localStorage加载主题偏好，覆盖默认值
-const savedTheme = localStorage.getItem('theme');
-applyTheme(savedTheme);
-
-themeToggle.addEventListener('click', () => {
-    const available = getAvailableThemes();
-    const currentIndex = available.indexOf(currentTheme);
-    const actualIndex = currentIndex >= 0 ? currentIndex : 0;
-    const nextTheme = available[(actualIndex + 1) % available.length];
-    applyTheme(nextTheme);
+const themeController = ThemeController.create({
+    settingsUi,
+    fetch,
+    storage: localStorage,
+    toggle: themeToggle,
+    themeIcon,
+    setControlIcon,
 });
+themeController.init();
 
 function updatePauseButtonUi() {
     runtimeControls.updatePauseButtonUi();
@@ -962,25 +921,7 @@ async function fetchUiConfig() {
         applySpeakerLabelVisibility();
         renderRuntimeSettingsPickers();
         if (data && typeof data.enable_chroma_theme === 'boolean') {
-            const wasEnabled = enableChromaTheme;
-            enableChromaTheme = data.enable_chroma_theme;
-
-            if (enableChromaTheme && !wasEnabled) {
-                // Config just turned on — restore saved theme if it was chroma
-                const savedTheme = localStorage.getItem('theme');
-                if (savedTheme === 'chroma' && currentTheme !== 'chroma') {
-                    applyTheme('chroma');
-                }
-                void syncWindowOnTopByTheme(currentTheme);
-            } else if (!enableChromaTheme && wasEnabled) {
-                // Config just turned off — fall back if on chroma
-                if (currentTheme === 'chroma') {
-                    applyTheme('dark');
-                }
-            } else if (enableChromaTheme) {
-                // Config stayed on, but initial applyTheme() ran before we knew the config
-                void syncWindowOnTopByTheme(currentTheme);
-            }
+            themeController.setChromaEnabled(data.enable_chroma_theme);
         }
         applySpeakerLabelVisibility();
         applyLockPauseRestartControlsUI();
