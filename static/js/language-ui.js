@@ -14,9 +14,16 @@
         const windowRef = options.window || root;
         const storage = options.storage || root.localStorage;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
+        const catalog = options.catalog;
+        if (!catalog
+            || typeof catalog.getLanguages !== 'function'
+            || typeof catalog.displayName !== 'function'
+            || typeof catalog.first !== 'function'
+            || typeof catalog.coerce !== 'function') {
+            throw new TypeError('LanguageUI.create requires a language catalog');
+        }
         const getState = typeof options.getState === 'function' ? options.getState : () => ({});
         const updateState = typeof options.updateState === 'function' ? options.updateState : () => {};
-        const getLanguages = typeof options.getLanguages === 'function' ? options.getLanguages : () => [];
         const button = options.button || null;
         let popover = null;
         let popoverOpen = false;
@@ -28,28 +35,16 @@
         let buttonHandler = null;
 
         function languages() {
-            const value = getLanguages();
+            const value = catalog.getLanguages();
             return Array.isArray(value) ? value : [];
         }
 
         function getLanguageDisplayName(code) {
-            const normalized = String(code || '').trim().toLowerCase();
-            const info = languages().find((lang) => String(lang.code).toLowerCase() === normalized);
-            return info ? `${info.en} - ${info.native}` : String(code || '');
-        }
-
-        function firstSupportedCode() {
-            const first = languages()[0];
-            return first && first.code ? first.code : 'en';
+            return catalog.displayName(code);
         }
 
         function coerceSupportedLanguageCode(code, fallback = 'en') {
-            const desired = String(code || '').trim().toLowerCase();
-            const fallbackCode = String(fallback || '').trim().toLowerCase();
-            const desiredMatch = languages().find((lang) => String(lang.code).toLowerCase() === desired);
-            if (desiredMatch) return desiredMatch.code;
-            const fallbackMatch = languages().find((lang) => String(lang.code).toLowerCase() === fallbackCode);
-            return fallbackMatch ? fallbackMatch.code : firstSupportedCode();
+            return catalog.coerce(code, fallback);
         }
 
         function ensureSelectMenu() {
@@ -105,7 +100,12 @@
                 const stored = storage.getItem('favoriteLanguages');
                 if (stored) {
                     const parsed = JSON.parse(stored);
-                    if (Array.isArray(parsed)) return parsed.map((code) => String(code).toLowerCase());
+                    if (Array.isArray(parsed)) {
+                        if (!parsed.every((code) => typeof code === 'string')) {
+                            throw new TypeError('Favorite language codes must be strings');
+                        }
+                        return parsed.map((code) => code.toLowerCase());
+                    }
                 }
             } catch (error) {
                 if (root.console) root.console.warn('Failed to parse favorite languages:', error);

@@ -27,6 +27,11 @@ describe('full-page settings and controls smoke', () => {
             expect(languagePopover).not.toBeNull();
             expect(languagePopover.style.display).toBe('block');
             expect(languagePopover.querySelectorAll('.translation-mode-control .segmented-option')).toHaveLength(3);
+            languagePopover.querySelector('.lang-picker[data-role="target"] .lang-picker-button').click();
+            const providerLanguages = [...page.document.querySelectorAll(
+                '.lang-select-menu .lang-select-option[data-section="all"]',
+            )].map((row) => row.dataset.code);
+            expect(providerLanguages).toEqual(['en', 'zh', 'ja']);
             translationButton.click();
             expect(languagePopover.style.display).toBe('none');
 

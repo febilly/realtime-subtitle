@@ -596,7 +596,7 @@ const languageUi = LanguageUI.create({
     storage: localStorage,
     t,
     button: translationLangButton,
-    getLanguages: languageCatalog.getLanguages,
+    catalog: languageCatalog,
     getState: () => ({
         uiTranslationMode,
         backendTranslationMode,

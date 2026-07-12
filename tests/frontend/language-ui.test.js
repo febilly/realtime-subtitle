@@ -1,4 +1,5 @@
 const { JSDOM } = require('jsdom');
+const LanguageCatalog = require('../../static/js/language-catalog');
 const LanguageUI = require('../../static/js/language-ui');
 
 function setup(overrides = {}) {
@@ -19,18 +20,14 @@ function setup(overrides = {}) {
     const restartRecognition = vi.fn();
     const setUiTranslationMode = vi.fn((mode) => { state.uiTranslationMode = mode; });
     const renderSubtitles = vi.fn();
-    let languages = [
-        { code: 'en', en: 'English', native: 'English' },
-        { code: 'zh', en: 'Chinese', native: '中文' },
-        { code: 'ja', en: 'Japanese', native: '日本語' },
-    ];
+    const catalog = LanguageCatalog.create(['en', 'zh', 'ja']);
     const controller = LanguageUI.create({
         document: dom.window.document,
         window: dom.window,
         storage: dom.window.localStorage,
         button: dom.window.document.getElementById('languages'),
         t: (key) => key,
-        getLanguages: () => languages,
+        catalog,
         getState: () => state,
         updateState: (patch) => Object.assign(state, patch),
         setUiTranslationMode,
@@ -44,7 +41,7 @@ function setup(overrides = {}) {
         restartRecognition,
         setUiTranslationMode,
         renderSubtitles,
-        setLanguages: (value) => { languages = value; },
+        setLanguages: (value) => { catalog.setCodes(value); },
     };
 }
 
@@ -54,6 +51,16 @@ describe('LanguageUI', () => {
         expect(controller.coerceSupportedLanguageCode('JA', 'en')).toBe('ja');
         expect(controller.coerceSupportedLanguageCode('xx', 'zh')).toBe('zh');
         expect(controller.getFavoriteLanguages()).toEqual(['en', 'zh', 'ja']);
+        dom.window.close();
+    });
+
+    it('falls back to seeded favorites when stored data contains non-string codes', () => {
+        const { dom, controller } = setup();
+        dom.window.localStorage.setItem('favoriteLanguages', JSON.stringify([123, null]));
+        const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        expect(controller.getFavoriteLanguages()).toEqual(['en', 'zh', 'ja']);
+        expect(warning).toHaveBeenCalledOnce();
+        warning.mockRestore();
         dom.window.close();
     });
 
@@ -138,7 +145,7 @@ describe('LanguageUI', () => {
         dom.window.document.querySelector('.lang-picker-button').click();
         expect(dom.window.document.body.textContent).toContain('Japanese');
 
-        setLanguages([{ code: 'fr', en: 'French', native: 'Français' }]);
+        setLanguages(['fr']);
         controller.invalidate();
         expect(dom.window.document.querySelector('.lang-popover')).toBeNull();
         controller.show();
