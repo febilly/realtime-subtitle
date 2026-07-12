@@ -228,6 +228,27 @@ describe('HostedLogin browser callback polling', () => {
         expect(page.controller.getDebugState().waitingForBrowser).toBe(false);
         page.dom.window.close();
     });
+
+    it('ignores an obsolete poll response after the login panel closes', async () => {
+        let resolvePoll;
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response({ state: 'state-1' }))
+            .mockImplementationOnce(() => new Promise((resolve) => { resolvePoll = resolve; }));
+        const page = setup({ fetch });
+        await page.controller.startHostedLogin();
+
+        const poll = page.controller.pollLoginCallback();
+        page.controller.hide();
+        resolvePoll(response({
+            status: 'done', api_key: 'obsolete-token', display_name: 'Old User', trust_rank: 'user',
+        }));
+        await poll;
+
+        expect(page.saveServerSettings).not.toHaveBeenCalled();
+        expect(page.actions.pushSetup).not.toHaveBeenCalled();
+        expect(page.controller.getDebugState().pollState).toBeNull();
+        page.dom.window.close();
+    });
 });
 
 describe('HostedLogin manual verification', () => {

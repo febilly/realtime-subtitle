@@ -328,6 +328,7 @@
             try {
                 const response = await fetchRef(`/account/login-poll?state=${encodeURIComponent(state)}`);
                 const data = await response.json().catch(() => ({}));
+                if (pollState !== state) return;
                 if (data && data.status === 'done' && data.api_key) {
                     stopPolling();
                     setBusy(true);
