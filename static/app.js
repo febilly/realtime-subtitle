@@ -56,42 +56,7 @@ const t = (key, vars) => {
     return key;
 };
 
-function localizeBackendMessage(message) {
-    if (message === null || message === undefined) {
-        return message;
-    }
-
-    const raw = String(message).trim();
-    if (!raw) {
-        return raw;
-    }
-
-    const directMap = {
-        'Manual restart is disabled by server config': 'backend_manual_restart_disabled',
-        'Pause is disabled by server config': 'backend_pause_disabled',
-        'Resume is disabled by server config': 'backend_resume_disabled',
-        'Audio source switching is disabled by server config': 'backend_audio_source_disabled',
-        'Microphone device switching is disabled by server config': 'backend_microphone_device_disabled',
-        'OSC translation toggle is disabled by server config': 'backend_osc_disabled',
-        'Overlay control is disabled by server config': 'backend_overlay_disabled',
-        'Segment mode switching is disabled': 'backend_segment_mode_disabled',
-        'Speaker label switching is disabled by server config': 'backend_speaker_labels_disabled',
-        'LLM refine toggle is disabled by server config': 'backend_llm_refine_disabled',
-        'Furigana feature not available (pykakasi not installed)': 'backend_furigana_unavailable',
-    };
-
-    const key = directMap[raw];
-    if (key) {
-        return t(key);
-    }
-
-    // Lightweight heuristics for similar messages without changing backend.
-    if (/disabled by server config/i.test(raw)) {
-        return raw;
-    }
-
-    return raw;
-}
+const localizeBackendMessage = BackendMessage.createLocalizer({ t });
 
 const INITIAL_UI_CONFIG = (window.__INITIAL_UI_CONFIG__ && typeof window.__INITIAL_UI_CONFIG__ === 'object')
     ? window.__INITIAL_UI_CONFIG__
