@@ -216,7 +216,7 @@ const settingsRuntime = SettingsRuntime.create({
         get defaultTranslationUiMode() { return TranslationModeController.DEFAULT_TRANSLATION_UI_MODE; },
         get translationUiModes() { return translationModeController.getAvailableTranslationModes(); },
         get segmentModeSupported() { return segmentModeSupported; },
-        get segmentMode() { return segmentMode; },
+        get segmentMode() { return segmentModeController.getMode(); },
         get segmentModes() { return getSegmentModes(); },
     }),
     updateState: (patch) => {
@@ -336,11 +336,18 @@ function showToast(message, isError = false, options = {}) {
     }, Number(options.timeoutMs) || 4000);
 }
 
-function normalizeSegmentMode(mode) {
-    const value = (mode || '').toString().trim();
-    return SEGMENT_MODES.includes(value) ? value : null;
-}
-
+const segmentModeController = SegmentModeController.create({
+    fetch,
+    storage: localStorage,
+    settingsStore,
+    button: segmentModeButton,
+    t,
+    console,
+    getRuntimeState: () => ({ lockManualControls, segmentModeSupported }),
+    isTranslateMode: () => translationModeController.isTranslateMode(),
+    renderPicker: () => settingsRuntime.renderSegmentModePicker(),
+});
+segmentModeController.init();
 const translationModeController = TranslationModeController.create({
     fetch,
     storage: localStorage,
@@ -349,8 +356,8 @@ const translationModeController = TranslationModeController.create({
     getSession: () => subtitleSession,
     getRuntimeState: () => ({ lockManualControls }),
     actions: {
-        enforceTranslateSegmentMode,
-        updateSegmentModeButton,
+        enforceTranslateSegmentMode: segmentModeController.enforceTranslateMode,
+        updateSegmentModeButton: segmentModeController.updateButton,
         renderSubtitles,
         updateTranslationModeHint,
         renderTranslationModePicker,
@@ -414,13 +421,6 @@ const languageUi = LanguageUI.create({
     renderSubtitles,
 });
 languageUi.init();
-
-// 分段模式: 'translation' | 'endpoint' | 'punctuation'
-let segmentMode = settingsStore.loadSegmentMode();
-const SEGMENT_MODES = ['translation', 'endpoint', 'punctuation'];
-if (!SEGMENT_MODES.includes(segmentMode)) {
-    segmentMode = 'punctuation';
-}
 
 // 显示模式: 'both', 'original', 'translation'
 let displayMode = settingsStore.loadDisplayMode();
@@ -653,19 +653,11 @@ function isLlmTranslateMode() {
 }
 
 function enforceTranslateSegmentMode() {
-    if (!isLlmTranslateMode()) {
-        return;
-    }
-    if (segmentMode === 'translation') {
-        segmentMode = 'punctuation';
-        localStorage.setItem('segmentMode', segmentMode);
-        updateSegmentModeButton();
-        void setSegmentMode('punctuation');
-    }
+    return segmentModeController.enforceTranslateMode();
 }
 
 function getSegmentModes() {
-    return isLlmTranslateMode() ? ['endpoint', 'punctuation'] : SEGMENT_MODES;
+    return segmentModeController.getAvailableModes();
 }
 
 const settingsUi = SettingsUI.create({
@@ -696,19 +688,7 @@ function updatePauseButtonUi() {
 
 // 更新分段模式按钮文本
 function updateSegmentModeButton() {
-    if (!segmentModeButton) {
-        return;
-    }
-
-    const translateLocked = isLlmTranslateMode();
-
-    if (segmentMode === 'translation') {
-        segmentModeButton.title = t('segment_translation');
-    } else if (segmentMode === 'endpoint') {
-        segmentModeButton.title = translateLocked ? t('segment_endpoint_no_translation') : t('segment_endpoint');
-    } else {
-        segmentModeButton.title = translateLocked ? t('segment_punctuation_no_translation') : t('segment_punctuation');
-    }
+    return segmentModeController.updateButton();
 }
 
 // 更新显示模式按钮文本
@@ -875,28 +855,7 @@ async function fetchUiConfig() {
         // Gemini "no translation" is a pure frontend suppression of the translation text.
         suppressTranslationDisplay = (translationProvider === 'gemini' && uiTranslationMode === 'none');
         updateSettingsButtonVisibility();
-        const backendSegmentMode = normalizeSegmentMode(data && data.segment_mode);
-        const storedSegmentMode = normalizeSegmentMode(localStorage.getItem('segmentMode'));
-
-        // Segment mode priority:
-        // 1) LOCK_MANUAL_CONTROLS=true -> always backend value
-        // 2) stored browser value (if valid)
-        // 3) backend value
-        if (lockManualControls) {
-            if (backendSegmentMode) {
-                segmentMode = backendSegmentMode;
-                localStorage.setItem('segmentMode', segmentMode);
-            }
-        } else if (storedSegmentMode) {
-            segmentMode = storedSegmentMode;
-            if (backendSegmentMode && backendSegmentMode !== storedSegmentMode) {
-                void setSegmentMode(storedSegmentMode);
-            }
-        } else if (backendSegmentMode) {
-            segmentMode = backendSegmentMode;
-            localStorage.setItem('segmentMode', segmentMode);
-        }
-        updateSegmentModeButton();
+        segmentModeController.applyBackendConfig(data);
         if (data && typeof data.custom_font_available === 'boolean') {
             customFontAvailable = data.custom_font_available;
             if (!customFontAvailable) {
@@ -952,14 +911,7 @@ function handleSubtitleRetract(data) {
 }
 
 function handleSegmentModeChanged(data) {
-    if (!data || typeof data.mode !== 'string') {
-        return;
-    }
-    segmentMode = data.mode;
-    localStorage.setItem('segmentMode', data.mode);
-    updateSegmentModeButton();
-    renderSegmentModePicker();
-    enforceTranslateSegmentMode();
+    return segmentModeController.handleBackendChanged(data);
 }
 
 function setUiTranslationMode(mode, { persistOnly = false } = {}) {
@@ -1064,46 +1016,8 @@ async function setSpeakerLabelsHidden(hidden) {
     }
 }
 
-async function setSegmentMode(mode) {
-    if (lockManualControls) {
-        return false;
-    }
-    if (!segmentModeSupported) {
-        return false;
-    }
-    if (isLlmTranslateMode() && mode === 'translation') {
-        return false;
-    }
-    try {
-        const response = await fetch('/segment-mode', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode })
-        });
-        if (!response.ok) {
-            console.error('Failed to set segment mode');
-            return false;
-        }
-        segmentMode = mode;
-        localStorage.setItem('segmentMode', mode);
-        updateSegmentModeButton();
-        renderSegmentModePicker();
-        return true;
-    } catch (error) {
-        console.error('Error setting segment mode:', error);
-        return false;
-    }
-}
-
-// 分段模式切换
-if (segmentModeButton) {
-    segmentModeButton.addEventListener('click', () => {
-        const availableModes = getSegmentModes();
-        const currentIndex = availableModes.indexOf(segmentMode);
-        const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % availableModes.length : 0;
-        const nextMode = availableModes[nextIndex];
-        void setSegmentMode(nextMode);
-    });
+function setSegmentMode(mode) {
+    return segmentModeController.setMode(mode);
 }
 
 if (oscTranslationButton) {
