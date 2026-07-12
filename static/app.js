@@ -183,6 +183,7 @@
 })();
 
 let ws;
+let wsClient = null;
 const subtitleContainer = document.getElementById('subtitleContainer');
 const themeToggle = document.getElementById('themeToggle');
 const themeIcon = document.getElementById('themeIcon');
@@ -400,6 +401,10 @@ const CLIENT_UPDATE_REMINDER_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
 const CLIENT_UPDATE_REMINDER_KEY = 'clientUpdateReminderLastShown';
 let relayAvailable = !!INITIAL_UI_CONFIG.relay_available;
 let relayServerUrl = typeof INITIAL_UI_CONFIG.server_url === 'string' ? INITIAL_UI_CONFIG.server_url : '';
+const settingsStore = SettingsStore.create({
+    storage: localStorage,
+    getRelayServerUrl: () => relayServerUrl,
+});
 let creditsPurchaseUrl = '';
 let firstRedeemBonusCredits = 0;
 let firstRedeemBonusEligible = false;
@@ -436,100 +441,19 @@ const RELAY_ERROR_KEYS = {
     concurrency_limit: 'relay_err_concurrency_limit',
 };
 
-function safeHttpUrl(value) {
-    const raw = String(value || '').trim();
-    if (!raw) return '';
-    try {
-        const url = new URL(raw);
-        if (url.protocol === 'http:' || url.protocol === 'https:') {
-            return url.href;
-        }
-    } catch (e) {
-        return '';
-    }
-    return '';
-}
+const { safeHttpUrl, normalizeServerUrl } = SettingsStore;
 
-// Normalize a server URL into a stable storage key (host is case-insensitive,
-// trailing slash stripped) so the same server maps to one credential bucket.
-function normalizeServerUrl(url) {
-    const raw = String(url || '').trim();
-    if (!raw) return '';
-    try {
-        const u = new URL(raw);
-        const path = u.pathname.replace(/\/+$/, '');
-        return u.protocol + '//' + u.host.toLowerCase() + path;
-    } catch (e) {
-        return raw.replace(/\/+$/, '');
-    }
-}
-
-// Raw on-disk shape: global `mode`/`modeChosen` + per-server credentials keyed
-// by normalized server URL: { servers: { <url>: { token, displayName, trustRank } } }.
 function loadServerSettingsRaw() {
-    try {
-        const raw = localStorage.getItem(SUBTITLE_SERVER_STORAGE_KEY);
-        if (raw) {
-            const obj = JSON.parse(raw);
-            if (obj && typeof obj === 'object') {
-                const out = Object.assign({ mode: null, modeChosen: false }, obj);
-                if (!out.servers || typeof out.servers !== 'object') {
-                    out.servers = {};
-                }
-                return out;
-            }
-        }
-    } catch (e) {
-        // ignore
-    }
-    return { mode: null, modeChosen: false, servers: {} };
+    return settingsStore.loadServerSettingsRaw();
 }
 
-// A per-server *view*: flattens the current server's credentials to the top
-// level so callers can read/write `token`/`displayName`/`trustRank` directly.
-// `mode`/`modeChosen` stay global. The current server is `relayServerUrl`.
 function loadServerSettings() {
-    const raw = loadServerSettingsRaw();
-    const key = normalizeServerUrl(relayServerUrl);
-    let creds = key ? raw.servers[key] : null;
-    // Migrate pre-per-server data: a top-level token belongs to the current server.
-    if (!creds && (raw.token || raw.displayName || raw.trustRank)) {
-        creds = { token: raw.token || '', displayName: raw.displayName || '', trustRank: raw.trustRank || '' };
-    }
-    creds = creds || { token: '', displayName: '', trustRank: '' };
-    return {
-        mode: raw.mode,
-        modeChosen: raw.modeChosen,
-        token: creds.token || '',
-        displayName: creds.displayName || '',
-        trustRank: creds.trustRank || '',
-        servers: raw.servers,
-    };
+    return settingsStore.loadServerSettings();
 }
 
 function saveServerSettings(settings) {
-    try {
-        const raw = loadServerSettingsRaw();
-        raw.mode = settings.mode;
-        raw.modeChosen = settings.modeChosen;
-        const key = normalizeServerUrl(relayServerUrl);
-        if (key) {
-            raw.servers[key] = {
-                token: settings.token || '',
-                displayName: settings.displayName || '',
-                trustRank: settings.trustRank || '',
-            };
-            // Drop legacy top-level credentials once migrated to a per-server bucket.
-            delete raw.token;
-            delete raw.displayName;
-            delete raw.trustRank;
-        }
-        localStorage.setItem(SUBTITLE_SERVER_STORAGE_KEY, JSON.stringify(raw));
-    } catch (e) {
-        // ignore
-    }
+    settingsStore.saveServerSettings(settings);
 }
-
 function hasExplicitConnectionMode(settings) {
     if (!settings || typeof settings !== 'object') {
         return false;
@@ -560,35 +484,14 @@ function getConnectionMode() {
     return null;
 }
 
-let uiTranslationMode = localStorage.getItem(UI_TRANSLATION_MODE_STORAGE_KEY);
-if (!['none', 'one_way', 'two_way'].includes(uiTranslationMode)) {
-    uiTranslationMode = null;
-}
+let uiTranslationMode = settingsStore.loadUiTranslationMode();
 
 function loadProviderSettings() {
-    try {
-        const raw = localStorage.getItem(PROVIDER_SETTINGS_STORAGE_KEY);
-        if (raw) {
-            const obj = JSON.parse(raw);
-            if (obj && typeof obj === 'object') {
-                if (!obj.keys || typeof obj.keys !== 'object') {
-                    obj.keys = {};
-                }
-                return obj;
-            }
-        }
-    } catch (e) {
-        // ignore
-    }
-    return { providerOverride: null, keys: {} };
+    return settingsStore.loadProviderSettings();
 }
 
 function saveProviderSettings(settings) {
-    try {
-        localStorage.setItem(PROVIDER_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-    } catch (e) {
-        // ignore
-    }
+    settingsStore.saveProviderSettings(settings);
 }
 
 function showToast(message, isError = false, options = {}) {
@@ -633,8 +536,7 @@ function normalizeSegmentMode(mode) {
 // 译文自动修复开关（默认关闭）
 let llmRefineMode = getStoredLlmRefineMode();
 if (!llmRefineMode) {
-    const legacy = localStorage.getItem('llmRefineEnabled');
-    llmRefineMode = legacy === 'true' ? 'refine' : 'off';
+    llmRefineMode = 'off';
 }
 let llmRefineEnabled = llmRefineMode !== 'off';
 let llmTranslateHideAfterSequence = llmRefineMode === 'translate' ? 0 : null;
@@ -650,13 +552,7 @@ const DEFAULT_TRANSLATION_UI_MODE = 'hybrid';
 const TRANSLATION_UI_MODE_TO_LLM = { fast: 'off', accurate: 'translate', hybrid: 'refine' };
 let translationModeSynced = false; // pushed the stored mode to the backend once
 function readStoredTranslationUiMode() {
-    try {
-        const raw = localStorage.getItem(TRANSLATION_UI_MODE_STORAGE_KEY);
-        // Legacy stored value: the old 改进 mode folds into 混合.
-        if (raw === 'refine') return 'hybrid';
-        if (raw && TRANSLATION_UI_MODES.includes(raw)) return raw;
-    } catch (e) { /* ignore */ }
-    return null;
+    return settingsStore.readTranslationUiMode();
 }
 
 function getStoredTranslationUiMode() {
@@ -832,18 +728,17 @@ let autoStickToBottom = true;
 let tokenSequenceCounter = 0;
 
 // 分段模式: 'translation' | 'endpoint' | 'punctuation'
-let segmentMode = localStorage.getItem('segmentMode') || 'punctuation';
+let segmentMode = settingsStore.loadSegmentMode();
 const SEGMENT_MODES = ['translation', 'endpoint', 'punctuation'];
 if (!SEGMENT_MODES.includes(segmentMode)) {
     segmentMode = 'punctuation';
 }
 
 // 显示模式: 'both', 'original', 'translation'
-let displayMode = localStorage.getItem('displayMode') || 'both';
+let displayMode = settingsStore.loadDisplayMode();
 
 // 自动重启识别开关（默认开启；已有保存值优先）
-const storedAutoRestartEnabled = localStorage.getItem('autoRestartEnabled');
-let autoRestartEnabled = storedAutoRestartEnabled === null ? true : storedAutoRestartEnabled === 'true';
+let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
 
 // OSC 翻译发送开关（默认关闭）
 let oscTranslationEnabled = false;
@@ -862,7 +757,7 @@ const pendingFuriganaRequests = new Set();
 let kuromojiTokenizerPromise = null;
 
 // 移动端底部留白开关（默认关闭）
-let bottomSafeAreaEnabled = localStorage.getItem('bottomSafeAreaEnabled') === 'true';
+let bottomSafeAreaEnabled = settingsStore.loadBottomSafeAreaEnabled();
 
 // 控制标志
 let shouldReconnect = true;  // 是否应该自动重连
@@ -954,14 +849,7 @@ function normalizeLlmRefineMode(mode) {
 }
 
 function getStoredLlmRefineMode() {
-    let rawStoredMode = localStorage.getItem(LLM_TRANSLATION_MODE_STORAGE_KEY);
-    if (!LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())) {
-        rawStoredMode = localStorage.getItem(LLM_REFINE_MODE_STORAGE_KEY);
-    }
-    const normalized = normalizeLlmRefineMode(rawStoredMode);
-    return LLM_REFINE_MODES.includes((rawStoredMode || '').toString().trim().toLowerCase())
-        ? normalized
-        : null;
+    return settingsStore.loadLlmRefineMode();
 }
 
 function isLlmTranslateMode() {
@@ -977,12 +865,8 @@ function applyLlmRefineMode(mode, options = {}) {
 
     const shouldPersist = options.persist !== false;
     if (shouldPersist) {
-        try {
-            localStorage.setItem(LLM_REFINE_MODE_STORAGE_KEY, llmRefineMode);
-            localStorage.setItem(LLM_TRANSLATION_MODE_STORAGE_KEY, llmRefineMode);
-            localStorage.setItem('llmRefineEnabled', llmRefineEnabled ? 'true' : 'false');
-        } catch (storageError) {
-            console.warn('Unable to persist LLM refine mode:', storageError);
+        if (!settingsStore.saveLlmRefineMode(llmRefineMode)) {
+            console.warn('Unable to persist LLM refine mode');
         }
     }
 
@@ -1574,11 +1458,7 @@ function setUiTranslationMode(mode, { persistOnly = false } = {}) {
         return;
     }
     uiTranslationMode = mode;
-    try {
-        localStorage.setItem(UI_TRANSLATION_MODE_STORAGE_KEY, mode);
-    } catch (e) {
-        // ignore
-    }
+    settingsStore.saveUiTranslationMode(mode);
     if (persistOnly) {
         return;
     }
@@ -3327,57 +3207,44 @@ async function fetchOscTranslationStatus() {
 
 
 function connect() {
-    if (hasUsableWebSocket()) {
-        return;
+    if (!wsClient) {
+        wsClient = WsClient.createClient({
+            WebSocketImpl: window.WebSocket,
+            getUrl: () => {
+                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                return `${protocol}://${window.location.host}/ws${window.location.search}`;
+            },
+            onSocketChange: (socket) => { ws = socket; },
+            onOpen: () => console.log('WebSocket connected'),
+            onFrame: handleMessage,
+            onError: (error) => console.error('WebSocket error:', error),
+            onClose: () => console.log('WebSocket closed'),
+            getAutoRestartEnabled: () => autoRestartEnabled,
+            onAutoRestart: triggerAutoRestart,
+            getShouldReconnect: () => shouldReconnect,
+            getIsRestarting: () => isRestarting,
+            reconnectDelayMs: 2000,
+        });
     }
-
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws${window.location.search}`);
-    ws = socket;
-
-    socket.onopen = () => {
-        console.log('WebSocket connected');
-        // The this-session cost meter is NOT started here: opening the local
-        // browser↔server socket happens at page load, before login or any
-        // billed relay link exists. The meter is driven by recognition-session
-        // events from the backend ('session_connected' / 'session_idle' /
-        // 'session_disconnected') so it only counts while we're actually billed.
-    };
-
-    socket.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        handleMessage(data);
-    };
-
-    socket.onerror = (error) => {
-        console.error('WebSocket error:', error);
-    };
-
-    socket.onclose = () => {
-        console.log('WebSocket closed');
-        // Don't pause the cost meter on a local socket drop: recognition (and
-        // billing) may still be running on the backend. The meter is paused by
-        // explicit recognition-session events instead.
-        if (ws === socket) {
-            ws = null;
-        }
-
-        if (autoRestartEnabled) {
-            triggerAutoRestart();
-            return;
-        }
-
-        // 只在应该重连且不在重启过程中时才重连
-        if (shouldReconnect && !isRestarting) {
-            console.log('Attempting to reconnect in 2 seconds...');
-            setTimeout(connect, 2000);
-        } else {
-            console.log('Auto-reconnect disabled');
-        }
-    };
+    return wsClient.connect();
 }
 
+const MESSAGE_TYPES = [
+    'subtitle_font_preference', 'recognition_paused', 'overlay_visibility', 'ipc_status', 'error',
+    'spec_translation_pending', 'spec_translation', 'refine_result', 'subtitle_retract', 'llm_cost',
+    'translation_mode_fallback', 'segment_mode_changed', 'speaker_labels_changed',
+    'session_connected', 'session_idle', 'session_disconnected', 'clear', 'update',
+];
+const MESSAGE_HANDLERS = Object.fromEntries(
+    MESSAGE_TYPES.map((type) => [type, handleMessageFrame])
+);
+MESSAGE_HANDLERS.default = handleMessageFrame;
+
 function handleMessage(data) {
+    return WsClient.dispatchFrame(data, MESSAGE_HANDLERS);
+}
+
+function handleMessageFrame(data) {
     if (data.type === 'subtitle_font_preference') {
         const enabled = !!data.use_bundled_cjk_fonts;
         applyBundledCjkFontPreference(enabled, { persist: true });
@@ -3804,7 +3671,9 @@ function requestFurigana(text) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function hasUsableWebSocket() {
-    return ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
+    return wsClient
+        ? wsClient.isUsable()
+        : !!ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING);
 }
 
 function finalizeCurrentNonFinalTokens({ render = true } = {}) {
