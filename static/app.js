@@ -1070,12 +1070,14 @@ const hostedBalance = HostedBalance.create({
     }),
     onAccountSectionChanged: hostedPorts.updateAccountSection,
     onAccountBalanceChanged: hostedPorts.updateAccountBalance,
+    onOpenSettings: settingsFlowController.open,
     elements: {
         balanceBar,
         balanceActionItem,
         balanceOpenSettingsButton,
     },
 });
+hostedBalance.init();
 hostedAccount = HostedAccount.create({
     document,
     window,
@@ -1118,9 +1120,6 @@ hostedAccount = HostedAccount.create({
     },
 });
 hostedAccount.init();
-if (balanceOpenSettingsButton) {
-    balanceOpenSettingsButton.addEventListener('click', () => settingsFlowController.open({ forced: false }));
-}
 
 const hostedController = Hosted.createController({
     preopenHostedLoginIfNeeded: hostedPorts.preopenHostedLoginIfNeeded,

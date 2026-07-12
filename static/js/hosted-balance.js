@@ -24,6 +24,9 @@
         const onAccountBalanceChanged = typeof options.onAccountBalanceChanged === 'function'
             ? options.onAccountBalanceChanged
             : () => {};
+        const onOpenSettings = typeof options.onOpenSettings === 'function'
+            ? options.onOpenSettings
+            : () => {};
         const elements = options.elements || {};
         const balanceBar = elements.balanceBar || null;
         const balanceActionItem = elements.balanceActionItem || null;
@@ -41,6 +44,7 @@
         let sessionHadLlmCost = false;
         let firstRedeemBonusCredits = 0;
         let firstRedeemBonusEligible = false;
+        let initialized = false;
 
         function runtimeState() {
             const value = getRuntimeState();
@@ -351,12 +355,29 @@
             };
         }
 
+        function handleOpenSettings() {
+            onOpenSettings({ forced: false });
+        }
+
+        function init() {
+            if (initialized) return false;
+            initialized = true;
+            if (balanceOpenSettingsButton) {
+                balanceOpenSettingsButton.addEventListener('click', handleOpenSettings);
+            }
+            return true;
+        }
+
         function destroy() {
             stopBalancePolling();
             if (sessionCostTimer) {
                 clearIntervalRef(sessionCostTimer);
                 sessionCostTimer = null;
             }
+            if (balanceOpenSettingsButton) {
+                balanceOpenSettingsButton.removeEventListener('click', handleOpenSettings);
+            }
+            initialized = false;
         }
 
         return {
@@ -370,6 +391,7 @@
             getDebugState,
             getFirstRedeemBonus,
             getLastBalanceData,
+            init,
             renderBalance,
             renderBalanceView,
             renderFreePools,

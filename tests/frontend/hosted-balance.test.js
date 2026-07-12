@@ -50,6 +50,7 @@ function setup(overrides = {}) {
     const fetch = overrides.fetch || vi.fn().mockResolvedValue(response(balance()));
     const onAccountSectionChanged = vi.fn();
     const onAccountBalanceChanged = vi.fn();
+    const onOpenSettings = vi.fn();
     const controller = HostedBalance.create({
         Billing: Hosted.Billing,
         document,
@@ -63,6 +64,7 @@ function setup(overrides = {}) {
         getRuntimeState: () => runtime,
         onAccountSectionChanged,
         onAccountBalanceChanged,
+        onOpenSettings,
         elements: {
             balanceBar: document.getElementById('balanceBar'),
             balanceActionItem: document.getElementById('balanceActionItem'),
@@ -78,6 +80,7 @@ function setup(overrides = {}) {
         fetch,
         onAccountBalanceChanged,
         onAccountSectionChanged,
+        onOpenSettings,
         runtime,
         setInterval,
         timers,
@@ -85,6 +88,22 @@ function setup(overrides = {}) {
 }
 
 describe('HostedBalance polling and fetching', () => {
+    it('owns the settings-button listener across an idempotent lifecycle', () => {
+        const page = setup();
+        const button = page.document.getElementById('balanceOpenSettingsButton');
+
+        expect(page.controller.init()).toBe(true);
+        expect(page.controller.init()).toBe(false);
+        button.click();
+        expect(page.onOpenSettings).toHaveBeenCalledOnce();
+        expect(page.onOpenSettings).toHaveBeenCalledWith({ forced: false });
+
+        page.controller.destroy();
+        button.click();
+        expect(page.onOpenSettings).toHaveBeenCalledOnce();
+        page.dom.window.close();
+    });
+
     it('shows only signed-in relay balance and switches idle/active cadence', async () => {
         const page = setup();
         page.controller.updateBalanceBarVisibility();

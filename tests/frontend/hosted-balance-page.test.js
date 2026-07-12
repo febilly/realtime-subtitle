@@ -30,6 +30,10 @@ describe('full-page hosted balance wiring', () => {
                 new URL(String(url), 'http://localhost/').pathname === '/account/balance'
             ))).toBe(true);
 
+            page.document.getElementById('balanceOpenSettingsButton').click();
+            expect(page.document.getElementById('settingsPanel').hidden).toBe(false);
+            expect(page.document.getElementById('settingsOverlay').hidden).toBe(false);
+
             await page.emitFrame({ type: 'session_connected' });
             await page.emitFrame({ type: 'llm_cost', credits: 1.25 });
             expect(page.document.getElementById('balanceValue').textContent).toBe('98.75');
