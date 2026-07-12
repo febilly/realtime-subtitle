@@ -3678,7 +3678,7 @@ function handleMessage(data) {
         // 当前进行中尾巴（属于下一句），与已确定 final token 不重叠。清空它只会让
         // 这段预览消失一帧、等下一帧再出现，造成界面闪烁。
         currentNonFinalTokens = (data.non_final_tokens || []).filter(token => token.text !== '<end>');
-        currentNonFinalTokens.forEach(assignSequenceIndex);
+        currentNonFinalTokens.forEach((token) => assignSequenceIndex(token));
 
         // 合并新增的final tokens
         if (hasNewFinalContent) {
@@ -3691,16 +3691,10 @@ function handleMessage(data) {
 }
 
 function insertFinalToken(token) {
-    assignSequenceIndex(token);
-    allFinalTokens.push(token);
+    tokenSequenceCounter = TokenStream.insertFinalToken(allFinalTokens, token, tokenSequenceCounter);
 }
 
-function joinTokenText(tokens) {
-    if (!tokens || tokens.length === 0) {
-        return '';
-    }
-    return tokens.map(t => (t && t.text) ? String(t.text) : '').join('');
-}
+const joinTokenText = TokenStream.joinTokenText;
 
 /**
  * 合并连续的final tokens以减少token数量
@@ -3708,79 +3702,7 @@ function joinTokenText(tokens) {
  * 合并条件：相同speaker、相同language、相同translation_status、is_final=true、非分隔符
  */
 function mergeFinalTokens() {
-    if (allFinalTokens.length === 0) {
-        return;
-    }
-
-    const safeStart = Math.max(0, lastMergedIndex - 1);
-    const startIndex = Math.min(safeStart, allFinalTokens.length - 1);
-    let writeIndex = startIndex;
-    let readIndex = startIndex;
-
-    while (readIndex < allFinalTokens.length) {
-        const currentToken = allFinalTokens[readIndex];
-
-        // 分隔符或非final token不合并，直接保留
-        if (currentToken.is_separator || !currentToken.is_final) {
-            allFinalTokens[writeIndex] = currentToken;
-            writeIndex++;
-            readIndex++;
-            continue;
-        }
-
-        // 尝试合并连续的相似token
-        let mergedText = currentToken.text || '';
-        let mergedToken = { ...currentToken };
-        let nextIndex = readIndex + 1;
-
-        // 查找可以合并的后续tokens
-        while (nextIndex < allFinalTokens.length) {
-            const nextToken = allFinalTokens[nextIndex];
-
-            // 检查是否可以合并
-            if (
-                !nextToken.is_separator &&
-                nextToken.is_final &&
-                nextToken.speaker === currentToken.speaker &&
-                nextToken.language === currentToken.language &&
-                (nextToken.translation_status || 'original') === (currentToken.translation_status || 'original') &&
-                nextToken.source_language === currentToken.source_language
-            ) {
-                // 合并文本
-                mergedText += (nextToken.text || '');
-                nextIndex++;
-            } else {
-                // 遇到不能合并的token，停止
-                break;
-            }
-        }
-
-        // 更新合并后的token
-        mergedToken.text = mergedText;
-        mergedToken._merged = true; // 标记为已合并
-        const sentenceIds = new Set();
-        for (let i = readIndex; i < nextIndex; i++) {
-            const id = allFinalTokens[i] && allFinalTokens[i].llm_sentence_id;
-            if (id) {
-                sentenceIds.add(String(id));
-            }
-        }
-        if (sentenceIds.size === 1) {
-            mergedToken.llm_sentence_id = Array.from(sentenceIds)[0];
-        } else if (sentenceIds.size > 1) {
-            delete mergedToken.llm_sentence_id;
-        }
-
-        allFinalTokens[writeIndex] = mergedToken;
-        writeIndex++;
-        readIndex = nextIndex;
-    }
-
-    // 截断数组，移除已合并的重复项
-    allFinalTokens.length = writeIndex;
-
-    // 更新lastMergedIndex到新的末尾
-    lastMergedIndex = allFinalTokens.length;
+    lastMergedIndex = TokenStream.mergeFinalTokens(allFinalTokens, lastMergedIndex);
 }
 
 const RTL_LANGUAGES = new Set(['ar', 'he', 'fa', 'ur', 'yi', 'ps', 'sd', 'ckb', 'dv']);
@@ -3799,131 +3721,15 @@ function getLanguageTag(language) {
     return `<span class="language-tag">${language.toUpperCase()}</span>`;
 }
 
-// Mirrors the backend's sentence-ending set / _split_into_sentence_lines so
-// the 准确-mode speculative preview keys match the backend's cache keys.
-const SENTENCE_ENDING_CHARS = new Set(['。', '！', '？', '.', '!', '?', '︒', '︕', '︖', '…']);
-const CLOSING_QUOTE_CHARS = new Set(['"', "'", '”', '’', '»', '›', '」', '』', '》']);
-const SENTENCE_END_ABBREVIATION_EXCEPTIONS = ['a.m.', 'p.m.', 'e.g.', 'i.e.', 'u.s.', 'u.k.'];
-const SENTENCE_END_ABBREVIATION_PREFIXES = SENTENCE_END_ABBREVIATION_EXCEPTIONS.flatMap((abbr) => {
-    const prefixes = [];
-    for (let i = 0; i < abbr.length - 1; i++) {
-        if (abbr[i] === '.') {
-            prefixes.push(abbr.slice(0, i + 1));
-        }
-    }
-    return prefixes;
-});
-
-function isSentenceEnderAt(value, index) {
-    const ch = value[index];
-    if (ch === '.') {
-        const prevCh = index > 0 ? value[index - 1] : '';
-        const nextCh = index + 1 < value.length ? value[index + 1] : '';
-        if (/\d/.test(prevCh) && /\d/.test(nextCh)) {
-            return false;
-        }
-    }
-    return SENTENCE_ENDING_CHARS.has(ch);
-}
-
-function textEndsWithAbbreviationSegment(text, segment) {
-    const value = String(text || '').trimEnd().toLowerCase();
-    if (!value.endsWith(segment)) {
-        return false;
-    }
-    const start = value.length - segment.length;
-    return start === 0 || !/[a-z]/i.test(value[start - 1]);
-}
-
-function textEndsWithAbbreviationException(text) {
-    return SENTENCE_END_ABBREVIATION_EXCEPTIONS.some((abbr) => textEndsWithAbbreviationSegment(text, abbr));
-}
-
-function textEndsWithAbbreviationPrefix(text) {
-    return SENTENCE_END_ABBREVIATION_PREFIXES.some((prefix) => textEndsWithAbbreviationSegment(text, prefix));
-}
-
-function tokenTextContinuesDecimal(previousText, nextText) {
-    if (!previousText || !nextText) {
-        return false;
-    }
-    return !/\s$/.test(previousText) && !/^\s/.test(nextText) && /^\d/.test(nextText);
-}
-
-function tokenTextStartsWithClosingQuote(previousText, nextText) {
-    if (!previousText || !nextText) {
-        return false;
-    }
-    return !/\s$/.test(previousText) && CLOSING_QUOTE_CHARS.has(nextText[0]);
-}
-
-function textContinuesAbbreviation(previousText, nextText) {
-    const combined = `${previousText || ''}${nextText || ''}`;
-    return textEndsWithAbbreviationException(combined) || textEndsWithAbbreviationPrefix(combined);
-}
-
-function isSentenceEndingPunctuation(text) {
-    let value = String(text || '').trim();
-    if (!value) {
-        return false;
-    }
-    while (value && CLOSING_QUOTE_CHARS.has(value[value.length - 1])) {
-        value = value.slice(0, -1).trimEnd();
-    }
-    if (!value || textEndsWithAbbreviationException(value) || textEndsWithAbbreviationPrefix(value)) {
-        return false;
-    }
-    for (let i = value.length - 1; i >= 0; i--) {
-        if (SENTENCE_ENDING_CHARS.has(value[i])) {
-            return isSentenceEnderAt(value, i);
-        }
-        if (!/\s/.test(value[i])) {
-            return false;
-        }
-    }
-    return false;
-}
-
-function endsWithSentenceEnding(text) {
-    return isSentenceEndingPunctuation(text);
-}
-
-// "甲。乙丙！丁" -> ["甲。", "乙丙！", "丁"]; a run of ending punctuation stays
-// attached to its sentence; the trailing partial (if any) is the last segment.
-function splitIntoSentenceSegments(text) {
-    const value = text || '';
-    if (!value) return [];
-    const lines = [];
-    let start = 0;
-    let i = 0;
-    while (i < value.length) {
-        if (!SENTENCE_ENDING_CHARS.has(value[i]) || !isSentenceEnderAt(value, i)) {
-            i += 1;
-            continue;
-        }
-        if (i + 1 < value.length && SENTENCE_ENDING_CHARS.has(value[i + 1])) {
-            i += 1;
-            continue;
-        }
-
-        let end = i + 1;
-        while (end < value.length && CLOSING_QUOTE_CHARS.has(value[end])) {
-            end += 1;
-        }
-        const segment = value.slice(start, end);
-        if (textEndsWithAbbreviationException(segment) || textEndsWithAbbreviationPrefix(segment)) {
-            i += 1;
-            continue;
-        }
-        lines.push(segment);
-        start = end;
-        i = end;
-    }
-    if (start < value.length) {
-        lines.push(value.slice(start));
-    }
-    return lines.map((s) => s.trim()).filter(Boolean);
-}
+// Pure sentence-boundary logic lives in segmentation.js and mirrors the
+// backend. These aliases keep the orchestration code readable.
+const {
+    endsWithSentenceEnding,
+    splitIntoSentenceSegments,
+    textContinuesAbbreviation,
+    tokenTextContinuesDecimal,
+    tokenTextStartsWithClosingQuote,
+} = Segmentation;
 
 function wrapSubtitleLineBody(innerHtml, dir, lang) {
     const langAttr = lang ? ` lang="${lang}"` : '';
@@ -3931,10 +3737,7 @@ function wrapSubtitleLineBody(innerHtml, dir, lang) {
 }
 
 function assignSequenceIndex(token) {
-    if (!token || token._sequenceIndex !== undefined) {
-        return;
-    }
-    token._sequenceIndex = tokenSequenceCounter++;
+    tokenSequenceCounter = TokenStream.assignSequenceIndex(token, tokenSequenceCounter);
 }
 
 function isCloseToBottom() {
@@ -4439,7 +4242,7 @@ function buildRenderTokens() {
 function renderSubtitles() {
     const scrollState = captureScrollState();
     const tokens = buildRenderTokens();
-    tokens.forEach(assignSequenceIndex);
+    tokens.forEach((token) => assignSequenceIndex(token));
 
     if (tokens.length === 0) {
         subtitleContainer.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;

@@ -5,7 +5,39 @@ sentence: splitting at a trail-off created extra pairing handoffs whose
 misfires shifted source/translation alignment, and the fragment before an
 ellipsis translates worse on its own.
 """
+import json
+from pathlib import Path
+
+import pytest
+
 import sentence_segmentation as seg
+
+
+SHARED_CASES = json.loads(
+    (Path(__file__).parent / "fixtures" / "segmentation-cases.json").read_text(encoding="utf-8")
+)["cases"]
+
+
+@pytest.mark.parametrize("case", SHARED_CASES, ids=lambda case: case["id"])
+def test_shared_sentence_segmentation_cases(case):
+    functions = {
+        "is_sentence_ender_at": seg.is_sentence_ender_at,
+        "text_ends_with_ellipsis": seg.text_ends_with_ellipsis,
+        "text_has_unclosed_quote": seg.text_has_unclosed_quote,
+        "text_continues_abbreviation": seg.text_continues_abbreviation,
+        "token_text_continues_decimal": seg.token_text_continues_decimal,
+        "token_text_starts_with_closing_quote": seg.token_text_starts_with_closing_quote,
+        "text_ends_with_closing_quote_after_sentence_punctuation": (
+            seg.text_ends_with_closing_quote_after_sentence_punctuation
+        ),
+        "is_sentence_ending_punctuation": seg.is_sentence_ending_punctuation,
+        "split_text_at_sentence_boundaries": seg.split_text_at_sentence_boundaries,
+        "split_into_sentence_lines": seg.split_into_sentence_lines,
+    }
+    actual = functions[case["function"]](*case["args"])
+    assert actual == case["expected"]
+    if case["function"] == "split_text_at_sentence_boundaries":
+        assert "".join(actual) == case["args"][0]
 
 
 def test_ellipsis_is_not_a_sentence_ender():
