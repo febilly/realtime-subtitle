@@ -4580,9 +4580,17 @@ function renderSubtitles() {
             if (currentSentence.originalLang === null && token.language) {
                 currentSentence.originalLang = token.language;
             } else if (currentSentence.originalLang && token.language && currentSentence.originalLang !== token.language) {
-                // 语言变了，新起一句
-                currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
-                currentSentence.originalLang = token.language;
+                // 语言变了。但如果 token 与当前句共享同一个 llm_sentence_id，
+                // 这是后端配对器认定的同一个句子（例如英文句子里引用日语
+                // 「だいじょうぶです。」）——必须留在一个显示块里：拆开会产生
+                // 两个共享 id 的块，按 id 归属的 LLM 译文会在每个块下各渲染
+                // 一次（live 2026-07-12）。没有 id（非最终 token）或 id 不同
+                // （真正的新句子）时才新起一句。
+                const tokenLlmId = token.llm_sentence_id ? String(token.llm_sentence_id) : '';
+                if (!(tokenLlmId && currentSentence.sentenceId === tokenLlmId)) {
+                    currentSentence = startSentence(speaker, { requiresTranslation: tokenRequiresTranslation });
+                    currentSentence.originalLang = token.language;
+                }
             }
 
             if (!currentSentence.sentenceId && token.llm_sentence_id) {
