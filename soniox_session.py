@@ -59,6 +59,7 @@ from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
 import sentence_segmentation
 import llm_refine
 import llm_log
+import soniox_response_log
 from sentence_pairing import SentencePairer, PairedSentence
 
 logger = logging.getLogger(__name__)
@@ -2174,6 +2175,16 @@ class SonioxSession:
         loop: asyncio.AbstractEventLoop,
     ) -> tuple[int, bool, str | None]:
         """Process one Soniox response. Returns sent count, should end stream, reason."""
+        soniox_response_log.log_response(
+            res,
+            segment_mode=self._segment_mode,
+            translation_mode=self.get_translation_mode(),
+            llm_refine_mode=self._llm_refine_mode,
+            suppress_soniox_translation=bool(self._suppress_soniox_translation),
+            sent_count=sent_count,
+            all_final_token_count=len(all_final_tokens),
+            stream_key=f"{id(all_final_tokens):x}",
+        )
         if res.get("error_code") is not None:
             message = res.get("error_message", "")
             reason = f"server error {res['error_code']}: {message}"

@@ -28,6 +28,7 @@ def web_server_class():
 @pytest.mark.asyncio
 async def test_frontend_frame_log_records_every_broadcast(monkeypatch, tmp_path, web_server_class):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("FRONTEND_FRAME_LOG", "1")
     server = web_server_class(None, MagicMock())
 
@@ -44,6 +45,7 @@ async def test_frontend_frame_log_records_every_broadcast(monkeypatch, tmp_path,
 
 def test_frontend_frame_logs_use_unique_files(monkeypatch, tmp_path, web_server_class):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("FRONTEND_FRAME_LOG", "1")
 
     first = web_server_class(None, MagicMock())
@@ -58,6 +60,7 @@ def test_frontend_frame_logs_use_unique_files(monkeypatch, tmp_path, web_server_
 
 def test_frontend_frame_log_open_failure_does_not_break_server(monkeypatch, tmp_path, web_server_class):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.setenv("FRONTEND_FRAME_LOG", "1")
     logger = MagicMock()
 
@@ -68,6 +71,17 @@ def test_frontend_frame_log_open_failure_does_not_break_server(monkeypatch, tmp_
     server = web_server_class(None, logger)
 
     assert server._frontend_frame_log is None
+
+
+def test_frontend_frame_log_ignores_local_env_during_pytest(monkeypatch, tmp_path, web_server_class):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "diagnostic-test")
+    monkeypatch.setenv("FRONTEND_FRAME_LOG", "1")
+
+    server = web_server_class(None, MagicMock())
+
+    assert server._frontend_frame_log is None
+    assert not (tmp_path / "logs").exists()
 
 
 @pytest.mark.asyncio

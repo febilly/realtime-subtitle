@@ -147,6 +147,39 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     assert session.last_sent_count == 1
 
 
+def test_soniox_response_capture_includes_raw_batch_and_active_modes(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    capture = MagicMock()
+    monkeypatch.setattr(module.soniox_response_log, "log_response", capture)
+    session = module.SonioxSession(MagicMock(), MagicMock())
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = True
+    response = {
+        "error_code": 500,
+        "error_message": "diagnostic stop",
+        "tokens": [{"text": "First. Second.", "is_final": True}],
+    }
+    accumulated = [{"text": "Earlier."}]
+
+    session._process_soniox_response(response, accumulated, 7, object())
+
+    capture.assert_called_once()
+    args, context = capture.call_args
+    assert args == (response,)
+    assert context == {
+        "segment_mode": "punctuation",
+        "translation_mode": "accurate",
+        "llm_refine_mode": "translate",
+        "suppress_soniox_translation": True,
+        "sent_count": 7,
+        "all_final_token_count": 1,
+        "stream_key": f"{id(accumulated):x}",
+    }
+
+
 def _run_immediately(coro, _loop):
     asyncio.run(coro)
     future = concurrent.futures.Future()

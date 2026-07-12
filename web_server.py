@@ -72,7 +72,7 @@ class WebServer:
         self._http = None
         self.use_bundled_cjk_fonts = False
         self._frontend_frame_log = None
-        if os.getenv("FRONTEND_FRAME_LOG") == "1":
+        if os.getenv("FRONTEND_FRAME_LOG") == "1" and not os.getenv("PYTEST_CURRENT_TEST"):
             try:
                 os.makedirs(os.path.join("logs", "frontend-frames"), exist_ok=True)
                 frame_name = f"frames_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{time.time_ns()}_{secrets.token_hex(4)}.jsonl"
