@@ -1313,13 +1313,17 @@ class WebServer:
             audio_format = "pcm_s16le"
 
             loop = asyncio.get_event_loop()
-            self.session.start(
+            started = self.session.start(
                 api_key,
                 audio_format,
                 translation_mode,
                 loop,
                 translation_target_lang=self.session.get_translation_target_lang(),
             )
+            if started is False:
+                message = "Recognition session is still stopping; start request was ignored"
+                print(f"[Server] Failed to restart: {message}")
+                return web.json_response({"status": "error", "message": message}, status=409)
 
             # Translation may have been toggled on/off; keep IPC in sync.
             if self.provider_manager is not None:

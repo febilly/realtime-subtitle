@@ -71,6 +71,23 @@ describe('Hosted.Billing metering', () => {
         expect(Billing.balanceTotalRemaining({ prepaid_balance: 2, free: { pools: [{ remaining: 3 }, { unlimited: true }] } })).toBe(5);
     });
 
+    it('checks the recovery threshold across prepaid, free, and subscription quota', () => {
+        expect(Billing.hasAtLeastCredits({
+            prepaid_balance: 5,
+            free: { pools: [{ remaining: 4 }] },
+            subscriptions: [{ remaining_credits: 11 }],
+        }, 20)).toBe(true);
+        expect(Billing.hasAtLeastCredits({
+            prepaid_balance: 5,
+            free: { pools: [{ remaining: 4 }] },
+            subscriptions: [{ remaining_credits: 10.99 }],
+        }, 20)).toBe(false);
+        expect(Billing.hasAtLeastCredits({
+            prepaid_balance: 0,
+            free: { pools: [{ unlimited: true }] },
+        }, 20)).toBe(true);
+    });
+
     it('locks the current scientific-notation formatting edge for a separate fix', () => {
         expect(Billing.formatSessionCost(3e-7, 1e-7)).toBe('0');
     });

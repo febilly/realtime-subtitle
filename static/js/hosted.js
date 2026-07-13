@@ -73,6 +73,19 @@
         return total;
     }
 
+    function hasAtLeastCredits(data, minimum) {
+        if (!data) return false;
+        const required = Math.max(0, Number(minimum) || 0);
+        const pools = data.free && Array.isArray(data.free.pools) ? data.free.pools : [];
+        if (pools.some((pool) => pool.unlimited)) return true;
+        let total = balanceTotalRemaining(data);
+        const subscriptions = Array.isArray(data.subscriptions) ? data.subscriptions : [];
+        for (const subscription of subscriptions) {
+            total += Math.max(0, Number(subscription.remaining_credits || 0));
+        }
+        return total >= required;
+    }
+
     function sttRateMultiplier({
         translationProvider,
         uiTranslationMode,
@@ -206,6 +219,7 @@
         hasUsableSubscription,
         isAccountExhausted,
         balanceTotalRemaining,
+        hasAtLeastCredits,
         sttRateMultiplier,
         effectivePricePerSecond,
         estimatedSessionCost,

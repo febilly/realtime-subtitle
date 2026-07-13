@@ -43,6 +43,9 @@
             logger.warn('Recognition session disconnected:', frame.reason || 'unknown');
             call('handleHostedSessionFrame', frame);
             const state = getState() || {};
+            if (frame.code === 'api_key' && call('handleApiKeyFailure', frame) === true) {
+                return true;
+            }
             const relayKey = RELAY_ERROR_KEYS[frame.code];
             if (relayKey) {
                 if (frame.code === 'billing_exhausted') {

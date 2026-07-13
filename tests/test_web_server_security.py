@@ -248,6 +248,45 @@ class TestWebServerSecurity:
             ws.provider_manager.apply_provider.assert_not_called()
 
     @async_test
+    async def test_restart_reports_conflict_when_session_start_is_ignored(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            session = self.mock_session()
+            session.get_translation_target_lang.return_value = "zh"
+            session.get_target_langs.return_value = ("en", "zh")
+            session.start.return_value = False
+            ws = WebServer(session, self.mock_logger())
+            ws.get_api_key = MagicMock(return_value="relay-token")
+            ws.provider_manager = MagicMock()
+            ws.provider_manager.translation_mode = "one_way"
+            ws.provider_manager._sync_ipc = AsyncMock()
+            ws.broadcast_to_clients = AsyncMock()
+
+            request = AsyncMock()
+            request.json.return_value = {"auto": True}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            response_data, status = await ws.restart_handler(request)
+
+            assert status == 409
+            assert response_data == {
+                "status": "error",
+                "message": "Recognition session is still stopping; start request was ignored",
+            }
+            session.stop.assert_called_once_with()
+            session.start.assert_called_once()
+            ws.provider_manager._sync_ipc.assert_not_awaited()
+
+    @async_test
     async def test_account_web_login_url_uses_short_web_login_code(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),

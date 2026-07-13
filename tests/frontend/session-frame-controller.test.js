@@ -22,6 +22,7 @@ function createHarness(options = {}) {
         saveServerSettings: vi.fn(() => events.push('saveServer')),
         updateBalanceBarVisibility: vi.fn(() => events.push('balance')),
         openLogin: vi.fn((settings) => events.push(`login:${settings.forced}`)),
+        handleApiKeyFailure: vi.fn(() => false),
         triggerAutoRestart: vi.fn(() => events.push('restart')),
         ...(options.actions || {}),
     };
@@ -231,6 +232,22 @@ describe('SessionFrameController disconnect policy', () => {
         page.controller.handle({ type: 'session_disconnected', code: 'api_key' });
 
         expect(page.actions.openSettings).toHaveBeenCalledWith({ forced: true });
+        expect(page.actions.triggerAutoRestart).not.toHaveBeenCalled();
+    });
+
+    it('lets a recoverable API-key disconnect bypass forced settings and restart policy', () => {
+        const handleApiKeyFailure = vi.fn(() => true);
+        const page = createHarness({ actions: { handleApiKeyFailure } });
+        const frame = {
+            type: 'session_disconnected',
+            code: 'api_key',
+            reason: 'Error: 403 - Temporary API key session duration limit exceeded.',
+        };
+
+        page.controller.handle(frame);
+
+        expect(handleApiKeyFailure).toHaveBeenCalledWith(frame);
+        expect(page.actions.openSettings).not.toHaveBeenCalled();
         expect(page.actions.triggerAutoRestart).not.toHaveBeenCalled();
     });
 

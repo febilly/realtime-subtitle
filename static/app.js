@@ -639,6 +639,58 @@ const appShellController = AppShellController.create({
 });
 
 let checkingGeminiQuota = false;
+let handlingTemporaryKeySessionExpiry = false;
+const TEMPORARY_KEY_SESSION_LIMIT_TEXT = 'temporary api key session duration limit exceeded';
+const MINIMUM_RECOVERY_CREDITS = 20;
+
+function isTemporaryKeySessionLimit(frame = {}) {
+    const detail = `${frame.message || ''} ${frame.reason || ''}`.toLowerCase();
+    return detail.includes(TEMPORARY_KEY_SESSION_LIMIT_TEXT);
+}
+
+async function recoverFromTemporaryKeySessionExpiry() {
+    if (handlingTemporaryKeySessionExpiry) return;
+    handlingTemporaryKeySessionExpiry = true;
+    try {
+        const balance = await hostedBalance.fetchProviderBalance(translationProvider);
+        if (!balance) {
+            showToast(t('connection_error_try_again'), true);
+            return;
+        }
+        if (!Hosted.Billing.hasAtLeastCredits(balance, MINIMUM_RECOVERY_CREDITS)) {
+            showToast(t('voice_model_balance_insufficient', {
+                minimum: MINIMUM_RECOVERY_CREDITS,
+            }), true);
+            return;
+        }
+
+        const fastModeApplied = await translationModeController.setTranslationUiMode('fast', {
+            restartIfNeeded: false,
+        });
+        settingsPorts.renderTranslationModePicker();
+        if (!fastModeApplied) {
+            showToast(t('connection_error_try_again'), true);
+            return;
+        }
+
+        showToast(t('translation_mode_fallback_toast'), false);
+        const restarted = await controlPorts.restartRecognition({ auto: true });
+        if (!restarted) showToast(t('connection_error_try_again'), true);
+    } finally {
+        handlingTemporaryKeySessionExpiry = false;
+    }
+}
+
+function handleApiKeyFailure(frame) {
+    if (
+        settingsPorts.getConnectionMode() !== 'relay'
+        || !isTemporaryKeySessionLimit(frame)
+    ) {
+        return false;
+    }
+    void recoverFromTemporaryKeySessionExpiry();
+    return true;
+}
 
 function showStandardBillingExhaustedToast() {
     showToast(t('relay_err_billing_exhausted'), true, {
@@ -662,6 +714,7 @@ async function switchToGeminiAfterQuotaExhaustion() {
         showToast(t('connection_error_try_again'), true);
         return false;
     }
+    subtitleRuntimeController.clear();
     const result = await settingsSetup.push('gemini', null, {
         silent: true,
         mode: 'relay',
@@ -674,8 +727,6 @@ async function switchToGeminiAfterQuotaExhaustion() {
     const providerSettings = settingsPorts.loadProviderSettings();
     providerSettings.providerOverride = 'gemini';
     settingsPorts.saveProviderSettings(providerSettings);
-    subtitleRuntimeController.clear();
-    void controlPorts.restartRecognition({ auto: true });
     return true;
 }
 
@@ -719,6 +770,7 @@ const sessionFrameController = SessionFrameController.create({
         updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
         openLogin: hostedPorts.openLogin,
         handleBillingExhausted,
+        handleApiKeyFailure,
         triggerAutoRestart: controlPorts.triggerAutoRestart,
     },
 });
@@ -731,6 +783,7 @@ const runtimeFrameController = RuntimeFrameController.create({
         syncIpcStatus: appShellController.syncIpcStatus,
         displayErrorMessage,
         openSettings: (options) => settingsFlowController.open(options),
+        handleApiKeyFailure,
         addLlmCost: (credits) => hostedBalance.addLlmCost(credits),
         setTranslationUiMode: controlPorts.setTranslationUiMode,
         renderTranslationModePicker: settingsPorts.renderTranslationModePicker,

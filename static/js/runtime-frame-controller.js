@@ -39,6 +39,9 @@
                 return true;
             }
             if (frame.type === 'error') {
+                if (frame.code === 'api_key' && call('handleApiKeyFailure', frame) === true) {
+                    return true;
+                }
                 call('displayErrorMessage', frame.message);
                 if (frame.code === 'api_key' && !(getState() || {}).lockManualControls) {
                     call('openSettings', { forced: true });
@@ -52,7 +55,7 @@
             if (frame.type === 'translation_mode_fallback') {
                 call('setTranslationUiMode', 'fast', { restartIfNeeded: false });
                 call('renderTranslationModePicker');
-                call('showToast', t('translation_mode_fallback_toast'), true);
+                call('showToast', t('translation_mode_fallback_toast'), false);
                 if (frame.needs_restart) call('restartRecognition', { auto: true });
                 return true;
             }

@@ -6,6 +6,7 @@ const ACTION_NAMES = [
     'syncIpcStatus',
     'displayErrorMessage',
     'openSettings',
+    'handleApiKeyFailure',
     'addLlmCost',
     'setTranslationUiMode',
     'renderTranslationModePicker',
@@ -98,6 +99,17 @@ describe('RuntimeFrameController direct runtime delegation', () => {
         expect(other.actions.openSettings).not.toHaveBeenCalled();
     });
 
+    it('lets a recoverable API-key failure bypass the error overlay and forced settings', () => {
+        const handleApiKeyFailure = vi.fn(() => true);
+        const page = createHarness({ actions: { handleApiKeyFailure } });
+        const frame = { type: 'error', code: 'api_key', message: 'temporary session expired' };
+
+        expect(page.controller.handle(frame)).toBe(true);
+        expect(handleApiKeyFailure).toHaveBeenCalledWith(frame);
+        expect(page.actions.displayErrorMessage).not.toHaveBeenCalled();
+        expect(page.actions.openSettings).not.toHaveBeenCalled();
+    });
+
     it('forwards LLM cost credits to hosted balance', () => {
         const page = createHarness();
 
@@ -118,7 +130,7 @@ describe('RuntimeFrameController direct runtime delegation', () => {
         );
         expect(page.actions.renderTranslationModePicker).toHaveBeenCalledOnce();
         expect(page.actions.showToast).toHaveBeenCalledWith(
-            'label:translation_mode_fallback_toast', true,
+            'label:translation_mode_fallback_toast', false,
         );
         expect(page.actions.restartRecognition).toHaveBeenCalledWith({ auto: true });
         expect(page.events.map((event) => event.split(':')[0])).toEqual([
