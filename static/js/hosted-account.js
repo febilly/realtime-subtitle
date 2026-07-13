@@ -3,6 +3,7 @@
 
     const INVITE_REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
     const INVITE_REMINDER_STORAGE_KEY = 'inviteRewardReminderLastShown';
+    const TICKET_UNREAD_POLL_INTERVAL_MS = 60 * 1000;
 
     function create(options = {}) {
         const documentRef = options.document || root.document;
@@ -41,6 +42,9 @@
         const openUserWebButton = elements.openUserWebButton || null;
 
         let initialized = false;
+        let ticketUnreadCheckPromise = null;
+        let ticketUnreadPollTimer = null;
+        let lastNotifiedTicketUnreadSignature = '';
         const listeners = [];
 
         function runtimeState() {
@@ -117,6 +121,98 @@
             } catch (error) {
                 return false;
             }
+        }
+
+        async function openUserWeb(nextPath = '') {
+            const suffix = nextPath ? `?next=${encodeURIComponent(nextPath)}` : '';
+            try {
+                const response = await fetchRef(`/account/web-login-url${suffix}`);
+                const data = await response.json().catch(() => ({}));
+                const url = data && data.url;
+                if (!response.ok || !url) {
+                    const message = data && (data.detail || data.message);
+                    call('showToast', localizeBackendMessage(message || t('account_open_web_failed')), true);
+                    return false;
+                }
+                try {
+                    windowRef.open(url, '_blank', 'noopener,noreferrer');
+                } catch (error) {
+                    if (navigatorRef.clipboard) {
+                        navigatorRef.clipboard.writeText(url).catch(() => {});
+                    }
+                    call('showToast', url);
+                }
+                return true;
+            } catch (error) {
+                call('showToast', String(error), true);
+                return false;
+            }
+        }
+
+        function ticketUnreadSignature(data) {
+            const tickets = Array.isArray(data && data.tickets) ? data.tickets : [];
+            const entries = tickets.map((ticket) => [
+                String((ticket && ticket.id) || ''),
+                String((ticket && ticket.read_cursor) || ''),
+                String((ticket && ticket.unread_type) || ''),
+                Number((ticket && ticket.unread_count) || 0),
+            ]).sort((left, right) => left[0].localeCompare(right[0]));
+            return JSON.stringify(entries.length ? entries : [
+                Number((data && data.admin_initiated_count) || 0),
+                Number((data && data.admin_reply_count) || 0),
+                Number((data && data.unread_activity_count) || 0),
+            ]);
+        }
+
+        async function checkTicketUnread() {
+            if (!isSignedIn()) return false;
+            try {
+                const response = await fetchRef('/account/tickets/unread-summary');
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data || typeof data !== 'object') return false;
+                const unreadCount = Number(data.unread_activity_count) || 0;
+                if (unreadCount <= 0) {
+                    lastNotifiedTicketUnreadSignature = '';
+                    return false;
+                }
+                const signature = ticketUnreadSignature(data);
+                if (signature === lastNotifiedTicketUnreadSignature) return false;
+                lastNotifiedTicketUnreadSignature = signature;
+                const initiatedCount = Number(data.admin_initiated_count) || 0;
+                const replyCount = Number(data.admin_reply_count) || 0;
+                const reminderKey = initiatedCount > 0 && replyCount > 0
+                    ? 'ticket_unread_mixed_reminder'
+                    : initiatedCount > 0
+                        ? 'ticket_admin_initiated_reminder'
+                        : 'ticket_reply_reminder';
+                call('showToast', t(reminderKey), false, {
+                    timeoutMs: 10000,
+                    actionLabel: t('open_tickets'),
+                    onAction: () => { void openUserWeb('/tickets'); },
+                });
+                return true;
+            } catch (error) {
+                return false;
+            }
+        }
+
+        function maybeShowTicketUnreadReminder() {
+            if (!isSignedIn()) return Promise.resolve(false);
+            if (!ticketUnreadCheckPromise) {
+                ticketUnreadCheckPromise = checkTicketUnread().finally(() => {
+                    ticketUnreadCheckPromise = null;
+                });
+            }
+            return ticketUnreadCheckPromise;
+        }
+
+        function startTicketUnreadPolling() {
+            if (ticketUnreadPollTimer === null && typeof windowRef.setInterval === 'function') {
+                ticketUnreadPollTimer = windowRef.setInterval(() => {
+                    void maybeShowTicketUnreadReminder();
+                }, TICKET_UNREAD_POLL_INTERVAL_MS);
+            }
+            return maybeShowTicketUnreadReminder();
         }
 
         function updateBalance() {
@@ -242,24 +338,7 @@
         async function handleOpenUserWeb() {
             if (openUserWebButton) openUserWebButton.disabled = true;
             try {
-                const response = await fetchRef('/account/web-login-url');
-                const data = await response.json().catch(() => ({}));
-                const url = data && data.url;
-                if (!response.ok || !url) {
-                    const message = data && (data.detail || data.message);
-                    call('showToast', localizeBackendMessage(message || t('account_open_web_failed')), true);
-                    return;
-                }
-                try {
-                    windowRef.open(url, '_blank', 'noopener,noreferrer');
-                } catch (error) {
-                    if (navigatorRef.clipboard) {
-                        navigatorRef.clipboard.writeText(url).catch(() => {});
-                    }
-                    call('showToast', url);
-                }
-            } catch (error) {
-                call('showToast', String(error), true);
+                await openUserWeb();
             } finally {
                 if (openUserWebButton) openUserWebButton.disabled = false;
             }
@@ -327,6 +406,10 @@
             for (const [element, type, listener] of listeners.splice(0)) {
                 element.removeEventListener(type, listener);
             }
+            if (ticketUnreadPollTimer !== null && typeof windowRef.clearInterval === 'function') {
+                windowRef.clearInterval(ticketUnreadPollTimer);
+                ticketUnreadPollTimer = null;
+            }
             initialized = false;
         }
 
@@ -339,13 +422,20 @@
             init,
             isSignedIn,
             maybeShowInviteReminder,
+            maybeShowTicketUnreadReminder,
+            startTicketUnreadPolling,
             successfulInviteCount,
             updateBalance,
             updateSection,
         };
     }
 
-    const api = { INVITE_REMINDER_COOLDOWN_MS, INVITE_REMINDER_STORAGE_KEY, create };
+    const api = {
+        INVITE_REMINDER_COOLDOWN_MS,
+        INVITE_REMINDER_STORAGE_KEY,
+        TICKET_UNREAD_POLL_INTERVAL_MS,
+        create,
+    };
     root.HostedAccount = api;
     if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

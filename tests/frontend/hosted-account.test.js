@@ -281,6 +281,125 @@ describe('HostedAccount actions', () => {
         page.dom.window.close();
     });
 
+    it('shows the same unread admin reply once per launch and opens the ticket page', async () => {
+        const unread = {
+            unread_ticket_count: 1,
+            unread_activity_count: 1,
+            admin_initiated_count: 0,
+            admin_reply_count: 1,
+            tickets: [{
+                id: 'ticket_one',
+                read_cursor: 'event_admin_1',
+                unread_type: 'admin_reply',
+                unread_count: 1,
+            }],
+        };
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response(unread))
+            .mockResolvedValueOnce(response(unread))
+            .mockResolvedValueOnce(response({ url: 'https://account.example/tickets' }));
+        const page = setup({ fetch });
+
+        await expect(page.controller.maybeShowTicketUnreadReminder()).resolves.toBe(true);
+        await expect(page.controller.maybeShowTicketUnreadReminder()).resolves.toBe(false);
+        expect(fetch).toHaveBeenNthCalledWith(1, '/account/tickets/unread-summary');
+        expect(fetch).toHaveBeenNthCalledWith(2, '/account/tickets/unread-summary');
+        expect(page.actions.showToast).toHaveBeenCalledWith(
+            'ticket_reply_reminder',
+            false,
+            expect.objectContaining({ timeoutMs: 10000, actionLabel: 'open_tickets' }),
+        );
+
+        page.actions.showToast.mock.calls[0][2].onAction();
+        await vi.waitFor(() => {
+            expect(fetch).toHaveBeenNthCalledWith(3, '/account/web-login-url?next=%2Ftickets');
+            expect(page.openWindow).toHaveBeenCalledWith(
+                'https://account.example/tickets',
+                '_blank',
+                'noopener,noreferrer',
+            );
+        });
+        expect(fetch).toHaveBeenCalledTimes(3);
+        page.dom.window.close();
+    });
+
+    it('distinguishes an administrator-initiated ticket from a reply', async () => {
+        const fetch = vi.fn().mockResolvedValue(response({
+            unread_ticket_count: 1,
+            unread_activity_count: 1,
+            admin_initiated_count: 1,
+            admin_reply_count: 0,
+            tickets: [{
+                id: 'ticket_admin',
+                read_cursor: 'event_admin_2',
+                unread_type: 'admin_initiated',
+                unread_count: 1,
+            }],
+        }));
+        const page = setup({ fetch });
+
+        await expect(page.controller.maybeShowTicketUnreadReminder()).resolves.toBe(true);
+        expect(page.actions.showToast).toHaveBeenCalledWith(
+            'ticket_admin_initiated_reminder',
+            false,
+            expect.objectContaining({ actionLabel: 'open_tickets' }),
+        );
+        page.dom.window.close();
+    });
+
+    it('notifies again when the server exposes a newer unread cursor', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response({
+                unread_activity_count: 1,
+                admin_initiated_count: 0,
+                admin_reply_count: 1,
+                tickets: [{ id: 'ticket_one', read_cursor: 'event_one', unread_count: 1 }],
+            }))
+            .mockResolvedValueOnce(response({
+                unread_activity_count: 2,
+                admin_initiated_count: 1,
+                admin_reply_count: 1,
+                tickets: [{ id: 'ticket_one', read_cursor: 'event_two', unread_count: 2 }],
+            }));
+        const page = setup({ fetch });
+
+        await expect(page.controller.maybeShowTicketUnreadReminder()).resolves.toBe(true);
+        await expect(page.controller.maybeShowTicketUnreadReminder()).resolves.toBe(true);
+        expect(page.actions.showToast).toHaveBeenNthCalledWith(
+            2,
+            'ticket_unread_mixed_reminder',
+            false,
+            expect.objectContaining({ actionLabel: 'open_tickets' }),
+        );
+        page.dom.window.close();
+    });
+
+    it('polls unread state every minute and stops polling when destroyed', async () => {
+        vi.useFakeTimers();
+        try {
+            const fetch = vi.fn().mockResolvedValue(response({
+                unread_ticket_count: 0,
+                unread_activity_count: 0,
+                admin_initiated_count: 0,
+                admin_reply_count: 0,
+                tickets: [],
+            }));
+            const page = setup({ fetch });
+
+            await page.controller.startTicketUnreadPolling();
+            expect(fetch).toHaveBeenCalledTimes(1);
+            await vi.advanceTimersByTimeAsync(HostedAccount.TICKET_UNREAD_POLL_INTERVAL_MS);
+            expect(fetch).toHaveBeenCalledTimes(2);
+
+            page.controller.destroy();
+            await vi.advanceTimersByTimeAsync(HostedAccount.TICKET_UNREAD_POLL_INTERVAL_MS);
+            expect(fetch).toHaveBeenCalledTimes(2);
+            page.dom.window.close();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('keeps credentials when logout is cancelled', async () => {
         const page = setup({ showConfirm: vi.fn().mockResolvedValue(false) });
 

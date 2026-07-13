@@ -904,7 +904,49 @@ class WebServer:
         base = config.relay_rest_url("/app/")
         from urllib.parse import quote
         url = f"{base}#/login?web_login_code={quote(str(data['web_login_code']))}"
+        next_path = str(request.query.get("next") or "").strip()
+        if next_path in {"/invite", "/tickets"}:
+            url += f"&next={quote(next_path, safe='')}"
         return web.json_response({"url": url, "expires_at": data.get("expires_at")})
+
+    async def account_tickets_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        status, data = await self._server_request("GET", "/me/tickets", token=token)
+        return web.json_response(data, status=status)
+
+    async def account_ticket_unread_summary_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        status, data = await self._server_request("GET", "/me/tickets/unread-summary", token=token)
+        return web.json_response(data, status=status)
+
+    async def account_ticket_detail_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        ticket_id = str(request.match_info.get("ticket_id") or "").strip()
+        if not ticket_id:
+            return web.json_response({"status": "error", "message": "Missing ticket ID"}, status=400)
+        from urllib.parse import quote
+        status, data = await self._server_request(
+            "GET", f"/me/tickets/{quote(ticket_id, safe='')}", token=token
+        )
+        return web.json_response(data, status=status)
 
     async def account_redeem_handler(self, request):
         if not self._is_loopback_request(request):
@@ -1708,6 +1750,9 @@ class WebServer:
         app.router.add_get('/account/usage', self.account_usage_handler)
         app.router.add_get('/account/invite', self.account_invite_handler)
         app.router.add_get('/account/web-login-url', self.account_web_login_url_handler)
+        app.router.add_get('/account/tickets', self.account_tickets_handler)
+        app.router.add_get('/account/tickets/unread-summary', self.account_ticket_unread_summary_handler)
+        app.router.add_get('/account/tickets/{ticket_id}', self.account_ticket_detail_handler)
         app.router.add_post('/account/redeem', self.account_redeem_handler)
         app.router.add_post('/account/logout', self.account_logout_handler)
         app.router.add_post('/restart', self.restart_handler)

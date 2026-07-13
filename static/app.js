@@ -1205,6 +1205,7 @@ const hostedController = Hosted.createController({
     maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
     updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
     maybeShowInviteReminder: () => hostedAccount.maybeShowInviteReminder(),
+    startTicketUnreadPolling: () => hostedAccount.startTicketUnreadPolling(),
     connect: webSocketController.connect,
     sessionCostResume: hostedPorts.sessionCostResume,
     sessionCostPause: hostedPorts.sessionCostPause,

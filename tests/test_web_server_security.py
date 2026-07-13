@@ -2,7 +2,7 @@ import json
 import sys
 import os
 import asyncio
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, AsyncMock, call, patch
 import pytest
 
 # Add root to sys.path
@@ -273,6 +273,7 @@ class TestWebServerSecurity:
 
             request = AsyncMock()
             request.remote = "127.0.0.1"
+            request.query = {}
             web.json_response.side_effect = lambda data, status=200: (data, status)
 
             response_data, status = await ws.account_web_login_url_handler(request)
@@ -280,6 +281,91 @@ class TestWebServerSecurity:
             assert status == 200
             assert response_data["url"] == "https://subtitle.example/app/#/login?web_login_code=WEB-123"
             ws._server_request.assert_awaited_once_with("POST", "/me/web-login-code", token="ss_token")
+
+    @async_test
+    async def test_account_web_login_url_can_open_allowed_pages_after_login(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import config
+            config.RELAY_AVAILABLE = True
+            config.SUBTITLE_SERVER_URL = "https://subtitle.example"
+            config.relay_rest_url.side_effect = lambda path="": "https://subtitle.example" + (path if str(path).startswith("/") else "/" + str(path))
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            manager = self.mock_manager()
+            manager.relay_token = "ss_token"
+            ws.provider_manager = manager
+            ws._server_request = AsyncMock(return_value=(200, {
+                "web_login_code": "WEB-123",
+                "expires_at": "2026-06-22T00:01:00.000Z",
+            }))
+
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            for next_path in ("/invite", "/tickets"):
+                request = AsyncMock()
+                request.remote = "127.0.0.1"
+                request.query = {"next": next_path}
+
+                response_data, status = await ws.account_web_login_url_handler(request)
+
+                assert status == 200
+                assert response_data["url"] == (
+                    "https://subtitle.example/app/#/login?web_login_code=WEB-123"
+                    f"&next=%2F{next_path.lstrip('/')}"
+                )
+
+    @async_test
+    async def test_account_ticket_proxies_use_the_saved_relay_token(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import config
+            config.RELAY_AVAILABLE = True
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws = WebServer(self.mock_session(), self.mock_logger())
+            manager = self.mock_manager()
+            manager.relay_token = "ss_token"
+            ws.provider_manager = manager
+            ws._server_request = AsyncMock(side_effect=[
+                (200, {"tickets": [{"id": "ticket_abc"}]}),
+                (200, {"unread_ticket_count": 1, "admin_initiated_count": 1}),
+                (200, {"messages": [{"sender": "admin"}]}),
+            ])
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            list_request = AsyncMock()
+            list_request.remote = "127.0.0.1"
+            detail_request = AsyncMock()
+            detail_request.remote = "127.0.0.1"
+            detail_request.match_info = {"ticket_id": "ticket_abc"}
+
+            list_data, list_status = await ws.account_tickets_handler(list_request)
+            unread_data, unread_status = await ws.account_ticket_unread_summary_handler(list_request)
+            detail_data, detail_status = await ws.account_ticket_detail_handler(detail_request)
+
+            assert list_status == 200
+            assert list_data["tickets"][0]["id"] == "ticket_abc"
+            assert unread_status == 200
+            assert unread_data["admin_initiated_count"] == 1
+            assert detail_status == 200
+            assert detail_data["messages"][0]["sender"] == "admin"
+            assert ws._server_request.await_args_list == [
+                call("GET", "/me/tickets", token="ss_token"),
+                call("GET", "/me/tickets/unread-summary", token="ss_token"),
+                call("GET", "/me/tickets/ticket_abc", token="ss_token"),
+            ]
 
     @async_test
     async def test_ui_config_exposes_client_version_policy(self):

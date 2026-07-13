@@ -83,7 +83,8 @@ describe('Hosted controller orchestration', () => {
             'preopenHostedLoginIfNeeded', 'fetchUiConfig', 'refreshPreopenedHostedLogin',
             'maybeRunFirstLaunchFlow', 'ensureHostedVersionAllowed', 'syncProviderFromStorage',
             'fetchLlmRefineStatus', 'fetchApiKeyStatus', 'fetchOscTranslationStatus',
-            'maybeForceOpenSettings', 'updateBalanceBarVisibility', 'maybeShowInviteReminder', 'connect',
+            'maybeForceOpenSettings', 'updateBalanceBarVisibility', 'maybeShowInviteReminder',
+            'startTicketUnreadPolling', 'connect',
         ];
         const actions = Object.fromEntries(names.map((name) => [name, () => { order.push(name); }]));
         await createController(actions).startup();
@@ -92,7 +93,7 @@ describe('Hosted controller orchestration', () => {
             'maybeRunFirstLaunchFlow', 'ensureHostedVersionAllowed', 'refreshPreopenedHostedLogin',
             'syncProviderFromStorage', 'fetchLlmRefineStatus', 'fetchApiKeyStatus',
             'fetchOscTranslationStatus', 'maybeForceOpenSettings', 'updateBalanceBarVisibility',
-            'maybeShowInviteReminder', 'connect',
+            'maybeShowInviteReminder', 'startTicketUnreadPolling', 'connect',
         ]);
     });
 
