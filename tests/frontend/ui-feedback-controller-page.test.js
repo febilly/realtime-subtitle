@@ -74,8 +74,9 @@ describe('full-page UI feedback controller wiring', () => {
             });
 
             const toast = page.document.getElementById('toast');
+            const toastItem = toast.querySelector('.toast');
             expect(toast.hidden).toBe(false);
-            expect(toast.classList.contains('error')).toBe(true);
+            expect(toastItem.classList.contains('error')).toBe(true);
             expect(toast.textContent).toContain('Credits or free quota exhausted.');
             const action = toast.querySelector('.toast-action');
             expect(action.textContent).toBe('Open settings');
@@ -83,6 +84,7 @@ describe('full-page UI feedback controller wiring', () => {
             action.click();
 
             expect(toast.hidden).toBe(true);
+            expect(toast.querySelectorAll('.toast')).toHaveLength(0);
             expect(page.document.getElementById('settingsPanel').hidden).toBe(false);
         } finally {
             page.close();

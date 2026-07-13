@@ -1,11 +1,13 @@
 (function (root) {
     'use strict';
 
+    const DEFAULT_TOAST_TIMEOUT_MS = 10000;
+
     function create(options = {}) {
         const documentRef = options.document || root.document;
         const fetchImpl = options.fetch || root.fetch;
         const subtitleContainer = options.subtitleContainer || null;
-        const toast = options.toast || null;
+        const toastContainer = options.toast || null;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const localizeBackendMessage = typeof options.localizeBackendMessage === 'function'
             ? options.localizeBackendMessage
@@ -16,26 +18,37 @@
         const logger = options.console || root.console || { error() {} };
         const schedule = options.setTimeout || ((...args) => root.setTimeout(...args));
         const cancel = options.clearTimeout || ((...args) => root.clearTimeout(...args));
-        let toastTimer = null;
+        const activeToasts = new Map();
 
         function hideToast() {
-            if (!toast) return;
-            toast.hidden = true;
-            if (toastTimer) {
-                cancel(toastTimer);
-                toastTimer = null;
+            if (!toastContainer) return;
+            for (const entry of activeToasts.values()) {
+                if (entry.timer) cancel(entry.timer);
+                entry.node.remove();
             }
+            activeToasts.clear();
+            toastContainer.hidden = true;
+        }
+
+        function dismissToast(messageKey) {
+            const entry = activeToasts.get(messageKey);
+            if (!entry) return;
+            if (entry.timer) cancel(entry.timer);
+            entry.node.remove();
+            activeToasts.delete(messageKey);
+            toastContainer.hidden = activeToasts.size === 0;
         }
 
         function showToast(message, isError = false, toastOptions = {}) {
-            if (!toast) return;
-            if (toastTimer) {
-                cancel(toastTimer);
-                toastTimer = null;
-            }
-            toast.textContent = '';
+            if (!toastContainer) return;
+            const messageText = String(message ?? '');
+            dismissToast(messageText);
+
+            const toast = documentRef.createElement('div');
+            toast.className = 'toast';
+            toast.setAttribute('role', isError ? 'alert' : 'status');
             const text = documentRef.createElement('span');
-            text.textContent = message;
+            text.textContent = messageText;
             toast.appendChild(text);
             if (toastOptions.actionLabel && typeof toastOptions.onAction === 'function') {
                 const action = documentRef.createElement('button');
@@ -43,7 +56,7 @@
                 action.className = 'toast-action';
                 action.textContent = toastOptions.actionLabel;
                 action.addEventListener('click', () => {
-                    toast.hidden = true;
+                    dismissToast(messageText);
                     toastOptions.onAction();
                 });
                 toast.appendChild(action);
@@ -58,15 +71,23 @@
             close.className = 'toast-close';
             close.setAttribute('aria-label', t('close'));
             close.setAttribute('title', t('close'));
-            close.addEventListener('click', hideToast);
+            close.addEventListener('click', () => dismissToast(messageText));
             toast.appendChild(close);
             toast.classList.toggle('error', !!isError);
-            toast.hidden = false;
+            toastContainer.appendChild(toast);
+            const entry = { node: toast, timer: null };
+            activeToasts.set(messageText, entry);
+            toastContainer.hidden = false;
             if (isError) return;
-            toastTimer = schedule(() => {
-                toast.hidden = true;
-                toastTimer = null;
-            }, Number(toastOptions.timeoutMs) || 4000);
+            const requestedTimeoutMs = Number(toastOptions.timeoutMs);
+            const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
+                ? requestedTimeoutMs
+                : DEFAULT_TOAST_TIMEOUT_MS;
+            entry.timer = schedule(() => {
+                if (activeToasts.get(messageText) !== entry) return;
+                entry.timer = null;
+                dismissToast(messageText);
+            }, timeoutMs);
         }
 
         function displayErrorMessage(message) {
@@ -106,7 +127,7 @@
         };
     }
 
-    const api = { create };
+    const api = { DEFAULT_TOAST_TIMEOUT_MS, create };
     root.UiFeedbackController = api;
     if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

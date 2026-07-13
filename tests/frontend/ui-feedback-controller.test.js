@@ -69,55 +69,78 @@ describe('UiFeedbackController toast lifecycle', () => {
 
         page.controller.showToast('<strong>unsafe</strong>', true);
 
+        const toast = page.toast.querySelector('.toast');
         expect(page.toast.hidden).toBe(false);
-        expect(page.toast.classList.contains('error')).toBe(true);
-        expect(page.toast.textContent).toBe('<strong>unsafe</strong>');
-        expect(page.toast.querySelector('strong')).toBeNull();
-        expect(page.toast.querySelector('.toast-close')).not.toBeNull();
+        expect(toast.classList.contains('error')).toBe(true);
+        expect(toast.textContent).toBe('<strong>unsafe</strong>');
+        expect(toast.querySelector('strong')).toBeNull();
+        expect(toast.querySelector('.toast-close')).not.toBeNull();
         expect(page.schedule).not.toHaveBeenCalled();
 
-        page.toast.querySelector('.toast-close').click();
+        toast.querySelector('.toast-close').click();
         expect(page.toast.hidden).toBe(true);
     });
 
-    it('replaces the previous timer and preserves timeout fallback semantics', () => {
+    it('keeps notifications with different content and gives each its own timer', () => {
         const page = createHarness();
         page.controller.showToast('first', false, { timeoutMs: 250 });
-        const firstTimer = page.timerTokens[0];
-
         page.controller.showToast('second', false, { timeoutMs: 0 });
 
-        expect(page.cancel).toHaveBeenCalledOnce();
-        expect(page.cancel).toHaveBeenCalledWith(firstTimer);
+        expect(page.cancel).not.toHaveBeenCalled();
         expect(page.schedule).toHaveBeenNthCalledWith(1, expect.any(Function), 250);
-        expect(page.schedule).toHaveBeenNthCalledWith(2, expect.any(Function), 4000);
-        expect(page.toast.textContent).toBe('second');
+        expect(page.schedule).toHaveBeenNthCalledWith(
+            2,
+            expect.any(Function),
+            UiFeedbackController.DEFAULT_TOAST_TIMEOUT_MS,
+        );
+        expect([...page.toast.querySelectorAll('.toast')].map((item) => item.textContent))
+            .toEqual(['first', 'second']);
     });
 
-    it('lets any new notification replace a persistent error toast', () => {
+    it('replaces an older notification when the new content is identical', () => {
         const page = createHarness();
-        page.controller.showToast('old error', true);
-
-        page.controller.showToast('new notice', false, { timeoutMs: 250 });
-
-        expect(page.toast.textContent).toBe('new notice');
-        expect(page.toast.classList.contains('error')).toBe(false);
-        expect(page.toast.hidden).toBe(false);
-        expect(page.schedule).toHaveBeenCalledOnce();
-        expect(page.schedule).toHaveBeenCalledWith(expect.any(Function), 250);
-    });
-
-    it('lets a persistent error replace a timed notification and cancels its timer', () => {
-        const page = createHarness();
-        page.controller.showToast('old notice', false, { timeoutMs: 250 });
+        page.controller.showToast('same message', false, { timeoutMs: 250 });
+        const oldToast = page.toast.querySelector('.toast');
         const oldTimer = page.timerTokens[0];
 
-        page.controller.showToast('new error', true);
+        page.controller.showToast('same message', true);
 
+        const toasts = page.toast.querySelectorAll('.toast');
+        expect(toasts).toHaveLength(1);
+        expect(toasts[0]).not.toBe(oldToast);
+        expect(toasts[0].textContent).toBe('same message');
+        expect(toasts[0].classList.contains('error')).toBe(true);
         expect(page.cancel).toHaveBeenCalledWith(oldTimer);
         expect(page.schedule).toHaveBeenCalledOnce();
-        expect(page.toast.textContent).toBe('new error');
-        expect(page.toast.classList.contains('error')).toBe(true);
+        expect(page.toast.hidden).toBe(false);
+    });
+
+    it('does not let a replaced notification timer dismiss its newer replacement', () => {
+        const page = createHarness();
+        page.controller.showToast('same message', false, { timeoutMs: 250 });
+        const oldTimer = page.timerTokens[0];
+        page.controller.showToast('same message', false, { timeoutMs: 500 });
+
+        oldTimer.callback();
+
+        expect(page.toast.hidden).toBe(false);
+        expect(page.toast.querySelectorAll('.toast')).toHaveLength(1);
+        expect(page.toast.textContent).toBe('same message');
+    });
+
+    it('keeps different persistent and timed notifications visible together', () => {
+        const page = createHarness();
+        page.controller.showToast('old notice', false, { timeoutMs: 250 });
+        page.controller.showToast('new error', true);
+
+        const toasts = page.toast.querySelectorAll('.toast');
+        expect(toasts).toHaveLength(2);
+        expect(toasts[0].textContent).toBe('old notice');
+        expect(toasts[0].classList.contains('error')).toBe(false);
+        expect(toasts[1].textContent).toBe('new error');
+        expect(toasts[1].classList.contains('error')).toBe(true);
+        expect(page.cancel).not.toHaveBeenCalled();
+        expect(page.schedule).toHaveBeenCalledOnce();
         expect(page.toast.hidden).toBe(false);
     });
 
@@ -158,6 +181,20 @@ describe('UiFeedbackController toast lifecycle', () => {
 
         expect(page.toast.hidden).toBe(true);
         expect(page.cancel).toHaveBeenCalledWith(timer);
+    });
+
+    it('removes only the selected notification when several are visible', () => {
+        const page = createHarness();
+        page.controller.showToast('first', false, { timeoutMs: 250 });
+        page.controller.showToast('second', false, { timeoutMs: 500 });
+
+        page.toast.querySelector('.toast .toast-close').click();
+
+        expect(page.toast.hidden).toBe(false);
+        expect([...page.toast.querySelectorAll('.toast')].map((item) => item.textContent))
+            .toEqual(['second']);
+        expect(page.cancel).toHaveBeenCalledWith(page.timerTokens[0]);
+        expect(page.cancel).not.toHaveBeenCalledWith(page.timerTokens[1]);
     });
 });
 

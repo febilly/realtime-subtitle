@@ -1028,11 +1028,26 @@ body.dark-theme .confirm-dialog {
     gap: 10px;
 }
 
-.toast {
+.toast-container {
     position: fixed;
     left: 16px;
     bottom: 16px;
     z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: min(420px, calc(100vw - 80px));
+    pointer-events: none;
+}
+
+.toast-container[hidden] {
+    display: none;
+}
+
+.toast {
+    position: relative;
+    width: 100%;
+    box-sizing: border-box;
     max-width: min(420px, calc(100vw - 80px));
     border-radius: 8px;
     padding: 10px 12px;
@@ -1041,6 +1056,7 @@ body.dark-theme .confirm-dialog {
     font-size: 14px;
     box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
     padding-right: 38px;
+    pointer-events: auto;
 }
 
 .toast.error {
