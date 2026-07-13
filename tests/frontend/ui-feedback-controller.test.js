@@ -64,7 +64,7 @@ afterEach(() => {
 });
 
 describe('UiFeedbackController toast lifecycle', () => {
-    it('renders toast text safely and applies error state with the default timeout', () => {
+    it('renders error text safely and keeps the toast visible until manually closed', () => {
         const page = createHarness();
 
         page.controller.showToast('<strong>unsafe</strong>', true);
@@ -74,9 +74,9 @@ describe('UiFeedbackController toast lifecycle', () => {
         expect(page.toast.textContent).toBe('<strong>unsafe</strong>');
         expect(page.toast.querySelector('strong')).toBeNull();
         expect(page.toast.querySelector('.toast-close')).not.toBeNull();
-        expect(page.schedule).toHaveBeenCalledWith(expect.any(Function), 4000);
+        expect(page.schedule).not.toHaveBeenCalled();
 
-        page.timerTokens[0].callback();
+        page.toast.querySelector('.toast-close').click();
         expect(page.toast.hidden).toBe(true);
     });
 
@@ -94,7 +94,34 @@ describe('UiFeedbackController toast lifecycle', () => {
         expect(page.toast.textContent).toBe('second');
     });
 
-    it('hides an action toast before invoking its callback and leaves its timer intact', () => {
+    it('lets any new notification replace a persistent error toast', () => {
+        const page = createHarness();
+        page.controller.showToast('old error', true);
+
+        page.controller.showToast('new notice', false, { timeoutMs: 250 });
+
+        expect(page.toast.textContent).toBe('new notice');
+        expect(page.toast.classList.contains('error')).toBe(false);
+        expect(page.toast.hidden).toBe(false);
+        expect(page.schedule).toHaveBeenCalledOnce();
+        expect(page.schedule).toHaveBeenCalledWith(expect.any(Function), 250);
+    });
+
+    it('lets a persistent error replace a timed notification and cancels its timer', () => {
+        const page = createHarness();
+        page.controller.showToast('old notice', false, { timeoutMs: 250 });
+        const oldTimer = page.timerTokens[0];
+
+        page.controller.showToast('new error', true);
+
+        expect(page.cancel).toHaveBeenCalledWith(oldTimer);
+        expect(page.schedule).toHaveBeenCalledOnce();
+        expect(page.toast.textContent).toBe('new error');
+        expect(page.toast.classList.contains('error')).toBe(true);
+        expect(page.toast.hidden).toBe(false);
+    });
+
+    it('lets an action manually dismiss a persistent error before invoking its callback', () => {
         const page = createHarness();
         const actionStates = [];
         const onAction = vi.fn(() => actionStates.push(page.toast.hidden));
@@ -111,6 +138,7 @@ describe('UiFeedbackController toast lifecycle', () => {
         expect(page.toast.hidden).toBe(true);
         expect(actionStates).toEqual([true]);
         expect(onAction).toHaveBeenCalledOnce();
+        expect(page.schedule).not.toHaveBeenCalled();
         expect(page.cancel).not.toHaveBeenCalled();
     });
 

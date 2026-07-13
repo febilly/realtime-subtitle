@@ -29,6 +29,10 @@
 
         function showToast(message, isError = false, toastOptions = {}) {
             if (!toast) return;
+            if (toastTimer) {
+                cancel(toastTimer);
+                toastTimer = null;
+            }
             toast.textContent = '';
             const text = documentRef.createElement('span');
             text.textContent = message;
@@ -58,7 +62,7 @@
             toast.appendChild(close);
             toast.classList.toggle('error', !!isError);
             toast.hidden = false;
-            if (toastTimer) cancel(toastTimer);
+            if (isError) return;
             toastTimer = schedule(() => {
                 toast.hidden = true;
                 toastTimer = null;
