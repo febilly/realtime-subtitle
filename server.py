@@ -635,6 +635,16 @@ def main():
         from overlay_window import main as overlay_main
         sys.exit(overlay_main())
 
+    # Existing desktop shortcuts follow the currently running downloaded version.
+    # This never creates a shortcut; creation remains an explicit post-login choice.
+    try:
+        from desktop_shortcut import repair_existing_shortcuts
+        shortcut_result = repair_existing_shortcuts()
+        if shortcut_result.get("updated"):
+            print(f"✅ Updated {shortcut_result['updated']} desktop shortcut(s) to this version")
+    except Exception as error:
+        print(f"⚠️  Failed to refresh desktop shortcut: {error}")
+
     args, _unknown = parse_cli_args(sys.argv[1:])
     apply_cli_overrides_to_env(args)
 

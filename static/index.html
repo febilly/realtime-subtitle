@@ -312,6 +312,23 @@
         </div>
     </div>
 
+    <!-- Offered after a successful hosted sign-in when no app shortcut exists. -->
+    <div class="confirm-overlay" id="desktopShortcutOverlay" hidden></div>
+    <div class="mode-chooser" id="desktopShortcutDialog" role="dialog" aria-modal="true" aria-labelledby="desktopShortcutTitle" hidden>
+        <h1 id="desktopShortcutTitle">Create a desktop shortcut?</h1>
+        <p class="field-hint" id="desktopShortcutHint"></p>
+        <div class="mode-chooser-options">
+            <button class="mode-card" id="desktopShortcutCreate" type="button">
+                <span class="mode-card-title" id="desktopShortcutCreateTitle">Create shortcut</span>
+                <span class="mode-card-desc" id="desktopShortcutCreateDesc"></span>
+            </button>
+            <button class="mode-card" id="desktopShortcutSkip" type="button">
+                <span class="mode-card-title" id="desktopShortcutSkipTitle">Not now</span>
+                <span class="mode-card-desc" id="desktopShortcutSkipDesc"></span>
+            </button>
+        </div>
+    </div>
+
     <!-- Subtitle-server sign-in (web one-time code) -->
     <div class="settings-overlay" id="loginOverlay" hidden></div>
     <aside class="settings-panel" id="loginPanel" aria-label="Sign in" hidden>
@@ -406,6 +423,7 @@
     <script src="js/ui-config-controller.js"></script>
     <script src="js/hosted.js"></script>
     <script src="js/hosted-mode.js"></script>
+    <script src="js/desktop-shortcut.js"></script>
     <script src="js/hosted-login.js"></script>
     <script src="js/hosted-update.js"></script>
     <script src="js/hosted-balance.js"></script>

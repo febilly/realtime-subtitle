@@ -42,7 +42,7 @@ function setup(overrides = {}) {
     const calls = [];
     const actionNames = [
         'showToast', 'updateBalanceBarVisibility', 'fetchBalance', 'clearSubtitleState',
-        'setTranslationModeSynced', 'pushSetup', 'switchToOwnKeyMode',
+        'setTranslationModeSynced', 'pushSetup', 'switchToOwnKeyMode', 'offerDesktopShortcut',
     ];
     const actions = Object.fromEntries(actionNames.map((name) => [
         name,
@@ -225,6 +225,12 @@ describe('HostedLogin browser callback polling', () => {
         expect(page.actions.pushSetup).toHaveBeenCalledWith('gemini', null, {
             silent: true, mode: 'relay', token: 'token',
         });
+        expect(page.actions.showToast).toHaveBeenCalledWith(
+            'login_success:User',
+            false,
+            { timeoutMs: 5000 },
+        );
+        expect(page.actions.offerDesktopShortcut).toHaveBeenCalledOnce();
         expect(page.controller.getDebugState().waitingForBrowser).toBe(false);
         page.dom.window.close();
     });

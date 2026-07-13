@@ -1174,6 +1174,19 @@ const hostedMode = HostedMode.create({
         directButton: document.getElementById('modeChooserDirect'),
     },
 });
+const desktopShortcut = DesktopShortcut.create({
+    document,
+    fetch,
+    t,
+    showToast,
+    elements: {
+        overlay: document.getElementById('desktopShortcutOverlay'),
+        dialog: document.getElementById('desktopShortcutDialog'),
+        createButton: document.getElementById('desktopShortcutCreate'),
+        skipButton: document.getElementById('desktopShortcutSkip'),
+    },
+});
+desktopShortcut.init();
 const hostedLogin = HostedLogin.create({
     document,
     window,
@@ -1198,6 +1211,7 @@ const hostedLogin = HostedLogin.create({
         setTranslationModeSynced: translationModeController.setTranslationModeSynced,
         pushSetup: settingsPorts.pushSetup,
         switchToOwnKeyMode: hostedPorts.switchToOwnKeyMode,
+        offerDesktopShortcut: desktopShortcut.offer,
     },
     elements: {
         overlay: loginOverlay,

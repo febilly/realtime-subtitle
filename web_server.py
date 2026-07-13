@@ -34,6 +34,7 @@ from audio_capture import (
 )
 from llm_client import close_llm_http_session
 import local_store
+import desktop_shortcut
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -1610,6 +1611,30 @@ class WebServer:
         except Exception as error:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
+    async def desktop_shortcut_get_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            return web.json_response(desktop_shortcut.get_shortcut_status())
+        except desktop_shortcut.DesktopShortcutError as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    async def desktop_shortcut_post_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or payload.get("action") != "create":
+            return web.json_response({"status": "error", "message": "Invalid shortcut action"}, status=400)
+        try:
+            result = desktop_shortcut.create_desktop_shortcut()
+            status = 200 if result.get("created") else 503
+            return web.json_response(result, status=status)
+        except desktop_shortcut.DesktopShortcutError as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
     def get_custom_font_path(self) -> str | None:
         import sys
         if getattr(sys, 'frozen', False):
@@ -1831,6 +1856,8 @@ class WebServer:
         app.router.add_get('/subtitle-font', self.subtitle_font_get_handler)
         app.router.add_post('/subtitle-font', self.subtitle_font_post_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
+        app.router.add_get('/desktop-shortcut', self.desktop_shortcut_get_handler)
+        app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)
         app.router.add_get('/overlay', self.overlay_get_handler)
         app.router.add_post('/overlay', self.overlay_post_handler)
         app.router.add_post('/shutdown', self.shutdown_handler)
