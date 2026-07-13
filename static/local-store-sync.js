@@ -23,15 +23,18 @@
         return;
     }
 
-    // Capture the native methods so hydration and write-through never recurse
-    // through our own wrappers.
-    var nativeSet = ls.setItem.bind(ls);
-    var nativeRemove = ls.removeItem.bind(ls);
-    var nativeClear = ls.clear.bind(ls);
+    // Storage objects are Web IDL exotic objects, so assigning methods directly
+    // on the localStorage instance is not reliable. Patch the shared prototype
+    // and guard by object identity so sessionStorage remains local-only.
+    var storagePrototype = Object.getPrototypeOf(ls);
+    var nativeSet = storagePrototype.setItem;
+    var nativeRemove = storagePrototype.removeItem;
+    var nativeClear = storagePrototype.clear;
 
     // Only these keys are shared across instances: API key / provider config
     // (providerSettings.v1), server address + login auth (subtitleServer.v1),
-    // the LLM refine/translate mode, and the optional bundled CJK font toggle.
+    // the LLM refine/translate mode, automatic sleep, the invite-reminder cadence,
+    // and the optional bundled CJK font toggle.
     // Everything else (theme,
     // segment/display mode, audio source, auto-restart, …) stays per-instance.
     // Keep in sync with the constants in app.js.
@@ -41,6 +44,8 @@
         'llmTranslationMode': true,
         'llmRefineMode': true,
         'llmRefineEnabled': true,
+        'sleepOnSilenceEnabled': true,
+        'inviteRewardReminderLastShown': true,
         'useBundledCjkFont': true,
     };
 
@@ -72,7 +77,7 @@
             return;
         }
         try {
-            nativeSet(key, String(fileStore[key]));
+            nativeSet.call(ls, key, String(fileStore[key]));
         } catch (e) { /* quota / serialization — ignore */ }
     });
 
@@ -117,24 +122,25 @@
         } catch (e) { /* ignore */ }
     }
 
-    ls.setItem = function (key, value) {
-        nativeSet(key, value);
-        if (isShared(key)) {
+    storagePrototype.setItem = function (key, value) {
+        nativeSet.call(this, key, value);
+        if (this === ls && isShared(key)) {
             var u = {};
             u[key] = value;
             post({ set: u }, false);
         }
     };
 
-    ls.removeItem = function (key) {
-        nativeRemove(key);
-        if (isShared(key)) {
+    storagePrototype.removeItem = function (key) {
+        nativeRemove.call(this, key);
+        if (this === ls && isShared(key)) {
             post({ remove: [key] }, false);
         }
     };
 
-    ls.clear = function () {
-        nativeClear();
+    storagePrototype.clear = function () {
+        nativeClear.call(this);
+        if (this !== ls) return;
         // Synchronous: the reset-all flow calls /shutdown immediately after, so
         // make sure the shared file is emptied before the backend exits.
         post({ clear: true }, true);
