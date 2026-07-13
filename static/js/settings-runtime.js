@@ -9,6 +9,9 @@
         devices: [],
         selected_id: '',
     };
+    const EMPTY_OUTPUT_DATA = { available: false, default: null, devices: [], selected_id: '' };
+    const MICROPHONE_STORAGE_KEY = 'microphoneDeviceId';
+    const OUTPUT_STORAGE_KEY = 'outputDeviceId';
 
     function normalizeMicrophoneData(value) {
         const data = value && typeof value === 'object' ? value : {};
@@ -39,6 +42,7 @@
         const elements = options.elements || {};
         const consoleRef = options.console || root.console || { warn() {}, error() {} };
         const pickers = {
+            output: null,
             microphone: null,
             autoRestart: null,
             speakerLabels: null,
@@ -47,6 +51,7 @@
             segmentMode: null,
         };
         let microphoneData = normalizeMicrophoneData(options.microphoneData || EMPTY_MICROPHONE_DATA);
+        let outputData = normalizeMicrophoneData(options.outputData || EMPTY_OUTPUT_DATA);
         let draft = {};
 
         function state() {
@@ -68,6 +73,7 @@
             return {
                 ...draft,
                 microphoneDeviceId: pickerValue('microphone', draft.microphoneDeviceId || ''),
+                outputDeviceId: pickerValue('output', draft.outputDeviceId || ''),
                 autoRestartEnabled: pickerValue(
                     'autoRestart',
                     draft.autoRestartEnabled === false ? 'false' : 'true',
@@ -94,6 +100,21 @@
 
         function getMicrophoneData() {
             return normalizeMicrophoneData(microphoneData);
+        }
+
+        function getOutputData() { return normalizeMicrophoneData(outputData); }
+
+        function storedDevicePreference(key) {
+            try {
+                const value = storage.getItem(key);
+                return { present: value !== null, id: String(value || '') };
+            } catch (_) { return { present: false, id: '' }; }
+        }
+
+        function persistDeviceId(key, value) {
+            try { storage.setItem(key, String(value || '')); } catch (error) {
+                consoleRef.warn('Unable to persist audio device preference:', error);
+            }
         }
 
         function replaceHost(host, name, selectOptions, config = {}) {
@@ -157,7 +178,6 @@
             const selectOptions = [
                 { value: '', label: microphoneDefaultLabel() },
                 ...microphoneData.devices
-                    .filter((device) => !device.is_default)
                     .map((device) => ({
                         value: String(device.id || ''),
                         label: String(device.name || device.id || ''),
@@ -181,6 +201,36 @@
             return picker;
         }
 
+        function outputDefaultLabel() {
+            const defaultName = outputData.default && outputData.default.name;
+            return defaultName
+                ? t('output_device_default', { name: defaultName })
+                : t('output_device_default_unknown');
+        }
+
+        function renderOutputDevicePicker() {
+            const host = elements.outputDevicePickerHost;
+            if (!host) { pickers.output = null; return null; }
+            const selectOptions = [
+                { value: '', label: outputDefaultLabel() },
+                ...outputData.devices.map((device) => ({
+                    value: String(device.id || ''), label: String(device.name || device.id || ''),
+                })).filter((entry) => entry.value && entry.label),
+            ];
+            const selected = selectOptions.some((entry) => entry.value === outputData.selected_id)
+                ? outputData.selected_id : '';
+            setDraft({ outputDeviceId: selected });
+            const picker = replaceHost(host, 'output', selectOptions, {
+                value: selected, disabled: !outputData.available,
+                onChange: (value) => setDraft({ outputDeviceId: value }),
+            });
+            if (elements.outputDeviceHint) {
+                elements.outputDeviceHint.textContent = outputData.available
+                    ? t('output_device_hint') : t('output_device_unavailable');
+            }
+            return picker;
+        }
+
         async function fetchMicrophoneDevices() {
             if (!elements.microphoneDeviceSection || !fetchRef) {
                 return false;
@@ -193,6 +243,15 @@
                     return false;
                 }
                 microphoneData = normalizeMicrophoneData(await response.json());
+                const stored = storedDevicePreference(MICROPHONE_STORAGE_KEY);
+                if (stored.present && !stored.id) {
+                    microphoneData.selected_id = '';
+                } else if (stored.id && microphoneData.devices.some((device) => String(device.id || '') === stored.id)) {
+                    microphoneData.selected_id = stored.id;
+                } else if (stored.id) {
+                    persistDeviceId(MICROPHONE_STORAGE_KEY, '');
+                    microphoneData.selected_id = '';
+                }
                 renderMicrophoneDevicePicker();
                 return true;
             } catch (error) {
@@ -203,29 +262,63 @@
             }
         }
 
-        async function saveMicrophoneDeviceSelection() {
-            if (!elements.microphoneDeviceSection || !microphoneData.available) {
-                return { ok: true };
+        async function fetchOutputDevices() {
+            if (!elements.outputDeviceSection || !fetchRef) return false;
+            try {
+                const response = await fetchRef('/output-devices');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                outputData = normalizeMicrophoneData(await response.json());
+                const stored = storedDevicePreference(OUTPUT_STORAGE_KEY);
+                if (stored.present && !stored.id) {
+                    outputData.selected_id = '';
+                } else if (stored.id && outputData.devices.some((device) => String(device.id || '') === stored.id)) {
+                    outputData.selected_id = stored.id;
+                } else if (stored.id) {
+                    persistDeviceId(OUTPUT_STORAGE_KEY, '');
+                    outputData.selected_id = '';
+                }
+                renderOutputDevicePicker();
+                return true;
+            } catch (error) {
+                consoleRef.error('Failed to fetch output devices:', error);
+                outputData = normalizeMicrophoneData(EMPTY_OUTPUT_DATA);
+                renderOutputDevicePicker();
+                return false;
             }
+        }
+
+        async function saveDeviceSelection(url, id, storageKey) {
+            const response = await fetchRef(url, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) return {
+                ok: false, message: localizeBackendMessage(data && data.message) || `HTTP ${response.status}`,
+            };
+            const savedId = String((data && data.id) || '');
+            persistDeviceId(storageKey, savedId);
+            return { ok: true, id: savedId };
+        }
+
+        async function saveMicrophoneDeviceSelection() {
             if (!fetchRef) {
                 return { ok: false, message: 'fetch unavailable' };
             }
-            const id = getDraft().microphoneDeviceId;
             try {
-                const response = await fetchRef('/microphone-device', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id }),
-                });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    return {
-                        ok: false,
-                        message: localizeBackendMessage(data && data.message) || `HTTP ${response.status}`,
-                    };
+                const currentDraft = getDraft();
+                if (elements.outputDeviceSection && outputData.available) {
+                    const result = await saveDeviceSelection('/output-device', currentDraft.outputDeviceId, OUTPUT_STORAGE_KEY);
+                    if (!result.ok) return result;
+                    outputData.selected_id = result.id;
+                    setDraft({ outputDeviceId: result.id });
                 }
-                microphoneData.selected_id = String((data && data.id) || id || '');
-                setDraft({ microphoneDeviceId: microphoneData.selected_id });
+                if (elements.microphoneDeviceSection && microphoneData.available) {
+                    const result = await saveDeviceSelection('/microphone-device', currentDraft.microphoneDeviceId, MICROPHONE_STORAGE_KEY);
+                    if (!result.ok) return result;
+                    microphoneData.selected_id = result.id;
+                    setDraft({ microphoneDeviceId: result.id });
+                }
                 return { ok: true };
             } catch (error) {
                 return { ok: false, message: String(error) };
@@ -436,6 +529,7 @@
         }
 
         function renderSettingsPickers() {
+            renderOutputDevicePicker();
             renderMicrophoneDevicePicker();
             renderRuntimeSettingsPickers();
             renderBundledCjkFontPicker();
@@ -508,6 +602,10 @@
             setDraft,
             getPickers,
             getMicrophoneData,
+            getOutputData,
+            outputDefaultLabel,
+            renderOutputDevicePicker,
+            fetchOutputDevices,
             microphoneDefaultLabel,
             renderMicrophoneDevicePicker,
             fetchMicrophoneDevices,
@@ -536,6 +634,7 @@
         TRANSLATION_UI_MODES,
         DEFAULT_TRANSLATION_UI_MODE,
         EMPTY_MICROPHONE_DATA,
+        EMPTY_OUTPUT_DATA,
         normalizeMicrophoneData,
         create,
     };

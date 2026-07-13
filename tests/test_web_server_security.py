@@ -25,7 +25,38 @@ class TestWebServerSecurity:
         session.set_audio_source.return_value = (True, "ok")
         session.get_microphone_device_id.return_value = ""
         session.set_microphone_device_id.return_value = (True, "ok")
+        session.get_output_device_id.return_value = ""
+        session.set_output_device_id.return_value = (True, "ok")
         return session
+
+    @async_test
+    async def test_output_device_updates_provider_manager_preference(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "config": MagicMock(), "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            session = self.mock_session()
+            session.get_output_device_id.return_value = "out-1"
+            ws = WebServer(session, self.mock_logger())
+            ws.provider_manager = MagicMock()
+            request = AsyncMock()
+            request.json.return_value = {"id": "out-1"}
+            with patch.object(ws_module, "list_output_devices", return_value={
+                "available": True, "default": {"id": "out-0", "name": "Default"},
+                "devices": [{"id": "out-1", "name": "USB"}],
+            }):
+                web.json_response.side_effect = lambda data, status=200: (data, status)
+                response, status = await ws.output_device_set_handler(request)
+
+            assert status == 200
+            assert response["id"] == "out-1"
+            session.set_output_device_id.assert_called_once_with("out-1")
+            assert ws.provider_manager.output_device_id == "out-1"
 
     def mock_logger(self):
         return MagicMock()

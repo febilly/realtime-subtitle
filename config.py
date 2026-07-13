@@ -565,6 +565,10 @@ MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = _env_bool("MUTE_MIC_WHEN_VRCHAT_SELF_MUTED", T
 # Optional microphone device ID. Empty means "current system default".
 MICROPHONE_DEVICE_ID = _env_str("MICROPHONE_DEVICE_ID", "").strip()
 
+# Optional speaker/output device ID used for system loopback capture.
+# Empty means "current system default".
+OUTPUT_DEVICE_ID = _env_str("OUTPUT_DEVICE_ID", "").strip()
+
 # Mix audio weights (effective only when audio source is mix)
 # Convention:
 # - "self" = microphone

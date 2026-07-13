@@ -7,6 +7,7 @@
         'Resume is disabled by server config': 'backend_resume_disabled',
         'Audio source switching is disabled by server config': 'backend_audio_source_disabled',
         'Microphone device switching is disabled by server config': 'backend_microphone_device_disabled',
+        'Output device switching is disabled by server config': 'backend_output_device_disabled',
         'OSC translation toggle is disabled by server config': 'backend_osc_disabled',
         'Overlay control is disabled by server config': 'backend_overlay_disabled',
         'Segment mode switching is disabled': 'backend_segment_mode_disabled',

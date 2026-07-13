@@ -26,7 +26,12 @@ from config import (
     LLM_REFINE_CONTEXT_MAX_COUNT,
 )
 
-from audio_capture import list_microphone_devices, normalize_microphone_device_id
+from audio_capture import (
+    list_microphone_devices,
+    list_output_devices,
+    normalize_microphone_device_id,
+    normalize_output_device_id,
+)
 from llm_client import close_llm_http_session
 import local_store
 
@@ -1371,6 +1376,13 @@ class WebServer:
         selected_id = ""
         if hasattr(self.session, "get_microphone_device_id"):
             selected_id = normalize_microphone_device_id(self.session.get_microphone_device_id())
+        valid_ids = {str(item.get("id") or "") for item in data.get("devices", []) if isinstance(item, dict)}
+        if data.get("available") and selected_id and selected_id not in valid_ids:
+            selected_id = ""
+            if hasattr(self.session, "set_microphone_device_id"):
+                self.session.set_microphone_device_id("")
+            if self.provider_manager is not None:
+                self.provider_manager.microphone_device_id = ""
         data["selected_id"] = selected_id
         return data
 
@@ -1379,6 +1391,52 @@ class WebServer:
         payload = self._microphone_payload()
         payload["status"] = "ok"
         return web.json_response(payload)
+
+    def _output_device_payload(self) -> dict:
+        data = list_output_devices()
+        selected_id = ""
+        if hasattr(self.session, "get_output_device_id"):
+            selected_id = normalize_output_device_id(self.session.get_output_device_id())
+        valid_ids = {str(item.get("id") or "") for item in data.get("devices", []) if isinstance(item, dict)}
+        if data.get("available") and selected_id and selected_id not in valid_ids:
+            selected_id = ""
+            if hasattr(self.session, "set_output_device_id"):
+                self.session.set_output_device_id("")
+            if self.provider_manager is not None:
+                self.provider_manager.output_device_id = ""
+        data["selected_id"] = selected_id
+        return data
+
+    async def output_devices_handler(self, request):
+        payload = self._output_device_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    async def output_device_set_handler(self, request):
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Output device switching is disabled by server config"}, status=403
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        device_id = normalize_output_device_id(payload.get("id"))
+        devices = self._output_device_payload().get("devices") or []
+        known_ids = {str(device.get("id") or "") for device in devices if isinstance(device, dict)}
+        if known_ids and device_id and device_id not in known_ids:
+            device_id = ""  # A stale persisted choice always falls back to current default.
+        if not hasattr(self.session, "set_output_device_id"):
+            return web.json_response({"status": "error", "message": "Output device switching is unavailable"}, status=503)
+        success, message = self.session.set_output_device_id(device_id)
+        if success and self.provider_manager is not None:
+            self.provider_manager.output_device_id = device_id
+        return web.json_response({
+            "status": "ok" if success else "error", "message": message,
+            "id": self.session.get_output_device_id(),
+        }, status=200 if success else 400)
 
     async def microphone_device_get_handler(self, request):
         """Get the selected microphone device."""
@@ -1407,7 +1465,7 @@ class WebServer:
             devices = self._microphone_payload().get("devices") or []
             known_ids = {str(device.get("id") or "") for device in devices if isinstance(device, dict)}
             if known_ids and device_id not in known_ids:
-                return web.json_response({"status": "error", "message": "Unknown microphone device"}, status=400)
+                device_id = ""  # A stale persisted choice always falls back to current default.
 
         if not hasattr(self.session, "set_microphone_device_id"):
             return web.json_response(
@@ -1660,6 +1718,8 @@ class WebServer:
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_get('/microphones', self.microphones_handler)
+        app.router.add_get('/output-devices', self.output_devices_handler)
+        app.router.add_post('/output-device', self.output_device_set_handler)
         app.router.add_get('/microphone-device', self.microphone_device_get_handler)
         app.router.add_post('/microphone-device', self.microphone_device_set_handler)
         app.router.add_get('/subtitle-font', self.subtitle_font_get_handler)

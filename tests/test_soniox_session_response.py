@@ -30,6 +30,7 @@ def _install_soniox_session_import_mocks(monkeypatch):
     }
     config.USE_TWITCH_AUDIO_STREAM = False
     config.MICROPHONE_DEVICE_ID = ""
+    config.OUTPUT_DEVICE_ID = ""
     config.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED = False
     config.TWITCH_CHANNEL = ""
     config.TWITCH_STREAM_QUALITY = "audio_only"

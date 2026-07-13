@@ -13,6 +13,7 @@ function setup(overrides = {}) {
     const dom = new JSDOM(`<!doctype html><body>
         <section id="runtime"></section>
         <section id="microphone"><div id="microphonePicker"></div><p id="microphoneHint"></p></section>
+        <section id="output"><div id="outputPicker"></div><p id="outputHint"></p></section>
         <div id="autoRestart"></div>
         <label id="speakerField"><div id="speakerPicker"></div></label>
         <div id="fontPicker"></div><p id="fontHint"></p>
@@ -77,6 +78,9 @@ function setup(overrides = {}) {
             microphoneDeviceSection: document.getElementById('microphone'),
             microphoneDevicePickerHost: document.getElementById('microphonePicker'),
             microphoneDeviceHint: document.getElementById('microphoneHint'),
+            outputDeviceSection: document.getElementById('output'),
+            outputDevicePickerHost: document.getElementById('outputPicker'),
+            outputDeviceHint: document.getElementById('outputHint'),
             autoRestartPickerHost: document.getElementById('autoRestart'),
             speakerLabelsSettingField: document.getElementById('speakerField'),
             speakerLabelsPickerHost: document.getElementById('speakerPicker'),
@@ -173,6 +177,25 @@ describe('SettingsRuntime picker state', () => {
 });
 
 describe('SettingsRuntime microphone and font effects', () => {
+    it('restores both saved device choices and preserves default as an empty preference', async () => {
+        const page = setup({ fetch: vi.fn()
+            .mockResolvedValueOnce(response({
+                available: true, default: { name: 'Speakers' },
+                devices: [{ id: 'out-1', name: 'USB output' }], selected_id: '',
+            }))
+            .mockResolvedValueOnce(response({ id: 'out-1' }))
+            .mockResolvedValueOnce(response({ id: '' })) });
+        page.dom.window.localStorage.setItem('outputDeviceId', 'out-1');
+        page.dom.window.localStorage.setItem('microphoneDeviceId', '');
+
+        expect(await page.controller.fetchOutputDevices()).toBe(true);
+        expect(page.controller.getPickers().output.value).toBe('out-1');
+        // Microphone was not fetched/available, so saving only syncs output.
+        expect(await page.controller.saveMicrophoneDeviceSelection()).toEqual({ ok: true });
+        expect(page.dom.window.localStorage.getItem('outputDeviceId')).toBe('out-1');
+        page.dom.window.close();
+    });
+
     it('loads devices and saves the selected microphone exactly', async () => {
         const fetch = vi.fn()
             .mockResolvedValueOnce(response({
@@ -191,6 +214,7 @@ describe('SettingsRuntime microphone and font effects', () => {
         const picker = page.controller.getPickers().microphone;
         expect(picker.options).toEqual([
             { value: '', label: 'microphone_device_default:System default' },
+            { value: 'default', label: 'Default' },
             { value: 'mic-1', label: 'USB mic' },
         ]);
         expect(picker.value).toBe('mic-1');

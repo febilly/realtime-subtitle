@@ -101,6 +101,9 @@ const sonioxRegionPickerHost = document.getElementById('sonioxRegionPicker');
 const microphoneDeviceSection = document.getElementById('microphoneDeviceSection');
 const microphoneDevicePickerHost = document.getElementById('microphoneDevicePicker');
 const microphoneDeviceHint = document.getElementById('microphoneDeviceHint');
+const outputDeviceSection = document.getElementById('outputDeviceSection');
+const outputDevicePickerHost = document.getElementById('outputDevicePicker');
+const outputDeviceHint = document.getElementById('outputDeviceHint');
 const bundledCjkFontPickerHost = document.getElementById('bundledCjkFontPicker');
 const runtimeControlsSection = document.getElementById('runtimeControlsSection');
 const autoRestartPickerHost = document.getElementById('autoRestartPicker');
@@ -182,7 +185,9 @@ const settingsPorts = {
     saveProviderSettings: (settings) => { settingsStore.saveProviderSettings(settings); },
     buildCustomSelect: (options, config = {}) => settingsUi.buildCustomSelect(options, config),
     renderMicrophoneDevicePicker: () => settingsRuntime.renderMicrophoneDevicePicker(),
+    renderOutputDevicePicker: () => settingsRuntime.renderOutputDevicePicker(),
     fetchMicrophoneDevices: () => settingsRuntime.fetchMicrophoneDevices(),
+    fetchOutputDevices: () => settingsRuntime.fetchOutputDevices(),
     renderBundledCjkFontPicker: () => settingsRuntime.renderBundledCjkFontPicker(),
     updateTranslationModeHint: () => { settingsRuntime.updateTranslationModeHint(); },
     renderTranslationModePicker: () => settingsRuntime.renderTranslationModePicker(),
@@ -211,6 +216,9 @@ const settingsRuntime = SettingsRuntime.create({
         microphoneDeviceSection,
         microphoneDevicePickerHost,
         microphoneDeviceHint,
+        outputDeviceSection,
+        outputDevicePickerHost,
+        outputDeviceHint,
         autoRestartPickerHost,
         speakerLabelsSettingField,
         speakerLabelsPickerHost,
@@ -1204,5 +1212,9 @@ const hostedController = Hosted.createController({
 });
 
 document.addEventListener('DOMContentLoaded', () => {
+    void Promise.all([
+        settingsRuntime.fetchOutputDevices(),
+        settingsRuntime.fetchMicrophoneDevices(),
+    ]).then(() => settingsRuntime.saveMicrophoneDeviceSelection());
     void hostedController.startup();
 });

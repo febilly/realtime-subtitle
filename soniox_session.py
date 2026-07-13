@@ -26,6 +26,7 @@ from config import (
     ROLLOVER_VAD_THRESHOLD,
     USE_TWITCH_AUDIO_STREAM,
     MICROPHONE_DEVICE_ID,
+    OUTPUT_DEVICE_ID,
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
@@ -227,6 +228,7 @@ class SonioxSession:
         self.chunk_size = 3840
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
         self.microphone_device_id = str(MICROPHONE_DEVICE_ID or "").strip()
+        self.output_device_id = str(OUTPUT_DEVICE_ID or "").strip()
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
         self._vrchat_self_muted = False
@@ -508,7 +510,25 @@ class SonioxSession:
 
     def get_microphone_device_id(self) -> str:
         with self.audio_lock:
+            if self.audio_streamer and hasattr(self.audio_streamer, "get_microphone_device_id"):
+                self.microphone_device_id = self.audio_streamer.get_microphone_device_id()
             return str(self.microphone_device_id or "")
+
+    def get_output_device_id(self) -> str:
+        with self.audio_lock:
+            if self.audio_streamer and hasattr(self.audio_streamer, "get_output_device_id"):
+                self.output_device_id = self.audio_streamer.get_output_device_id()
+            return str(self.output_device_id or "")
+
+    def set_output_device_id(self, device_id: str) -> Tuple[bool, str]:
+        if USE_TWITCH_AUDIO_STREAM:
+            return False, "Twitch streaming mode is enabled; output device switching is disabled."
+        next_id = str(device_id or "").strip()
+        with self.audio_lock:
+            self.output_device_id = next_id
+            streamer = self.audio_streamer
+        changed = bool(streamer.set_output_device_id(next_id)) if streamer and hasattr(streamer, "set_output_device_id") else False
+        return True, "Output device switched." if changed else "Output device saved."
 
     def set_microphone_device_id(self, device_id: str) -> Tuple[bool, str]:
         """Set the microphone device used by microphone and mixed capture."""
@@ -591,6 +611,7 @@ class SonioxSession:
                 chunk_size=self.chunk_size,
                 mute_mic_when_vrchat_muted=bool(MUTE_MIC_WHEN_VRCHAT_SELF_MUTED),
                 microphone_device_id=self.get_microphone_device_id(),
+                output_device_id=self.get_output_device_id(),
             )
             streamer.set_vrchat_mic_muted(self._vrchat_self_muted)
 

@@ -22,6 +22,7 @@ class FakeSession:
         self.broadcast_callback = broadcast_callback
         self.audio_source = "system"
         self.microphone_device_id = ""
+        self.output_device_id = ""
         self.started = False
         self.stopped = False
         self.translation_target_lang = None
@@ -53,6 +54,13 @@ class FakeSession:
         self.microphone_device_id = str(device_id or "").strip()
         return True, "ok"
 
+    def get_output_device_id(self):
+        return self.output_device_id
+
+    def set_output_device_id(self, device_id):
+        self.output_device_id = str(device_id or "").strip()
+        return True, "ok"
+
     def set_translation_target_lang(self, target_lang):
         self.translation_target_lang = target_lang
         return True, "ok"
@@ -70,7 +78,7 @@ class FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_provider_switch_preserves_audio_source_and_microphone_device(monkeypatch):
+async def test_provider_switch_preserves_audio_source_and_device_preferences(monkeypatch):
     monkeypatch.setitem(sys.modules, "config", _get_real_config())
     logger = MagicMock()
     ipc_server = MagicMock()
@@ -81,6 +89,7 @@ async def test_provider_switch_preserves_audio_source_and_microphone_device(monk
     old_session = FakeSession(logger, manager.broadcast_callback)
     old_session.set_audio_source("microphone")
     old_session.set_microphone_device_id("mic-123")
+    old_session.set_output_device_id("out-456")
     manager.web_server = SimpleNamespace(session=old_session, get_api_key=None)
 
     fake_session_module = SimpleNamespace(ipc_server=None)
@@ -98,8 +107,10 @@ async def test_provider_switch_preserves_audio_source_and_microphone_device(monk
     assert new_session.started is True
     assert new_session.get_audio_source() == "microphone"
     assert new_session.get_microphone_device_id() == "mic-123"
+    assert new_session.get_output_device_id() == "out-456"
     assert manager.audio_source == "microphone"
     assert manager.microphone_device_id == "mic-123"
+    assert manager.output_device_id == "out-456"
 
 
 @pytest.mark.asyncio

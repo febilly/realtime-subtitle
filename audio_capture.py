@@ -7,7 +7,7 @@ from collections import deque
 from typing import Optional
 
 import numpy as np
-from config import MICROPHONE_DEVICE_ID, MIX_OWN_VOLUME, MIX_OTHER_VOLUME
+from config import MICROPHONE_DEVICE_ID, OUTPUT_DEVICE_ID, MIX_OWN_VOLUME, MIX_OTHER_VOLUME
 
 try:
     import soundcard as sc
@@ -96,6 +96,50 @@ def normalize_microphone_device_id(device_id: object) -> str:
     return str(device_id or "").strip()
 
 
+def normalize_output_device_id(device_id: object) -> str:
+    return str(device_id or "").strip()
+
+
+def list_output_devices() -> dict:
+    """Return speaker devices whose output can be captured through loopback."""
+    if sc is None:
+        return {"available": False, "default": None, "devices": [], "message": "soundcard is not installed"}
+
+    try:
+        default = sc.default_speaker()
+    except Exception:
+        default = None
+    default_id = str(getattr(default, "id", "") or "").strip() if default is not None else ""
+    default_name = str(getattr(default, "name", "") or "").strip() if default is not None else ""
+    try:
+        speakers = list(sc.all_speakers())
+    except Exception as error:
+        return {
+            "available": False,
+            "default": {"id": default_id, "name": default_name} if default_name else None,
+            "devices": [],
+            "message": str(error),
+        }
+
+    devices = []
+    seen = set()
+    for speaker in speakers:
+        device_id = str(getattr(speaker, "id", "") or "").strip()
+        name = str(getattr(speaker, "name", "") or "").strip()
+        if not device_id or not name or device_id in seen:
+            continue
+        seen.add(device_id)
+        devices.append({"id": device_id, "name": name, "is_default": bool(default_id and device_id == default_id)})
+    if default_id and default_id not in seen:
+        devices.append({"id": default_id, "name": default_name, "is_default": True})
+    devices.sort(key=lambda item: (not item.get("is_default"), str(item.get("name", "")).casefold()))
+    return {
+        "available": True,
+        "default": {"id": default_id, "name": default_name} if default_name else None,
+        "devices": devices,
+    }
+
+
 def _convert_float32_to_int16(channel_data: np.ndarray) -> bytes:
     """将浮点音频数据转换为int16字节流"""
     clipped = np.clip(channel_data, -1.0, 1.0)
@@ -114,6 +158,7 @@ class AudioStreamer:
         chunk_size: int = 3840,
         mute_mic_when_vrchat_muted: bool = True,
         microphone_device_id: str = MICROPHONE_DEVICE_ID,
+        output_device_id: str = OUTPUT_DEVICE_ID,
     ):
         self.ws = ws
         self.sample_rate = sample_rate
@@ -126,6 +171,7 @@ class AudioStreamer:
 
         self._current_source = initial_source
         self._microphone_device_id = normalize_microphone_device_id(microphone_device_id)
+        self._output_device_id = normalize_output_device_id(output_device_id)
         self._thread: Optional[threading.Thread] = None
         self.mix_mic_gain = float(MIX_OWN_VOLUME)
         self.mix_system_gain = float(MIX_OTHER_VOLUME)
@@ -198,6 +244,21 @@ class AudioStreamer:
         with self._source_lock:
             return self._microphone_device_id
 
+    def set_output_device_id(self, device_id: str) -> bool:
+        next_id = normalize_output_device_id(device_id)
+        with self._source_lock:
+            if next_id == self._output_device_id:
+                return False
+            self._output_device_id = next_id
+            restart_needed = self._current_source in ("system", "mix")
+        if restart_needed:
+            self._source_changed_event.set()
+        return True
+
+    def get_output_device_id(self) -> str:
+        with self._source_lock:
+            return self._output_device_id
+
     def _run(self) -> None:
         """音频线程主循环"""
         while not self._stop_event.is_set():
@@ -213,6 +274,7 @@ class AudioStreamer:
                 self._run_single_source_mode(source)
 
     def _run_single_source_mode(self, source: str) -> None:
+        initial_device = self._device_signature(source)
         recorder_ctx = self._create_recorder(source)
         if recorder_ctx is None:
             time.sleep(1.0)
@@ -220,8 +282,14 @@ class AudioStreamer:
 
         try:
             with recorder_ctx as recorder:
+                next_device_check = time.monotonic() + 1.0
                 while not self._stop_event.is_set() and not self._source_changed_event.is_set():
                     data = recorder.record(numframes=self.chunk_size)
+                    if time.monotonic() >= next_device_check:
+                        next_device_check = time.monotonic() + 1.0
+                        if self._device_signature(source) != initial_device:
+                            self._source_changed_event.set()
+                            break
                     channel_data = self._extract_mono_channel(data)
                     if channel_data.size == 0:
                         continue
@@ -289,6 +357,7 @@ class AudioStreamer:
         local_stop_event: threading.Event,
         capture_frames: int,
     ) -> None:
+        initial_device = self._device_signature(source)
         recorder_ctx = self._create_recorder(source)
         if recorder_ctx is None:
             local_stop_event.set()
@@ -296,8 +365,14 @@ class AudioStreamer:
 
         try:
             with recorder_ctx as recorder:
+                next_device_check = time.monotonic() + 1.0
                 while not self._stop_event.is_set() and not self._source_changed_event.is_set() and not local_stop_event.is_set():
                     data = recorder.record(numframes=max(1, int(capture_frames)))
+                    if time.monotonic() >= next_device_check:
+                        next_device_check = time.monotonic() + 1.0
+                        if self._device_signature(source) != initial_device:
+                            self._source_changed_event.set()
+                            break
                     channel_data = self._extract_mono_channel(data)
                     if channel_data.size == 0:
                         continue
@@ -494,7 +569,7 @@ class AudioStreamer:
                 return None
 
             if source == "system":
-                speaker = sc.default_speaker()
+                speaker = self._resolve_output_device()
                 if speaker is None:
                     print("⚠️  No default speaker available for system audio capture")
                     return None
@@ -507,22 +582,7 @@ class AudioStreamer:
                 print(f"🔊 Capturing system audio from: {speaker.name}")
                 return loopback.recorder(samplerate=self.sample_rate, channels=1)
 
-            with self._source_lock:
-                microphone_device_id = self._microphone_device_id
-
-            if microphone_device_id:
-                try:
-                    microphone = sc.get_microphone(id=microphone_device_id, include_loopback=False)
-                except Exception as error:
-                    microphone = None
-                    print(f"⚠️  Selected microphone lookup failed: {error}")
-                if microphone is None:
-                    print(f"⚠️  Selected microphone is unavailable: {microphone_device_id}")
-            else:
-                microphone = None
-
-            if microphone is None:
-                microphone = sc.default_microphone()
+            microphone = self._resolve_microphone_device()
             if microphone is None:
                 print("⚠️  No default microphone available")
                 return None
@@ -533,3 +593,49 @@ class AudioStreamer:
         except Exception as init_error:
             print(f"Error initializing audio source '{source}': {init_error}")
             return None
+
+    @staticmethod
+    def _device_id(device) -> str:
+        return str(getattr(device, "id", "") or "").strip() if device is not None else ""
+
+    def _resolve_output_device(self):
+        with self._source_lock:
+            selected_id = self._output_device_id
+        speaker = None
+        if selected_id:
+            try:
+                speaker = sc.get_speaker(id=selected_id)
+            except Exception as error:
+                print(f"⚠️  Selected output device lookup failed: {error}")
+            if speaker is None:
+                print(f"⚠️  Selected output device is unavailable; falling back to default: {selected_id}")
+                with self._source_lock:
+                    if self._output_device_id == selected_id:
+                        self._output_device_id = ""
+        return speaker if speaker is not None else sc.default_speaker()
+
+    def _resolve_microphone_device(self):
+        with self._source_lock:
+            selected_id = self._microphone_device_id
+        microphone = None
+        if selected_id:
+            try:
+                microphone = sc.get_microphone(id=selected_id, include_loopback=False)
+            except Exception as error:
+                print(f"⚠️  Selected microphone lookup failed: {error}")
+            if microphone is None:
+                print(f"⚠️  Selected microphone is unavailable; falling back to default: {selected_id}")
+                with self._source_lock:
+                    if self._microphone_device_id == selected_id:
+                        self._microphone_device_id = ""
+        return microphone if microphone is not None else sc.default_microphone()
+
+    def _device_signature(self, source: str) -> str:
+        """Resolve the actual endpoint so hot-plug/default changes restart capture."""
+        if sc is None:
+            return ""
+        try:
+            device = self._resolve_output_device() if source == "system" else self._resolve_microphone_device()
+            return self._device_id(device)
+        except Exception:
+            return ""

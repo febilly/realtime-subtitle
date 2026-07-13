@@ -265,6 +265,7 @@
             updateApiKeyField(provider);
             updateSonioxRegion(provider);
             applyModeVisibility(mode);
+            call('renderOutputDevicePicker');
             call('renderMicrophoneDevicePicker');
             call('renderRuntimeSettingsPickers');
             call('renderBundledCjkFontPicker');
@@ -299,6 +300,7 @@
             setText('providerGeminiLabel', 'provider_gemini');
             setText('sonioxRegionLabel', 'soniox_region');
             setText('microphoneDeviceLabel', 'microphone_device');
+            setText('outputDeviceLabel', 'output_device');
             setText('runtimeControlsLabel', 'recognition_controls');
             setText('autoRestartSettingLabel', 'auto_restart_setting');
             setText('speakerLabelsSettingLabel', 'speaker_labels_setting');
@@ -309,6 +311,7 @@
             setText('bundledCjkFontHint', 'bundled_cjk_font_hint');
             renderSonioxRegionPicker(getSelectedSonioxRegion());
             call('renderMicrophoneDevicePicker');
+            call('renderOutputDevicePicker');
             call('renderRuntimeSettingsPickers');
             call('renderBundledCjkFontPicker');
             if (elements.saveButton) elements.saveButton.textContent = t('save');
@@ -336,6 +339,7 @@
                 void call('fetchBalance');
             }
             void call('fetchMicrophoneDevices');
+            void call('fetchOutputDevices');
             if (elements.overlay) elements.overlay.hidden = false;
             if (elements.panel) elements.panel.hidden = false;
             const hideClose = forcedOpen ? 'none' : '';

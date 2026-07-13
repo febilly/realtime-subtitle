@@ -253,6 +253,7 @@ class ProviderManager:
         self.target_lang_2 = config.normalize_language_code(config.TARGET_LANG_2) or "zh"
         self.audio_source = "twitch" if bool(getattr(config, "USE_TWITCH_AUDIO_STREAM", False)) else "system"
         self.microphone_device_id = str(getattr(config, "MICROPHONE_DEVICE_ID", "") or "").strip()
+        self.output_device_id = str(getattr(config, "OUTPUT_DEVICE_ID", "") or "").strip()
 
         self.lock_manual_controls = bool(config.LOCK_MANUAL_CONTROLS)
         self.setup_required = False
@@ -378,6 +379,12 @@ class ProviderManager:
             except Exception:
                 pass
 
+        if hasattr(session, "get_output_device_id"):
+            try:
+                self.output_device_id = str(session.get_output_device_id() or "").strip()
+            except Exception:
+                pass
+
     def _apply_audio_preferences(self, session) -> None:
         """Apply remembered audio choices to a freshly-created session."""
         if session is None:
@@ -388,6 +395,12 @@ class ProviderManager:
                 session.set_microphone_device_id(self.microphone_device_id)
             except Exception as error:
                 print(f"⚠️  Failed to restore microphone device selection: {error}")
+
+        if hasattr(session, "set_output_device_id"):
+            try:
+                session.set_output_device_id(self.output_device_id)
+            except Exception as error:
+                print(f"⚠️  Failed to restore output device selection: {error}")
 
         source = str(self.audio_source or "").strip().lower()
         if source in ("system", "microphone", "mix") and hasattr(session, "set_audio_source"):
