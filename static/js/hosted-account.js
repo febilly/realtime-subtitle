@@ -108,9 +108,9 @@
                 const data = await response.json().catch(() => ({}));
                 if (successfulInviteCount(data) !== 0) return false;
                 call('showToast', t('invite_reward_reminder'), false, {
-                    timeoutMs: 12000,
-                    actionLabel: t('open_settings'),
-                    onAction: () => call('openSettings', { forced: false }),
+                    timeoutMs: 20000,
+                    actionLabel: t('open_invite_page'),
+                    onAction: () => { void openUserWeb('/invite'); },
                 });
                 try {
                     if (storage) storage.setItem(INVITE_REMINDER_STORAGE_KEY, String(now()));
@@ -298,7 +298,7 @@
                     call('showToast', t('account_redeem_success', {
                         credits: formatCredits(data.granted_credits),
                         balance: formatCredits(data.new_balance),
-                    }));
+                    }), false, { timeoutMs: 5000 });
                     balanceCall('resetFirstRedeemBonus', data.first_redeem_bonus_credits);
                     updateSection();
                     void balanceCall('fetchBalance');

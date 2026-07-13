@@ -117,21 +117,32 @@ function setup(overrides = {}) {
 
 describe('HostedAccount invite reward reminder', () => {
     it('shows only for a user who was already signed in at launch and has no successful invites', async () => {
-        const fetch = vi.fn().mockResolvedValue(response({
-            invite_link: 'https://invite.example/code',
-            invited_users_count: 0,
-        }));
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response({
+                invite_link: 'https://invite.example/code',
+                successful_invite_count: 0,
+            }))
+            .mockResolvedValueOnce(response({
+                url: 'https://account.example/app/#/login?web_login_code=WEB-123&next=%2Finvite',
+            }));
         const page = setup({ fetch, signedInAtLaunch: true, now: () => 1_000_000_000 });
 
         await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(true);
         expect(page.actions.showToast).toHaveBeenCalledWith(
             'invite_reward_reminder',
             false,
-            expect.objectContaining({ timeoutMs: 12000, actionLabel: 'open_settings' }),
+            expect.objectContaining({ timeoutMs: 20000, actionLabel: 'open_invite_page' }),
         );
         expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_STORAGE_KEY)).toBe('1000000000');
         page.actions.showToast.mock.calls[0][2].onAction();
-        expect(page.actions.openSettings).toHaveBeenCalledWith({ forced: false });
+        await vi.waitFor(() => {
+            expect(fetch).toHaveBeenNthCalledWith(2, '/account/web-login-url?next=%2Finvite');
+            expect(page.openWindow).toHaveBeenCalledWith(
+                'https://account.example/app/#/login?web_login_code=WEB-123&next=%2Finvite',
+                '_blank',
+                'noopener,noreferrer',
+            );
+        });
         page.dom.window.close();
     });
 
@@ -152,7 +163,7 @@ describe('HostedAccount invite reward reminder', () => {
 
         const invited = setup({
             signedInAtLaunch: true,
-            fetch: vi.fn().mockResolvedValue(response({ successful_invites: 1 })),
+            fetch: vi.fn().mockResolvedValue(response({ successful_invite_count: 1 })),
         });
         await expect(invited.controller.maybeShowInviteReminder()).resolves.toBe(false);
         expect(invited.actions.showToast).not.toHaveBeenCalled();
@@ -220,6 +231,8 @@ describe('HostedAccount actions', () => {
         expect(page.document.getElementById('redeemInput').value).toBe('');
         expect(page.actions.showToast).toHaveBeenCalledWith(
             'account_redeem_success|credits=C10|balance=C130',
+            false,
+            { timeoutMs: 5000 },
         );
         expect(page.balance.resetFirstRedeemBonus).toHaveBeenCalledWith(5);
         expect(page.balance.fetchBalance).toHaveBeenCalledOnce();

@@ -100,7 +100,7 @@ describe('hosted notification flows', () => {
         const fetch = async (url, request = {}) => {
             const parsed = new URL(String(url), 'http://localhost/');
             if (parsed.pathname === '/account/invite') {
-                return { ok: true, status: 200, json: async () => ({ invited_users_count: 0 }) };
+                return { ok: true, status: 200, json: async () => ({ successful_invite_count: 0 }) };
             }
             return defaultFetchResponse(url, { ...request, uiConfig: hostedConfig });
         };
@@ -113,7 +113,14 @@ describe('hosted notification flows', () => {
         try {
             const toast = page.document.getElementById('toast');
             expect(toast.textContent).toContain('Invite a friend and you both receive rewards');
+            expect(toast.textContent).toContain('only once per week');
             expect(page.window.localStorage.getItem('inviteRewardReminderLastShown')).not.toBeNull();
+            const cadenceWrite = page.fetchCalls.find(([url, request]) => (
+                new URL(String(url), 'http://localhost/').pathname === '/local-store'
+                && request && request.method === 'POST'
+                && String(request.body).includes('inviteRewardReminderLastShown')
+            ));
+            expect(cadenceWrite).toBeTruthy();
             toast.querySelector('.toast-close').click();
             expect(toast.hidden).toBe(true);
         } finally {
