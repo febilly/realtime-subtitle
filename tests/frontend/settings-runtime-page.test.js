@@ -34,7 +34,8 @@ describe('full-page runtime settings wiring', () => {
 
             const savePosts = page.fetchCalls.slice(beforeSave)
                 .filter(([, options]) => options && options.method === 'POST')
-                .map(([url]) => new URL(String(url), 'http://localhost/').pathname);
+                .map(([url]) => new URL(String(url), 'http://localhost/').pathname)
+                .filter((pathname) => pathname !== '/local-store');
             expect(savePosts).toEqual([
                 '/subtitle-font',
                 '/speaker-labels',

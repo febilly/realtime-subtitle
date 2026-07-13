@@ -38,7 +38,12 @@
         return supportedRegions.includes(normalized) ? normalized : 'us';
     }
 
-    function buildSetupBody(provider, apiKey, { region = null, mode = null, token = null } = {}) {
+    function buildSetupBody(provider, apiKey, {
+        region = null,
+        mode = null,
+        token = null,
+        sleepOnSilence = null,
+    } = {}) {
         const body = { provider };
         if (mode) {
             body.mode = mode;
@@ -52,6 +57,9 @@
         }
         if (provider === 'soniox' && region) {
             body.soniox_region = region;
+        }
+        if (typeof sleepOnSilence === 'boolean') {
+            body.sleep_on_silence = sleepOnSilence;
         }
         return body;
     }

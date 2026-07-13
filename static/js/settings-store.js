@@ -12,6 +12,7 @@
         segmentMode: 'segmentMode',
         displayMode: 'displayMode',
         autoRestartEnabled: 'autoRestartEnabled',
+        sleepOnSilenceEnabled: 'sleepOnSilenceEnabled',
         bottomSafeAreaEnabled: 'bottomSafeAreaEnabled',
         bundledCjkFontEnabled: 'useBundledCjkFont',
         theme: 'theme',
@@ -286,6 +287,12 @@
             saveDisplayMode,
             loadAutoRestartEnabled: () => loadBoolean(KEYS.autoRestartEnabled, true),
             saveAutoRestartEnabled: (value) => saveBoolean(KEYS.autoRestartEnabled, value),
+            readSleepOnSilenceEnabled: () => {
+                const value = read(KEYS.sleepOnSilenceEnabled);
+                return value === null ? null : value === 'true';
+            },
+            loadSleepOnSilenceEnabled: () => loadBoolean(KEYS.sleepOnSilenceEnabled, true),
+            saveSleepOnSilenceEnabled: (value) => saveBoolean(KEYS.sleepOnSilenceEnabled, value),
             loadBottomSafeAreaEnabled: () => loadBoolean(KEYS.bottomSafeAreaEnabled, false),
             saveBottomSafeAreaEnabled: (value) => saveBoolean(KEYS.bottomSafeAreaEnabled, value),
             loadBundledCjkFontEnabled: () => loadBoolean(KEYS.bundledCjkFontEnabled, false),

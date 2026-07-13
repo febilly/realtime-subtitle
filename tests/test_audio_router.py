@@ -260,6 +260,57 @@ def test_sleep_buffer_keeps_preroll_and_wake_audio(monkeypatch):
     ]
 
 
+def test_reset_sleep_tracking_restarts_idle_and_clears_latched_wake(monkeypatch):
+    _force_energy_backend(monkeypatch)
+    router = AudioSendRouter(
+        sample_rate=1000,
+        chunk_size=100,
+        sleep_idle_seconds=0.3,
+        sleep_speech_grace_seconds=0.2,
+        sleep_speech_window_seconds=0.3,
+    )
+    silence = _pcm_chunk(0)
+    speech = _pcm_chunk(2000)
+
+    for _ in range(3):
+        router.send(silence)
+    assert router.sleep_ready() is True
+    router.reset_sleep_tracking()
+    assert router.sleep_ready() is False
+
+    target = RecordingTarget()
+    assert router.set_target(target) is True
+    assert router.enter_sleep_buffering(target) is True
+    router.send(speech)
+    router.send(speech)
+    assert router.wake_ready() is True
+    router.reset_sleep_tracking()
+    assert router.wake_ready() is False
+
+
+def test_dormant_wake_requires_stricter_speech_evidence(monkeypatch):
+    _force_energy_backend(monkeypatch)
+    router = AudioSendRouter(
+        sample_rate=1000,
+        chunk_size=100,
+        sleep_idle_seconds=1.0,
+        sleep_speech_grace_seconds=0.2,
+        sleep_speech_window_seconds=0.3,
+        sleep_wake_speech_seconds=0.4,
+        sleep_wake_speech_window_seconds=0.5,
+    )
+    target = RecordingTarget()
+    assert router.set_target(target) is True
+    assert router.enter_sleep_buffering(target) is True
+    speech = _pcm_chunk(2000)
+
+    for _ in range(3):
+        router.send(speech)
+    assert router.wake_ready() is False
+    router.send(speech)
+    assert router.wake_ready() is True
+
+
 def test_audio_router_dual_vad_thresholds():
     router = AudioSendRouter(
         max_buffered_chunks=10,
@@ -267,8 +318,11 @@ def test_audio_router_dual_vad_thresholds():
         chunk_size=3840,
         vad_speech_threshold=0.6,
         sleep_vad_threshold=0.2,
+        sleep_wake_vad_threshold=0.7,
     )
     if hasattr(router._silence_detector, "speech_threshold"):
         assert router._silence_detector.speech_threshold == 0.6
     if hasattr(router._sleep_silence_detector, "speech_threshold"):
         assert router._sleep_silence_detector.speech_threshold == 0.2
+    if hasattr(router._wake_silence_detector, "speech_threshold"):
+        assert router._wake_silence_detector.speech_threshold == 0.7

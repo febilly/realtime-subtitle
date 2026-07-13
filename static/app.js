@@ -107,6 +107,7 @@ const outputDeviceHint = document.getElementById('outputDeviceHint');
 const bundledCjkFontPickerHost = document.getElementById('bundledCjkFontPicker');
 const runtimeControlsSection = document.getElementById('runtimeControlsSection');
 const autoRestartPickerHost = document.getElementById('autoRestartPicker');
+const sleepOnSilencePickerHost = document.getElementById('sleepOnSilencePicker');
 const speakerLabelsSettingField = document.getElementById('speakerLabelsSettingField');
 const speakerLabelsPickerHost = document.getElementById('speakerLabelsPicker');
 const segmentModeSettingField = document.getElementById('segmentModeSettingField');
@@ -162,6 +163,7 @@ const controlPorts = {
     updateAutoRestartButton: () => { recognitionControls.updateAutoRestartButton(); },
     updateAudioSourceButton: () => { runtimeControls.updateAudioSourceButton(); },
     setTranslationUiMode: (mode, options = {}) => translationModeController.setTranslationUiMode(mode, options),
+    setSleepOnSilenceEnabled: (enabled) => setSleepOnSilenceEnabled(enabled),
     setSpeakerLabelsHidden: (hidden) => speakerLabelController.setHidden(hidden),
     setSegmentMode: (mode) => segmentModeController.setMode(mode),
     updateFuriganaButton: () => furiganaToggleController.updateButton(),
@@ -220,6 +222,7 @@ const settingsRuntime = SettingsRuntime.create({
         outputDevicePickerHost,
         outputDeviceHint,
         autoRestartPickerHost,
+        sleepOnSilencePickerHost,
         speakerLabelsSettingField,
         speakerLabelsPickerHost,
         bundledCjkFontPickerHost,
@@ -235,6 +238,7 @@ const settingsRuntime = SettingsRuntime.create({
         get selectedProvider() { return settingsPorts.getSelectedProvider(); },
         get providerSettings() { return settingsPorts.loadProviderSettings(); },
         get autoRestartEnabled() { return autoRestartEnabled; },
+        get sleepOnSilenceEnabled() { return sleepOnSilenceEnabled; },
         get hideSpeakerLabels() { return speakerLabelController.isHidden(); },
         get customFontAvailable() { return customFontAvailable; },
         get useBundledCjkFont() { return useBundledCjkFont; },
@@ -251,12 +255,16 @@ const settingsRuntime = SettingsRuntime.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
             autoRestartEnabled = patch.autoRestartEnabled;
         }
+        if (Object.prototype.hasOwnProperty.call(patch, 'sleepOnSilenceEnabled')) {
+            sleepOnSilenceEnabled = patch.sleepOnSilenceEnabled;
+        }
         if (Object.prototype.hasOwnProperty.call(patch, 'useBundledCjkFont')) {
             useBundledCjkFont = patch.useBundledCjkFont;
         }
     },
     actions: {
         updateAutoRestartButton: controlPorts.updateAutoRestartButton,
+        setSleepOnSilenceEnabled: controlPorts.setSleepOnSilenceEnabled,
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
         setTranslationUiMode: controlPorts.setTranslationUiMode,
@@ -438,6 +446,39 @@ let displayMode = settingsStore.loadDisplayMode();
 
 // 自动重启识别开关（默认开启；已有保存值优先）
 let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
+let sleepOnSilenceEnabled = settingsStore.loadSleepOnSilenceEnabled();
+
+async function setSleepOnSilenceEnabled(enabled) {
+    try {
+        const response = await fetch('/sleep-on-silence', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!enabled }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        sleepOnSilenceEnabled = typeof data.enabled === 'boolean' ? data.enabled : !!enabled;
+        settingsStore.saveSleepOnSilenceEnabled(sleepOnSilenceEnabled);
+        settingsRuntime.renderSleepOnSilencePicker();
+        return true;
+    } catch (error) {
+        console.error('Error setting automatic sleep:', error);
+        return false;
+    }
+}
+
+function applySleepOnSilenceConfig(data = {}) {
+    if (typeof data.sleep_on_silence_enabled !== 'boolean') return;
+    const stored = settingsStore.readSleepOnSilenceEnabled();
+    sleepOnSilenceEnabled = stored === null ? data.sleep_on_silence_enabled : stored;
+    if (
+        stored !== null
+        && !lockManualControls
+        && stored !== data.sleep_on_silence_enabled
+    ) {
+        void setSleepOnSilenceEnabled(stored);
+    }
+}
 
 const furiganaService = Furigana.createService({
     kuromoji: window.kuromoji,
@@ -722,6 +763,7 @@ const settingsSetup = SettingsSetup.create({
         providerSettings: settingsPorts.loadProviderSettings(),
         connectionMode: settingsPorts.getConnectionMode(),
         serverSettings: settingsPorts.loadServerSettings(),
+        sleepOnSilenceEnabled,
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'translationProvider')) translationProvider = patch.translationProvider;
@@ -839,6 +881,7 @@ const uiConfigController = UiConfigController.create({
         updateAccountSection: hostedPorts.updateAccountSection,
         updateSettingsButtonVisibility: settingsPorts.updateSettingsButtonVisibility,
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
+        applySleepOnSilenceConfig,
         renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,

@@ -303,6 +303,7 @@
             setText('outputDeviceLabel', 'output_device');
             setText('runtimeControlsLabel', 'recognition_controls');
             setText('autoRestartSettingLabel', 'auto_restart_setting');
+            setText('sleepOnSilenceSettingLabel', 'auto_sleep_setting');
             setText('speakerLabelsSettingLabel', 'speaker_labels_setting');
             setText('segmentModeSettingLabel', 'segment_mode_setting');
             setText('translationModeSettingLabel', 'translation_mode_setting');

@@ -42,6 +42,9 @@ def _clear_sleep_env(monkeypatch):
             "SLEEP_SPEECH_WINDOW_SECONDS",
             "SLEEP_SPEECH_GRACE_SECONDS",
             "SLEEP_VAD_THRESHOLD",
+            "SLEEP_WAKE_SPEECH_SECONDS",
+            "SLEEP_WAKE_SPEECH_WINDOW_SECONDS",
+            "SLEEP_WAKE_VAD_THRESHOLD",
         ):
             monkeypatch.delenv(f"{prefix}{suffix}", raising=False)
 
@@ -100,3 +103,35 @@ def test_sleep_tuning_reads_active_provider_legacy_alias(
     assert config.SLEEP_IDLE_SECONDS == 44
     assert config.GEMINI_SLEEP_IDLE_SECONDS == 44
     assert config.SONIOX_SLEEP_IDLE_SECONDS == 44
+
+
+def test_runtime_sleep_preference_defaults_on_and_survives_key_type_changes(
+    monkeypatch, restore_config_module
+):
+    _clear_sleep_env(monkeypatch)
+    monkeypatch.setenv("SONIOX_API_KEY", "persistent")
+    monkeypatch.setenv("GEMINI_API_KEY", "persistent")
+    config = _reload_config(monkeypatch, "smart")
+
+    assert config.get_sleep_on_silence_enabled() is True
+    assert config.SONIOX_SLEEP_ON_SILENCE is True
+    assert config.GEMINI_SLEEP_ON_SILENCE is True
+    assert config.SLEEP_SPEECH_GRACE_SECONDS == 0.45
+    assert config.SLEEP_SPEECH_WINDOW_SECONDS == 1.2
+    assert config.SLEEP_WAKE_SPEECH_SECONDS == 0.65
+    assert config.SLEEP_WAKE_SPEECH_WINDOW_SECONDS == 1.5
+    assert config.SLEEP_VAD_THRESHOLD == 0.5
+    assert config.SLEEP_WAKE_VAD_THRESHOLD == 0.6
+
+    assert config.set_sleep_on_silence_enabled(False) is False
+    config.set_uses_temp_api_key("soniox", False)
+    config.set_uses_temp_api_key("gemini", False)
+    assert config.SONIOX_SLEEP_ON_SILENCE is False
+    assert config.GEMINI_SLEEP_ON_SILENCE is False
+
+    assert config.set_sleep_on_silence_enabled(True) is True
+    config.set_uses_temp_api_key("soniox", True)
+    assert config.get_sleep_on_silence_enabled("soniox") is True
+    assert config.SONIOX_SLEEP_ON_SILENCE is False
+    config.set_uses_temp_api_key("soniox", False)
+    assert config.SONIOX_SLEEP_ON_SILENCE is True

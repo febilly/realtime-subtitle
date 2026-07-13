@@ -175,6 +175,7 @@
             call('renderBundledCjkFontPicker');
 
             speakerLabels.applyBackendConfig(data);
+            call('applySleepOnSilenceConfig', data);
             call('renderRuntimeSettingsPickers');
             if (typeof data.enable_chroma_theme === 'boolean') {
                 theme.setChromaEnabled(data.enable_chroma_theme);

@@ -12,6 +12,7 @@
         'Overlay control is disabled by server config': 'backend_overlay_disabled',
         'Segment mode switching is disabled': 'backend_segment_mode_disabled',
         'Speaker label switching is disabled by server config': 'backend_speaker_labels_disabled',
+        'Auto sleep switching is disabled by server config': 'backend_auto_sleep_disabled',
         'LLM refine toggle is disabled by server config': 'backend_llm_refine_disabled',
         'Furigana feature not available (pykakasi not installed)': 'backend_furigana_unavailable',
     });

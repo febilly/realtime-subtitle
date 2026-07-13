@@ -54,6 +54,9 @@ describe('settings policy setup payload', () => {
         ['key without explicit mode', ['gemini', 'key', {}], {
             provider: 'gemini', api_key: 'key',
         }],
+        ['automatic sleep preference', ['gemini', 'key', { sleepOnSilence: false }], {
+            provider: 'gemini', api_key: 'key', sleep_on_silence: false,
+        }],
     ])('%s', (_label, args, expected) => {
         expect(buildSetupBody(...args)).toEqual(expected);
     });

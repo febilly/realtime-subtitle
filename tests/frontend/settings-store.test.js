@@ -180,6 +180,7 @@ describe('settings-store typed preferences', () => {
         expect(store.saveSegmentMode('endpoint')).toBe(true);
         expect(store.saveDisplayMode('translation')).toBe(true);
         expect(store.saveAutoRestartEnabled(false)).toBe(true);
+        expect(store.saveSleepOnSilenceEnabled(false)).toBe(true);
         expect(store.saveBottomSafeAreaEnabled(true)).toBe(true);
         expect(store.saveBundledCjkFontEnabled(true)).toBe(true);
         expect(store.saveAudioSource('mix')).toBe(true);
@@ -191,6 +192,8 @@ describe('settings-store typed preferences', () => {
         expect(store.loadSegmentMode()).toBe('endpoint');
         expect(store.loadDisplayMode()).toBe('translation');
         expect(store.loadAutoRestartEnabled()).toBe(false);
+        expect(store.readSleepOnSilenceEnabled()).toBe(false);
+        expect(store.loadSleepOnSilenceEnabled()).toBe(false);
         expect(store.loadBottomSafeAreaEnabled()).toBe(true);
         expect(store.loadBundledCjkFontEnabled()).toBe(true);
         expect(store.loadAudioSource()).toBe('mix');

@@ -45,6 +45,7 @@
             output: null,
             microphone: null,
             autoRestart: null,
+            sleepOnSilence: null,
             speakerLabels: null,
             bundledCjkFont: null,
             translationMode: null,
@@ -77,6 +78,10 @@
                 autoRestartEnabled: pickerValue(
                     'autoRestart',
                     draft.autoRestartEnabled === false ? 'false' : 'true',
+                ) !== 'false',
+                sleepOnSilenceEnabled: pickerValue(
+                    'sleepOnSilence',
+                    draft.sleepOnSilenceEnabled === false ? 'false' : 'true',
                 ) !== 'false',
                 hideSpeakerLabels: pickerValue(
                     'speakerLabels',
@@ -337,6 +342,18 @@
             });
         }
 
+        function renderSleepOnSilencePicker() {
+            const enabled = state().sleepOnSilenceEnabled !== false;
+            setDraft({ sleepOnSilenceEnabled: enabled });
+            return replaceHost(elements.sleepOnSilencePickerHost, 'sleepOnSilence', [
+                { value: 'true', label: t('auto_sleep_enabled') },
+                { value: 'false', label: t('auto_sleep_disabled') },
+            ], {
+                value: enabled ? 'true' : 'false',
+                onChange: (value) => setDraft({ sleepOnSilenceEnabled: value !== 'false' }),
+            });
+        }
+
         function renderSpeakerLabelsPicker() {
             const supported = selectedProvider() === 'soniox';
             if (elements.speakerLabelsSettingField) {
@@ -524,6 +541,7 @@
         function renderRuntimeSettingsPickers() {
             if (elements.runtimeControlsSection) elements.runtimeControlsSection.hidden = false;
             renderAutoRestartPicker();
+            renderSleepOnSilencePicker();
             renderSpeakerLabelsPicker();
             renderSegmentModePicker();
         }
@@ -560,6 +578,16 @@
                 if (typeof actions.updateAutoRestartButton === 'function') {
                     actions.updateAutoRestartButton();
                 }
+            }
+
+            if (pickers.sleepOnSilence && typeof pickers.sleepOnSilence.value === 'string') {
+                const enabled = getDraft().sleepOnSilenceEnabled;
+                if (enabled !== (state().sleepOnSilenceEnabled !== false)) {
+                    const ok = await actionSucceeded('setSleepOnSilenceEnabled', enabled);
+                    if (!ok) return { ok: false, message: t('backend_auto_sleep_disabled') };
+                    updateState({ sleepOnSilenceEnabled: enabled });
+                }
+                storage.setItem('sleepOnSilenceEnabled', enabled ? 'true' : 'false');
             }
 
             const currentProvider = selectedProvider();
@@ -611,6 +639,7 @@
             fetchMicrophoneDevices,
             saveMicrophoneDeviceSelection,
             renderAutoRestartPicker,
+            renderSleepOnSilencePicker,
             getStoredHideSpeakerLabelsSetting,
             renderSpeakerLabelsPicker,
             renderBundledCjkFontPicker,

@@ -32,7 +32,12 @@
                 token = null,
             } = pushOptions;
             try {
-                const body = policy.buildSetupBody(provider, apiKey, { region, mode, token });
+                const body = policy.buildSetupBody(provider, apiKey, {
+                    region,
+                    mode,
+                    token,
+                    sleepOnSilence: state().sleepOnSilenceEnabled,
+                });
                 const response = await fetchRef('/setup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },

@@ -28,6 +28,7 @@ function setup(overrides = {}) {
         providerSettings: { providerOverride: null, keys: {} },
         connectionMode: 'direct',
         serverSettings: {},
+        sleepOnSilenceEnabled: true,
         ...overrides.state,
     };
     const fetch = overrides.fetch || vi.fn().mockResolvedValue(response({
@@ -74,6 +75,7 @@ describe('SettingsSetup push', () => {
                 mode: 'direct',
                 api_key: 'local-key',
                 soniox_region: 'eu',
+                sleep_on_silence: true,
             }),
         });
         expect(env.state).toMatchObject({
@@ -103,7 +105,7 @@ describe('SettingsSetup push', () => {
 
         expect(result.ok).toBe(true);
         expect(JSON.parse(env.fetch.mock.calls[0][1].body)).toEqual({
-            provider: 'gemini', mode: 'relay', token: 'relay-token',
+            provider: 'gemini', mode: 'relay', token: 'relay-token', sleep_on_silence: true,
         });
         expect(env.actions.sessionCostReset).toHaveBeenCalledOnce();
         expect(env.actions.showToast).not.toHaveBeenCalled();
@@ -203,7 +205,7 @@ describe('SettingsSetup decisions and startup sync', () => {
         const result = await env.controller.syncFromStorage();
         expect(result.ok).toBe(true);
         expect(JSON.parse(env.fetch.mock.calls[0][1].body)).toEqual({
-            provider: 'gemini', mode: 'direct', api_key: 'gemini-key',
+            provider: 'gemini', mode: 'direct', api_key: 'gemini-key', sleep_on_silence: true,
         });
     });
 });

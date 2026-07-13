@@ -35,6 +35,7 @@ describe('full-page settings save orchestration', () => {
                 provider: 'gemini',
                 mode: 'direct',
                 api_key: 'gemini-key',
+                sleep_on_silence: true,
             });
             const provider = JSON.parse(page.window.localStorage.getItem('providerSettings.v1'));
             expect(provider).toMatchObject({
@@ -148,6 +149,7 @@ describe('full-page settings save orchestration', () => {
                 provider: 'gemini',
                 mode: 'relay',
                 token: 'relay-token',
+                sleep_on_silence: true,
             });
             const provider = JSON.parse(page.window.localStorage.getItem('providerSettings.v1'));
             expect(provider.providerOverride).toBe('gemini');

@@ -15,6 +15,7 @@ function setup(overrides = {}) {
         <section id="microphone"><div id="microphonePicker"></div><p id="microphoneHint"></p></section>
         <section id="output"><div id="outputPicker"></div><p id="outputHint"></p></section>
         <div id="autoRestart"></div>
+        <div id="sleepOnSilence"></div>
         <label id="speakerField"><div id="speakerPicker"></div></label>
         <div id="fontPicker"></div><p id="fontHint"></p>
         <section id="translationSection"><label id="translationField"><div id="translationPicker"></div></label><p id="translationHint"></p></section>
@@ -25,6 +26,7 @@ function setup(overrides = {}) {
         selectedProvider: 'soniox',
         providerSettings: {},
         autoRestartEnabled: true,
+        sleepOnSilenceEnabled: true,
         hideSpeakerLabels: false,
         customFontAvailable: true,
         useBundledCjkFont: false,
@@ -56,6 +58,7 @@ function setup(overrides = {}) {
     const calls = [];
     const actions = {
         updateAutoRestartButton: vi.fn(() => calls.push('auto')),
+        setSleepOnSilenceEnabled: vi.fn(async () => { calls.push('sleep'); return true; }),
         setSpeakerLabelsHidden: vi.fn(async () => { calls.push('speaker'); return true; }),
         setSegmentMode: vi.fn(async () => { calls.push('segment'); return true; }),
         setTranslationUiMode: vi.fn(async () => { calls.push('translation'); return true; }),
@@ -82,6 +85,7 @@ function setup(overrides = {}) {
             outputDevicePickerHost: document.getElementById('outputPicker'),
             outputDeviceHint: document.getElementById('outputHint'),
             autoRestartPickerHost: document.getElementById('autoRestart'),
+            sleepOnSilencePickerHost: document.getElementById('sleepOnSilence'),
             speakerLabelsSettingField: document.getElementById('speakerField'),
             speakerLabelsPickerHost: document.getElementById('speakerPicker'),
             bundledCjkFontPickerHost: document.getElementById('fontPicker'),
@@ -132,6 +136,7 @@ describe('SettingsRuntime picker state', () => {
         const pickers = page.controller.getPickers();
 
         expect(pickers.autoRestart.value).toBe('true');
+        expect(pickers.sleepOnSilence.value).toBe('true');
         expect(pickers.speakerLabels.value).toBe('hide');
         expect(pickers.bundledCjkFont.value).toBe('false');
         expect(pickers.translationMode.value).toBe('hybrid');
@@ -264,19 +269,22 @@ describe('SettingsRuntime microphone and font effects', () => {
 });
 
 describe('SettingsRuntime save orchestration', () => {
-    it('applies auto restart, speaker, segment, and translation in order', async () => {
+    it('applies auto restart, auto sleep, speaker, segment, and translation in order', async () => {
         const page = setup();
         page.controller.renderSettingsPickers();
         const pickers = page.controller.getPickers();
         pickers.autoRestart.choose('false');
+        pickers.sleepOnSilence.choose('false');
         pickers.speakerLabels.choose('hide');
         pickers.segmentMode.choose('endpoint');
         pickers.translationMode.choose('accurate');
 
         await expect(page.controller.applyRuntimeControlSettings()).resolves.toEqual({ ok: true });
         expect(page.state.autoRestartEnabled).toBe(false);
+        expect(page.state.sleepOnSilenceEnabled).toBe(false);
         expect(page.dom.window.localStorage.getItem('autoRestartEnabled')).toBe('false');
-        expect(page.calls).toEqual(['auto', 'speaker', 'segment', 'translation']);
+        expect(page.dom.window.localStorage.getItem('sleepOnSilenceEnabled')).toBe('false');
+        expect(page.calls).toEqual(['auto', 'sleep', 'speaker', 'segment', 'translation']);
         expect(page.actions.setTranslationUiMode).toHaveBeenCalledWith('accurate', {
             restartIfNeeded: true,
         });

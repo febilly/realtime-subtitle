@@ -300,6 +300,7 @@ class WebServer:
             "soniox_no_translation_factor": float(config.HOSTED_SONIOX_NO_TRANSLATION_FACTOR),
             "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
             "hide_speaker_labels": bool(config.HIDE_SPEAKER_LABELS),
+            "sleep_on_silence_enabled": config.get_sleep_on_silence_enabled(provider),
             "soniox_region": config.SONIOX_REGION,
             "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
             # Subtitle-server relay (hosted mode) availability. The server URL is
@@ -414,6 +415,14 @@ class WebServer:
         provider = str(payload.get("provider") or "").strip().lower()
         if provider not in ("soniox", "gemini"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
+
+        if "sleep_on_silence" in payload:
+            if not isinstance(payload.get("sleep_on_silence"), bool):
+                return web.json_response(
+                    {"status": "error", "message": "Invalid sleep_on_silence value"},
+                    status=400,
+                )
+            config.set_sleep_on_silence_enabled(payload["sleep_on_silence"])
 
         # Connection mode: "direct" (own provider key) or "relay" (hosted).
         mode = str(payload.get("mode") or "").strip().lower()
@@ -1053,6 +1062,52 @@ class WebServer:
         response = dict(data)
         response["status"] = "ok"
         return web.json_response(response)
+
+    async def sleep_on_silence_get_handler(self, request):
+        """Return the user-facing auto-sleep preference and current effect."""
+        provider = config.TRANSLATION_PROVIDER
+        effective = (
+            config.GEMINI_SLEEP_ON_SILENCE
+            if provider == "gemini"
+            else config.SONIOX_SLEEP_ON_SILENCE
+        )
+        return web.json_response({
+            "status": "ok",
+            "enabled": config.get_sleep_on_silence_enabled(provider),
+            "effective": bool(effective),
+        })
+
+    async def sleep_on_silence_set_handler(self, request):
+        """Hot-apply auto sleep without rebuilding the provider session."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Auto sleep switching is disabled by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
+            return web.json_response(
+                {"status": "error", "message": "Missing or invalid 'enabled' field"},
+                status=400,
+            )
+
+        enabled = config.set_sleep_on_silence_enabled(payload["enabled"])
+        provider = config.TRANSLATION_PROVIDER
+        effective = (
+            config.GEMINI_SLEEP_ON_SILENCE
+            if provider == "gemini"
+            else config.SONIOX_SLEEP_ON_SILENCE
+        )
+        return web.json_response({
+            "status": "ok",
+            "enabled": enabled,
+            "effective": bool(effective),
+        })
 
     async def llm_refine_get_handler(self, request):
         """获取 LLM 改进开关状态"""
@@ -1732,6 +1787,8 @@ class WebServer:
         app.router.add_post('/segment-mode', self.segment_mode_set_handler)
         app.router.add_get('/speaker-labels', self.speaker_labels_get_handler)
         app.router.add_post('/speaker-labels', self.speaker_labels_set_handler)
+        app.router.add_get('/sleep-on-silence', self.sleep_on_silence_get_handler)
+        app.router.add_post('/sleep-on-silence', self.sleep_on_silence_set_handler)
         app.router.add_get('/llm-refine', self.llm_refine_get_handler)
         app.router.add_post('/llm-refine', self.llm_refine_set_handler)
         app.router.add_post('/translation-mode', self.translation_mode_set_handler)

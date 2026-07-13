@@ -34,6 +34,7 @@ describe('full-page setup wiring', () => {
                 provider: 'soniox',
                 mode: 'direct',
                 soniox_region: 'eu',
+                sleep_on_silence: true,
             });
             expect(page.document.getElementById('settingsPanel').hidden).toBe(true);
         } finally {

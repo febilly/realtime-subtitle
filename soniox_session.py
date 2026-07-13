@@ -22,7 +22,10 @@ from config import (
     SLEEP_PRE_ROLL_SECONDS,
     SLEEP_SPEECH_GRACE_SECONDS,
     SLEEP_SPEECH_WINDOW_SECONDS,
+    SLEEP_WAKE_SPEECH_SECONDS,
+    SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
     SLEEP_VAD_THRESHOLD,
+    SLEEP_WAKE_VAD_THRESHOLD,
     ROLLOVER_VAD_THRESHOLD,
     USE_TWITCH_AUDIO_STREAM,
     MICROPHONE_DEVICE_ID,
@@ -2666,12 +2669,15 @@ class SonioxSession:
         if rollover_seconds is not None:
             print(f"🔁 Soniox stream rollover enabled: {rollover_seconds:.1f}s per stream")
         sleep_idle_seconds = self._sleep_idle_seconds()
+        sleep_enabled = sleep_idle_seconds is not None
         if sleep_idle_seconds is not None:
             print(
                 f"💤 Soniox silence sleep enabled: {sleep_idle_seconds:.1f}s idle, "
                 f"{float(SLEEP_PRE_ROLL_SECONDS):.2f}s pre-roll, "
                 f"{float(SLEEP_SPEECH_GRACE_SECONDS):.2f}s speech/"
-                f"{float(SLEEP_SPEECH_WINDOW_SECONDS):.2f}s window"
+                f"{float(SLEEP_SPEECH_WINDOW_SECONDS):.2f}s window, "
+                f"{float(SLEEP_WAKE_SPEECH_SECONDS):.2f}s wake speech/"
+                f"{float(SLEEP_WAKE_SPEECH_WINDOW_SECONDS):.2f}s wake window"
             )
 
         self.stop_event = threading.Event()
@@ -2693,11 +2699,14 @@ class SonioxSession:
             chunk_size=self.chunk_size,
             silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
             vad_speech_threshold=ROLLOVER_VAD_THRESHOLD,
-            sleep_idle_seconds=sleep_idle_seconds,
+            sleep_idle_seconds=float(SLEEP_IDLE_SECONDS),
             sleep_pre_roll_seconds=SLEEP_PRE_ROLL_SECONDS,
             sleep_speech_grace_seconds=SLEEP_SPEECH_GRACE_SECONDS,
             sleep_speech_window_seconds=SLEEP_SPEECH_WINDOW_SECONDS,
             sleep_vad_threshold=SLEEP_VAD_THRESHOLD,
+            sleep_wake_speech_seconds=SLEEP_WAKE_SPEECH_SECONDS,
+            sleep_wake_speech_window_seconds=SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
+            sleep_wake_vad_threshold=SLEEP_WAKE_VAD_THRESHOLD,
         )
 
         try:
@@ -2742,9 +2751,16 @@ class SonioxSession:
                     notify_disconnect = False
                     break
 
+                current_sleep_enabled = self._sleep_idle_seconds() is not None
+                if current_sleep_enabled != sleep_enabled:
+                    sleep_enabled = current_sleep_enabled
+                    audio_router.reset_sleep_tracking()
+                    print(f"💤 Soniox automatic sleep {'enabled' if sleep_enabled else 'disabled'} at runtime.")
+
                 if active_stream is None:
                     if dormant_for_silence:
-                        if audio_router.wake_ready():
+                        resume_because_disabled = not sleep_enabled
+                        if audio_router.wake_ready() or resume_because_disabled:
                             buffered_count = audio_router.buffered_count()
                             try:
                                 next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
@@ -2767,10 +2783,16 @@ class SonioxSession:
                                 dormant_for_silence = False
                                 self._notify_relay_session(loop, "session_connected")
                                 disconnect_reason = "silence sleep resumed"
-                                print(
-                                    f"▶️  Speech detected after silence; reopened Soniox stream "
-                                    f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
-                                )
+                                if resume_because_disabled:
+                                    print(
+                                        f"▶️  Automatic sleep disabled; reopened Soniox stream "
+                                        f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
+                                    )
+                                else:
+                                    print(
+                                        f"▶️  Speech detected after silence; reopened Soniox stream "
+                                        f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
+                                    )
                             except Exception as error:
                                 disconnect_reason = f"failed to reopen Soniox stream after silence: {error}"
                                 print(f"⚠️  {disconnect_reason}")
@@ -2783,7 +2805,7 @@ class SonioxSession:
                         break
 
                 if (
-                    sleep_idle_seconds is not None
+                    sleep_enabled
                     and not dormant_for_silence
                     and active_stream is not None
                     and audio_router.sleep_ready()
@@ -2943,7 +2965,7 @@ class SonioxSession:
                 try:
                     recv_timeout = (
                         STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS
-                        if rollover_seconds is not None or sleep_idle_seconds is not None
+                        if rollover_seconds is not None or sleep_enabled
                         else None
                     )
                     pairing_timeout = self._pairer.seconds_until_next_deadline()

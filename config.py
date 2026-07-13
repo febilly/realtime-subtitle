@@ -361,15 +361,27 @@ SLEEP_IDLE_SECONDS = max(1.0, _env_float_any(_provider_sleep_env_names("IDLE_SEC
 SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float_any(_provider_sleep_env_names("PRE_ROLL_SECONDS"), 1.0))
 SLEEP_SPEECH_GRACE_SECONDS = max(
     0.0,
-    _env_float_any(_provider_sleep_env_names("SPEECH_GRACE_SECONDS"), 0.25),
+    _env_float_any(_provider_sleep_env_names("SPEECH_GRACE_SECONDS"), 0.45),
 )
 SLEEP_SPEECH_WINDOW_SECONDS = max(
     SLEEP_SPEECH_GRACE_SECONDS,
-    _env_float_any(_provider_sleep_env_names("SPEECH_WINDOW_SECONDS"), 0.75),
+    _env_float_any(_provider_sleep_env_names("SPEECH_WINDOW_SECONDS"), 1.2),
+)
+SLEEP_WAKE_SPEECH_SECONDS = max(
+    SLEEP_SPEECH_GRACE_SECONDS,
+    _env_float_any(_provider_sleep_env_names("WAKE_SPEECH_SECONDS"), 0.65),
+)
+SLEEP_WAKE_SPEECH_WINDOW_SECONDS = max(
+    SLEEP_WAKE_SPEECH_SECONDS,
+    _env_float_any(_provider_sleep_env_names("WAKE_SPEECH_WINDOW_SECONDS"), 1.5),
 )
 SLEEP_VAD_THRESHOLD = min(
     1.0,
-    max(0.0, _env_float_any(_provider_sleep_env_names("VAD_THRESHOLD"), 0.2)),
+    max(0.0, _env_float_any(_provider_sleep_env_names("VAD_THRESHOLD"), 0.5)),
+)
+SLEEP_WAKE_VAD_THRESHOLD = min(
+    1.0,
+    max(0.0, _env_float_any(_provider_sleep_env_names("WAKE_VAD_THRESHOLD"), 0.6)),
 )
 ROLLOVER_VAD_THRESHOLD = min(
     1.0,
@@ -382,13 +394,19 @@ SONIOX_SLEEP_IDLE_SECONDS = SLEEP_IDLE_SECONDS
 SONIOX_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
 SONIOX_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
 SONIOX_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
+SONIOX_SLEEP_WAKE_SPEECH_SECONDS = SLEEP_WAKE_SPEECH_SECONDS
+SONIOX_SLEEP_WAKE_SPEECH_WINDOW_SECONDS = SLEEP_WAKE_SPEECH_WINDOW_SECONDS
 SONIOX_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
+SONIOX_SLEEP_WAKE_VAD_THRESHOLD = SLEEP_WAKE_VAD_THRESHOLD
 SONIOX_ROLLOVER_VAD_THRESHOLD = ROLLOVER_VAD_THRESHOLD
 GEMINI_SLEEP_IDLE_SECONDS = SLEEP_IDLE_SECONDS
 GEMINI_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
 GEMINI_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
 GEMINI_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
+GEMINI_SLEEP_WAKE_SPEECH_SECONDS = SLEEP_WAKE_SPEECH_SECONDS
+GEMINI_SLEEP_WAKE_SPEECH_WINDOW_SECONDS = SLEEP_WAKE_SPEECH_WINDOW_SECONDS
 GEMINI_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
+GEMINI_SLEEP_WAKE_VAD_THRESHOLD = SLEEP_WAKE_VAD_THRESHOLD
 GEMINI_ROLLOVER_VAD_THRESHOLD = ROLLOVER_VAD_THRESHOLD
 
 # Soniox API configuration
@@ -434,6 +452,7 @@ SONIOX_STREAM_DURATION_SECONDS = _SONIOX_STREAM_DURATION_SECONDS_RAW
 # can change at runtime via provider/key hot-switch, so this is recomputed in
 # set_uses_temp_api_key().
 _SONIOX_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool_any(("SONIOX_SLEEP_ON_SILENCE", "SLEEP_ON_SILENCE"))
+_RUNTIME_SLEEP_ON_SILENCE_OVERRIDE: bool | None = None
 SONIOX_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
     SONIOX_USES_TEMP_API_KEY, _SONIOX_SLEEP_ON_SILENCE_OVERRIDE
 )
@@ -465,6 +484,34 @@ _GEMINI_SLEEP_ON_SILENCE_OVERRIDE = _env_optional_bool_any(("GEMINI_SLEEP_ON_SIL
 GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
     GEMINI_USES_TEMP_API_KEY, _GEMINI_SLEEP_ON_SILENCE_OVERRIDE
 )
+
+
+def get_sleep_on_silence_enabled(provider: str | None = None) -> bool:
+    """Return the requested auto-sleep preference before key-type gating."""
+    if _RUNTIME_SLEEP_ON_SILENCE_OVERRIDE is not None:
+        return _RUNTIME_SLEEP_ON_SILENCE_OVERRIDE
+    p = str(provider or TRANSLATION_PROVIDER or "soniox").strip().lower()
+    override = (
+        _GEMINI_SLEEP_ON_SILENCE_OVERRIDE
+        if p == "gemini"
+        else _SONIOX_SLEEP_ON_SILENCE_OVERRIDE
+    )
+    return override if override is not None else True
+
+
+def set_sleep_on_silence_enabled(enabled: bool) -> bool:
+    """Hot-apply the shared auto-sleep preference to both providers."""
+    global _RUNTIME_SLEEP_ON_SILENCE_OVERRIDE
+    global SONIOX_SLEEP_ON_SILENCE, GEMINI_SLEEP_ON_SILENCE
+
+    _RUNTIME_SLEEP_ON_SILENCE_OVERRIDE = bool(enabled)
+    SONIOX_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
+        SONIOX_USES_TEMP_API_KEY, _RUNTIME_SLEEP_ON_SILENCE_OVERRIDE
+    )
+    GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
+        GEMINI_USES_TEMP_API_KEY, _RUNTIME_SLEEP_ON_SILENCE_OVERRIDE
+    )
+    return _RUNTIME_SLEEP_ON_SILENCE_OVERRIDE
 
 # ============ Subtitle-server relay (hosted mode) ============
 # When a server URL is configured, the app can run in "relay" (hosted) mode:
@@ -962,12 +1009,12 @@ def set_uses_temp_api_key(provider: str, uses_temp: bool) -> None:
     if p == "gemini":
         GEMINI_USES_TEMP_API_KEY = uses_temp
         GEMINI_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
-            uses_temp, _GEMINI_SLEEP_ON_SILENCE_OVERRIDE
+            uses_temp, get_sleep_on_silence_enabled("gemini")
         )
     else:
         SONIOX_USES_TEMP_API_KEY = uses_temp
         SONIOX_SLEEP_ON_SILENCE = _derive_sleep_on_silence(
-            uses_temp, _SONIOX_SLEEP_ON_SILENCE_OVERRIDE
+            uses_temp, get_sleep_on_silence_enabled("soniox")
         )
 
 

@@ -84,12 +84,15 @@ To reduce provider usage during long silent periods, enable local silence sleep:
 SLEEP_ON_SILENCE="True"
 SLEEP_IDLE_SECONDS="30"
 SLEEP_PRE_ROLL_SECONDS="1.0"
-SLEEP_SPEECH_WINDOW_SECONDS="0.75"
-SLEEP_SPEECH_GRACE_SECONDS="0.5"
-SLEEP_VAD_THRESHOLD="0.2"
+SLEEP_SPEECH_WINDOW_SECONDS="1.2"
+SLEEP_SPEECH_GRACE_SECONDS="0.45"
+SLEEP_VAD_THRESHOLD="0.5"
+SLEEP_WAKE_SPEECH_SECONDS="0.65"
+SLEEP_WAKE_SPEECH_WINDOW_SECONDS="1.5"
+SLEEP_WAKE_VAD_THRESHOLD="0.6"
 ```
 
-When enabled, the app closes the active provider stream after the configured idle time, keeps listening locally, then reopens it when enough speech is detected in the recent confirmation window and flushes the local pre-roll buffer. The `SLEEP_*` tuning applies to both Soniox and Gemini; old provider-specific names are still accepted for compatibility.
+Automatic sleep is enabled by default in Settings. The app closes the active provider stream after the configured idle time, keeps listening locally, then reopens it only after the stricter wake detector confirms enough speech and flushes the local pre-roll buffer. The `SLEEP_*` tuning applies to both Soniox and Gemini; old provider-specific names are still accepted for compatibility.
 
 ### LLM translation refinement
 

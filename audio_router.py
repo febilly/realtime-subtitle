@@ -268,6 +268,7 @@ class TolerantSpeechActivityGate:
         speech_grace_seconds: float = 0.5,
         speech_window_seconds: float = 0.75,
         wake_speech_seconds: float | None = None,
+        wake_speech_window_seconds: float | None = None,
     ):
         self.idle_timeout_seconds = max(0.0, float(idle_timeout_seconds))
         self.speech_grace_seconds = max(0.0, float(speech_grace_seconds))
@@ -278,6 +279,16 @@ class TolerantSpeechActivityGate:
         if wake_speech_seconds is None:
             wake_speech_seconds = self.speech_grace_seconds
         self.wake_speech_seconds = max(0.0, float(wake_speech_seconds))
+        if wake_speech_window_seconds is None:
+            wake_speech_window_seconds = self.speech_window_seconds
+        self.wake_speech_window_seconds = max(
+            self.wake_speech_seconds,
+            float(wake_speech_window_seconds),
+        )
+        self._max_window_seconds = max(
+            self.speech_window_seconds,
+            self.wake_speech_window_seconds,
+        )
         self.confirmed_silence_seconds = 0.0
         self._window: deque[tuple[float, float]] = deque()
         self._window_observed_seconds = 0.0
@@ -304,8 +315,8 @@ class TolerantSpeechActivityGate:
         self._window_observed_seconds += observed
         self._window_speech_seconds += speech
 
-        while self._window and self._window_observed_seconds > self.speech_window_seconds:
-            excess = self._window_observed_seconds - self.speech_window_seconds
+        while self._window and self._window_observed_seconds > self._max_window_seconds:
+            excess = self._window_observed_seconds - self._max_window_seconds
             oldest_observed, oldest_speech = self._window[0]
             if oldest_observed <= excess + 1e-9:
                 self._window.popleft()
@@ -321,6 +332,18 @@ class TolerantSpeechActivityGate:
             self._window_speech_seconds -= removed_speech
             break
 
+    def _recent_speech_seconds(self, window_seconds: float) -> float:
+        remaining = max(0.0, float(window_seconds))
+        speech = 0.0
+        for observed, observed_speech in reversed(self._window):
+            if remaining <= 1e-9:
+                break
+            included = min(remaining, observed)
+            if observed > 0.0:
+                speech += observed_speech * (included / observed)
+            remaining -= included
+        return speech
+
     def update(self, observed_seconds: float, speech_seconds: float) -> bool:
         observed = max(0.0, float(observed_seconds or 0.0))
         speech = min(observed, max(0.0, float(speech_seconds or 0.0)))
@@ -331,11 +354,14 @@ class TolerantSpeechActivityGate:
         self._append_observation(observed, speech)
 
         speech_confirmed = (
-            self._window_speech_seconds >= self.speech_grace_seconds
-            and self._window_observed_seconds <= self.speech_window_seconds + 1e-9
+            self._recent_speech_seconds(self.speech_window_seconds)
+            >= self.speech_grace_seconds
         )
         if speech_confirmed:
-            if self._window_speech_seconds >= self.wake_speech_seconds:
+            if (
+                self._recent_speech_seconds(self.wake_speech_window_seconds)
+                >= self.wake_speech_seconds
+            ):
                 self._wake_ready = True
             self.confirmed_silence_seconds = 0.0
         else:
@@ -369,6 +395,9 @@ class AudioSendRouter:
         sleep_speech_grace_seconds: float = 0.5,
         sleep_speech_window_seconds: float = 0.75,
         sleep_vad_threshold: float | None = None,
+        sleep_wake_speech_seconds: float | None = None,
+        sleep_wake_speech_window_seconds: float | None = None,
+        sleep_wake_vad_threshold: float | None = None,
     ):
         self._max_buffered_chunks = max(1, int(max_buffered_chunks))
         self._buffered_chunks: deque[bytes] = deque()
@@ -379,9 +408,13 @@ class AudioSendRouter:
         self._sleep_wake_started = False
         chunk_duration = max(0.001, float(chunk_size) / max(1, int(sample_rate)))
         self._sleep_pre_roll_chunks = max(1, int(math.ceil(max(0.0, float(sleep_pre_roll_seconds)) / chunk_duration)))
+        wake_window_seconds = max(
+            float(sleep_speech_window_seconds),
+            float(sleep_wake_speech_window_seconds or sleep_speech_window_seconds),
+        )
         sleep_detection_chunks = max(
             1,
-            int(math.ceil(max(0.0, float(sleep_speech_window_seconds)) / chunk_duration)),
+            int(math.ceil(max(0.0, wake_window_seconds) / chunk_duration)),
         )
         self._sleep_pre_wake_chunks = max(
             self._sleep_pre_roll_chunks,
@@ -392,6 +425,8 @@ class AudioSendRouter:
                 idle_timeout_seconds=float(sleep_idle_seconds),
                 speech_grace_seconds=sleep_speech_grace_seconds,
                 speech_window_seconds=sleep_speech_window_seconds,
+                wake_speech_seconds=sleep_wake_speech_seconds,
+                wake_speech_window_seconds=sleep_wake_speech_window_seconds,
             )
             if sleep_idle_seconds is not None and float(sleep_idle_seconds) > 0
             else None
@@ -412,6 +447,17 @@ class AudioSendRouter:
             sample_rate=sample_rate,
             silence_hold_seconds=silence_hold_seconds,
             vad_speech_threshold=actual_sleep_vad_threshold,
+        )
+        actual_wake_vad_threshold = (
+            sleep_wake_vad_threshold
+            if sleep_wake_vad_threshold is not None
+            else actual_sleep_vad_threshold
+        )
+        self._wake_silence_detector = self._build_silence_detector(
+            backend,
+            sample_rate=sample_rate,
+            silence_hold_seconds=silence_hold_seconds,
+            vad_speech_threshold=actual_wake_vad_threshold,
         )
 
     @staticmethod
@@ -556,6 +602,13 @@ class AudioSendRouter:
             return 0.0
         return self._sleep_gate.confirmed_silence_seconds
 
+    def reset_sleep_tracking(self) -> None:
+        """Restart the idle/wake evidence window after a runtime toggle."""
+        if self._sleep_gate is not None:
+            self._sleep_gate.reset_after_wake()
+        with self._lock:
+            self._sleep_wake_started = False
+
     def wake_ready(self) -> bool:
         with self._lock:
             return self._sleep_wake_started
@@ -565,9 +618,16 @@ class AudioSendRouter:
         self._silence_detector.update(payload)
         wake_ready = False
         if self._sleep_gate is not None:
-            self._sleep_silence_detector.update(payload)
-            observed_seconds = float(getattr(self._sleep_silence_detector, "last_observed_seconds", 0.0) or 0.0)
-            speech_seconds = float(getattr(self._sleep_silence_detector, "last_speech_seconds", 0.0) or 0.0)
+            with self._lock:
+                sleep_buffering = self._sleep_buffering
+            activity_detector = (
+                self._wake_silence_detector
+                if sleep_buffering
+                else self._sleep_silence_detector
+            )
+            activity_detector.update(payload)
+            observed_seconds = float(getattr(activity_detector, "last_observed_seconds", 0.0) or 0.0)
+            speech_seconds = float(getattr(activity_detector, "last_speech_seconds", 0.0) or 0.0)
             wake_ready = self._sleep_gate.update(observed_seconds, speech_seconds)
 
         with self._lock:
