@@ -521,7 +521,7 @@ def set_sleep_on_silence_enabled(enabled: bool) -> bool:
 # the environment (.env) and is never editable from the UI.
 SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
-CLIENT_VERSION = "4.1.3"
+CLIENT_VERSION = "4.2.0"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
 # the UI login flow / localStorage override take priority at runtime.
