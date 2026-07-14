@@ -50,21 +50,37 @@
             const text = documentRef.createElement('span');
             text.textContent = messageText;
             toast.appendChild(text);
-            if (toastOptions.actionLabel && typeof toastOptions.onAction === 'function') {
+            const configuredActions = Array.isArray(toastOptions.actions)
+                ? toastOptions.actions.filter((item) => (
+                    item && item.label && typeof item.onAction === 'function'
+                ))
+                : [];
+            const toastActions = configuredActions.length
+                ? configuredActions
+                : (toastOptions.actionLabel && typeof toastOptions.onAction === 'function'
+                    ? [{ label: toastOptions.actionLabel, onAction: toastOptions.onAction }]
+                    : []);
+            toastActions.forEach((item, index) => {
+                if (index > 0 && toastOptions.actionSeparator) {
+                    const separator = documentRef.createElement('span');
+                    separator.className = 'toast-action-separator';
+                    separator.textContent = toastOptions.actionSeparator;
+                    toast.appendChild(separator);
+                }
                 const action = documentRef.createElement('button');
                 action.type = 'button';
                 action.className = 'toast-action';
-                action.textContent = toastOptions.actionLabel;
+                action.textContent = item.label;
                 action.addEventListener('click', () => {
                     dismissToast(messageText);
-                    toastOptions.onAction();
+                    item.onAction();
                 });
                 toast.appendChild(action);
-                if (toastOptions.actionSuffix) {
-                    const suffix = documentRef.createElement('span');
-                    suffix.textContent = toastOptions.actionSuffix;
-                    toast.appendChild(suffix);
-                }
+            });
+            if (toastActions.length && toastOptions.actionSuffix) {
+                const suffix = documentRef.createElement('span');
+                suffix.textContent = toastOptions.actionSuffix;
+                toast.appendChild(suffix);
             }
             const close = documentRef.createElement('button');
             close.type = 'button';

@@ -165,6 +165,32 @@ describe('UiFeedbackController toast lifecycle', () => {
         expect(page.cancel).not.toHaveBeenCalled();
     });
 
+    it('renders multiple actions with a separator and invokes only the selected action', () => {
+        const page = createHarness();
+        const getCredits = vi.fn();
+        const switchProvider = vi.fn();
+        page.controller.showToast('quota exhausted', true, {
+            actions: [
+                { label: 'Get more Credits', onAction: getCredits },
+                { label: 'Switch to Gemini', onAction: switchProvider },
+            ],
+            actionSeparator: ' or ',
+            actionSuffix: ' to continue.',
+        });
+
+        const actions = page.toast.querySelectorAll('.toast-action');
+        expect([...actions].map((action) => action.textContent)).toEqual([
+            'Get more Credits',
+            'Switch to Gemini',
+        ]);
+        expect(page.toast.textContent).toContain('Get more Credits or Switch to Gemini to continue.');
+
+        actions[1].click();
+        expect(getCredits).not.toHaveBeenCalled();
+        expect(switchProvider).toHaveBeenCalledOnce();
+        expect(page.toast.hidden).toBe(true);
+    });
+
     it('does nothing when the optional toast element is absent', () => {
         const page = createHarness({ withoutToast: true });
 

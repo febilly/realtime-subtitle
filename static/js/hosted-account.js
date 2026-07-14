@@ -423,6 +423,7 @@
             isSignedIn,
             maybeShowInviteReminder,
             maybeShowTicketUnreadReminder,
+            openUserWeb,
             startTicketUnreadPolling,
             successfulInviteCount,
             updateBalance,

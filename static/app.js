@@ -692,12 +692,33 @@ function handleApiKeyFailure(frame) {
     return true;
 }
 
+function openCreditsPurchasePage() {
+    if (!creditsPurchaseUrl) return;
+    window.open(creditsPurchaseUrl, '_blank', 'noopener,noreferrer');
+}
+
+function openInviteRewardsPage() {
+    if (!hostedAccount) return;
+    void hostedAccount.openUserWeb('/invite');
+}
+
 function showStandardBillingExhaustedToast() {
-    showToast(t('relay_err_billing_exhausted'), true, {
+    const canPurchaseCredits = !!creditsPurchaseUrl;
+    const toastOptions = {
         timeoutMs: 8000,
-        actionLabel: t('open_settings'),
-        onAction: () => settingsFlowController.open({ forced: false }),
-    });
+        actionLabel: t(canPurchaseCredits ? 'get_more_credits' : 'open_settings'),
+        onAction: canPurchaseCredits
+            ? openCreditsPurchasePage
+            : () => settingsFlowController.open({ forced: false }),
+    };
+    if (canPurchaseCredits) {
+        toastOptions.actions = [
+            { label: t('get_more_credits'), onAction: openCreditsPurchasePage },
+            { label: t('invite_friends_for_rewards'), onAction: openInviteRewardsPage },
+        ];
+        toastOptions.actionSeparator = t('billing_offer_or');
+    }
+    showToast(t('relay_err_billing_exhausted'), true, toastOptions);
 }
 
 async function switchToGeminiAfterQuotaExhaustion() {
@@ -743,12 +764,24 @@ async function handleBillingExhausted() {
         showStandardBillingExhaustedToast();
         return;
     }
-    showToast(t('billing_gemini_offer_before'), true, {
+    const toastOptions = {
         timeoutMs: 12000,
         actionLabel: t('billing_gemini_offer_action'),
         actionSuffix: t('billing_gemini_offer_after'),
         onAction: () => { void switchToGeminiAfterQuotaExhaustion(); },
-    });
+    };
+    if (creditsPurchaseUrl) {
+        toastOptions.actions = [
+            {
+                label: t('billing_gemini_offer_action'),
+                onAction: () => { void switchToGeminiAfterQuotaExhaustion(); },
+            },
+            { label: t('get_more_credits'), onAction: openCreditsPurchasePage },
+            { label: t('invite_friends_for_rewards'), onAction: openInviteRewardsPage },
+        ];
+        toastOptions.actionSeparator = t('billing_offer_or');
+    }
+    showToast(t('billing_gemini_offer_before'), true, toastOptions);
 }
 
 const sessionFrameController = SessionFrameController.create({

@@ -195,7 +195,9 @@ describe('hosted notification flows', () => {
 
             const toast = page.document.getElementById('toast');
             expect(toast.textContent).toContain('switch to Gemini');
-            toast.querySelector('.toast-action').click();
+            const actions = toast.querySelectorAll('.toast-action');
+            expect(actions).toHaveLength(1);
+            actions[0].click();
             await page.flush(16);
 
             const setupCall = page.fetchCalls.find(([url]) => (
@@ -216,6 +218,142 @@ describe('hosted notification flows', () => {
             expect(page.fetchCalls.some(([url]) => (
                 new URL(String(url), 'http://localhost/').pathname === '/restart'
             ))).toBe(false);
+        } finally {
+            page.close();
+        }
+    });
+
+    it('offers Credits, invite rewards, or Gemini when a purchase URL is configured', async () => {
+        const config = {
+            ...hostedConfig,
+            credits_purchase_url: 'https://credits.example/buy',
+        };
+        const fetch = async (url, request = {}) => {
+            const parsed = new URL(String(url), 'http://localhost/');
+            if (parsed.pathname === '/account/invite') {
+                return { ok: true, status: 200, json: async () => ({ invited_users_count: 1 }) };
+            }
+            if (parsed.pathname === '/account/balance') {
+                const free = parsed.searchParams.get('provider') === 'gemini'
+                    ? { pools: [{ period: 'daily', remaining: 10, max_credits: 20 }] }
+                    : { pools: [] };
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({ prepaid_balance: 0, subscriptions: [], free }),
+                };
+            }
+            if (parsed.pathname === '/account/web-login-url') {
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({ url: 'https://account.example/invite' }),
+                };
+            }
+            return defaultFetchResponse(url, { ...request, uiConfig: config });
+        };
+        const page = await createPageHarness({
+            fetch,
+            initialUiConfig: config,
+            uiConfig: config,
+            localStorage: storedHostedLogin(),
+        });
+        try {
+            page.window.open = vi.fn();
+            await page.emitFrame({
+                type: 'session_disconnected',
+                code: 'billing_exhausted',
+                relay_terminal: true,
+            });
+            await page.flush(6);
+
+            const toast = page.document.getElementById('toast');
+            const actions = toast.querySelectorAll('.toast-action');
+            expect([...actions].map((action) => action.textContent)).toEqual([
+                'switch to Gemini',
+                'get more Credits',
+                'invite friends for rewards',
+            ]);
+            expect(toast.textContent).toContain(
+                'switch to Gemini or get more Credits or invite friends for rewards',
+            );
+
+            actions[2].click();
+            await page.flush(4);
+            expect(page.window.open).toHaveBeenCalledWith(
+                'https://account.example/invite',
+                '_blank',
+                'noopener,noreferrer',
+            );
+            expect(page.fetchCalls.some(([url]) => {
+                const parsed = new URL(String(url), 'http://localhost/');
+                return parsed.pathname === '/account/web-login-url'
+                    && parsed.searchParams.get('next') === '/invite';
+            })).toBe(true);
+            expect(page.fetchCalls.some(([url]) => (
+                new URL(String(url), 'http://localhost/').pathname === '/setup'
+            ))).toBe(false);
+        } finally {
+            page.close();
+        }
+    });
+
+    it('offers Credits or invite rewards when every model quota is exhausted', async () => {
+        const config = {
+            ...hostedConfig,
+            credits_purchase_url: 'https://credits.example/buy',
+        };
+        const fetch = async (url, request = {}) => {
+            const parsed = new URL(String(url), 'http://localhost/');
+            if (parsed.pathname === '/account/invite') {
+                return { ok: true, status: 200, json: async () => ({ invited_users_count: 1 }) };
+            }
+            if (parsed.pathname === '/account/balance') {
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({
+                        prepaid_balance: 0,
+                        subscriptions: [],
+                        free: { pools: [] },
+                    }),
+                };
+            }
+            return defaultFetchResponse(url, { ...request, uiConfig: config });
+        };
+        const page = await createPageHarness({
+            fetch,
+            initialUiConfig: config,
+            uiConfig: config,
+            localStorage: storedHostedLogin(),
+        });
+        try {
+            page.window.open = vi.fn();
+            await page.emitFrame({
+                type: 'session_disconnected',
+                code: 'billing_exhausted',
+                relay_terminal: true,
+            });
+            await page.flush(6);
+
+            const toast = page.document.getElementById('toast');
+            expect(toast.textContent).toContain('Credits or free quota exhausted.');
+            const actions = toast.querySelectorAll('.toast-action');
+            expect([...actions].map((action) => action.textContent)).toEqual([
+                'get more Credits',
+                'invite friends for rewards',
+            ]);
+            expect(toast.textContent).toContain(
+                'get more Credits or invite friends for rewards',
+            );
+
+            actions[0].click();
+            expect(page.window.open).toHaveBeenCalledWith(
+                'https://credits.example/buy',
+                '_blank',
+                'noopener,noreferrer',
+            );
+            expect(page.document.getElementById('settingsPanel').hidden).toBe(true);
         } finally {
             page.close();
         }
