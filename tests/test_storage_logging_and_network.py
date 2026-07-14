@@ -316,3 +316,18 @@ def test_relay_close_info_returns_all_known_mappings(code):
     result = relay_close_info(str(code))
     assert result[0:2] == (tag, terminal)
     assert result[2]
+
+
+def test_relay_http_402_maps_to_billing_exhausted():
+    from relay_errors import RelayConnectionRequestError, relay_error_info
+
+    error = RelayConnectionRequestError(402, '{"detail":"Insufficient credits"}')
+
+    assert str(error) == (
+        'Relay connection request failed (402): {"detail":"Insufficient credits"}'
+    )
+    assert relay_error_info(error) == (
+        "billing_exhausted",
+        True,
+        "Credits or free quota exhausted.",
+    )

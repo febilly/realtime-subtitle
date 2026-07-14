@@ -29,6 +29,17 @@ RELAY_TAG_MESSAGES = {
 }
 
 
+class RelayConnectionRequestError(RuntimeError):
+    """The relay REST endpoint rejected a connection-ticket request."""
+
+    def __init__(self, status_code, detail):
+        self.status_code = int(status_code)
+        self.detail = str(detail or "").strip()
+        super().__init__(
+            f"Relay connection request failed ({self.status_code}): {self.detail}"
+        )
+
+
 def relay_close_info(code):
     """Return (tag, terminal, message) for a relay close code, or None.
 
@@ -44,3 +55,17 @@ def relay_close_info(code):
         return None
     tag, terminal = entry
     return tag, terminal, RELAY_TAG_MESSAGES.get(tag, "Relay connection closed.")
+
+
+def relay_error_info(error):
+    """Map either a WebSocket close or relay REST failure to frontend metadata."""
+    info = relay_close_info(getattr(error, "code", None))
+    if info is not None:
+        return info
+    try:
+        status_code = int(getattr(error, "status_code", 0))
+    except (TypeError, ValueError):
+        return None
+    if status_code == 402:
+        return relay_close_info(4001)
+    return None

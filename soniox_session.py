@@ -53,7 +53,7 @@ from config import (
 )
 ipc_server = None
 from audio_router import AudioSendRouter
-from relay_errors import relay_close_info
+from relay_errors import relay_error_info
 from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
@@ -2719,7 +2719,7 @@ class SonioxSession:
                     translation_target_lang,
                 )
             except ConnectionClosed as error:
-                info = relay_close_info(getattr(error, "code", None))
+                info = relay_error_info(error)
                 if info is not None:
                     relay_close = info
                     disconnect_reason = f"relay: {info[0]}"
@@ -2727,7 +2727,7 @@ class SonioxSession:
                     disconnect_reason = f"connection closed: {error}"
                 return
             except Exception as error:
-                info = relay_close_info(getattr(error, "code", None))
+                info = relay_error_info(error)
                 if info is not None:
                     relay_close = info
                     disconnect_reason = f"relay: {info[0]}"
@@ -3034,7 +3034,7 @@ class SonioxSession:
                             print(f"Error reconnecting to Soniox after rollover closure: {reconnect_error}")
                             break
 
-                    info = relay_close_info(getattr(error, "code", None))
+                    info = relay_error_info(error)
                     if info is not None:
                         relay_close = info
                         disconnect_reason = f"relay: {info[0]}"

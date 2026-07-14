@@ -1098,7 +1098,11 @@ def relay_connect_info(provider: str | None = None, model: str | None = None, tr
         detail = (response.text or "").strip()
         if len(detail) > 300:
             detail = detail[:300] + "..."
-        raise RuntimeError(f"Relay connection request failed ({response.status_code}): {detail or response.reason}")
+        from relay_errors import RelayConnectionRequestError
+        raise RelayConnectionRequestError(
+            response.status_code,
+            detail or response.reason,
+        )
 
     try:
         data = response.json()

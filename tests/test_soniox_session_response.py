@@ -199,6 +199,38 @@ def _separator_in_updates(updates):
     )
 
 
+def test_relay_http_402_broadcasts_billing_exhausted_disconnect(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+    from relay_errors import RelayConnectionRequestError
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "AudioSendRouter", MagicMock())
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session._open_soniox_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
+        402,
+        '{"detail":"Insufficient credits"}',
+    ))
+    session._stop_audio_streamer = MagicMock()
+
+    session._run_session("key", "pcm_s16le", "one_way", "zh", object())
+
+    assert updates[-1] == {
+        "type": "session_disconnected",
+        "reason": "relay: billing_exhausted",
+        "code": "billing_exhausted",
+        "relay_terminal": True,
+        "message": "Credits or free quota exhausted.",
+    }
+    assert session.last_disconnect_payload == updates[-1]
+
+
 def _feed_original(session, text, language):
     return session._process_soniox_response(
         {
