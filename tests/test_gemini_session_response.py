@@ -13,6 +13,8 @@ def _install_gemini_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
     config = ModuleType("config")
     config.GEMINI_STREAM_DURATION_SECONDS = None
+    config.GEMINI_USES_TEMP_API_KEY = False
+    config.GEMINI_TEMP_KEY_URL = None
     config.GEMINI_SLEEP_ON_SILENCE = False
     config.SLEEP_IDLE_SECONDS = 30.0
     config.SLEEP_PRE_ROLL_SECONDS = 1.0
@@ -86,6 +88,54 @@ def _run_immediately_factory():
         return future
 
     return run_immediately
+
+
+def test_stream_key_refresh_skips_temp_key_fetch_in_relay_mode(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    get_api_key = sys.modules["gemini_client"].get_api_key
+    get_api_key.side_effect = AssertionError("should not fetch temp key")
+    module.config.RELAY_MODE = True
+    module.config.GEMINI_USES_TEMP_API_KEY = True
+    module.config.GEMINI_TEMP_KEY_URL = None
+    session = module.GeminiSession(MagicMock(), MagicMock())
+
+    assert session._fetch_api_key_for_next_stream("relay-placeholder") == "relay-placeholder"
+    get_api_key.assert_not_called()
+
+
+def test_stream_key_refresh_skips_permanent_and_missing_temp_key_sources(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    get_api_key = sys.modules["gemini_client"].get_api_key
+    get_api_key.side_effect = AssertionError("should not fetch temp key")
+    session = module.GeminiSession(MagicMock(), MagicMock())
+
+    module.config.GEMINI_USES_TEMP_API_KEY = False
+    module.config.GEMINI_TEMP_KEY_URL = "https://keys.example"
+    assert session._fetch_api_key_for_next_stream("permanent-key") == "permanent-key"
+
+    module.config.GEMINI_USES_TEMP_API_KEY = True
+    module.config.GEMINI_TEMP_KEY_URL = None
+    assert session._fetch_api_key_for_next_stream("current-key") == "current-key"
+    get_api_key.assert_not_called()
+
+
+def test_stream_key_refresh_fetches_configured_temporary_key(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    get_api_key = sys.modules["gemini_client"].get_api_key
+    get_api_key.return_value = "next-key"
+    module.config.GEMINI_USES_TEMP_API_KEY = True
+    module.config.GEMINI_TEMP_KEY_URL = "https://keys.example"
+    session = module.GeminiSession(MagicMock(), MagicMock())
+
+    assert session._fetch_api_key_for_next_stream("current-key") == "next-key"
+    assert session.api_key == "next-key"
+    get_api_key.assert_called_once_with()
 
 
 def test_gemini_input_transcription_becomes_original_token(monkeypatch):

@@ -1388,6 +1388,15 @@ class GeminiSession:
 
     def _fetch_api_key_for_next_stream(self, current_api_key: str) -> str:
         """Refresh temp keys between stream rollovers while preserving permanent keys."""
+        import config
+
+        if config.RELAY_MODE:
+            return current_api_key
+        if not config.GEMINI_USES_TEMP_API_KEY:
+            return current_api_key
+        if not config.GEMINI_TEMP_KEY_URL:
+            return current_api_key
+
         try:
             from gemini_client import get_api_key
 
