@@ -1,6 +1,9 @@
 (function (root) {
     'use strict';
 
+    const AUTO_RESTART_RETRY_BASE_MS = 2000;
+    const AUTO_RESTART_RETRY_MAX_MS = 30000;
+
     function buildRestartPayload(options = {}, currentTranslationTargetLang = '') {
         const payload = { auto: !!options.auto };
         const lang = (options.targetLang || currentTranslationTargetLang || '')
@@ -77,6 +80,8 @@
         let initialized = false;
         let autoRestartClickHandler = null;
         let restartClickHandler = null;
+        let autoRestartFailureCount = 0;
+        let autoRestartRetryGeneration = 0;
 
         function state() {
             return readState() || {};
@@ -104,6 +109,11 @@
             }
         }
 
+        function resetAutoRestartBackoff() {
+            autoRestartFailureCount = 0;
+            autoRestartRetryGeneration += 1;
+        }
+
         async function restartRecognition(restartOptions = {}) {
             const auto = !!restartOptions.auto;
             if (state().isRestarting) {
@@ -111,6 +121,7 @@
             }
 
             if (!auto) {
+                resetAutoRestartBackoff();
                 sessionCostReset();
             }
             writeState({ isRestarting: true, shouldReconnect: false });
@@ -175,6 +186,7 @@
                 if (!auto || !hasUsableWebSocket()) {
                     connect();
                 }
+                resetAutoRestartBackoff();
                 return true;
             } catch (error) {
                 logger.error(`${auto ? 'Auto restart' : 'Restart'} error:`, error);
@@ -200,13 +212,23 @@
 
         function scheduleAutoRestartRetry() {
             if (!shouldRetryAutoRestart()) return;
-            logger.log('Auto restart failed; retrying in 2 seconds...');
-            schedule(triggerAutoRestart, 2000);
+            const retryDelayMs = Math.min(
+                AUTO_RESTART_RETRY_MAX_MS,
+                AUTO_RESTART_RETRY_BASE_MS * (2 ** autoRestartFailureCount)
+            );
+            autoRestartFailureCount += 1;
+            const retryGeneration = autoRestartRetryGeneration;
+            logger.log(`Auto restart failed; retrying in ${retryDelayMs / 1000} seconds...`);
+            schedule(() => {
+                if (retryGeneration !== autoRestartRetryGeneration) return;
+                triggerAutoRestart();
+            }, retryDelayMs);
         }
 
         function triggerAutoRestart() {
             const current = state();
             if (!current.autoRestartEnabled) {
+                resetAutoRestartBackoff();
                 return;
             }
 
@@ -234,6 +256,7 @@
                     const current = state();
                     if (current.lockManualControls) return;
                     const enabled = !current.autoRestartEnabled;
+                    if (!enabled) resetAutoRestartBackoff();
                     writeState({ autoRestartEnabled: enabled });
                     storage.setItem('autoRestartEnabled', enabled);
                     updateAutoRestartButton();
@@ -253,6 +276,7 @@
 
         function destroy() {
             if (!initialized) return;
+            resetAutoRestartBackoff();
             if (autoRestartButton && autoRestartClickHandler) {
                 autoRestartButton.removeEventListener('click', autoRestartClickHandler);
             }

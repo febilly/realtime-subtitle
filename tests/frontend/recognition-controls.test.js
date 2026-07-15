@@ -237,7 +237,7 @@ describe('RecognitionControls recovery and events', () => {
         env.dom.window.close();
     });
 
-    it('schedules a failed auto restart once and re-checks the enabled gate on retry', async () => {
+    it('backs off failed auto restarts and re-checks the enabled gate on retry', async () => {
         const fetchImpl = vi.fn(async () => ({
             ok: false,
             status: 502,
@@ -250,18 +250,43 @@ describe('RecognitionControls recovery and events', () => {
         await flushMicrotasks();
 
         expect(fetchImpl).toHaveBeenCalledOnce();
-        expect(env.schedule).toHaveBeenCalledWith(env.controller.triggerAutoRestart, 2000);
-        const retry = env.schedule.mock.calls.find(([, ms]) => ms === 2000)[0];
+        expect(env.schedule).toHaveBeenCalledWith(expect.any(Function), 2000);
+        const firstRetry = env.schedule.mock.calls.find(([, ms]) => ms === 2000)[0];
+        firstRetry();
+        await flushMicrotasks();
+        await flushMicrotasks();
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
+        expect(env.schedule).toHaveBeenCalledWith(expect.any(Function), 4000);
+
+        const retry = env.schedule.mock.calls.find(([, ms]) => ms === 4000)[0];
         env.state.autoRestartEnabled = false;
         retry();
         await flushMicrotasks();
-        expect(fetchImpl).toHaveBeenCalledOnce();
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
 
         env.state.isRestarting = true;
         env.state.autoRestartEnabled = true;
         env.controller.triggerAutoRestart();
-        expect(fetchImpl).toHaveBeenCalledOnce();
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
         expect(env.logger.log).toHaveBeenCalledWith('Restart already in progress; skipping auto restart trigger.');
+        env.dom.window.close();
+    });
+
+    it('invalidates a scheduled auto-restart retry after a successful restart', async () => {
+        const fetchImpl = vi.fn()
+            .mockResolvedValueOnce({ ok: false, status: 502, json: async () => ({}) })
+            .mockResolvedValue({ ok: true, status: 200, json: async () => ({}) });
+        const env = setup({ fetch: fetchImpl });
+
+        env.controller.triggerAutoRestart();
+        await flushMicrotasks();
+        await flushMicrotasks();
+        const staleRetry = env.schedule.mock.calls.find(([, ms]) => ms === 2000)[0];
+
+        expect(await env.controller.restartRecognition()).toBe(true);
+        staleRetry();
+        await flushMicrotasks();
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
         env.dom.window.close();
     });
 
