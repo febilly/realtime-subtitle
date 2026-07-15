@@ -3,7 +3,6 @@
 
     const INVITE_REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
     const INVITE_REMINDER_STORAGE_KEY = 'inviteRewardReminderLastShown';
-    const TICKET_UNREAD_POLL_INTERVAL_MS = 60 * 1000;
 
     function create(options = {}) {
         const documentRef = options.document || root.document;
@@ -43,7 +42,6 @@
 
         let initialized = false;
         let ticketUnreadCheckPromise = null;
-        let ticketUnreadPollTimer = null;
         let lastNotifiedTicketUnreadSignature = '';
         const listeners = [];
 
@@ -206,12 +204,7 @@
             return ticketUnreadCheckPromise;
         }
 
-        function startTicketUnreadPolling() {
-            if (ticketUnreadPollTimer === null && typeof windowRef.setInterval === 'function') {
-                ticketUnreadPollTimer = windowRef.setInterval(() => {
-                    void maybeShowTicketUnreadReminder();
-                }, TICKET_UNREAD_POLL_INTERVAL_MS);
-            }
+        function startTicketNotifications() {
             return maybeShowTicketUnreadReminder();
         }
 
@@ -406,10 +399,6 @@
             for (const [element, type, listener] of listeners.splice(0)) {
                 element.removeEventListener(type, listener);
             }
-            if (ticketUnreadPollTimer !== null && typeof windowRef.clearInterval === 'function') {
-                windowRef.clearInterval(ticketUnreadPollTimer);
-                ticketUnreadPollTimer = null;
-            }
             initialized = false;
         }
 
@@ -424,7 +413,7 @@
             maybeShowInviteReminder,
             maybeShowTicketUnreadReminder,
             openUserWeb,
-            startTicketUnreadPolling,
+            startTicketNotifications,
             successfulInviteCount,
             updateBalance,
             updateSection,
@@ -434,7 +423,6 @@
     const api = {
         INVITE_REMINDER_COOLDOWN_MS,
         INVITE_REMINDER_STORAGE_KEY,
-        TICKET_UNREAD_POLL_INTERVAL_MS,
         create,
     };
     root.HostedAccount = api;

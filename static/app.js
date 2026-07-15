@@ -991,6 +991,11 @@ void controlPorts.refreshOverlayState();
 
 
 function handleMessageFrame(data) {
+    if (data && (data.type === 'ticket_changed'
+        || (data.type === 'ticket_notifications_ready' && data.connected))) {
+        void hostedAccount.maybeShowTicketUnreadReminder();
+        return;
+    }
     if (subtitleFrameController.handle(data)) return;
     if (sessionFrameController.handle(data)) return;
     runtimeFrameController.handle(data);
@@ -1348,7 +1353,7 @@ const hostedController = Hosted.createController({
     maybeForceOpenSettings: settingsFlowController.maybeForceOpen,
     updateBalanceBarVisibility: hostedPorts.updateBalanceBarVisibility,
     maybeShowInviteReminder: () => hostedAccount.maybeShowInviteReminder(),
-    startTicketUnreadPolling: () => hostedAccount.startTicketUnreadPolling(),
+    startTicketNotifications: () => hostedAccount.startTicketNotifications(),
     connect: webSocketController.connect,
     sessionCostResume: hostedPorts.sessionCostResume,
     sessionCostPause: hostedPorts.sessionCostPause,

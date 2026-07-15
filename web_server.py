@@ -76,6 +76,8 @@ class WebServer:
         self._ipc_polling_task = None
         # Lazy aiohttp client for proxying REST calls to the subtitle-server.
         self._http = None
+        self._ticket_notifications_task = None
+        self._ticket_notifications_connected = False
         self.use_bundled_cjk_fonts = False
         self._frontend_frame_log = None
         if os.getenv("FRONTEND_FRAME_LOG") == "1" and not os.getenv("PYTEST_CURRENT_TEST"):
@@ -194,6 +196,10 @@ class WebServer:
             await ws.send_str(json.dumps({
                 "type": "subtitle_font_preference",
                 "use_bundled_cjk_fonts": bool(self.use_bundled_cjk_fonts and self.check_custom_font_exists()),
+            }))
+            await ws.send_str(json.dumps({
+                "type": "ticket_notifications_ready",
+                "connected": self._ticket_notifications_connected,
             }))
 
             manager = self.provider_manager
@@ -575,6 +581,72 @@ class WebServer:
         if self._http is None or self._http.closed:
             self._http = aiohttp.ClientSession()
         return self._http
+
+    async def _start_ticket_notifications(self, app):
+        self._ticket_notifications_task = asyncio.create_task(self._ticket_notification_loop())
+
+    async def _stop_ticket_notifications(self, app):
+        if self._ticket_notifications_task:
+            self._ticket_notifications_task.cancel()
+            try:
+                await self._ticket_notifications_task
+            except asyncio.CancelledError:
+                pass
+            self._ticket_notifications_task = None
+        self._ticket_notifications_connected = False
+
+    async def _ticket_notification_loop(self):
+        """Forward authenticated subtitle-server ticket events to local UI sockets."""
+        retry_seconds = 1
+        while True:
+            token = self._relay_token()
+            if not config.RELAY_AVAILABLE or not token:
+                self._ticket_notifications_connected = False
+                retry_seconds = 1
+                await asyncio.sleep(1)
+                continue
+
+            http_url = config.relay_rest_url("/me/tickets/events")
+            ws_url = ("wss://" + http_url[len("https://"):]) if http_url.startswith("https://") else (
+                "ws://" + http_url[len("http://"):]
+            )
+            try:
+                session = await self._get_http_session()
+                async with session.ws_connect(
+                    ws_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    heartbeat=30,
+                    autoping=True,
+                ) as upstream:
+                    self._ticket_notifications_connected = True
+                    retry_seconds = 1
+                    await self.broadcast_to_clients({"type": "ticket_notifications_ready", "connected": True})
+                    while not upstream.closed:
+                        if token != self._relay_token():
+                            await upstream.close(code=1000, message=b"Account changed")
+                            break
+                        try:
+                            message = await upstream.receive(timeout=5)
+                        except asyncio.TimeoutError:
+                            continue
+                        if message.type == WSMsgType.TEXT:
+                            try:
+                                event = json.loads(message.data)
+                            except Exception:
+                                continue
+                            if isinstance(event, dict) and event.get("type") == "ticket_changed":
+                                await self.broadcast_to_clients(event)
+                        elif message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self.logger.warning(f"Ticket notification WebSocket disconnected: {error}")
+            finally:
+                self._ticket_notifications_connected = False
+
+            await asyncio.sleep(retry_seconds)
+            retry_seconds = min(30, retry_seconds * 2)
 
     async def _server_request(self, method, path, *, json_body=None, token=None, timeout=15):
         """Proxy a REST call to the configured subtitle-server.
@@ -1785,6 +1857,8 @@ class WebServer:
 
         app.on_startup.append(self._start_ipc_status_polling)
         app.on_cleanup.append(self._stop_ipc_status_polling)
+        app.on_startup.append(self._start_ticket_notifications)
+        app.on_cleanup.append(self._stop_ticket_notifications)
 
         async def _cleanup_llm_session(app_instance):
             try:

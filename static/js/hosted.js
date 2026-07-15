@@ -185,7 +185,7 @@
             call('maybeForceOpenSettings');
             call('updateBalanceBarVisibility');
             await call('maybeShowInviteReminder');
-            void call('startTicketUnreadPolling');
+            void call('startTicketNotifications');
             call('connect');
         }
 

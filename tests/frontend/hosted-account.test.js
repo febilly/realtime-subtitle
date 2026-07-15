@@ -387,7 +387,7 @@ describe('HostedAccount actions', () => {
         page.dom.window.close();
     });
 
-    it('polls unread state every minute and stops polling when destroyed', async () => {
+    it('checks unread state once when ticket notifications start', async () => {
         vi.useFakeTimers();
         try {
             const fetch = vi.fn().mockResolvedValue(response({
@@ -399,14 +399,13 @@ describe('HostedAccount actions', () => {
             }));
             const page = setup({ fetch });
 
-            await page.controller.startTicketUnreadPolling();
+            await page.controller.startTicketNotifications();
             expect(fetch).toHaveBeenCalledTimes(1);
-            await vi.advanceTimersByTimeAsync(HostedAccount.TICKET_UNREAD_POLL_INTERVAL_MS);
-            expect(fetch).toHaveBeenCalledTimes(2);
+            await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+            expect(fetch).toHaveBeenCalledTimes(1);
 
             page.controller.destroy();
-            await vi.advanceTimersByTimeAsync(HostedAccount.TICKET_UNREAD_POLL_INTERVAL_MS);
-            expect(fetch).toHaveBeenCalledTimes(2);
+            expect(fetch).toHaveBeenCalledTimes(1);
             page.dom.window.close();
         } finally {
             vi.useRealTimers();

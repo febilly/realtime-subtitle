@@ -101,7 +101,7 @@ describe('Hosted controller orchestration', () => {
             'maybeRunFirstLaunchFlow', 'ensureHostedVersionAllowed', 'syncProviderFromStorage',
             'fetchLlmRefineStatus', 'fetchApiKeyStatus', 'fetchOscTranslationStatus',
             'maybeForceOpenSettings', 'updateBalanceBarVisibility', 'maybeShowInviteReminder',
-            'startTicketUnreadPolling', 'connect',
+            'startTicketNotifications', 'connect',
         ];
         const actions = Object.fromEntries(names.map((name) => [name, () => { order.push(name); }]));
         await createController(actions).startup();
@@ -110,7 +110,7 @@ describe('Hosted controller orchestration', () => {
             'maybeRunFirstLaunchFlow', 'ensureHostedVersionAllowed', 'refreshPreopenedHostedLogin',
             'syncProviderFromStorage', 'fetchLlmRefineStatus', 'fetchApiKeyStatus',
             'fetchOscTranslationStatus', 'maybeForceOpenSettings', 'updateBalanceBarVisibility',
-            'maybeShowInviteReminder', 'startTicketUnreadPolling', 'connect',
+            'maybeShowInviteReminder', 'startTicketNotifications', 'connect',
         ]);
     });
 
