@@ -1797,19 +1797,21 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     relay_calls = []
     sent_payloads = []
     config_translations = []
+    close_calls = []
 
     class FakeWs:
         def send(self, payload):
             sent_payloads.append(payload)
 
-        def close(self):
-            return None
+        def close(self, code=None, reason=None):
+            close_calls.append((code, reason))
 
-    def relay_connect_info(provider=None, model=None, translation=None):
+    def relay_connect_info(provider=None, model=None, translation=None, run_id=None):
         relay_calls.append({
             "provider": provider,
             "model": model,
             "translation": translation,
+            "run_id": run_id,
         })
         return {
             "url": "wss://relay.invalid/relay/soniox?ticket=test",
@@ -1830,6 +1832,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     module.config.relay_connect_info = relay_connect_info
 
     session = module.SonioxSession(MagicMock(), MagicMock())
+    session.relay_run_id = "abc123def456"
 
     stream = session._open_soniox_stream_state(
         "relay-placeholder",
@@ -1841,13 +1844,18 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
 
     assert config_translations == ["none"]
     assert relay_calls[-1]["translation"] == "none"
+    # The run id ties this stream to the run that opened it, so silence-sleep
+    # and rollover reconnects do not read as separate sessions.
+    assert relay_calls[-1]["run_id"] == "abc123def456"
     module.sync_connect.assert_called_once_with(
         "wss://relay.invalid/relay/soniox?ticket=test",
         additional_headers={"X-Test-Relay": "ok"},
     )
     assert sent_payloads
     assert '"api_key": ""' in sent_payloads[-1]
-    stream.ws.close()
+
+    session._close_soniox_stream_state(stream, "silence_sleep")
+    assert close_calls == [(1000, "silence_sleep")]
 
 
 def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):

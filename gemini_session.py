@@ -8,6 +8,7 @@ import time
 import re
 import concurrent.futures
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -254,6 +255,7 @@ class GeminiSession:
         self.audio_format: Optional[str] = None
         self.translation: Optional[str] = None
         self.translation_target_lang: str = "en"
+        self.relay_run_id: Optional[str] = None
         self._relay_session_active = False
         self.last_disconnect_payload: Optional[dict] = None
         self.sample_rate = 16000
@@ -347,6 +349,9 @@ class GeminiSession:
         self._pending_translation_finalization.clear()
         self._pending_boundaries.clear()
         self._last_input_language = ""
+        # One id for this whole run; silence sleep and stream rollover reconnect
+        # underneath it and would otherwise look like separate short sessions.
+        self.relay_run_id = uuid.uuid4().hex
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
         self._refine_context_history.clear()
@@ -469,7 +474,8 @@ class GeminiSession:
 
         if self.ws:
             try:
-                self.ws.close()
+                # The one close the user actually asked for.
+                self.ws.close("user_stop")
             except Exception as close_error:
                 print(f"⚠️  Error while closing Gemini connection: {close_error}")
             finally:
@@ -1282,6 +1288,7 @@ class GeminiSession:
             translation=translation,
             translation_target_lang=translation_target_lang,
             sample_rate=self.sample_rate,
+            run_id=self.relay_run_id,
         )
         state = _StreamState(
             ws=ws,

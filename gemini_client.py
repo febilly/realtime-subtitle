@@ -211,8 +211,14 @@ class GeminiLiveStream:
     def recv(self, timeout: float | None = None):
         return self._ws.recv(timeout=timeout)
 
-    def close(self) -> None:
-        self._ws.close()
+    def close(self, reason: str = "stream_close") -> None:
+        """关闭流，并通过 close frame 告知 relay 关闭原因。
+
+        The server keeps `reason` only when it matches a short tag shape
+        (`^[a-z0-9][a-z0-9_-]{0,39}$`), so it can tell a deliberate stop from a
+        dropped connection.
+        """
+        self._ws.close(1000, reason)
 
 
 def connect_live(
@@ -220,8 +226,12 @@ def connect_live(
     translation: str,
     translation_target_lang: str | None = None,
     sample_rate: int = 16000,
+    run_id: str | None = None,
 ) -> GeminiLiveStream:
-    """连接Gemini Live API并完成setup握手，返回可用的流包装对象。"""
+    """连接Gemini Live API并完成setup握手，返回可用的流包装对象。
+
+    `run_id` 将一次识别运行中因静音休眠/流切换而重连的多个流归为同一次运行。
+    """
     if not api_key:
         raise RuntimeError("Gemini API key is missing")
 
@@ -231,7 +241,7 @@ def connect_live(
     if _config.RELAY_MODE:
         # Mirror the model the setup frame carries (models/<GEMINI_MODEL>) so the
         # relay can authorize/meter the stream before the first setup frame.
-        relay_info = _config.relay_connect_info("gemini", model=f"models/{GEMINI_MODEL}")
+        relay_info = _config.relay_connect_info("gemini", model=f"models/{GEMINI_MODEL}", run_id=run_id)
         url = relay_info["url"]
         connect_kwargs = {"max_size": None}
         relay_headers = relay_info.get("headers") or {}

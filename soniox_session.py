@@ -9,6 +9,7 @@ import re
 import concurrent.futures
 import logging
 import unicodedata
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
 
@@ -225,6 +226,7 @@ class SonioxSession:
         self.audio_format: Optional[str] = None
         self.translation: Optional[str] = None
         self.translation_target_lang: str = "en"
+        self.relay_run_id: Optional[str] = None
         self._relay_session_active = False
         self.last_disconnect_payload: Optional[dict] = None
         self.sample_rate = 16000
@@ -335,6 +337,10 @@ class SonioxSession:
         self._pairer.flush_all()
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
+        # One id for this whole run. Silence sleep and stream rollover each open
+        # a fresh relay stream underneath; without this the server counts them as
+        # separate short sessions.
+        self.relay_run_id = uuid.uuid4().hex
         self._refine_context_history.clear()
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         self._spec_last_fired_at = 0.0
@@ -478,7 +484,9 @@ class SonioxSession:
 
         if self.ws:
             try:
-                self.ws.close()
+                # The one close the user actually asked for: a short session
+                # tagged this way is a deliberate stop, not a failure.
+                self.ws.close(1000, "user_stop")
             except Exception as close_error:
                 print(f"⚠️  Error while closing Soniox connection: {close_error}")
             finally:
@@ -1985,6 +1993,7 @@ class SonioxSession:
                 "soniox",
                 model=stream_config.get("model"),
                 translation="none" if effective_translation == "none" else None,
+                run_id=self.relay_run_id,
             )
             relay_headers = relay_info.get("headers") or {}
             connect_kwargs = {}
@@ -2007,14 +2016,25 @@ class SonioxSession:
         print(f"Session started ({label}{purpose}).")
         return state
 
-    def _close_soniox_stream_state(self, stream: _SonioxStreamState | None) -> None:
+    def _close_soniox_stream_state(
+        self,
+        stream: _SonioxStreamState | None,
+        reason: str = "stream_close",
+    ) -> None:
+        """Close a stream, telling the relay why it ended.
+
+        `reason` rides the WebSocket close frame, which is the only channel the
+        server can use to tell a deliberate stop from a dropped connection. Keep
+        it a short tag — the server stores `^[a-z0-9][a-z0-9_-]{0,39}$` and
+        discards anything else.
+        """
         if stream is None:
             return
         if stream.silence_sender is not None:
             stream.silence_sender.stop()
             stream.silence_sender = None
         try:
-            stream.ws.close()
+            stream.ws.close(1000, reason)
         except Exception as close_error:
             print(f"⚠️  Error closing Soniox stream #{stream.index}: {close_error}")
 
@@ -2089,7 +2109,7 @@ class SonioxSession:
                 old_stream.sent_count,
                 loop,
             )
-            self._close_soniox_stream_state(old_stream)
+            self._close_soniox_stream_state(old_stream, "rollover")
             return replacement_stream, next_api_key, next_stream_index
         except Exception as error:
             if replacement_stream is not None:
@@ -2641,7 +2661,7 @@ class SonioxSession:
             )
         except Exception as error:
             print(f"⚠️  Error finalizing old stream #{old_stream.index}: {error}")
-        self._close_soniox_stream_state(old_stream)
+        self._close_soniox_stream_state(old_stream, "rollover")
 
     
     def _run_session(
@@ -2838,7 +2858,7 @@ class SonioxSession:
                         sleeping_stream.sent_count,
                         loop,
                     )
-                    self._close_soniox_stream_state(sleeping_stream)
+                    self._close_soniox_stream_state(sleeping_stream, "silence_sleep")
                     continue
 
                 if active_stream is None:

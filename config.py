@@ -1055,7 +1055,12 @@ def _relay_provider(provider: str | None = None) -> str:
     return p
 
 
-def _relay_connect_url(provider: str | None = None, model: str | None = None, translation: str | None = None) -> str:
+def _relay_connect_url(
+    provider: str | None = None,
+    model: str | None = None,
+    translation: str | None = None,
+    run_id: str | None = None,
+) -> str:
     """REST endpoint used to mint a short-lived provider relay connection."""
     p = _relay_provider(provider)
     url = relay_rest_url(f"/relay/{p}/connect")
@@ -1064,18 +1069,28 @@ def _relay_connect_url(provider: str | None = None, model: str | None = None, tr
         params["model"] = str(model)
     if translation:
         params["translation"] = str(translation)
+    if run_id:
+        params["run_id"] = str(run_id)
     if params:
         url += "?" + urlencode(params)
     return url
 
 
-def relay_connect_info(provider: str | None = None, model: str | None = None, translation: str | None = None) -> dict:
+def relay_connect_info(
+    provider: str | None = None,
+    model: str | None = None,
+    translation: str | None = None,
+    run_id: str | None = None,
+) -> dict:
     """Request the actual relay WebSocket URL from subtitle-server.
 
     The server registers the full relay session directly with the selected
     backend (Durable Object or VPS) and returns only an opaque one-time ticket in
     the WebSocket URL. The account token is sent only to this REST endpoint, not
     to the relay backend WebSocket.
+
+    `run_id` ties the several streams one recognition run opens (silence sleep,
+    stream rollover) back together into a single run on the server.
     """
     if not SUBTITLE_SERVER_URL:
         raise RuntimeError("SUBTITLE_SERVER_URL is required for hosted relay mode")
@@ -1084,7 +1099,7 @@ def relay_connect_info(provider: str | None = None, model: str | None = None, tr
     if not token:
         raise RuntimeError("Relay account token is missing; please sign in again")
 
-    url = _relay_connect_url(provider, model=model, translation=translation)
+    url = _relay_connect_url(provider, model=model, translation=translation, run_id=run_id)
     try:
         response = requests.get(
             url,

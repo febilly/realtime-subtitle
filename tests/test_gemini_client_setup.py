@@ -95,6 +95,7 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
     connect_calls = []
     sent_payloads = []
     relay_calls = []
+    close_calls = []
 
     class FakeWs:
         def send(self, payload):
@@ -103,14 +104,15 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
         def recv(self, timeout=None):
             return '{"setupComplete": {}}'
 
-        def close(self):
-            return None
+        def close(self, code=None, reason=None):
+            close_calls.append((code, reason))
 
-    def relay_connect_info(provider=None, model=None, translation=None):
+    def relay_connect_info(provider=None, model=None, translation=None, run_id=None):
         relay_calls.append({
             "provider": provider,
             "model": model,
             "translation": translation,
+            "run_id": run_id,
         })
         return {
             "url": "wss://relay-2.example.invalid/?ticket=test",
@@ -125,14 +127,18 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
     monkeypatch.setattr(config, "relay_connect_info", relay_connect_info)
     monkeypatch.setattr(gemini_client, "sync_connect", sync_connect)
 
-    stream = gemini_client.connect_live("local-key", "one_way", "en")
-    stream.close()
+    stream = gemini_client.connect_live("local-key", "one_way", "en", run_id="abc123def456")
+    stream.close("user_stop")
 
     assert relay_calls == [{
         "provider": "gemini",
         "model": f"models/{gemini_client.GEMINI_MODEL}",
         "translation": None,
+        "run_id": "abc123def456",
     }]
+    # The reason has to reach the close frame; it is how the server tells a
+    # deliberate stop from a dropped connection.
+    assert close_calls == [(1000, "user_stop")]
     assert connect_calls == [(
         "wss://relay-2.example.invalid/?ticket=test",
         {"max_size": None, "additional_headers": {"X-Test-Relay": "ok"}},
