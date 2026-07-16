@@ -236,6 +236,7 @@ class SonioxSession:
         self.output_device_id = str(OUTPUT_DEVICE_ID or "").strip()
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
+        self._stream_close_lock = threading.Lock()
         self._vrchat_self_muted = False
         self.osc_translation_enabled = False
         self._segment_mode = DEFAULT_SEGMENT_MODE if DEFAULT_SEGMENT_MODE in ("translation", "endpoint", "punctuation") else "punctuation"
@@ -477,20 +478,22 @@ class SonioxSession:
         """停止当前会话"""
         self._relay_session_active = False
         self.last_disconnect_payload = None
-        if self.stop_event:
-            self.stop_event.set()
+        with self._stream_close_lock:
+            if self.stop_event:
+                self.stop_event.set()
 
         self._stop_audio_streamer()
 
-        if self.ws:
-            try:
-                # The one close the user actually asked for: a short session
-                # tagged this way is a deliberate stop, not a failure.
-                self.ws.close(1000, "user_stop")
-            except Exception as close_error:
-                print(f"⚠️  Error while closing Soniox connection: {close_error}")
-            finally:
-                self.ws = None
+        with self._stream_close_lock:
+            if self.ws:
+                try:
+                    # The one close the user actually asked for: a short session
+                    # tagged this way is a deliberate stop, not a failure.
+                    self.ws.close(1000, "user_stop")
+                except Exception as close_error:
+                    print(f"⚠️  Error while closing Soniox connection: {close_error}")
+                finally:
+                    self.ws = None
 
         thread = self.thread
 
@@ -3014,7 +3017,7 @@ class SonioxSession:
                             "rolling over..."
                         )
                         audio_router.clear_target(active_stream.ws)
-                        self._close_soniox_stream_state(active_stream)
+                        self._close_soniox_stream_state(active_stream, "rollover")
 
                         if warmup_stream is not None:
                             if warmup_stream.silence_sender is not None:
@@ -3099,7 +3102,7 @@ class SonioxSession:
                             "rolling over..."
                         )
                         audio_router.clear_target(active_stream.ws)
-                        self._close_soniox_stream_state(active_stream)
+                        self._close_soniox_stream_state(active_stream, "rollover")
 
                         if warmup_stream is not None:
                             if warmup_stream.silence_sender is not None:
@@ -3148,18 +3151,22 @@ class SonioxSession:
                     warmup_future.cancel()
                 warmup_future = None
             key_fetch_executor.shutdown(wait=False)
-            stop_requested = bool(self.stop_event and self.stop_event.is_set())
-            if self.stop_event:
-                self.stop_event.set()
-            self.stop_event = None
-            self.ws = None
             self._relay_session_active = False
             audio_router.close()
             self._stop_audio_streamer()
-            if warmup_stream is not None:
-                self._close_soniox_stream_state(warmup_stream)
-            if active_stream is not None:
-                self._close_soniox_stream_state(active_stream)
+            # Serialize this decision with stop(): whichever path claims the
+            # close first determines whether it is a natural end or user_stop.
+            with self._stream_close_lock:
+                stop_requested = bool(self.stop_event and self.stop_event.is_set())
+                if self.stop_event:
+                    self.stop_event.set()
+                close_reason = "user_stop" if stop_requested else "stream_close"
+                if warmup_stream is not None:
+                    self._close_soniox_stream_state(warmup_stream, close_reason)
+                if active_stream is not None:
+                    self._close_soniox_stream_state(active_stream, close_reason)
+                self.stop_event = None
+                self.ws = None
             self.thread = None
             if notify_disconnect and not stop_requested:
                 try:

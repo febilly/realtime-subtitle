@@ -1855,7 +1855,61 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     assert '"api_key": ""' in sent_payloads[-1]
 
     session._close_soniox_stream_state(stream, "silence_sleep")
-    assert close_calls == [(1000, "silence_sleep")]
+    session._close_soniox_stream_state(stream, "rollover")
+    session._close_soniox_stream_state(stream, "user_stop")
+    session._close_soniox_stream_state(stream)
+    assert close_calls == [
+        (1000, "silence_sleep"),
+        (1000, "rollover"),
+        (1000, "user_stop"),
+        (1000, "stream_close"),
+    ]
+
+
+def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    close_calls = []
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def set_target(self, _ws):
+            return True
+
+        def close(self):
+            return None
+
+    class FakeWs:
+        def recv(self, timeout=None):
+            session.stop()
+            raise TimeoutError()
+
+        def close(self, code=1000, reason=""):
+            close_calls.append((code, reason))
+
+    monkeypatch.setattr(module, "AudioSendRouter", FakeRouter)
+
+    session = module.SonioxSession(MagicMock(), MagicMock())
+    session.thread = MagicMock()
+    session.thread.is_alive.return_value = True
+    session._start_audio_streamer = MagicMock()
+    session._stop_audio_streamer = MagicMock()
+    session._open_soniox_stream_state = MagicMock(return_value=module._SonioxStreamState(
+        ws=FakeWs(),
+        index=1,
+        api_key="key",
+        started_at=module.time.monotonic(),
+        ready_at=module.time.monotonic(),
+        all_final_tokens=[],
+    ))
+
+    session._run_session("key", "pcm_s16le", "one_way", "zh", object())
+
+    assert close_calls
+    assert {reason for _code, reason in close_calls} == {"user_stop"}
 
 
 def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):

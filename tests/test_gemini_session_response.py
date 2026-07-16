@@ -402,6 +402,82 @@ def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     assert session._stream_rollover_prepare_age(10.0) == 4.0
 
 
+def test_close_stream_state_forwards_reason_to_ws(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    close_calls = []
+
+    class FakeWs:
+        def close(self, reason="stream_close"):
+            close_calls.append(reason)
+
+    session = module.GeminiSession(MagicMock(), MagicMock())
+    stream = module._StreamState(
+        ws=FakeWs(),
+        index=1,
+        api_key="key",
+        started_at=module.time.monotonic(),
+        ready_at=module.time.monotonic(),
+        all_final_tokens=[],
+    )
+
+    session._close_stream_state(stream, "silence_sleep")
+    session._close_stream_state(stream, "rollover")
+    session._close_stream_state(stream, "user_stop")
+    session._close_stream_state(stream)
+
+    # Reason must reach the close frame so the relay can classify deliberate
+    # silence-sleep / rollover / stop closes separately from drops.
+    assert close_calls == ["silence_sleep", "rollover", "user_stop", "stream_close"]
+
+
+def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    close_calls = []
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def set_target(self, _ws):
+            return True
+
+        def close(self):
+            return None
+
+    class FakeWs:
+        def recv(self, timeout=None):
+            session.stop()
+            raise TimeoutError()
+
+        def close(self, reason="stream_close"):
+            close_calls.append(reason)
+
+    monkeypatch.setattr(module, "AudioSendRouter", FakeRouter)
+
+    session = module.GeminiSession(MagicMock(), MagicMock())
+    session.thread = MagicMock()
+    session.thread.is_alive.return_value = True
+    session._start_audio_streamer = MagicMock()
+    session._stop_audio_streamer = MagicMock()
+    session._open_stream_state = MagicMock(return_value=module._StreamState(
+        ws=FakeWs(),
+        index=1,
+        api_key="key",
+        started_at=module.time.monotonic(),
+        ready_at=module.time.monotonic(),
+        all_final_tokens=[],
+    ))
+
+    session._run_session("key", "pcm_s16le", "one_way", "zh", object())
+
+    assert close_calls
+    assert set(close_calls) == {"user_stop"}
+
+
 def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
     import gemini_session as module
