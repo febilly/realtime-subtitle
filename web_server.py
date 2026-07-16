@@ -78,6 +78,9 @@ class WebServer:
         self._http = None
         self._ticket_notifications_task = None
         self._ticket_notifications_connected = False
+        # A client process reports its version only on its first successful
+        # startup account-validation GET /me request.
+        self._client_version_reported = False
         self.use_bundled_cjk_fonts = False
         self._frontend_frame_log = None
         if os.getenv("FRONTEND_FRAME_LOG") == "1" and not os.getenv("PYTEST_CURRENT_TEST"):
@@ -648,7 +651,16 @@ class WebServer:
             await asyncio.sleep(retry_seconds)
             retry_seconds = min(30, retry_seconds * 2)
 
-    async def _server_request(self, method, path, *, json_body=None, token=None, timeout=15):
+    async def _server_request(
+        self,
+        method,
+        path,
+        *,
+        json_body=None,
+        token=None,
+        timeout=15,
+        include_client_version=False,
+    ):
         """Proxy a REST call to the configured subtitle-server.
 
         Returns (status, data). FastAPI errors arrive as {"detail": ...}.
@@ -656,9 +668,9 @@ class WebServer:
         if not config.RELAY_AVAILABLE:
             return 503, {"detail": "Subtitle server not configured"}
         url = config.relay_rest_url(path)
-        headers = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        if include_client_version and token:
+            headers[config.CLIENT_VERSION_HEADER] = str(config.CLIENT_VERSION).strip()
         try:
             session = await self._get_http_session()
             async with session.request(
@@ -684,8 +696,16 @@ class WebServer:
         """
         if not token:
             return False, "Missing token", None, True
-        status, data = await self._server_request("GET", "/me", token=token)
+        report_client_version = not self._client_version_reported
+        status, data = await self._server_request(
+            "GET",
+            "/me",
+            token=token,
+            include_client_version=report_client_version,
+        )
         if status == 200 and isinstance(data, dict):
+            if report_client_version:
+                self._client_version_reported = True
             return True, None, data, False
         if status in (401, 403):
             return False, "Invalid or unauthorized token", None, True

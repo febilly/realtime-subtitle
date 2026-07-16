@@ -19,6 +19,21 @@ class FakeWebSocketContext:
         return False
 
 
+class FakeHttpResponseContext:
+    def __init__(self, status, data):
+        self.status = status
+        self._data = data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return False
+
+    async def json(self):
+        return self._data
+
+
 @pytest.fixture
 def ticket_notification_runtime():
     previous_config = sys.modules.pop("config", None)
@@ -85,3 +100,59 @@ async def test_ticket_notification_socket_waits_locally_without_credentials(monk
         await server._ticket_notification_loop()
 
     server._get_http_session.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_startup_me_validation_reports_client_version_once(monkeypatch, ticket_notification_runtime):
+    config, WebServer = ticket_notification_runtime
+    server = WebServer(MagicMock(), MagicMock())
+    http = MagicMock()
+    http.request.return_value = FakeHttpResponseContext(200, {"ok": True})
+    server._get_http_session = AsyncMock(return_value=http)
+    monkeypatch.setattr(config, "RELAY_AVAILABLE", True)
+    monkeypatch.setattr(config, "relay_rest_url", lambda path: f"https://subtitle.example{path}")
+
+    ok, error, account, auth_failed = await server._validate_relay_token("ss_test")
+    second_ok, _, _, _ = await server._validate_relay_token("ss_test")
+    normal_status, normal_data = await server._server_request("GET", "/billing/summary", token="ss_test")
+
+    assert ok is True
+    assert error is None
+    assert account == {"ok": True}
+    assert auth_failed is False
+    assert second_ok is True
+    assert normal_status == 200
+    assert normal_data == {"ok": True}
+    first_headers = http.request.call_args_list[0].kwargs["headers"]
+    second_headers = http.request.call_args_list[1].kwargs["headers"]
+    normal_headers = http.request.call_args_list[2].kwargs["headers"]
+    assert first_headers == {
+        "Authorization": "Bearer ss_test",
+        "X-Client-Version": config.CLIENT_VERSION,
+    }
+    assert second_headers == {
+        "Authorization": "Bearer ss_test",
+    }
+    assert normal_headers == {
+        "Authorization": "Bearer ss_test",
+    }
+
+
+@pytest.mark.asyncio
+async def test_failed_startup_auth_rearms_client_version_report(monkeypatch, ticket_notification_runtime):
+    config, WebServer = ticket_notification_runtime
+    server = WebServer(MagicMock(), MagicMock())
+    http = MagicMock()
+    http.request.side_effect = [
+        FakeHttpResponseContext(401, {"detail": "invalid"}),
+        FakeHttpResponseContext(200, {"ok": True}),
+    ]
+    server._get_http_session = AsyncMock(return_value=http)
+    monkeypatch.setattr(config, "RELAY_AVAILABLE", True)
+    monkeypatch.setattr(config, "relay_rest_url", lambda path: f"https://subtitle.example{path}")
+
+    await server._validate_relay_token("expired")
+    await server._validate_relay_token("fresh")
+
+    assert http.request.call_args_list[0].kwargs["headers"]["X-Client-Version"] == config.CLIENT_VERSION
+    assert http.request.call_args_list[1].kwargs["headers"]["X-Client-Version"] == config.CLIENT_VERSION

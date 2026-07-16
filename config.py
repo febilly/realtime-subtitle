@@ -522,6 +522,7 @@ def set_sleep_on_silence_enabled(enabled: bool) -> bool:
 SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
 CLIENT_VERSION = "4.2.2"
+CLIENT_VERSION_HEADER = "X-Client-Version"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
 # the UI login flow / localStorage override take priority at runtime.
