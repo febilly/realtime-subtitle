@@ -1283,10 +1283,12 @@ const hostedBalance = HostedBalance.create({
         uiTranslationMode,
         translationUiMode: translationModeController.getTranslationUiMode(),
         sonioxNoTranslationFactor,
+        creditsPurchaseUrl,
     }),
     onAccountSectionChanged: hostedPorts.updateAccountSection,
     onAccountBalanceChanged: hostedPorts.updateAccountBalance,
     onOpenSettings: settingsFlowController.open,
+    onPurchaseCredits: openCreditsPurchasePage,
     elements: {
         balanceBar,
         balanceActionItem,

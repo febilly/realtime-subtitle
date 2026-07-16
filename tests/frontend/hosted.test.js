@@ -88,6 +88,31 @@ describe('Hosted.Billing metering', () => {
         }, 20)).toBe(true);
     });
 
+    it('prices the remaining balance as listening time when judging it low', () => {
+        const tenMinutes = 600;
+        // At 1 credit/sec, 500 credits is 8 minutes and 900 is 15.
+        expect(Billing.isBalanceLow({ prepaid_balance: 500, free: { pools: [] } }, 1, tenMinutes)).toBe(true);
+        expect(Billing.isBalanceLow({ prepaid_balance: 900, free: { pools: [] } }, 1, tenMinutes)).toBe(false);
+        // The same 500 credits is over half an hour at Gemini's cheaper rate.
+        expect(Billing.isBalanceLow({ prepaid_balance: 500, free: { pools: [] } }, 0.25, tenMinutes)).toBe(false);
+    });
+
+    it('counts free pools and subscriptions toward the low-balance threshold', () => {
+        const tenMinutes = 600;
+        expect(Billing.isBalanceLow({
+            prepaid_balance: 300,
+            free: { pools: [{ remaining: 400 }] },
+            subscriptions: [{ remaining_credits: 400 }],
+        }, 1, tenMinutes)).toBe(false);
+        expect(Billing.isBalanceLow({ prepaid_balance: 0, free: { pools: [{ unlimited: true }] } }, 1, tenMinutes)).toBe(false);
+    });
+
+    it('reports no low balance when the rate or data is unusable', () => {
+        expect(Billing.isBalanceLow(null, 1, 600)).toBe(false);
+        expect(Billing.isBalanceLow({ prepaid_balance: 0 }, 0, 600)).toBe(false);
+        expect(Billing.isBalanceLow({ prepaid_balance: 0 }, Number.NaN, 600)).toBe(false);
+    });
+
     it('locks the current scientific-notation formatting edge for a separate fix', () => {
         expect(Billing.formatSessionCost(3e-7, 1e-7)).toBe('0');
     });

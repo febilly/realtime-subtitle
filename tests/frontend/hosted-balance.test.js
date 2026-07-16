@@ -51,6 +51,7 @@ function setup(overrides = {}) {
     const onAccountSectionChanged = vi.fn();
     const onAccountBalanceChanged = vi.fn();
     const onOpenSettings = vi.fn();
+    const onPurchaseCredits = vi.fn();
     const controller = HostedBalance.create({
         Billing: Hosted.Billing,
         document,
@@ -65,6 +66,7 @@ function setup(overrides = {}) {
         onAccountSectionChanged,
         onAccountBalanceChanged,
         onOpenSettings,
+        onPurchaseCredits,
         elements: {
             balanceBar: document.getElementById('balanceBar'),
             balanceActionItem: document.getElementById('balanceActionItem'),
@@ -81,6 +83,7 @@ function setup(overrides = {}) {
         onAccountBalanceChanged,
         onAccountSectionChanged,
         onOpenSettings,
+        onPurchaseCredits,
         runtime,
         setInterval,
         timers,
@@ -201,6 +204,58 @@ describe('HostedBalance rendering and metering', () => {
 
         page.controller.renderBalance(balance({ prepaid_balance: 0 }));
         expect(page.document.getElementById('balanceActionItem').hidden).toBe(false);
+        page.dom.window.close();
+    });
+
+    it('offers a top-up once the balance is under ten minutes, before it runs out', async () => {
+        // 1 credit/sec: 2000 credits is 33 minutes left, 400 is under 7.
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response(balance({ prepaid_balance: 2000, price_per_second: 1 })))
+            .mockResolvedValueOnce(response(balance({ prepaid_balance: 400, price_per_second: 1 })));
+        const page = setup({ fetch, runtime: { creditsPurchaseUrl: 'https://pay.example/shop' } });
+        const actionItem = page.document.getElementById('balanceActionItem');
+
+        await page.controller.fetchBalance({ force: true });
+        expect(actionItem.hidden).toBe(true);
+
+        await page.controller.fetchBalance({ force: true });
+        expect(actionItem.hidden).toBe(false);
+        page.dom.window.close();
+    });
+
+    it('spends down into the low state mid-session without waiting for a poll', async () => {
+        const fetch = vi.fn().mockResolvedValue(response(balance({ prepaid_balance: 700, price_per_second: 1 })));
+        const page = setup({ fetch, runtime: { creditsPurchaseUrl: 'https://pay.example/shop' } });
+        const actionItem = page.document.getElementById('balanceActionItem');
+
+        await page.controller.fetchBalance({ force: true });
+        expect(actionItem.hidden).toBe(true);
+
+        // 200s of a 0.5x-rate session burns 100 credits, leaving under ten minutes.
+        page.controller.sessionCostResume();
+        page.advance(200_000);
+        page.controller.renderBalanceView();
+        expect(actionItem.hidden).toBe(false);
+        page.dom.window.close();
+    });
+
+    it('sends the action straight to the shop, falling back to settings without one', async () => {
+        const fetch = vi.fn().mockResolvedValue(response(balance({ prepaid_balance: 0, price_per_second: 1 })));
+        const page = setup({ fetch, runtime: { creditsPurchaseUrl: 'https://pay.example/shop' } });
+        const button = page.document.getElementById('balanceOpenSettingsButton');
+        page.controller.init();
+        await page.controller.fetchBalance({ force: true });
+
+        expect(button.textContent).toBe('get_more_credits');
+        button.dispatchEvent(new page.dom.window.Event('click'));
+        expect(page.onPurchaseCredits).toHaveBeenCalledOnce();
+        expect(page.onOpenSettings).not.toHaveBeenCalled();
+
+        page.runtime.creditsPurchaseUrl = '';
+        page.controller.renderBalanceView();
+        expect(button.textContent).toBe('open_settings');
+        button.dispatchEvent(new page.dom.window.Event('click'));
+        expect(page.onOpenSettings).toHaveBeenCalledOnce();
         page.dom.window.close();
     });
 

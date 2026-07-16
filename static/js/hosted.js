@@ -86,6 +86,19 @@
         return total >= required;
     }
 
+    /**
+     * Whether the account has less than `seconds` of listening left at the
+     * given rate. Measured in time rather than credits so the threshold means
+     * the same thing across providers, whose per-second rates differ several
+     * fold. An unlimited free pool is never low.
+     */
+    function isBalanceLow(data, pricePerSecond, seconds) {
+        if (!data) return false;
+        const rate = Number(pricePerSecond);
+        if (!Number.isFinite(rate) || rate <= 0) return false;
+        return !hasAtLeastCredits(data, rate * Math.max(0, Number(seconds) || 0));
+    }
+
     function sttRateMultiplier({
         translationProvider,
         uiTranslationMode,
@@ -218,6 +231,7 @@
         hasUsableFreePool,
         hasUsableSubscription,
         isAccountExhausted,
+        isBalanceLow,
         balanceTotalRemaining,
         hasAtLeastCredits,
         sttRateMultiplier,

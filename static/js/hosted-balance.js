@@ -3,6 +3,10 @@
 
     const ACTIVE_POLL_MS = 45 * 1000;
     const IDLE_POLL_MS = 5 * 60 * 1000;
+    // Offer a top-up while there is still enough left to finish a conversation.
+    // Waiting for the balance to hit zero only tells the user once the session
+    // has already been cut off.
+    const LOW_BALANCE_SECONDS = 10 * 60;
 
     function create(options = {}) {
         const Billing = options.Billing || (root.Hosted && root.Hosted.Billing);
@@ -27,6 +31,9 @@
         const onOpenSettings = typeof options.onOpenSettings === 'function'
             ? options.onOpenSettings
             : () => {};
+        const onPurchaseCredits = typeof options.onPurchaseCredits === 'function'
+            ? options.onPurchaseCredits
+            : null;
         const elements = options.elements || {};
         const balanceBar = elements.balanceBar || null;
         const balanceActionItem = elements.balanceActionItem || null;
@@ -185,6 +192,22 @@
             );
         }
 
+        /**
+         * Checked against the live view so it flips mid-session, not only on
+         * poll. Without a known rate there is no way to price the remaining
+         * seconds, so fall back to the plain "nothing left" test.
+         */
+        function balanceIsLow() {
+            const view = currentBalanceView();
+            const rate = effectivePricePerSecond();
+            if (!Number.isFinite(rate) || rate <= 0) return Billing.isAccountExhausted(view);
+            return Billing.isBalanceLow(view, rate, LOW_BALANCE_SECONDS);
+        }
+
+        function canPurchaseCredits() {
+            return !!onPurchaseCredits && !!runtimeState().creditsPurchaseUrl;
+        }
+
         function currentBalanceView() {
             return Billing.currentBalanceView({
                 balanceBaseline,
@@ -217,9 +240,11 @@
             setText('balanceLabel', t('balance_label'));
             setText('balanceValue', formatCredits(view.prepaid_balance));
             setText('sessionLabel', t('balance_session'));
-            if (balanceOpenSettingsButton) balanceOpenSettingsButton.textContent = t('open_settings');
+            if (balanceOpenSettingsButton) {
+                balanceOpenSettingsButton.textContent = t(canPurchaseCredits() ? 'get_more_credits' : 'open_settings');
+            }
             if (balanceActionItem) {
-                balanceActionItem.hidden = !Billing.isAccountExhausted(lastBalanceData);
+                balanceActionItem.hidden = !balanceIsLow();
             }
             renderFreePools(
                 documentRef.getElementById('freePools'),
@@ -366,15 +391,18 @@
             };
         }
 
-        function handleOpenSettings() {
-            onOpenSettings({ forced: false });
+        // Send the user straight to the shop when there is one; the settings
+        // panel is only the fallback route to the same link.
+        function handleBalanceAction() {
+            if (canPurchaseCredits()) onPurchaseCredits();
+            else onOpenSettings({ forced: false });
         }
 
         function init() {
             if (initialized) return false;
             initialized = true;
             if (balanceOpenSettingsButton) {
-                balanceOpenSettingsButton.addEventListener('click', handleOpenSettings);
+                balanceOpenSettingsButton.addEventListener('click', handleBalanceAction);
             }
             return true;
         }
@@ -386,7 +414,7 @@
                 sessionCostTimer = null;
             }
             if (balanceOpenSettingsButton) {
-                balanceOpenSettingsButton.removeEventListener('click', handleOpenSettings);
+                balanceOpenSettingsButton.removeEventListener('click', handleBalanceAction);
             }
             initialized = false;
         }
