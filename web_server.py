@@ -305,6 +305,9 @@ class WebServer:
             # Unified 翻译模式: 快速(fast) / 准确(accurate) / 混合(hybrid). 混合 shows
             # the STT draft immediately and refines it in place.
             "translation_ui_mode": (self.session.get_translation_mode() if hasattr(self.session, "get_translation_mode") else "fast"),
+            # Toki Pona mode locks 翻译模式 to 准确 (accurate); the client forces its
+            # picker to this value and cannot switch away.
+            "translation_mode_locked": ("accurate" if getattr(config, "TOKIPONA_MODE", False) else ""),
             # Server-delivered STT billing factor for soniox 准确 mode (built-in
             # translation off); the client mirrors it in its live cost estimate.
             "soniox_no_translation_factor": float(config.HOSTED_SONIOX_NO_TRANSLATION_FACTOR),

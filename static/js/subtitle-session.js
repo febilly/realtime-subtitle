@@ -200,6 +200,7 @@
             getSpecTranslation: refineState.getSpecTranslation,
             getTranslationLanguage: refineState.getTranslationLanguage,
             getTranslationOverride: refineState.getTranslationOverride,
+            getSourceOverride: refineState.getSourceOverride,
             isSpecPending: refineState.isSpecPending,
             markSpecPending,
             noteHybridBoundary,

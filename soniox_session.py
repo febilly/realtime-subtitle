@@ -265,6 +265,14 @@ class SonioxSession:
         # 准确 (accurate) mode: soniox runs STT-only and the LLM does the
         # translation, so its built-in translation is suppressed.
         self._suppress_soniox_translation = False
+        # Toki Pona mode locks 准确 (accurate): soniox is STT-only and the LLM
+        # both reconstructs the real toki pona source and translates it. 准确 has
+        # no translation stream to segment on, so force punctuation segmentation.
+        if getattr(config, "TOKIPONA_MODE", False):
+            self._llm_refine_mode = "translate"
+            self._suppress_soniox_translation = True
+            if self._segment_mode == "translation":
+                self._segment_mode = "punctuation"
         # Speculative translation state (see SPEC_TRANSLATE_* constants):
         # monotonic time of the last fire (post-fire cooldown), in-flight
         # text -> concurrent Future, and a small LRU text -> result.
@@ -1022,6 +1030,11 @@ class SonioxSession:
             return
         if self._llm_refine_mode != "translate":
             return
+        # Toki Pona mode: the finalize-path call also reconstructs the real toki
+        # pona source, which a speculative translation-only call would not
+        # produce. Skip speculation so every sentence runs the combined call once.
+        if getattr(config, "TOKIPONA_MODE", False):
+            return
         if not is_llm_refine_available() or not self.loop:
             return
 
@@ -1597,6 +1610,9 @@ class SonioxSession:
 
         refined_translation = display_translation
         no_change = True
+        # Toki Pona mode: the translate call also reconstructs the real toki pona
+        # source, which replaces the displayed source line.
+        corrected_source = ""
 
         if llm_can_run:
             try:
@@ -1627,6 +1643,7 @@ class SonioxSession:
                         if result.get("status") == "ok":
                             translated = (result.get("translation") or "").strip()
                             refined_translation = translated if translated else translation
+                            corrected_source = (result.get("corrected_source") or "").strip()
                             no_change = False
             except Exception as error:
                 if mode == "translate":
@@ -1642,10 +1659,16 @@ class SonioxSession:
             )
             return
 
+        # Toki Pona mode: prefer the reconstructed real-toki-pona source for the
+        # displayed source line, OSC chatbox, and LLM context history.
+        effective_source = corrected_source or source
+
         await self.broadcast_callback({
             "type": "refine_result",
             "sentence_id": sentence_id,
             "source": source,
+            # Reconstructed real toki pona; replaces the displayed source line.
+            "refined_source": corrected_source or None,
             "original_translation": display_translation,
             "refined_translation": refined_translation if not no_change else None,
             "no_change": no_change,
@@ -1659,16 +1682,17 @@ class SonioxSession:
             sentence_id=sentence_id,
             no_change=no_change,
             refined=refined_translation if not no_change else "",
+            refined_source=corrected_source,
         )
 
         osc_pub.publish_final(
-            self._select_osc_text(refined_translation, source, original_tokens),
+            self._select_osc_text(refined_translation, effective_source, original_tokens),
             no_change=no_change,
         )
 
         self._refine_context_history.append({
             "sentence_id": sentence_id,
-            "source": source,
+            "source": effective_source,
             "translation": refined_translation,
         })
         max_history = max(1, int(self._context_bounds()[1]))
@@ -1776,6 +1800,9 @@ class SonioxSession:
         soniox stream must be reopened because its translation on/off changed.
         """
         normalized = str(mode or "").strip().lower()
+        # Toki Pona mode is locked to 准确 (accurate): ignore any other request.
+        if getattr(config, "TOKIPONA_MODE", False):
+            normalized = "accurate"
         # 混合 (hybrid) now shows the STT draft immediately and refines it in place,
         # so it maps onto the internal refine mode. "refine" is accepted as a
         # legacy alias (old stored prefs / clients) and normalized to hybrid.
@@ -1833,6 +1860,7 @@ class SonioxSession:
             context_items,
             target_lang=target_lang if (isinstance(target_lang, str) and target_lang.strip())
             else self.get_translation_target_lang(),
+            tokipona=bool(getattr(config, "TOKIPONA_MODE", False)),
         )
 
     def set_segment_mode(self, mode: str) -> tuple[bool, str]:

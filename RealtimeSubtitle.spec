@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('static', 'static'), ('ACKNOWLEDGMENTS.md', '.')]
+datas = [('static', 'static'), ('ACKNOWLEDGMENTS.md', '.'), ('terms', 'terms')]
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',

@@ -100,6 +100,16 @@ def get_config(
         "enable_endpoint_detection": True,
     }
 
+    # Toki Pona mode: Soniox does not support toki pona, so pin recognition to a
+    # single phonetically-close real language (identification off) and bias it
+    # with the toki pona vocabulary as context terms.
+    if config.TOKIPONA_MODE:
+        stt_config["language_hints"] = [config.TOKIPONA_STT_LANGUAGE]
+        stt_config["language_hints_strict"] = True
+        terms = config.load_tokipona_terms()
+        if terms:
+            stt_config["context"] = {"terms": terms}
+
     # Audio format for microphone input
     if audio_format == "auto":
         stt_config["audio_format"] = "auto"

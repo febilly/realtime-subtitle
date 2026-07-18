@@ -74,6 +74,9 @@
             settingsStore.readTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE,
         );
         let translationModeSynced = false;
+        // Toki Pona mode: backend locks 翻译模式 to a single value ('accurate').
+        // When set, the picker is forced to it and cannot switch away.
+        let translationModeLock = '';
 
         function session() {
             const value = getSession();
@@ -124,7 +127,10 @@
         }
 
         async function setTranslationUiMode(mode, setOptions = {}) {
-            const normalized = normalizeTranslationUiMode(mode);
+            // Locked (Toki Pona) builds ignore any request to a different mode.
+            const normalized = translationModeLock
+                ? translationModeLock
+                : normalizeTranslationUiMode(mode);
             const previous = translationUiMode;
             translationUiMode = normalized;
             session().noteHybridBoundary(normalized, previous);
@@ -164,9 +170,13 @@
                 forceUnavailable();
             }
 
-            translationUiMode = normalizeTranslationUiMode(
+            const rawLock = (data.translation_mode_locked || '').toString().trim().toLowerCase();
+            translationModeLock = TRANSLATION_UI_MODES.includes(rawLock) ? rawLock : '';
+
+            translationUiMode = translationModeLock || normalizeTranslationUiMode(
                 settingsStore.readTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE,
             );
+            if (translationModeLock) persistTranslationUiMode(translationModeLock);
             renderTranslationModePicker();
 
             const nextBootId = typeof data.boot_id === 'string' ? data.boot_id : '';
@@ -228,6 +238,7 @@
                 llmRefineMode,
                 translationUiMode,
                 translationModeSynced,
+                translationModeLock,
             };
         }
 
@@ -239,6 +250,8 @@
             getDebugState,
             getLlmRefineMode: () => llmRefineMode,
             getTranslationUiMode: () => translationUiMode,
+            getTranslationModeLock: () => translationModeLock,
+            isTranslationModeLocked: () => !!translationModeLock,
             isAvailable: () => llmRefineAvailable,
             isTranslateMode,
             setTranslationModeSynced,

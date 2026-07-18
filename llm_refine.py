@@ -22,6 +22,7 @@ ChatFn = Callable[..., Awaitable[str]]
 NO_CHANGE_MARKER = "__NO_CHANGE__"
 _REFINE_PLACEHOLDER = "...refined translation..."
 _TRANSLATE_PLACEHOLDER = "...translated text..."
+_TOKIPONA_SOURCE_PLACEHOLDER = "...corrected toki pona..."
 MAX_REFINE_ATTEMPTS = 3
 MAX_TRANSLATE_ATTEMPTS = 3
 
@@ -45,6 +46,7 @@ ERROR_CATEGORIES = frozenset(
 
 _ANSWER_TAG_RE = re.compile(r"<answer>(.*?)</answer>", re.IGNORECASE | re.DOTALL)
 _ERROR_TAG_RE = re.compile(r"<error>(.*?)</error>", re.IGNORECASE | re.DOTALL)
+_SOURCE_TAG_RE = re.compile(r"<source>(.*?)</source>", re.IGNORECASE | re.DOTALL)
 
 
 def _clean_target_lang(target_lang) -> str:
@@ -261,6 +263,37 @@ def _build_translate_prompt(source: str, target_lang_value: str, context_block: 
     )
 
 
+def _build_tokipona_translate_prompt(source: str, target_lang_value: str, context_block: str) -> str:
+    vocab = ", ".join(config.load_tokipona_terms())
+    return (
+        f"Target language: {config.describe_target_language(target_lang_value)}\n\n"
+        "You translate toki pona speech. The source text below is toki pona that was captured by a "
+        "speech-to-text engine which does NOT support toki pona: it was pinned to a phonetically close "
+        "language, so the words come out mis-spelled, wrongly split or merged, or replaced by "
+        "similar-sounding words from other languages. Toki pona has only ~140 words, listed here:\n"
+        f"{vocab}\n\n"
+        "The speaker may also MIX toki pona with English (or names), so some tokens are genuinely English "
+        "and were not meant to be toki pona at all.\n\n"
+        "Do TWO things:\n"
+        "1. Reconstruct what the speaker actually said. For each token decide: was it meant as toki pona "
+        "(then map the garbled STT token to the toki pona word it most likely was, by sound, using ONLY "
+        "words from the list above), or was it a real English word / name the speaker code-switched into "
+        "(then keep it as the English word). Keep toki pona grammar words (li, e, la, pi, o, en, ...) and "
+        "word order. Do not invent meaning that is not there; if a token is unrecoverable, drop it rather "
+        "than guessing wildly.\n"
+        "2. Translate that reconstructed sentence into the target language, preserving meaning, question "
+        "intent, numbers, and names. Do NOT add or omit information.\n\n"
+        "Output EXACTLY these two lines and nothing else:\n"
+        f"<source>{_TOKIPONA_SOURCE_PLACEHOLDER}</source>\n"
+        f"<answer>{_TRANSLATE_PLACEHOLDER}</answer>\n\n"
+        f"{context_block}"
+        "Source (raw STT of toki pona speech):\n```\n"
+        f"{source}\n"
+        "```\n"
+        f"{_suffix_block()}"
+    )
+
+
 def build_refine_messages(
     source: str,
     translation: str,
@@ -296,12 +329,29 @@ def build_translate_messages(
     context_items: list,
     *,
     target_lang: Optional[str] = None,
+    tokipona: bool = False,
 ) -> list[dict[str, str]]:
-    """Build the exact chat messages used by ``perform_translate``."""
+    """Build the exact chat messages used by ``perform_translate``.
+
+    When ``tokipona`` is set, the prompt reconstructs a real-toki-pona source
+    (STT does not know toki pona) alongside the translation.
+    """
     target_lang_value = _clean_target_lang(target_lang)
     context_block = _render_context_block(
         _normalize_context(context_items), mention_translation=False
     )
+    if tokipona:
+        return [
+            {"role": "system", "content": "You are a precise toki pona translator."},
+            {
+                "role": "user",
+                "content": _build_tokipona_translate_prompt(
+                    (source or "").strip(),
+                    target_lang_value,
+                    context_block,
+                ),
+            },
+        ]
     return [
         {"role": "system", "content": "You are a precise real-time translator."},
         {
@@ -403,15 +453,30 @@ async def perform_refine(
     return {"status": "ok", "no_change": True}
 
 
+def _parse_tokipona_source(raw_content: str) -> str:
+    """Extract the reconstructed toki pona source from a ``<source>`` tag."""
+    matches = _SOURCE_TAG_RE.findall(str(raw_content or ""))
+    if not matches:
+        return ""
+    corrected = _strip_code_fence(str(matches[-1]).strip())
+    if corrected == _TOKIPONA_SOURCE_PLACEHOLDER:
+        return ""
+    return corrected
+
+
 async def perform_translate(
     chat: ChatFn,
     source: str,
     context_items: list,
     *,
     target_lang: Optional[str] = None,
+    tokipona: bool = False,
 ) -> dict:
     """Translate the source directly. ``target_lang`` overrides the session
-    target (used for two-way, where each utterance targets its partner language)."""
+    target (used for two-way, where each utterance targets its partner language).
+
+    When ``tokipona`` is set, the same call also reconstructs a real-toki-pona
+    source, returned as ``corrected_source`` (empty if the model omitted it)."""
     source = (source or "").strip()
     if not source:
         return {"status": "error", "message": "empty source"}
@@ -420,6 +485,7 @@ async def perform_translate(
         source,
         context_items,
         target_lang=target_lang,
+        tokipona=tokipona,
     )
 
     t0 = time.perf_counter()
@@ -474,6 +540,9 @@ async def perform_translate(
             return {"status": "error", "message": "placeholder translation"}
 
         _log_translate("ok", attempt=attempt, raw=raw_content, translated=translated)
-        return {"status": "ok", "translation": translated}
+        result: dict = {"status": "ok", "translation": translated}
+        if tokipona:
+            result["corrected_source"] = _parse_tokipona_source(raw_content)
+        return result
 
     return {"status": "error", "message": "translation failed"}

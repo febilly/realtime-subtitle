@@ -477,7 +477,10 @@
 
         function renderTranslationModePicker() {
             const current = state();
-            const shown = !!current.llmRefineAvailable && !current.lockManualControls;
+            // Toki Pona mode locks 翻译模式 to 准确; hide the picker entirely.
+            const shown = !!current.llmRefineAvailable
+                && !current.lockManualControls
+                && !current.translationModeLocked;
             if (elements.translationModeSection) elements.translationModeSection.hidden = !shown;
             if (elements.translationModeSettingField) elements.translationModeSettingField.hidden = !shown;
             if (!shown) {

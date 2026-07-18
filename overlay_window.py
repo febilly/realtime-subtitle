@@ -1128,6 +1128,8 @@ class OverlayWindow(QWidget):
         # 悬浮窗只展示最终译文，不做网页版的绿色（已改进）/灰色（临时译文）标注。
         self._refined_by_sid: dict[str, str] = {}
         self._refined_lang_by_sid: dict[str, str] = {}
+        # Toki Pona 模式：LLM 重建的真正 toki pona 原文，按 sentence_id 覆盖 STT 原文行。
+        self._source_by_sid: dict[str, str] = {}
         self.settings = QSettings("RealtimeSubtitle", "Overlay")
 
         self.font_size = int(self.settings.value("font_size", 20))
@@ -1652,6 +1654,7 @@ class OverlayWindow(QWidget):
             if not preserve:
                 self._refined_by_sid.clear()
                 self._refined_lang_by_sid.clear()
+                self._source_by_sid.clear()
             self._last_html = None
             self._render()
         elif mtype == "overlay_visibility":
@@ -1681,7 +1684,15 @@ class OverlayWindow(QWidget):
         if not sid:
             return
         sid = str(sid)
+        # Toki Pona 原文覆盖独立于译文的 no_change 门控，需在提前返回前处理。
+        refined_source = (data.get("refined_source") or "").strip()
+        if refined_source:
+            self._source_by_sid[sid] = refined_source
+            self._last_html = None
         if data.get("no_change"):
+            if refined_source:
+                self._trim_refine_maps()
+                self._render()
             return
         refined = (data.get("refined_translation") or "").strip()
         if not refined:
@@ -1696,7 +1707,7 @@ class OverlayWindow(QWidget):
         self._render()
 
     def _trim_refine_maps(self, cap: int = 200):
-        for m in (self._refined_by_sid, self._refined_lang_by_sid):
+        for m in (self._refined_by_sid, self._refined_lang_by_sid, self._source_by_sid):
             while len(m) > cap:
                 m.pop(next(iter(m)))  # dict 保序：淘汰最旧的一条
 
@@ -1720,6 +1731,13 @@ class OverlayWindow(QWidget):
         # 改进 / 混合：沿用 STT 译文行的语言标签；准确模式无 STT 译文，退回 LLM 目标语言。
         lang = sentence.get("translation_lang") or self._refined_lang_by_sid.get(sid)
         return text, lang
+
+    def _sentence_source_override(self, sentence: dict):
+        """Toki Pona 模式：若该句有 LLM 重建原文，返回该文本，否则 None。"""
+        sid = self._sentence_sid(sentence)
+        if not sid:
+            return None
+        return self._source_by_sid.get(sid) or None
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
@@ -1827,6 +1845,10 @@ class OverlayWindow(QWidget):
                 # LLM 译文更新优先于 STT 内置译文；准确模式下 trans 为空，靠它补出译文行。
                 override = self._sentence_translation_override(sentence) if show_trans else None
                 has_trans = bool(trans) or override is not None
+                # Toki Pona 模式：用 LLM 重建的真正 toki pona 覆盖 STT 原文行。
+                source_override = self._sentence_source_override(sentence) if show_orig else None
+                if source_override:
+                    orig = [{"text": source_override, "is_final": True}]
                 if orig:
                     mb = pair_mb if has_trans else sent_mb
                     group.append(self._line_html(

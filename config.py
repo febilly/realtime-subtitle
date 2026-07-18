@@ -712,6 +712,50 @@ if _LLM_DEFAULT_MODE not in ("off", "refine", "translate"):
     _LLM_DEFAULT_MODE = "refine" if LLM_REFINE_DEFAULT_ENABLED else "off"
 LLM_REFINE_DEFAULT_MODE = _LLM_DEFAULT_MODE
 
+# ======================== Toki Pona mode ========================
+# When enabled, the app becomes a toki pona -> target-language translator:
+#   - Soniox STT is pinned to a phonetically-close real language (default "sl",
+#     Slovenian) with language identification off, and biased with the toki pona
+#     vocabulary (terms/tokipona.txt) as Soniox `context.terms`.
+#   - Translation is locked to 准确 (accurate): Soniox's built-in translation is
+#     off and the LLM does the translation.
+#   - The LLM also reconstructs a real-toki-pona source (the STT does not know
+#     toki pona), which replaces the displayed source line.
+TOKIPONA_MODE = _env_bool("TOKIPONA_MODE", True)
+TOKIPONA_STT_LANGUAGE = _env_str("TOKIPONA_STT_LANGUAGE", "sl")
+
+_TOKIPONA_TERMS_CACHE: list[str] | None = None
+
+
+def load_tokipona_terms() -> list[str]:
+    """Return the toki pona vocabulary (one term per line, from terms/tokipona.txt).
+
+    Cached module-level. Path is resolved bundle-safely (PyInstaller `_MEIPASS`
+    fallback) so it works both in dev and in a frozen build.
+    """
+    global _TOKIPONA_TERMS_CACHE
+    if _TOKIPONA_TERMS_CACHE is not None:
+        return _TOKIPONA_TERMS_CACHE
+
+    base_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(base_dir, "terms", "tokipona.txt")
+    terms: list[str] = []
+    seen: set[str] = set()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                term = line.strip()
+                if not term or term in seen:
+                    continue
+                seen.add(term)
+                terms.append(term)
+    except OSError as exc:
+        print(f"⚠️  Failed to load toki pona terms from {path}: {exc}")
+
+    _TOKIPONA_TERMS_CACHE = terms
+    return terms
+
+
 # Optional suffix appended to the end of the LLM prompt.
 # Default: empty string (no suffix). Example: "/no_think"
 LLM_PROMPT_SUFFIX = _env_str("LLM_PROMPT_SUFFIX", "")

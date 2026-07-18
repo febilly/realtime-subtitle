@@ -92,6 +92,20 @@
                 return { blocked: false, pendingFurigana: false, html: '' };
             }
             const languageTag = getLanguageTag(sentence.originalLang);
+            // Toki Pona mode: the LLM-reconstructed real toki pona replaces the
+            // raw STT source line once available for this sentence.
+            const llmId = getLlmSentenceId(sentence);
+            const sourceOverride = llmId && typeof session.getSourceOverride === 'function'
+                ? (session.getSourceOverride(llmId) || '').trim()
+                : '';
+            if (sourceOverride) {
+                const body = `<span class="subtitle-text" lang="${sentence.originalLang || ''}">${escapeHtml(sourceOverride)}</span>`;
+                return {
+                    blocked: false,
+                    pendingFurigana: false,
+                    html: `<div class="subtitle-line original-line" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${wrapSubtitleLineBody(`${languageTag}${body}`, sentenceDir, sentence.originalLang)}</div>`,
+                };
+            }
             const isJapanese = sentence.originalLang === 'ja';
             if (isJapanese && view.furiganaEnabled) {
                 const plainText = sentence.originalTokens.map((token) => token.text).join('');

@@ -60,6 +60,9 @@
         const retractedSentenceIds = new Set();
         const translationOverrides = new Map();
         const translationLanguages = new Map();
+        // Toki Pona mode: reconstructed real-toki-pona source, keyed by sentence
+        // id; replaces the displayed (raw STT) source line.
+        const sourceOverrides = new Map();
         const specTranslations = new Map();
         const specPendingSources = new Map();
 
@@ -78,6 +81,7 @@
                 retracted: !!id && retractedSentenceIds.has(id),
                 translationOverride: id ? translationOverrides.get(id) : undefined,
                 translationLanguage: id ? translationLanguages.get(id) : undefined,
+                sourceOverride: id ? sourceOverrides.get(id) : undefined,
             };
         }
 
@@ -87,6 +91,7 @@
             const source = normalizeSource(data.source);
             const sentenceId = normalizeSentenceId(data.sentence_id);
             const refinedTranslation = normalizeSource(data.refined_translation);
+            const refinedSource = normalizeSource(data.refined_source);
             const targetLanguage = normalizeLanguage(data.target_lang);
             const noChange = !!data.no_change;
             const translateMode = !!applyOptions.translateMode;
@@ -96,6 +101,12 @@
 
             // A finalized result makes the speculative pending marker obsolete.
             specPendingSources.delete(source);
+
+            // Toki Pona mode: the reconstructed real toki pona replaces the
+            // displayed source line, independent of the translation gate.
+            if (refinedSource && sentenceId) {
+                sourceOverrides.set(sentenceId, refinedSource);
+            }
 
             if (!noChange && refinedTranslation && sentenceId) {
                 refinedResults.set(sentenceId, refinedTranslation);
@@ -118,6 +129,7 @@
             confirmedSentenceIds.delete(id);
             translationOverrides.delete(id);
             translationLanguages.delete(id);
+            sourceOverrides.delete(id);
             return true;
         }
 
@@ -166,6 +178,7 @@
             retractedSentenceIds.clear();
             translationOverrides.clear();
             translationLanguages.clear();
+            sourceOverrides.clear();
             specTranslations.clear();
             specPendingSources.clear();
         }
@@ -182,6 +195,7 @@
             isRetracted: (sentenceId) => lookup(sentenceId).retracted,
             getTranslationOverride: (sentenceId) => lookup(sentenceId).translationOverride,
             getTranslationLanguage: (sentenceId) => lookup(sentenceId).translationLanguage,
+            getSourceOverride: (sentenceId) => lookup(sentenceId).sourceOverride,
             markSpecPending,
             applySpecTranslation,
             setSpecTranslation,

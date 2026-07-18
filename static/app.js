@@ -251,6 +251,7 @@ const settingsRuntime = SettingsRuntime.create({
         get llmRefineAvailable() { return translationModeController.isAvailable(); },
         get lockManualControls() { return lockManualControls; },
         get translationUiMode() { return translationModeController.getTranslationUiMode(); },
+        get translationModeLocked() { return translationModeController.isTranslationModeLocked(); },
         get defaultTranslationUiMode() { return TranslationModeController.DEFAULT_TRANSLATION_UI_MODE; },
         get translationUiModes() { return translationModeController.getAvailableTranslationModes(); },
         get segmentModeSupported() { return segmentModeSupported; },
