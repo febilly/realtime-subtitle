@@ -32,6 +32,7 @@ const translationLangIcon = document.getElementById('translationLangIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const toastContainer = document.getElementById('toast');
+const bottomToastContainer = document.getElementById('toastBottom');
 const t = (key, vars) => {
     try {
         if (window.I18N && typeof window.I18N.t === 'function') {
@@ -125,6 +126,7 @@ const uiFeedbackController = UiFeedbackController.create({
     fetch,
     subtitleContainer,
     toast: toastContainer,
+    bottomToast: bottomToastContainer,
     t,
     localizeBackendMessage,
     escapeHtml,

@@ -300,7 +300,7 @@
             saveServerSettings(server);
             call('showToast', t('login_success', {
                 name: server.displayName || data.display_name || '',
-            }), false, { timeoutMs: 5000 });
+            }), false, { timeoutMs: 5000, position: 'bottom' });
             hide();
             void call('offerDesktopShortcut');
             call('updateBalanceBarVisibility');

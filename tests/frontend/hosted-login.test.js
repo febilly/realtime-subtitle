@@ -228,7 +228,7 @@ describe('HostedLogin browser callback polling', () => {
         expect(page.actions.showToast).toHaveBeenCalledWith(
             'login_success:User',
             false,
-            { timeoutMs: 5000 },
+            { timeoutMs: 5000, position: 'bottom' },
         );
         expect(page.actions.offerDesktopShortcut).toHaveBeenCalledOnce();
         expect(page.controller.getDebugState().waitingForBrowser).toBe(false);
