@@ -168,6 +168,7 @@ describe('settings-store typed preferences', () => {
         expect(store.loadLlmRefineMode()).toBeNull();
         expect(store.loadSegmentMode()).toBe('punctuation');
         expect(store.loadDisplayMode()).toBe('both');
+        expect(store.loadSubtitleFlowDirection()).toBe('up');
         expect(store.loadAutoRestartEnabled()).toBe(true);
         expect(store.loadBottomSafeAreaEnabled()).toBe(false);
         expect(store.loadBundledCjkFontEnabled()).toBe(false);
@@ -179,6 +180,7 @@ describe('settings-store typed preferences', () => {
         expect(store.saveLlmRefineMode('translate')).toBe(true);
         expect(store.saveSegmentMode('endpoint')).toBe(true);
         expect(store.saveDisplayMode('translation')).toBe(true);
+        expect(store.saveSubtitleFlowDirection('down')).toBe(true);
         expect(store.saveAutoRestartEnabled(false)).toBe(true);
         expect(store.saveSleepOnSilenceEnabled(false)).toBe(true);
         expect(store.saveBottomSafeAreaEnabled(true)).toBe(true);
@@ -191,6 +193,7 @@ describe('settings-store typed preferences', () => {
         expect(store.loadLlmRefineMode()).toBe('translate');
         expect(store.loadSegmentMode()).toBe('endpoint');
         expect(store.loadDisplayMode()).toBe('translation');
+        expect(store.loadSubtitleFlowDirection()).toBe('down');
         expect(store.loadAutoRestartEnabled()).toBe(false);
         expect(store.readSleepOnSilenceEnabled()).toBe(false);
         expect(store.loadSleepOnSilenceEnabled()).toBe(false);
@@ -206,6 +209,7 @@ describe('settings-store typed preferences', () => {
             [SettingsStore.KEYS.llmRefineEnabled]: 'true',
             [SettingsStore.KEYS.segmentMode]: 'bogus',
             [SettingsStore.KEYS.displayMode]: 'bogus',
+            [SettingsStore.KEYS.subtitleFlowDirection]: 'sideways',
             [SettingsStore.KEYS.autoRestartEnabled]: 'bogus',
             [SettingsStore.KEYS.audioSource]: 'bogus',
         });
@@ -216,9 +220,11 @@ describe('settings-store typed preferences', () => {
         expect(store.loadSegmentMode()).toBe('punctuation');
         // app.js currently accepts any non-empty displayMode string at startup.
         expect(store.loadDisplayMode()).toBe('bogus');
+        expect(store.loadSubtitleFlowDirection()).toBe('up');
         expect(store.loadAutoRestartEnabled()).toBe(false);
         expect(store.loadAudioSource()).toBe('system');
         expect(store.saveUiTranslationMode('bogus')).toBe(false);
         expect(store.saveSegmentMode('bogus')).toBe(false);
+        expect(store.saveSubtitleFlowDirection('sideways')).toBe(false);
     });
 });

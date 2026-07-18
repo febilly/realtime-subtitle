@@ -97,6 +97,26 @@ describe('SubtitleScroll render and event lifecycle', () => {
         page.dom.window.close();
     });
 
+    it('sticks to the top when subtitles flow downward', () => {
+        const page = setup({ scrollTop: 400 });
+        page.controller.setFlowDirection('down');
+        expect(page.container.scrollTop).toBe(0);
+        expect(page.controller.isCloseToFlowEdge()).toBe(true);
+        expect(page.controller.capture()).toEqual({ wasAtTop: true });
+
+        page.container.scrollTop = 120;
+        page.controller.init();
+        page.container.dispatchEvent(new page.dom.window.Event('scroll'));
+        expect(page.controller.getDebugState()).toMatchObject({
+            autoStickToEdge: false,
+            flowDirection: 'down',
+        });
+
+        page.controller.completeRender({ wasAtTop: true });
+        expect(page.container.scrollTop).toBe(0);
+        page.dom.window.close();
+    });
+
     it('binds scroll and resize once and removes both handlers on destroy', () => {
         const page = setup({ scrollTop: 350 });
         expect(page.controller.init()).toBe(true);

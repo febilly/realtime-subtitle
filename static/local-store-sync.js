@@ -36,7 +36,7 @@
     // the LLM refine/translate mode, automatic sleep, the invite-reminder cadence,
     // and the optional bundled CJK font toggle.
     // Everything else (theme,
-    // segment/display mode, audio source, auto-restart, …) stays per-instance.
+    // segment/display/subtitle-flow mode, audio source, auto-restart, …) stays per-instance.
     // Keep in sync with the constants in app.js.
     var ALLOWLIST = {
         'providerSettings.v1': true,

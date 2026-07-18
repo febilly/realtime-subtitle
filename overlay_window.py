@@ -159,6 +159,8 @@ _I18N_DATA = {
         "display_both": "当前：显示原文与译文 (点击切换为仅原文)",
         "display_original": "当前：仅显示原文 (点击切换为仅译文)",
         "display_translation": "当前：仅显示译文 (点击切换为显示全部)",
+        "flow_up": "字幕向上流动 (点击改为向下流动)",
+        "flow_down": "字幕向下流动 (点击改为向上流动)",
         "passthrough_off": "穿透模式：关闭 (开启后除按钮外鼠标均可穿透)",
         "passthrough_on": "穿透模式：开启 (关闭后鼠标无法穿透悬浮窗)",
         "restart": "重启识别",
@@ -176,6 +178,8 @@ _I18N_DATA = {
         "display_both": "Current: original + translation (click for original only)",
         "display_original": "Current: original only (click for translation only)",
         "display_translation": "Current: translation only (click for both)",
+        "flow_up": "Subtitles flow upward (click to flow downward)",
+        "flow_down": "Subtitles flow downward (click to flow upward)",
         "passthrough_off": "Click-through mode: disabled (click to enable)",
         "passthrough_on": "Click-through mode: enabled (click to disable)",
         "restart": "Restart recognition",
@@ -193,6 +197,8 @@ _I18N_DATA = {
         "display_both": "現在：原文＋訳文 (クリックで原文のみ表示)",
         "display_original": "現在：原文のみ (クリックで訳文のみ表示)",
         "display_translation": "現在：訳文のみ (クリックで両方表示)",
+        "flow_up": "字幕は上方向に流れます (クリックで下方向に変更)",
+        "flow_down": "字幕は下方向に流れます (クリックで上方向に変更)",
         "passthrough_off": "マウスクリック透過：無効 (クリックで有効化)",
         "passthrough_on": "マウスクリック透過：有効 (クリックで無効化)",
         "restart": "認識を再起動",
@@ -210,6 +216,8 @@ _I18N_DATA = {
         "display_both": "현재: 원문+번역문 (클릭 시 원문만 표시)",
         "display_original": "현재: 원문만 표시 (클릭 시 번역문만 표시)",
         "display_translation": "현재: 번역문만 표시 (클릭 시 둘 다 표시)",
+        "flow_up": "자막이 위로 흐릅니다 (클릭하여 아래로 변경)",
+        "flow_down": "자막이 아래로 흐릅니다 (클릭하여 위로 변경)",
         "passthrough_off": "마우스 클릭 관통: 비활성화 (클릭 시 활성화)",
         "passthrough_on": "마우스 클릭 관통: 활성화 (클릭 시 비활성화)",
         "restart": "인식 재시작",
@@ -227,6 +235,8 @@ _I18N_DATA = {
         "display_both": "Сейчас: оригинал + перевод (нажмите для оригинала)",
         "display_original": "Сейчас: только оригинал (нажмите для перевода)",
         "display_translation": "Сейчас: только перевод (нажмите для всего)",
+        "flow_up": "Субтитры движутся вверх (нажмите, чтобы направить вниз)",
+        "flow_down": "Субтитры движутся вниз (нажмите, чтобы направить вверх)",
         "passthrough_off": "Режим сквозного клика: отключен (нажмите для включения)",
         "passthrough_on": "Режим сквозного клика: включен (нажмите для отключения)",
         "restart": "Перезапустить распознавание",
@@ -244,6 +254,8 @@ _I18N_DATA = {
         "display_both": "Actual: original + traducción (clic para solo original)",
         "display_original": "Actual: solo original (clic para solo traducción)",
         "display_translation": "Actual: solo traducción (clic para ambos)",
+        "flow_up": "Los subtítulos fluyen hacia arriba (clic para invertir)",
+        "flow_down": "Los subtítulos fluyen hacia abajo (clic para invertir)",
         "passthrough_off": "Modo de paso del ratón: desactivado (clic para activar)",
         "passthrough_on": "Modo de paso del ratón: activado (clic para desactivar)",
         "restart": "Reiniciar reconocimiento",
@@ -261,6 +273,8 @@ _I18N_DATA = {
         "display_both": "Atual: original + tradução (clique para apenas original)",
         "display_original": "Atual: apenas original (clique para apenas tradução)",
         "display_translation": "Atual: apenas tradução (clique para ambos)",
+        "flow_up": "As legendas fluem para cima (clique para inverter)",
+        "flow_down": "As legendas fluem para baixo (clique para inverter)",
         "passthrough_off": "Modo de passagem do mouse: desativado (clique para ativar)",
         "passthrough_on": "Modo de passagem do mouse: ativado (clique para desativar)",
         "restart": "Reiniciar reconhecimento",
@@ -956,6 +970,9 @@ class OverlayWindow(QWidget):
         self.bg_alpha = int(self.settings.value("bg_alpha", DEFAULT_ALPHA))
         # 显示模式：both（原文+译文）/ original（仅原文）/ translation（仅译文）
         self.display_mode = str(self.settings.value("display_mode", "both"))
+        self.flow_direction = str(self.settings.value("flow_direction", "up"))
+        if self.flow_direction not in ("up", "down"):
+            self.flow_direction = "up"
         self.is_paused = False
         self.use_bundled_cjk_fonts = False
         self._restart_in_flight = False
@@ -1024,20 +1041,22 @@ class OverlayWindow(QWidget):
         self.btn_alpha_dec = self._make_button("", tr("alpha_dec"), self._dec_alpha, icon="layers-minus")
         self.btn_alpha_inc = self._make_button("", tr("alpha_inc"), self._inc_alpha, icon="layers-plus")
         self.btn_display = self._make_button("O/T", "", self._cycle_display)
+        self.btn_flow = self._make_button("", "", self._toggle_flow_direction,
+                                          icon="arrow-up-from-line")
         self.btn_passthrough = self._make_button("", "", self._toggle_passthrough, icon="mouse-pointer-2")
         self.btn_restart = self._make_button("", tr("restart"), self._restart_recognition, icon="rotate-cw")
         self.btn_pause = self._make_button("", tr("pause"), self._toggle_pause, icon="pause")
         self.btn_close = self._make_button("", tr("close"), self.close, icon="x")
         for b in (self.btn_font_dec, self.btn_font_inc,
                   self.btn_alpha_dec, self.btn_alpha_inc,
-                  self.btn_display, self.btn_passthrough,
+                  self.btn_display, self.btn_flow, self.btn_passthrough,
                   self.btn_restart, self.btn_pause, self.btn_close):
             bar_layout.addWidget(b)
         # Create opacity effects for all other buttons
         self._other_buttons = (
             self.btn_font_dec, self.btn_font_inc,
             self.btn_alpha_dec, self.btn_alpha_inc,
-            self.btn_display, self.btn_restart,
+            self.btn_display, self.btn_flow, self.btn_restart,
             self.btn_pause, self.btn_close
         )
         self._btn_opacity_effects = {}
@@ -1047,6 +1066,7 @@ class OverlayWindow(QWidget):
             self._btn_opacity_effects[btn] = effect
 
         self._update_display_button()
+        self._update_flow_button()
         self._update_passthrough_button()
 
         self.button_bar.adjustSize()
@@ -1269,6 +1289,19 @@ class OverlayWindow(QWidget):
         self.settings.setValue("display_mode", self.display_mode)
         self._update_display_button()
         self._last_html = None   # 模式变了，强制重渲染
+        self._render()
+
+    def _update_flow_button(self):
+        flowing_down = self.flow_direction == "down"
+        self.btn_flow.setIconName(
+            "arrow-down-to-line" if flowing_down else "arrow-up-from-line")
+        self.btn_flow.setToolTip(tr("flow_down" if flowing_down else "flow_up"))
+
+    def _toggle_flow_direction(self):
+        self.flow_direction = "down" if self.flow_direction == "up" else "up"
+        self.settings.setValue("flow_direction", self.flow_direction)
+        self._update_flow_button()
+        self._last_html = None
         self._render()
 
     # ----------------------------------------------------- 鼠标穿透模式 ----
@@ -1495,29 +1528,38 @@ class OverlayWindow(QWidget):
                 f'text-align:center; margin-top:{top}px;">等待字幕…</div>'
             )
         else:
-            # 只渲染底部最近的完整句子组，避免把一句的顶部切成残缺 token。
-            html = "".join(self._select_recent_lines(line_groups, max_lines))
+            # 只渲染最近的完整句子组，避免把一句切成残缺 token。
+            html = "".join(self._select_recent_lines(
+                line_groups,
+                max_lines,
+                newest_first=self.flow_direction == "down",
+            ))
 
         sb = self.text.verticalScrollBar()
 
-        # 内容没变就不重建文档（避免无谓重排导致的闪烁），但仍保证停在底部。
+        # 内容没变就不重建文档（避免无谓重排导致的闪烁），但仍跟随流向端点。
         if html == getattr(self, "_last_html", None):
-            if sb.value() != sb.maximum():
-                sb.setValue(sb.maximum())
+            target = sb.minimum() if self.flow_direction == "down" else sb.maximum()
+            if sb.value() != target:
+                sb.setValue(target)
             return
         self._last_html = html
 
-        # 关掉重绘再替换内容，确保只在最终（已滚到底部）状态画一次，避免闪烁。
+        # 关掉重绘再替换内容，确保只在最终端点状态画一次，避免闪烁。
         self.text.setUpdatesEnabled(False)
         try:
             self.text.setHtml(html)
-            # 永远把光标移到末尾并滚到最底，露出最新字幕。
-            self.text.moveCursor(QTextCursor.End)
-            sb.setValue(sb.maximum())
+            # 根据独立的悬浮窗流向，把最新字幕固定在顶部或底部。
+            if self.flow_direction == "down":
+                self.text.moveCursor(QTextCursor.Start)
+                sb.setValue(sb.minimum())
+            else:
+                self.text.moveCursor(QTextCursor.End)
+                sb.setValue(sb.maximum())
         finally:
             self.text.setUpdatesEnabled(True)
 
-    def _select_recent_lines(self, line_groups, max_lines: int):
+    def _select_recent_lines(self, line_groups, max_lines: int, newest_first=False):
         selected = []
         line_count = 0
         for group in reversed(line_groups):
@@ -1526,7 +1568,8 @@ class OverlayWindow(QWidget):
                 break
             selected.insert(0, group)
             line_count += group_len
-        return [line for group in selected for line in group]
+        ordered = reversed(selected) if newest_first else selected
+        return [line for group in ordered for line in group]
 
     def _build_line_groups(self, blocks):
         """产出按显示句子分组的 HTML <div> 列表。

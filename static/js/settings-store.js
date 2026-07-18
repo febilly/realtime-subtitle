@@ -11,6 +11,7 @@
         llmRefineEnabled: 'llmRefineEnabled',
         segmentMode: 'segmentMode',
         displayMode: 'displayMode',
+        subtitleFlowDirection: 'subtitleFlowDirection',
         autoRestartEnabled: 'autoRestartEnabled',
         sleepOnSilenceEnabled: 'sleepOnSilenceEnabled',
         bottomSafeAreaEnabled: 'bottomSafeAreaEnabled',
@@ -25,6 +26,7 @@
     const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
     const SEGMENT_MODES = ['translation', 'endpoint', 'punctuation'];
     const AUDIO_SOURCES = ['system', 'microphone', 'mix'];
+    const SUBTITLE_FLOW_DIRECTIONS = ['up', 'down'];
 
     function safeHttpUrl(value) {
         const raw = String(value || '').trim();
@@ -255,6 +257,17 @@
             return write(KEYS.displayMode, mode);
         }
 
+        function loadSubtitleFlowDirection() {
+            const value = String(read(KEYS.subtitleFlowDirection) || '').trim().toLowerCase();
+            return SUBTITLE_FLOW_DIRECTIONS.includes(value) ? value : 'up';
+        }
+
+        function saveSubtitleFlowDirection(direction) {
+            const normalized = String(direction || '').trim().toLowerCase();
+            return SUBTITLE_FLOW_DIRECTIONS.includes(normalized)
+                && write(KEYS.subtitleFlowDirection, normalized);
+        }
+
         function loadBoolean(key, defaultValue = false) {
             const value = read(key);
             return value === null ? !!defaultValue : value === 'true';
@@ -285,6 +298,8 @@
             saveSegmentMode,
             loadDisplayMode,
             saveDisplayMode,
+            loadSubtitleFlowDirection,
+            saveSubtitleFlowDirection,
             loadAutoRestartEnabled: () => loadBoolean(KEYS.autoRestartEnabled, true),
             saveAutoRestartEnabled: (value) => saveBoolean(KEYS.autoRestartEnabled, value),
             readSleepOnSilenceEnabled: () => {

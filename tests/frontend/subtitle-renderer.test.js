@@ -378,3 +378,30 @@ describe('SubtitleRenderer dependency boundary', () => {
         expect(page.container.innerHTML).toBe(visibleHtml);
     });
 });
+
+describe('SubtitleRenderer flow direction', () => {
+    const twoSentences = () => [
+        original('First.', { llm_sentence_id: 'sentence-1', _sequenceIndex: 10 }),
+        translation('第一。', { llm_sentence_id: 'sentence-1', _sequenceIndex: 11 }),
+        { is_separator: true },
+        original('Second.', { llm_sentence_id: 'sentence-2', _sequenceIndex: 20 }),
+        translation('第二。', { llm_sentence_id: 'sentence-2', _sequenceIndex: 21 }),
+    ];
+
+    it.each([
+        ['up', ['First.第一。', 'Second.第二。']],
+        ['down', ['Second.第二。', 'First.第一。']],
+    ])('orders complete sentence pairs for %s flow', (flowDirection, expected) => {
+        const page = createHarness({
+            tokens: twoSentences(),
+            view: { flowDirection },
+        });
+
+        page.renderer.render();
+        const sentences = Array.from(page.container.querySelectorAll('.sentence-block'))
+            .map((node) => Array.from(node.querySelectorAll('.subtitle-text'))
+                .map((text) => text.textContent)
+                .join(''));
+        expect(sentences).toEqual(expected);
+    });
+});

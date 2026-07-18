@@ -1032,12 +1032,21 @@ body.dark-theme .confirm-dialog {
     position: absolute;
     left: 16px;
     top: 16px;
+    bottom: auto;
     z-index: 10000;
     display: flex;
-    flex-direction: column;
+    /* Newest notification sits at the upward-flow endpoint. */
+    flex-direction: column-reverse;
     gap: 10px;
     width: min(420px, calc(100vw - 80px));
     pointer-events: none;
+}
+
+.toast-container.toast-container--bottom {
+    top: auto;
+    bottom: 16px;
+    /* Newest notification sits at the downward-flow endpoint. */
+    flex-direction: column;
 }
 
 .toast-container[hidden] {

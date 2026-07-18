@@ -270,13 +270,19 @@
             let previousSpeaker = null;
             let fallbackCounter = 0;
             let blockingUpdate = false;
-            for (const block of speakerBlocks) {
+            const orderedSpeakerBlocks = viewState.flowDirection === 'down'
+                ? [...speakerBlocks].reverse()
+                : speakerBlocks;
+            for (const block of orderedSpeakerBlocks) {
                 if (blockingUpdate) break;
-                const firstDirection = block.sentences.length
-                    ? getLangDir(block.sentences[0].originalLang)
+                const orderedSentences = viewState.flowDirection === 'down'
+                    ? [...block.sentences].reverse()
+                    : block.sentences;
+                const firstDirection = orderedSentences.length
+                    ? getLangDir(orderedSentences[0].originalLang)
                     : 'ltr';
                 const sentenceHtml = [];
-                for (const sentence of block.sentences) {
+                for (const sentence of orderedSentences) {
                     const sentenceId = getSentenceId(sentence, fallbackCounter++);
                     const parts = [];
                     const sentenceDirection = getLangDir(sentence.originalLang);
@@ -341,9 +347,10 @@
             renderedSentences.clear();
         }
 
-        function invalidateAll() {
+        function invalidateAll(options = {}) {
             renderedSentences.clear();
             renderedBlocks.clear();
+            if (options.dom) domPatcher.clear({ dom: true });
         }
 
         function clearSession() {

@@ -10,7 +10,8 @@
         const stickyThreshold = Number.isFinite(Number(options.stickyThreshold))
             ? Number(options.stickyThreshold)
             : DEFAULT_STICKY_THRESHOLD;
-        let autoStickToBottom = true;
+        let flowDirection = options.flowDirection === 'down' ? 'down' : 'up';
+        let autoStickToEdge = true;
         let initialized = false;
 
         function isCloseToBottom() {
@@ -18,9 +19,23 @@
                 >= (container.scrollHeight - stickyThreshold);
         }
 
+        function isCloseToTop() {
+            return container.scrollTop <= stickyThreshold;
+        }
+
+        function isCloseToFlowEdge() {
+            return flowDirection === 'down' ? isCloseToTop() : isCloseToBottom();
+        }
+
+        function scrollToFlowEdge() {
+            container.scrollTop = flowDirection === 'down' ? 0 : container.scrollHeight;
+        }
+
         function capture() {
-            const wasAtBottom = isCloseToBottom();
-            if (wasAtBottom) return { wasAtBottom: true };
+            const wasAtFlowEdge = isCloseToFlowEdge();
+            if (wasAtFlowEdge) {
+                return flowDirection === 'down' ? { wasAtTop: true } : { wasAtBottom: true };
+            }
 
             const sentenceBlocks = container.querySelectorAll('.sentence-block');
             const currentScrollTop = container.scrollTop;
@@ -45,8 +60,8 @@
 
         function restore(scrollState) {
             if (!scrollState) return;
-            if (scrollState.wasAtBottom) {
-                container.scrollTop = container.scrollHeight;
+            if (scrollState.wasAtBottom || scrollState.wasAtTop) {
+                scrollToFlowEdge();
                 return;
             }
             if (scrollState.sentenceId) {
@@ -65,26 +80,39 @@
 
         function reset() {
             container.scrollTop = 0;
-            autoStickToBottom = true;
+            autoStickToEdge = true;
         }
 
         function restoreAfterEmpty(scrollState) {
             restore(scrollState);
-            autoStickToBottom = scrollState ? !!scrollState.wasAtBottom : true;
+            autoStickToEdge = scrollState
+                ? !!(scrollState.wasAtBottom || scrollState.wasAtTop)
+                : true;
         }
 
         function completeRender(scrollState) {
             restore(scrollState);
-            autoStickToBottom = scrollState ? !!scrollState.wasAtBottom : isCloseToBottom();
-            if (autoStickToBottom) container.scrollTop = container.scrollHeight;
+            autoStickToEdge = scrollState
+                ? !!(scrollState.wasAtBottom || scrollState.wasAtTop)
+                : isCloseToFlowEdge();
+            if (autoStickToEdge) scrollToFlowEdge();
         }
 
         function handleScroll() {
-            autoStickToBottom = isCloseToBottom();
+            autoStickToEdge = isCloseToFlowEdge();
         }
 
         function handleResize() {
-            if (autoStickToBottom) container.scrollTop = container.scrollHeight;
+            if (autoStickToEdge) scrollToFlowEdge();
+        }
+
+        function setFlowDirection(direction) {
+            const normalized = direction === 'down' ? 'down' : 'up';
+            const changed = normalized !== flowDirection;
+            flowDirection = normalized;
+            autoStickToEdge = true;
+            scrollToFlowEdge();
+            return changed;
         }
 
         function init() {
@@ -104,7 +132,13 @@
         }
 
         function getDebugState() {
-            return { autoStickToBottom, initialized, stickyThreshold };
+            return {
+                autoStickToBottom: autoStickToEdge,
+                autoStickToEdge,
+                flowDirection,
+                initialized,
+                stickyThreshold,
+            };
         }
 
         return {
@@ -114,9 +148,12 @@
             getDebugState,
             init,
             isCloseToBottom,
+            isCloseToFlowEdge,
+            isCloseToTop,
             reset,
             restore,
             restoreAfterEmpty,
+            setFlowDirection,
         };
     }
 

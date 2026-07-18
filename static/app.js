@@ -4,6 +4,7 @@ customTooltip.init();
 const subtitleContainer = document.getElementById('subtitleContainer');
 const subtitleScroll = SubtitleScroll.create({ container: subtitleContainer, window });
 subtitleScroll.init();
+let subtitleFlowDirection = 'up';
 const themeToggle = document.getElementById('themeToggle');
 const themeIcon = document.getElementById('themeIcon');
 const restartButton = document.getElementById('restartButton');
@@ -20,6 +21,8 @@ const segmentModeButton = document.getElementById('segmentModeButton');
 const segmentModeText = document.getElementById('segmentModeText');
 const displayModeButton = document.getElementById('displayModeButton');
 const displayModeText = document.getElementById('displayModeText');
+const subtitleFlowButton = document.getElementById('subtitleFlowButton');
+const subtitleFlowIcon = document.getElementById('subtitleFlowIcon');
 const oscTranslationButton = document.getElementById('oscTranslationButton');
 const oscTranslationIcon = document.getElementById('oscTranslationIcon');
 const furiganaButton = document.getElementById('furiganaButton');
@@ -28,6 +31,7 @@ const translationLangButton = document.getElementById('translationLangButton');
 const translationLangIcon = document.getElementById('translationLangIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
+const toastContainer = document.getElementById('toast');
 const t = (key, vars) => {
     try {
         if (window.I18N && typeof window.I18N.t === 'function') {
@@ -120,7 +124,7 @@ const uiFeedbackController = UiFeedbackController.create({
     document,
     fetch,
     subtitleContainer,
-    toast: document.getElementById('toast'),
+    toast: toastContainer,
     t,
     localizeBackendMessage,
     escapeHtml,
@@ -280,6 +284,8 @@ const settingsStore = SettingsStore.create({
     storage: localStorage,
     getRelayServerUrl: () => relayServerUrl,
 });
+subtitleFlowDirection = settingsStore.loadSubtitleFlowDirection();
+subtitleScroll.setFlowDirection(subtitleFlowDirection);
 const signedInAtLaunch = !!settingsStore.loadServerSettings().token;
 let creditsPurchaseUrl = '';
 let clientVersion = '0.1.0';
@@ -506,6 +512,7 @@ const subtitleRenderer = SubtitleRenderer.create({
         furiganaEnabled: furiganaToggleController.isEnabled(),
         speakerDiarizationEnabled: speakerLabelController.isDiarizationEnabled(),
         hideSpeakerLabels: speakerLabelController.isHidden(),
+        flowDirection: subtitleFlowDirection,
     }),
 });
 const subtitleRuntimeController = SubtitleRuntimeController.create({
@@ -516,6 +523,36 @@ const subtitleRuntimeController = SubtitleRuntimeController.create({
         translationUiMode: translationModeController.getTranslationUiMode(),
     }),
 });
+
+function updateSubtitleFlowButton() {
+    const flowingDown = subtitleFlowDirection === 'down';
+    ControlIcon.set(
+        subtitleFlowIcon,
+        flowingDown ? 'arrow-down-to-line' : 'arrow-up-from-line',
+    );
+    subtitleFlowButton.title = t(flowingDown ? 'subtitle_flow_down' : 'subtitle_flow_up');
+    subtitleFlowButton.setAttribute('aria-label', subtitleFlowButton.title);
+    toastContainer.classList.toggle('toast-container--bottom', flowingDown);
+}
+
+function setSubtitleFlowDirection(direction, { persist = false, render = false } = {}) {
+    subtitleFlowDirection = direction === 'down' ? 'down' : 'up';
+    subtitleScroll.setFlowDirection(subtitleFlowDirection);
+    if (persist) settingsStore.saveSubtitleFlowDirection(subtitleFlowDirection);
+    updateSubtitleFlowButton();
+    if (render) {
+        subtitleRenderer.invalidateAll({ dom: true });
+        subtitleRuntimeController.render();
+    }
+}
+
+subtitleFlowButton.addEventListener('click', () => {
+    setSubtitleFlowDirection(subtitleFlowDirection === 'up' ? 'down' : 'up', {
+        persist: true,
+        render: true,
+    });
+});
+updateSubtitleFlowButton();
 const subtitleFrameController = SubtitleFrameController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
