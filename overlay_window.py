@@ -7,7 +7,7 @@
 冻结（PyInstaller）后由主程序通过 `--run-overlay` 重新拉起自身进入这里。
 
 窗口特性：
-  * 无边框、半透明黑底、白字、圆角
+  * 无边框、半透明黑底或文字背板、白字、圆角
   * 任意位置鼠标拖动；贴近边缘鼠标缩放
   * 鼠标移入才在右下角显示一排常用按钮（字号 +/-、暂停/继续、关闭）
   * 通过 WebSocket(`/ws`) 接收字幕，样式与网页版基本一致
@@ -22,7 +22,7 @@ import threading
 import urllib.request
 from html import escape as _html_escape
 
-from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QRect, QRectF, QSettings, QSize, QEvent, QLocale
+from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QPointF, QRect, QRectF, QSettings, QSize, QEvent, QLocale
 from PySide6.QtGui import (
     QCursor,
     QPainter,
@@ -31,6 +31,7 @@ from PySide6.QtGui import (
     QFont,
     QFontDatabase,
     QFontMetrics,
+    QFontMetricsF,
     QIcon,
     QPainterPath,
     QPen,
@@ -78,6 +79,12 @@ BUNDLED_KR_FONT_STACK = f"'{FONT_KR_FAMILY}', '{FONT_SC_FAMILY}', '{FONT_JP_FAMI
 RESIZE_MARGIN = 8              # 边缘缩放热区（像素）
 MIN_W, MIN_H = 220, 120
 BG_RADIUS = 14
+HIT_TEST_ALPHA = 1             # Windows layered window: alpha=0 pixels cannot receive mouse input
+BACKGROUND_MODE_WINDOW = "window"
+BACKGROUND_MODE_TEXT = "text"
+# At the standard 24px subtitle size: language-tag radius 7.6px + 6px inset
+# = 13.6px. A fixed 14px radius keeps the two left arcs visually concentric.
+TEXT_BACKDROP_RADIUS = 14
 
 
 def _build_alpha_levels(n: int = 11) -> list[int]:
@@ -156,6 +163,8 @@ _I18N_DATA = {
         "font_inc": "增大字号",
         "alpha_dec": "背景更透明",
         "alpha_inc": "背景更不透明",
+        "background_window": "背景模式：整个窗口 (点击改为仅文字背板)",
+        "background_text": "背景模式：仅文字背板 (点击改为整个窗口)",
         "display_both": "当前：显示原文与译文 (点击切换为仅原文)",
         "display_original": "当前：仅显示原文 (点击切换为仅译文)",
         "display_translation": "当前：仅显示译文 (点击切换为显示全部)",
@@ -175,6 +184,8 @@ _I18N_DATA = {
         "font_inc": "Increase font size",
         "alpha_dec": "More transparent background",
         "alpha_inc": "More opaque background",
+        "background_window": "Background: whole window (click for text only)",
+        "background_text": "Background: text only (click for whole window)",
         "display_both": "Current: original + translation (click for original only)",
         "display_original": "Current: original only (click for translation only)",
         "display_translation": "Current: translation only (click for both)",
@@ -194,6 +205,8 @@ _I18N_DATA = {
         "font_inc": "フォントサイズを大きくする",
         "alpha_dec": "背景の透明度を上げる",
         "alpha_inc": "背景の不透明度を上げる",
+        "background_window": "背景：ウィンドウ全体 (クリックで文字のみ)",
+        "background_text": "背景：文字の背面のみ (クリックでウィンドウ全体)",
         "display_both": "現在：原文＋訳文 (クリックで原文のみ表示)",
         "display_original": "現在：原文のみ (クリックで訳文のみ表示)",
         "display_translation": "現在：訳文のみ (クリックで両方表示)",
@@ -213,6 +226,8 @@ _I18N_DATA = {
         "font_inc": "글꼴 크기 늘리기",
         "alpha_dec": "배경을 더 투명하게",
         "alpha_inc": "배경을 더 불투명하게",
+        "background_window": "배경: 전체 창 (클릭하여 글자 뒤만 표시)",
+        "background_text": "배경: 글자 뒤만 (클릭하여 전체 창 표시)",
         "display_both": "현재: 원문+번역문 (클릭 시 원문만 표시)",
         "display_original": "현재: 원문만 표시 (클릭 시 번역문만 표시)",
         "display_translation": "현재: 번역문만 표시 (클릭 시 둘 다 표시)",
@@ -232,6 +247,8 @@ _I18N_DATA = {
         "font_inc": "Увеличить размер шрифта",
         "alpha_dec": "Сделать фон более прозрачным",
         "alpha_inc": "Сделать фон менее прозрачным",
+        "background_window": "Фон: всё окно (нажмите для фона только под текстом)",
+        "background_text": "Фон: только под текстом (нажмите для всего окна)",
         "display_both": "Сейчас: оригинал + перевод (нажмите для оригинала)",
         "display_original": "Сейчас: только оригинал (нажмите для перевода)",
         "display_translation": "Сейчас: только перевод (нажмите для всего)",
@@ -251,6 +268,8 @@ _I18N_DATA = {
         "font_inc": "Aumentar tamaño de fuente",
         "alpha_dec": "Fondo más transparente",
         "alpha_inc": "Fondo más opaco",
+        "background_window": "Fondo: ventana completa (clic para solo texto)",
+        "background_text": "Fondo: solo detrás del texto (clic para ventana completa)",
         "display_both": "Actual: original + traducción (clic para solo original)",
         "display_original": "Actual: solo original (clic para solo traducción)",
         "display_translation": "Actual: solo traducción (clic para ambos)",
@@ -270,6 +289,8 @@ _I18N_DATA = {
         "font_inc": "Aumentar tamanho da fonte",
         "alpha_dec": "Fundo mais transparente",
         "alpha_inc": "Fundo mais opaco",
+        "background_window": "Fundo: janela inteira (clique para apenas o texto)",
+        "background_text": "Fundo: apenas atrás do texto (clique para a janela inteira)",
         "display_both": "Atual: original + tradução (clique para apenas original)",
         "display_original": "Atual: apenas original (clique para apenas tradução)",
         "display_translation": "Atual: apenas tradução (clique para ambos)",
@@ -292,6 +313,36 @@ def tr(key: str) -> str:
     if lang not in _I18N_DATA:
         lang = "en"
     return _I18N_DATA[lang].get(key, _I18N_DATA["en"].get(key, key))
+
+
+def _normalize_background_mode(value) -> str:
+    return (BACKGROUND_MODE_TEXT
+            if str(value) == BACKGROUND_MODE_TEXT
+            else BACKGROUND_MODE_WINDOW)
+
+
+def _paint_overlay_background(painter: QPainter, rect: QRect, bg_alpha: int,
+                              background_mode: str,
+                              show_outline: bool = False) -> None:
+    mode = _normalize_background_mode(background_mode)
+    alpha = max(0, min(255, int(bg_alpha)))
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # Layered windows do not receive mouse input on alpha=0 pixels under Windows.
+    # A 1/255-alpha full-rect fill is visually transparent but keeps every point
+    # draggable, including rounded corners and text-only background mode.
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QBrush(QColor(0, 0, 0, HIT_TEST_ALPHA)))
+    painter.drawRect(rect)
+
+    if mode == BACKGROUND_MODE_WINDOW and alpha > 0:
+        painter.setBrush(QBrush(QColor(0, 0, 0, alpha)))
+        painter.drawRoundedRect(rect, BG_RADIUS, BG_RADIUS)
+    elif mode == BACKGROUND_MODE_TEXT and show_outline:
+        outline = QRectF(rect).adjusted(0.75, 0.75, -0.75, -0.75)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(255, 255, 255, 90), 1.5))
+        painter.drawRoundedRect(outline, BG_RADIUS, BG_RADIUS)
 
 
 class OverlayToolTip(QLabel):
@@ -812,11 +863,124 @@ def _make_tag_pixmap(text: str, fs: int, dpr: float = 1.0) -> QPixmap:
 
 
 class SubtitleTextEdit(QTextEdit):
-    """QTextEdit，但把 ``langtag:<fs>|<TEXT>`` 的图片资源动态画成圆角语言标识。"""
+    """QTextEdit with inline language badges and rounded per-line backdrops."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._tag_cache = {}
+        self._backdrop_enabled = False
+        self._backdrop_alpha = 0
+        self._backdrop_padding = 0
+        self.viewport().setAutoFillBackground(False)
+
+    def setTextBackdrop(self, enabled: bool, alpha: int, padding: int) -> None:
+        state = (bool(enabled), max(0, min(255, int(alpha))), max(0, int(padding)))
+        current = (self._backdrop_enabled, self._backdrop_alpha, self._backdrop_padding)
+        if state == current:
+            return
+        self._backdrop_enabled, self._backdrop_alpha, self._backdrop_padding = state
+        # Keep enough document inset for the backdrop's left/right padding so
+        # rounded corners are never clipped by the viewport.
+        self.document().setDocumentMargin(
+            max(4, self._backdrop_padding) if self._backdrop_enabled else 4)
+        self.viewport().update()
+
+    def _backdrop_rects(self) -> list[QRectF]:
+        """Return viewport-space rects for every laid-out visual subtitle line.
+
+        QTextLine's height already contains the font's equal top/bottom leading.
+        Extending its natural width by the same apparent leading adds the missing
+        left/right inset. Inline image width is part of naturalTextRect, so the
+        language badge is included automatically.
+        """
+        rects = []
+        document = self.document()
+        layout = document.documentLayout()
+        offset = QPointF(
+            -self.horizontalScrollBar().value(),
+            -self.verticalScrollBar().value(),
+        )
+        block = document.begin()
+        while block.isValid():
+            block_rect = layout.blockBoundingRect(block)
+            text_layout = block.layout()
+            for index in range(text_layout.lineCount()):
+                line = text_layout.lineAt(index)
+                if line.naturalTextWidth() <= 0:
+                    continue
+                rect = line.naturalTextRect().translated(block_rect.topLeft() + offset)
+                content_bounds = self._line_content_vertical_bounds(block, line)
+                if content_bounds is not None:
+                    content_top, content_bottom = content_bounds
+                    content_center = (content_top + content_bottom) / 2
+                    line_center = line.naturalTextRect().center().y()
+                    rect.translate(0, content_center - line_center)
+                rect.adjust(-self._backdrop_padding, 0,
+                            self._backdrop_padding, 0)
+                rects.append(rect)
+            block = block.next()
+        return rects
+
+    def _line_content_vertical_bounds(self, block, line):
+        """Measure actual glyph/image bounds in block-local coordinates."""
+        line_start = line.textStart()
+        line_end = line_start + line.textLength()
+        top = None
+        bottom = None
+
+        iterator = block.begin()
+        while not iterator.atEnd():
+            fragment = iterator.fragment()
+            fragment_start = fragment.position() - block.position()
+            fragment_end = fragment_start + fragment.length()
+            start = max(line_start, fragment_start)
+            end = min(line_end, fragment_end)
+            if start >= end:
+                iterator += 1
+                continue
+
+            char_format = fragment.charFormat()
+            if char_format.isImageFormat():
+                name = char_format.toImageFormat().name()
+                if name.startswith(_TAG_SCHEME):
+                    pixmap = self._tag_pixmap(name[len(_TAG_SCHEME):])
+                    image_height = pixmap.height() / max(1.0, pixmap.devicePixelRatio())
+                    item_top = line.y() + (line.height() - image_height) / 2
+                    item_bottom = item_top + image_height
+                else:
+                    iterator += 1
+                    continue
+            else:
+                text_start = start - fragment_start
+                text_end = end - fragment_start
+                visible_text = fragment.text()[text_start:text_end].replace("\u2028", "")
+                if not visible_text:
+                    iterator += 1
+                    continue
+                bounds = QFontMetricsF(char_format.font()).tightBoundingRect(visible_text)
+                baseline = line.y() + line.ascent()
+                item_top = baseline + bounds.top()
+                item_bottom = baseline + bounds.bottom()
+
+            top = item_top if top is None else min(top, item_top)
+            bottom = item_bottom if bottom is None else max(bottom, item_bottom)
+            iterator += 1
+
+        return None if top is None else (top, bottom)
+
+    def paintEvent(self, event):
+        if self._backdrop_enabled and self._backdrop_alpha > 0:
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setClipRect(event.rect())
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, self._backdrop_alpha))
+            for rect in self._backdrop_rects():
+                # Keep this for easy restoration if rounded backdrops are wanted again:
+                # painter.drawRoundedRect(rect, TEXT_BACKDROP_RADIUS, TEXT_BACKDROP_RADIUS)
+                painter.drawRect(rect)
+            painter.end()
+        super().paintEvent(event)
 
     def loadResource(self, rtype, name):
         try:
@@ -968,6 +1132,8 @@ class OverlayWindow(QWidget):
 
         self.font_size = int(self.settings.value("font_size", 20))
         self.bg_alpha = int(self.settings.value("bg_alpha", DEFAULT_ALPHA))
+        self.background_mode = _normalize_background_mode(
+            self.settings.value("background_mode", BACKGROUND_MODE_WINDOW))
         # 显示模式：both（原文+译文）/ original（仅原文）/ translation（仅译文）
         self.display_mode = str(self.settings.value("display_mode", "both"))
         self.flow_direction = str(self.settings.value("flow_direction", "up"))
@@ -978,6 +1144,7 @@ class OverlayWindow(QWidget):
         self._restart_in_flight = False
         self._passthrough = False
         self._click_through_on = False
+        self._mouse_inside = False
 
         self._drag_offset = None
         self._resize_edges = None
@@ -1040,6 +1207,8 @@ class OverlayWindow(QWidget):
         self.btn_font_inc = self._make_button("A+", tr("font_inc"), self._inc_font)
         self.btn_alpha_dec = self._make_button("", tr("alpha_dec"), self._dec_alpha, icon="layers-minus")
         self.btn_alpha_inc = self._make_button("", tr("alpha_inc"), self._inc_alpha, icon="layers-plus")
+        self.btn_background = self._make_button(
+            "", "", self._toggle_background_mode, icon="subtitles")
         self.btn_display = self._make_button("O/T", "", self._cycle_display)
         self.btn_flow = self._make_button("", "", self._toggle_flow_direction,
                                           icon="arrow-up-from-line")
@@ -1047,15 +1216,20 @@ class OverlayWindow(QWidget):
         self.btn_restart = self._make_button("", tr("restart"), self._restart_recognition, icon="rotate-cw")
         self.btn_pause = self._make_button("", tr("pause"), self._toggle_pause, icon="pause")
         self.btn_close = self._make_button("", tr("close"), self.close, icon="x")
-        for b in (self.btn_font_dec, self.btn_font_inc,
-                  self.btn_alpha_dec, self.btn_alpha_inc,
-                  self.btn_display, self.btn_flow, self.btn_passthrough,
-                  self.btn_restart, self.btn_pause, self.btn_close):
+        self._all_buttons = (
+            self.btn_font_dec, self.btn_font_inc,
+            self.btn_alpha_dec, self.btn_alpha_inc,
+            self.btn_background,
+            self.btn_display, self.btn_flow, self.btn_passthrough,
+            self.btn_restart, self.btn_pause, self.btn_close,
+        )
+        for b in self._all_buttons:
             bar_layout.addWidget(b)
         # Create opacity effects for all other buttons
         self._other_buttons = (
             self.btn_font_dec, self.btn_font_inc,
             self.btn_alpha_dec, self.btn_alpha_inc,
+            self.btn_background,
             self.btn_display, self.btn_flow, self.btn_restart,
             self.btn_pause, self.btn_close
         )
@@ -1065,6 +1239,7 @@ class OverlayWindow(QWidget):
             btn.setGraphicsEffect(effect)
             self._btn_opacity_effects[btn] = effect
 
+        self._update_background_button()
         self._update_display_button()
         self._update_flow_button()
         self._update_passthrough_button()
@@ -1086,28 +1261,61 @@ class OverlayWindow(QWidget):
     _BTN_QSS = (
         "QPushButton {"
         "  color: #f3f4f6;"
-        "  background: rgba(255,255,255,0.14);"
+        "  background: rgba(128,128,128,0.30);"
         "  border: none; border-radius: 6px;"
         "  font-size: 13px; font-weight: 600;"
         "}"
-        "QPushButton:hover { background: rgba(255,255,255,0.30); }"
-        "QPushButton:pressed { background: rgba(255,255,255,0.45); }"
+        "QPushButton:hover { background: rgba(128,128,128,0.34); }"
+        "QPushButton:pressed { background: rgba(128,128,128,0.48); }"
     )
-    # 激活态（如穿透模式开启）：蓝色高亮，和网页版 active 按钮一致。
     _BTN_QSS_ACTIVE = (
         "QPushButton {"
         "  color: #bfdbfe;"
-        "  background: rgba(96,165,250,0.45);"
+        "  background: rgba(128,128,128,0.50);"
         "  border: none; border-radius: 6px;"
         "  font-size: 13px; font-weight: 600;"
         "}"
-        "QPushButton:hover { background: rgba(96,165,250,0.60); }"
-        "QPushButton:pressed { background: rgba(96,165,250,0.70); }"
+        "QPushButton:hover { background: rgba(128,128,128,0.62); }"
+        "QPushButton:pressed { background: rgba(128,128,128,0.74); }"
     )
+    _BTN_QSS_TEXT = (
+        "QPushButton {"
+        "  color: #f3f4f6;"
+        "  background: rgba(96,96,96,0.40);"
+        "  border: none; border-radius: 6px;"
+        "  font-size: 13px; font-weight: 600;"
+        "}"
+        "QPushButton:hover { background: rgba(96,96,96,0.52); }"
+        "QPushButton:pressed { background: rgba(96,96,96,0.64); }"
+    )
+    _BTN_QSS_TEXT_ACTIVE = (
+        "QPushButton {"
+        "  color: #bfdbfe;"
+        "  background: rgba(96,96,96,0.58);"
+        "  border: none; border-radius: 6px;"
+        "  font-size: 13px; font-weight: 600;"
+        "}"
+        "QPushButton:hover { background: rgba(96,96,96,0.70); }"
+        "QPushButton:pressed { background: rgba(96,96,96,0.80); }"
+    )
+
+    def _button_style(self, active: bool = False) -> str:
+        if self.background_mode == BACKGROUND_MODE_TEXT:
+            return self._BTN_QSS_TEXT_ACTIVE if active else self._BTN_QSS_TEXT
+        return self._BTN_QSS_ACTIVE if active else self._BTN_QSS
+
+    def _refresh_button_styles(self) -> None:
+        for button in self._all_buttons:
+            active = (
+                (button is self.btn_background
+                 and self.background_mode == BACKGROUND_MODE_TEXT)
+                or (button is self.btn_passthrough and self._passthrough)
+            )
+            button.setStyleSheet(self._button_style(active))
 
     def _make_button(self, text, tip, slot, icon=None):
         b = VectorButton(text, tip, slot, icon, self.button_bar)
-        b.setStyleSheet(self._BTN_QSS)
+        b.setStyleSheet(self._button_style())
         b.installEventFilter(self.tooltip_filter)
         return b
 
@@ -1155,10 +1363,9 @@ class OverlayWindow(QWidget):
     # --------------------------------------------------------------- paint --
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QBrush(QColor(0, 0, 0, self.bg_alpha)))  # 黑色 + 可调半透明
-        painter.setPen(Qt.NoPen)
-        painter.drawRoundedRect(self.rect(), BG_RADIUS, BG_RADIUS)
+        _paint_overlay_background(
+            painter, self.rect(), self.bg_alpha, self.background_mode,
+            show_outline=self._mouse_inside)
 
     # -------------------------------------------------- 鼠标拖动 / 缩放 ----
     def _edges_at(self, pos):
@@ -1237,6 +1444,9 @@ class OverlayWindow(QWidget):
     def _update_button_visibility(self):
         pos = QCursor.pos()
         inside = self.geometry().contains(pos)
+        if inside != self._mouse_inside:
+            self._mouse_inside = inside
+            self.update()
         # 按钮条：鼠标在窗口内才显示（穿透模式下也照常显示）。
         if inside != self.button_bar.isVisible():
             self.button_bar.setVisible(inside)
@@ -1269,12 +1479,31 @@ class OverlayWindow(QWidget):
         self.bg_alpha = ALPHA_LEVELS[idx]
         self.settings.setValue("bg_alpha", self.bg_alpha)
         self.update()
+        self._render()
 
     def _inc_alpha(self):
         self._step_alpha(+1)
 
     def _dec_alpha(self):
         self._step_alpha(-1)
+
+    def _update_background_button(self):
+        text_only = self.background_mode == BACKGROUND_MODE_TEXT
+        self.btn_background.setStyleSheet(self._button_style(text_only))
+        self.btn_background.setToolTip(tr(
+            "background_text" if text_only else "background_window"))
+
+    def _toggle_background_mode(self):
+        self.background_mode = (
+            BACKGROUND_MODE_WINDOW
+            if self.background_mode == BACKGROUND_MODE_TEXT
+            else BACKGROUND_MODE_TEXT)
+        self.settings.setValue("background_mode", self.background_mode)
+        self._update_background_button()
+        self._refresh_button_styles()
+        self._last_html = None
+        self.update()
+        self._render()
 
     _DISPLAY_LABELS = {"both": "O/T", "original": "O", "translation": "T"}
     def _update_display_button(self):
@@ -1332,8 +1561,7 @@ class OverlayWindow(QWidget):
             self._set_click_through_state(False)
 
     def _update_passthrough_button(self):
-        self.btn_passthrough.setStyleSheet(
-            self._BTN_QSS_ACTIVE if self._passthrough else self._BTN_QSS)
+        self.btn_passthrough.setStyleSheet(self._button_style(self._passthrough))
         self.btn_passthrough.setToolTip(tr("passthrough_on") if self._passthrough else tr("passthrough_off"))
 
         # In passthrough mode, hide (opacity 0) and disable other buttons, keeping their layout position
@@ -1513,6 +1741,11 @@ class OverlayWindow(QWidget):
         blocks = self.model.build_blocks()
         line_groups = self._build_line_groups(blocks)
         lines = [line for group in line_groups for line in group]
+        self.text.setTextBackdrop(
+            bool(lines) and self.background_mode == BACKGROUND_MODE_TEXT,
+            self.bg_alpha,
+            max(5, round(self.font_size * 0.26)),
+        )
 
         if not lines:
             fs = self.font_size
@@ -1631,7 +1864,8 @@ class OverlayWindow(QWidget):
         font_stack = _font_stack_for_lang(lang, self.use_bundled_cjk_fonts)
         style = (f"margin:0 0 {margin_bottom}px 0; line-height:110%; "
                  f"font-size:{fs}px; color:{FINAL_COLOR}; font-family:{font_stack};")
-        return f'<div{_lang_attr(lang)} style="{style}">{tag_html}{"".join(spans)}</div>'
+        content = f'{tag_html}{"".join(spans)}'
+        return f'<div{_lang_attr(lang)} style="{style}">{content}</div>'
 
     # ------------------------------------------------------------- 关闭 ----
     def _save_geometry(self):
