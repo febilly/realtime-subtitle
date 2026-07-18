@@ -22,7 +22,11 @@ describe('full-page frontend harness', () => {
         const page = await createPageHarness();
         pages.push(page);
 
-        expect(page.document.getElementById('subtitleContainer')).not.toBeNull();
+        const subtitleRegion = page.document.querySelector('.subtitle-region');
+        expect(subtitleRegion).not.toBeNull();
+        expect(subtitleRegion.querySelector(':scope > #subtitleContainer')).not.toBeNull();
+        expect(subtitleRegion.querySelector(':scope > #toast')).not.toBeNull();
+        expect(page.document.getElementById('balanceBar').nextElementSibling).toBe(subtitleRegion);
         expect(page.sockets).toHaveLength(1);
         await page.emitFrame(readFrames(DEFAULT_INPUT)[0]);
         expect(page.html()).toContain('Hello.');

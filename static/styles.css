@@ -1029,9 +1029,9 @@ body.dark-theme .confirm-dialog {
 }
 
 .toast-container {
-    position: fixed;
+    position: absolute;
     left: 16px;
-    bottom: 16px;
+    top: 16px;
     z-index: 10000;
     display: flex;
     flex-direction: column;
@@ -1391,10 +1391,16 @@ body.dark-theme .lang-select-divider {
     flex-direction: column;
 }
 
+/* The notification layer is anchored to the subtitle area, below the usage bar. */
+.subtitle-region {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+}
+
 /* The subtitle area fills the remaining height under the (optional) balance bar. */
 .content-area .subtitle-container {
-    flex: 1;
-    height: auto;
+    height: 100%;
     min-height: 0;
 }
 

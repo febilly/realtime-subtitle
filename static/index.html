@@ -30,8 +30,11 @@
                     <button class="balance-action-button" id="balanceOpenSettingsButton" type="button">Open settings</button>
                 </span>
             </div>
-            <div class="subtitle-container" id="subtitleContainer">
-                <div class="empty-state">Waiting for subtitles…</div>
+            <div class="subtitle-region">
+                <div class="subtitle-container" id="subtitleContainer">
+                    <div class="empty-state">Waiting for subtitles…</div>
+                </div>
+                <div class="toast-container" id="toast" role="region" aria-live="polite" hidden></div>
             </div>
         </div>
 
@@ -375,8 +378,6 @@
             </div>
         </form>
     </aside>
-
-    <div class="toast-container" id="toast" role="region" aria-live="polite" hidden></div>
 
     <script src="local-store-sync.js"></script>
     <script src="/kuromoji/kuromoji.js"></script>
