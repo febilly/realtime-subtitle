@@ -146,12 +146,34 @@ describe('HostedUpdate dialog and policy', () => {
         page.storage.setItem(HostedUpdate.DEFAULT_REMINDER_KEY, '99999');
         await expect(page.controller.ensure()).resolves.toBe(true);
         expect(page.document.getElementById('dialog').hidden).toBe(true);
+        expect(page.storage.getItem(HostedUpdate.DEFAULT_CHECKED_VERSION_KEY)).toBe('1.1.0');
 
         page.advance(HostedUpdate.DEFAULT_REMINDER_MS + 1);
         const result = page.controller.ensure();
         page.document.getElementById('later').click();
         await expect(result).resolves.toBe(true);
         expect(Number(page.storage.getItem(HostedUpdate.DEFAULT_REMINDER_KEY))).toBeGreaterThan(99999);
+        page.dom.window.close();
+    });
+
+    it('bypasses the cooldown for a newer available version and restarts it', async () => {
+        const page = setup();
+        page.storage.setItem(HostedUpdate.DEFAULT_REMINDER_KEY, '99999');
+        page.storage.setItem(HostedUpdate.DEFAULT_CHECKED_VERSION_KEY, '1.1.0');
+
+        await expect(page.controller.ensure()).resolves.toBe(true);
+        expect(page.document.getElementById('dialog').hidden).toBe(true);
+
+        page.state.latestVersion = '1.2.0';
+        const result = page.controller.ensure();
+        expect(page.document.getElementById('dialog').hidden).toBe(false);
+        expect(page.storage.getItem(HostedUpdate.DEFAULT_CHECKED_VERSION_KEY)).toBe('1.2.0');
+        expect(page.storage.getItem(HostedUpdate.DEFAULT_REMINDER_KEY)).toBe('100000');
+        page.document.getElementById('later').click();
+        await expect(result).resolves.toBe(true);
+
+        await expect(page.controller.ensure()).resolves.toBe(true);
+        expect(page.document.getElementById('dialog').hidden).toBe(true);
         page.dom.window.close();
     });
 

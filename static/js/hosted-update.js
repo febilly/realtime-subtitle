@@ -3,6 +3,7 @@
 
     const DEFAULT_REMINDER_MS = 20 * 60 * 60 * 1000;
     const DEFAULT_REMINDER_KEY = 'clientUpdateReminderLastShown';
+    const DEFAULT_CHECKED_VERSION_KEY = 'clientUpdateLastCheckedVersion';
 
     function resolveUpdateState(input = {}, Billing) {
         const mode = input.mode;
@@ -41,6 +42,7 @@
             : () => {};
         const reminderMs = options.reminderMs || DEFAULT_REMINDER_MS;
         const reminderKey = options.reminderKey || DEFAULT_REMINDER_KEY;
+        const checkedVersionKey = options.checkedVersionKey || DEFAULT_CHECKED_VERSION_KEY;
         const elements = options.elements || {};
         const overlay = elements.overlay || null;
         const dialog = elements.dialog || null;
@@ -147,6 +149,22 @@
 
         async function ensure({ candidateMode = null } = {}) {
             const updateState = state(candidateMode);
+            let newerThanLastCheck = false;
+            if (updateState.latest) {
+                let lastCheckedVersion = '';
+                try {
+                    lastCheckedVersion = String(storage.getItem(checkedVersionKey) || '').trim();
+                } catch (error) {
+                    lastCheckedVersion = '';
+                }
+                newerThanLastCheck = !!lastCheckedVersion
+                    && Billing.compareVersions(updateState.latest, lastCheckedVersion) > 0;
+                try {
+                    storage.setItem(checkedVersionKey, updateState.latest);
+                } catch (error) {
+                    // Preserve the browser's storage-failure fallback.
+                }
+            }
             if (!updateState.needed) return true;
             if (!updateState.forced) {
                 let lastShown = 0;
@@ -155,16 +173,16 @@
                 } catch (error) {
                     lastShown = 0;
                 }
-                if (lastShown && now() - lastShown < reminderMs) return true;
-            }
-            const action = await show(updateState);
-            if (!updateState.forced) {
+                if (!newerThanLastCheck && lastShown && now() - lastShown < reminderMs) {
+                    return true;
+                }
                 try {
                     storage.setItem(reminderKey, String(now()));
                 } catch (error) {
                     // Preserve the browser's storage-failure fallback.
                 }
             }
+            const action = await show(updateState);
             if (updateState.forced && action === 'direct') {
                 onSwitchDirect();
                 return false;
@@ -185,6 +203,7 @@
     const api = {
         DEFAULT_REMINDER_MS,
         DEFAULT_REMINDER_KEY,
+        DEFAULT_CHECKED_VERSION_KEY,
         resolveUpdateState,
         create,
     };
