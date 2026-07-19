@@ -6,13 +6,11 @@ const pages = [];
 function createHarness(options = {}) {
     const dom = new JSDOM(`<!doctype html>
         <main id="subtitles">seed subtitles</main>
-        <div id="toast" hidden></div>
-        <div id="toastBottom" hidden></div>`);
+        <div id="toast" hidden></div>`);
     pages.push(dom);
     const { document } = dom.window;
     const subtitleContainer = document.getElementById('subtitles');
     const toast = options.withoutToast ? null : document.getElementById('toast');
-    const bottomToast = options.withoutToast ? null : document.getElementById('toastBottom');
     const logger = { error: vi.fn() };
     const timerTokens = [];
     const schedule = vi.fn((callback, delay) => {
@@ -38,7 +36,6 @@ function createHarness(options = {}) {
         fetch: fetchImpl,
         subtitleContainer,
         toast,
-        bottomToast,
         t: (key) => ({
             error_title: '<Error>',
             error_suggestion_api: 'Check <API>',
@@ -59,7 +56,6 @@ function createHarness(options = {}) {
         subtitleContainer,
         timerTokens,
         toast,
-        bottomToast,
     };
 }
 
@@ -68,20 +64,6 @@ afterEach(() => {
 });
 
 describe('UiFeedbackController toast lifecycle', () => {
-    it('can place one notification in the forced bottom container', () => {
-        const page = createHarness();
-
-        page.controller.showToast('signed in', false, {
-            timeoutMs: 5000,
-            position: 'bottom',
-        });
-
-        expect(page.toast.hidden).toBe(true);
-        expect(page.bottomToast.hidden).toBe(false);
-        expect(page.bottomToast.querySelector('.toast').textContent).toBe('signed in');
-        expect(page.schedule).toHaveBeenCalledWith(expect.any(Function), 5000);
-    });
-
     it('renders error text safely and keeps the toast visible until manually closed', () => {
         const page = createHarness();
 

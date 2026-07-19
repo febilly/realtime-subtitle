@@ -11,9 +11,12 @@
             throw new TypeError('SubtitleRuntimeController requires a subtitle renderer');
         }
         const readState = typeof options.getState === 'function' ? options.getState : () => ({});
+        const afterRender = typeof options.afterRender === 'function' ? options.afterRender : () => {};
 
         function render() {
-            return renderer.render();
+            const result = renderer.render();
+            afterRender(result);
+            return result;
         }
 
         function finalize({ render: shouldRender = true } = {}) {
