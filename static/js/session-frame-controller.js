@@ -36,6 +36,7 @@
             }
 
             if (frame.type === 'session_connected' || frame.type === 'session_idle') {
+                call('resetAutoRestartBackoff');
                 call('handleHostedSessionFrame', frame);
                 return true;
             }

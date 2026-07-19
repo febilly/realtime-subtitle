@@ -852,6 +852,7 @@ const sessionFrameController = SessionFrameController.create({
         openLogin: hostedPorts.openLogin,
         handleBillingExhausted,
         handleApiKeyFailure,
+        resetAutoRestartBackoff: recognitionControls.resetAutoRestartBackoff,
         triggerAutoRestart: controlPorts.triggerAutoRestart,
     },
 });

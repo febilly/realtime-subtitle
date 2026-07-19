@@ -23,6 +23,7 @@ function createHarness(options = {}) {
         updateBalanceBarVisibility: vi.fn(() => events.push('balance')),
         openLogin: vi.fn((settings) => events.push(`login:${settings.forced}`)),
         handleApiKeyFailure: vi.fn(() => false),
+        resetAutoRestartBackoff: vi.fn(() => events.push('backoff.reset')),
         triggerAutoRestart: vi.fn(() => events.push('restart')),
         ...(options.actions || {}),
     };
@@ -95,8 +96,9 @@ describe('SessionFrameController connected and paused frames', () => {
             const frame = { type };
 
             expect(page.controller.handle(frame)).toBe(true);
+            expect(page.actions.resetAutoRestartBackoff).toHaveBeenCalledOnce();
             expect(page.actions.handleHostedSessionFrame).toHaveBeenCalledWith(frame);
-            expect(page.events).toEqual([`hosted:${type}`]);
+            expect(page.events).toEqual(['backoff.reset', `hosted:${type}`]);
         },
     );
 });

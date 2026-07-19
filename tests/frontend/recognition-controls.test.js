@@ -272,6 +272,52 @@ describe('RecognitionControls recovery and events', () => {
         env.dom.window.close();
     });
 
+    it('backs off repeated disconnects until a real session connection resets recovery', async () => {
+        const env = setup();
+
+        env.controller.triggerAutoRestart();
+        await flushMicrotasks();
+        await flushMicrotasks();
+        for (let attempt = 0; attempt < 5 && env.state.isRestarting; attempt += 1) {
+            await flushMicrotasks();
+        }
+        expect(env.state.isRestarting).toBe(false);
+        expect(env.fetchImpl).toHaveBeenCalledOnce();
+
+        // /restart succeeded, but no session_connected frame followed. A second
+        // disconnect must not create another relay session immediately.
+        env.controller.triggerAutoRestart();
+        await flushMicrotasks();
+        await flushMicrotasks();
+        expect(env.fetchImpl).toHaveBeenCalledOnce();
+        expect(env.schedule).toHaveBeenCalledWith(expect.any(Function), 2000);
+
+        const retry = env.schedule.mock.calls.find(([, ms]) => ms === 2000)[0];
+        retry();
+        await flushMicrotasks();
+        await flushMicrotasks();
+        for (let attempt = 0; attempt < 5 && env.state.isRestarting; attempt += 1) {
+            await flushMicrotasks();
+        }
+        expect(env.state.isRestarting).toBe(false);
+        expect(env.fetchImpl).toHaveBeenCalledTimes(2);
+
+        env.controller.triggerAutoRestart();
+        expect(env.schedule).toHaveBeenCalledWith(expect.any(Function), 4000);
+        const staleRetry = env.schedule.mock.calls.find(([, ms]) => ms === 4000)[0];
+
+        env.controller.resetAutoRestartBackoff();
+        staleRetry();
+        await flushMicrotasks();
+        expect(env.fetchImpl).toHaveBeenCalledTimes(2);
+
+        env.controller.triggerAutoRestart();
+        await flushMicrotasks();
+        await flushMicrotasks();
+        expect(env.fetchImpl).toHaveBeenCalledTimes(3);
+        env.dom.window.close();
+    });
+
     it('invalidates a scheduled auto-restart retry after a successful restart', async () => {
         const fetchImpl = vi.fn()
             .mockResolvedValueOnce({ ok: false, status: 502, json: async () => ({}) })

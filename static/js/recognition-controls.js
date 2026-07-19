@@ -82,6 +82,7 @@
         let restartClickHandler = null;
         let autoRestartFailureCount = 0;
         let autoRestartRetryGeneration = 0;
+        let autoRestartRetryPending = false;
 
         function state() {
             return readState() || {};
@@ -112,6 +113,7 @@
         function resetAutoRestartBackoff() {
             autoRestartFailureCount = 0;
             autoRestartRetryGeneration += 1;
+            autoRestartRetryPending = false;
         }
 
         async function restartRecognition(restartOptions = {}) {
@@ -186,7 +188,7 @@
                 if (!auto || !hasUsableWebSocket()) {
                     connect();
                 }
-                resetAutoRestartBackoff();
+                if (!auto) resetAutoRestartBackoff();
                 return true;
             } catch (error) {
                 logger.error(`${auto ? 'Auto restart' : 'Restart'} error:`, error);
@@ -211,18 +213,33 @@
         }
 
         function scheduleAutoRestartRetry() {
-            if (!shouldRetryAutoRestart()) return;
+            if (!shouldRetryAutoRestart() || autoRestartRetryPending) return;
             const retryDelayMs = Math.min(
                 AUTO_RESTART_RETRY_MAX_MS,
-                AUTO_RESTART_RETRY_BASE_MS * (2 ** autoRestartFailureCount)
+                AUTO_RESTART_RETRY_BASE_MS * (2 ** Math.max(0, autoRestartFailureCount - 1))
             );
             autoRestartFailureCount += 1;
             const retryGeneration = autoRestartRetryGeneration;
+            autoRestartRetryPending = true;
             logger.log(`Auto restart failed; retrying in ${retryDelayMs / 1000} seconds...`);
             schedule(() => {
+                autoRestartRetryPending = false;
                 if (retryGeneration !== autoRestartRetryGeneration) return;
-                triggerAutoRestart();
+                runAutoRestart();
             }, retryDelayMs);
+        }
+
+        function runAutoRestart() {
+            if (!shouldRetryAutoRestart()) return;
+
+            restartRecognition({ auto: true })
+                .then((success) => {
+                    if (!success) scheduleAutoRestartRetry();
+                })
+                .catch((error) => {
+                    logger.error('Auto restart promise rejected:', error);
+                    scheduleAutoRestartRetry();
+                });
         }
 
         function triggerAutoRestart() {
@@ -237,14 +254,15 @@
                 return;
             }
 
-            restartRecognition({ auto: true })
-                .then((success) => {
-                    if (!success) scheduleAutoRestartRetry();
-                })
-                .catch((error) => {
-                    logger.error('Auto restart promise rejected:', error);
-                    scheduleAutoRestartRetry();
-                });
+            // The first disconnect after a healthy connection retries immediately.
+            // Until a real session_connected/session_idle frame resets the counter,
+            // later disconnects are treated as failed handshakes and back off.
+            if (autoRestartFailureCount === 0) {
+                autoRestartFailureCount = 1;
+                runAutoRestart();
+                return;
+            }
+            scheduleAutoRestartRetry();
         }
 
         function init() {
@@ -291,6 +309,7 @@
         return {
             destroy,
             init,
+            resetAutoRestartBackoff,
             restartRecognition,
             triggerAutoRestart,
             updateAutoRestartButton,
