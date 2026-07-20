@@ -242,6 +242,21 @@ describe('SubtitleRenderer dependency boundary', () => {
         expect(page.getViewState).toHaveBeenCalledTimes(3);
     });
 
+    it('finalizes a hybrid line when an applied refine matches the completed draft', () => {
+        const page = createHarness({
+            tokens: [original('Hello.'), translation('你好。')],
+            view: { translationUiMode: 'hybrid' },
+        });
+        page.state.hybridInterimAfterSequence = 1;
+        page.state.refined.set('sentence-1', '你好。');
+
+        page.renderer.render();
+
+        const translated = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(translated.textContent).toContain('你好。');
+        expect(translated.classList.contains('subtitle-line--stt-interim')).toBe(false);
+    });
+
     it('renders accurate-mode speculative results and pending placeholders', () => {
         const page = createHarness({
             tokens: [original('Hello.')],
