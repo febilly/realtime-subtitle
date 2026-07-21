@@ -32,7 +32,6 @@ const translationLangIcon = document.getElementById('translationLangIcon');
 const bottomSafeAreaButton = document.getElementById('bottomSafeAreaButton');
 const bottomSafeAreaIcon = document.getElementById('bottomSafeAreaIcon');
 const toastContainer = document.getElementById('toast');
-const bottomToastContainer = document.getElementById('toastBottom');
 const t = (key, vars) => {
     try {
         if (window.I18N && typeof window.I18N.t === 'function') {
@@ -126,7 +125,6 @@ const uiFeedbackController = UiFeedbackController.create({
     fetch,
     subtitleContainer,
     toast: toastContainer,
-    bottomToast: bottomToastContainer,
     t,
     localizeBackendMessage,
     escapeHtml,
@@ -135,8 +133,12 @@ const uiFeedbackController = UiFeedbackController.create({
 const {
     displayErrorMessage,
     fetchApiKeyStatus,
-    showToast,
 } = uiFeedbackController;
+
+function showToast(...args) {
+    updateToastPlacement();
+    return uiFeedbackController.showToast(...args);
+}
 
 const BUNDLED_CJK_FONT_STORAGE_KEY = 'useBundledCjkFont';
 
@@ -521,6 +523,7 @@ const subtitleRenderer = SubtitleRenderer.create({
 const subtitleRuntimeController = SubtitleRuntimeController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
+    afterRender: updateToastPlacement,
     getState: () => ({
         translateMode: controlPorts.isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
@@ -535,7 +538,13 @@ function updateSubtitleFlowButton() {
     );
     subtitleFlowButton.title = t(flowingDown ? 'subtitle_flow_down' : 'subtitle_flow_up');
     subtitleFlowButton.setAttribute('aria-label', subtitleFlowButton.title);
-    toastContainer.classList.toggle('toast-container--bottom', flowingDown);
+    updateToastPlacement();
+}
+
+function updateToastPlacement() {
+    const subtitleCount = subtitleContainer.querySelectorAll('.sentence-block').length;
+    const shouldUseBottom = subtitleCount <= 3 || subtitleFlowDirection === 'down';
+    toastContainer.classList.toggle('toast-container--bottom', shouldUseBottom);
 }
 
 function setSubtitleFlowDirection(direction, { persist = false, render = false } = {}) {
@@ -844,6 +853,7 @@ const sessionFrameController = SessionFrameController.create({
         openLogin: hostedPorts.openLogin,
         handleBillingExhausted,
         handleApiKeyFailure,
+        resetAutoRestartBackoff: recognitionControls.resetAutoRestartBackoff,
         triggerAutoRestart: controlPorts.triggerAutoRestart,
     },
 });

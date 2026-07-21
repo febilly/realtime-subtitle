@@ -22,6 +22,7 @@ function setup(overrides = {}) {
     const controller = SubtitleRuntimeController.create({
         session,
         renderer,
+        afterRender: overrides.afterRender,
         getState: () => state,
     });
     return { controller, events, renderer, session, state };
@@ -38,9 +39,11 @@ describe('SubtitleRuntimeController dependencies and rendering', () => {
     });
 
     it('returns the renderer result through the stable render port', () => {
-        const env = setup();
+        const afterRender = vi.fn();
+        const env = setup({ afterRender });
         expect(env.controller.render()).toBe('rendered');
         expect(env.renderer.render).toHaveBeenCalledOnce();
+        expect(afterRender).toHaveBeenCalledWith('rendered');
     });
 });
 

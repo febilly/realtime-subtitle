@@ -185,6 +185,7 @@
                     body = `<span class="subtitle-text" lang="${sentence.translationLang || ''}">${escapeHtml(displayTranslation || '')}</span>`;
                 } else {
                     const provisional = view.translationUiMode === 'hybrid'
+                        && !hasRefined
                         && !confirmed
                         && sentenceHasTranslationTokenAtOrAfter(
                             sentence,

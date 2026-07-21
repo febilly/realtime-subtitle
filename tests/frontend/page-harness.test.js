@@ -26,6 +26,7 @@ describe('full-page frontend harness', () => {
         expect(subtitleRegion).not.toBeNull();
         expect(subtitleRegion.querySelector(':scope > #subtitleContainer')).not.toBeNull();
         expect(subtitleRegion.querySelector(':scope > #toast')).not.toBeNull();
+        expect(subtitleRegion.querySelector('#toastBottom')).toBeNull();
         expect(page.document.getElementById('balanceBar').nextElementSibling).toBe(subtitleRegion);
         expect(page.sockets).toHaveLength(1);
         await page.emitFrame(readFrames(DEFAULT_INPUT)[0]);

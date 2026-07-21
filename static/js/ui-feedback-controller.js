@@ -8,7 +8,6 @@
         const fetchImpl = options.fetch || root.fetch;
         const subtitleContainer = options.subtitleContainer || null;
         const toastContainer = options.toast || null;
-        const bottomToastContainer = options.bottomToast || null;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const localizeBackendMessage = typeof options.localizeBackendMessage === 'function'
             ? options.localizeBackendMessage
@@ -21,21 +20,14 @@
         const cancel = options.clearTimeout || ((...args) => root.clearTimeout(...args));
         const activeToasts = new Map();
 
-        function updateContainerVisibility(container) {
-            if (!container) return;
-            container.hidden = ![...activeToasts.values()]
-                .some((entry) => entry.container === container);
-        }
-
         function hideToast() {
-            if (!toastContainer && !bottomToastContainer) return;
+            if (!toastContainer) return;
             for (const entry of activeToasts.values()) {
                 if (entry.timer) cancel(entry.timer);
                 entry.node.remove();
             }
             activeToasts.clear();
-            if (toastContainer) toastContainer.hidden = true;
-            if (bottomToastContainer) bottomToastContainer.hidden = true;
+            toastContainer.hidden = true;
         }
 
         function dismissToast(messageKey) {
@@ -44,14 +36,11 @@
             if (entry.timer) cancel(entry.timer);
             entry.node.remove();
             activeToasts.delete(messageKey);
-            updateContainerVisibility(entry.container);
+            toastContainer.hidden = activeToasts.size === 0;
         }
 
         function showToast(message, isError = false, toastOptions = {}) {
-            const targetContainer = toastOptions.position === 'bottom' && bottomToastContainer
-                ? bottomToastContainer
-                : toastContainer;
-            if (!targetContainer) return;
+            if (!toastContainer) return;
             const messageText = String(message ?? '');
             dismissToast(messageText);
 
@@ -101,10 +90,10 @@
             close.addEventListener('click', () => dismissToast(messageText));
             toast.appendChild(close);
             toast.classList.toggle('error', !!isError);
-            targetContainer.appendChild(toast);
-            const entry = { node: toast, timer: null, container: targetContainer };
+            toastContainer.appendChild(toast);
+            const entry = { node: toast, timer: null };
             activeToasts.set(messageText, entry);
-            targetContainer.hidden = false;
+            toastContainer.hidden = false;
             if (isError) return;
             const requestedTimeoutMs = Number(toastOptions.timeoutMs);
             const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
