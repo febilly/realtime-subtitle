@@ -714,15 +714,14 @@ LLM_REFINE_DEFAULT_MODE = _LLM_DEFAULT_MODE
 
 # ======================== Toki Pona mode ========================
 # When enabled, the app becomes a toki pona -> target-language translator:
-#   - Soniox STT is pinned to a phonetically-close real language (default "sl",
-#     Slovenian) with language identification off, and biased with the toki pona
+#   - Soniox STT is pinned to a phonetically-close real language with language identification off, and biased with the toki pona
 #     vocabulary (terms/tokipona.txt) as Soniox `context.terms`.
 #   - Translation is locked to 准确 (accurate): Soniox's built-in translation is
 #     off and the LLM does the translation.
 #   - The LLM also reconstructs a real-toki-pona source (the STT does not know
 #     toki pona), which replaces the displayed source line.
 TOKIPONA_MODE = _env_bool("TOKIPONA_MODE", True)
-TOKIPONA_STT_LANGUAGE = _env_str("TOKIPONA_STT_LANGUAGE", "sl")
+TOKIPONA_STT_LANGUAGE = _env_str("TOKIPONA_STT_LANGUAGE", "sw")
 
 _TOKIPONA_TERMS_CACHE: list[str] | None = None
 

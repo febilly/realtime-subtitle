@@ -1,5 +1,17 @@
 # Realtime Subtitle
 
+> ⚠️ **Experimental branch — Toki Pona edition.** This is a special, experimental build that turns the
+> app into a **toki pona → target-language** translator. It relies entirely on an **LLM translation
+> backend**, which you must have configured — the built-in provider translation is not enough on its own.
+> **DeepSeek V4 Pro** is the recommended model. When using DeepSeek, it's recommended to disable its
+> thinking mode via an environment variable / `.env` entry, otherwise latency gets very high:
+>
+> ```env
+> LLM_REQUEST_JSON='{"thinking": {"type": "disabled"}}'
+> ```
+>
+> If you just want normal subtitles, use the `main` branch instead.
+
 A real-time speech-to-subtitle tool. Captures system audio and displays live transcription and translation.
 
 Supports two translation providers; you pick one at startup:
