@@ -10,6 +10,8 @@
 > LLM_REQUEST_JSON='{"thinking": {"type": "disabled"}}'
 > ```
 >
+> It's also recommended to set the **Segmentation mode** to **Segment by endpoint** in Settings.
+>
 > If you just want normal subtitles, use the `main` branch instead.
 
 A real-time speech-to-subtitle tool. Captures system audio and displays live transcription and translation.
