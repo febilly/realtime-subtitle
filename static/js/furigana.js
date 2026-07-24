@@ -25,13 +25,12 @@
         return /[\u30a0-\u30ff]/.test(text || '');
     }
 
-    function buildFuriganaHtml(tokens, escapeHtml) {
-        if (!Array.isArray(tokens) || tokens.length === 0) return null;
-        if (typeof escapeHtml !== 'function') {
-            throw new TypeError('buildFuriganaHtml requires an escapeHtml function');
-        }
-
-        const htmlParts = [];
+    // 把分词结果归一成 [[surface, reading|null], ...]。reading 仅在需要注音时非空
+    // （含汉字或片假名、且读音转平假名后与表面形不同）。这是注音规则的唯一来源，
+    // buildFuriganaHtml 与原生悬浮窗（经 window.__overlayFurigana）都复用它。
+    function buildFuriganaPairs(tokens) {
+        if (!Array.isArray(tokens)) return [];
+        const pairs = [];
         tokens.forEach((token) => {
             const surface = (token.surface_form || token.surface || token.basic_form || '').toString();
             if (!surface) return;
@@ -40,13 +39,22 @@
             const needsRuby = (hasKanji(surface) || hasKatakana(surface))
                 && reading
                 && reading !== surface;
-            if (needsRuby) {
-                htmlParts.push(
-                    `<ruby>${escapeHtml(surface)}<rp>(</rp><rt>${escapeHtml(reading)}</rt><rp>)</rp></ruby>`,
-                );
-            } else {
-                htmlParts.push(escapeHtml(surface));
+            pairs.push([surface, needsRuby ? reading : null]);
+        });
+        return pairs;
+    }
+
+    function buildFuriganaHtml(tokens, escapeHtml) {
+        if (!Array.isArray(tokens) || tokens.length === 0) return null;
+        if (typeof escapeHtml !== 'function') {
+            throw new TypeError('buildFuriganaHtml requires an escapeHtml function');
+        }
+
+        const htmlParts = buildFuriganaPairs(tokens).map(([surface, reading]) => {
+            if (reading) {
+                return `<ruby>${escapeHtml(surface)}<rp>(</rp><rt>${escapeHtml(reading)}</rt><rp>)</rp></ruby>`;
             }
+            return escapeHtml(surface);
         });
         return htmlParts.join('');
     }
@@ -76,6 +84,7 @@
         const pending = new Set();
         let enabled = false;
         let tokenizerPromise = null;
+        let readyTokenizer = null;
 
         function getKuromojiTokenizer() {
             if (tokenizerPromise) return tokenizerPromise;
@@ -94,6 +103,7 @@
                                 resolve(null);
                                 return;
                             }
+                            readyTokenizer = tokenizer;
                             resolve(tokenizer);
                         });
                 } catch (error) {
@@ -190,6 +200,7 @@
             hasPending,
             getKuromojiTokenizer,
             getTokenizer: getKuromojiTokenizer,
+            getReadyTokenizer: () => readyTokenizer,
             getFuriganaHtml,
             get: getFuriganaHtml,
             requestFurigana,
@@ -208,6 +219,7 @@
         toHiragana,
         hasKanji,
         hasKatakana,
+        buildFuriganaPairs,
         buildFuriganaHtml,
         createService,
     };

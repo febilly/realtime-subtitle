@@ -496,6 +496,22 @@ const furiganaService = Furigana.createService({
     onReady: () => subtitleRuntimeController.render(),
 });
 furiganaService.setEnabled(furiganaToggleController.isEnabled(), { clearState: false });
+
+// 原生半透明悬浮窗（独立进程）自己不带日语词典，改为经 server 调用这里已加载的
+// kuromoji 分词，避免在 exe 里再打包一份 Python 词典。与网页版共用同一 tokenizer，
+// 分词/注音结果完全一致。首个请求会触发词典异步加载；未就绪时返回 ready:false，
+// 悬浮窗先显示纯文本并稍后重试。不受网页版假名开关影响。
+window.__overlayFurigana = function (text) {
+    try {
+        furiganaService.getTokenizer(); // 幂等：确保词典开始加载
+        const tokenizer = furiganaService.getReadyTokenizer();
+        if (!tokenizer) return { ready: false, pairs: [] };
+        const tokens = tokenizer.tokenize(String(text == null ? '' : text)) || [];
+        return { ready: true, pairs: Furigana.buildFuriganaPairs(tokens) };
+    } catch (error) {
+        return { ready: true, pairs: [] };
+    }
+};
 const subtitleRenderer = SubtitleRenderer.create({
     document,
     container: subtitleContainer,

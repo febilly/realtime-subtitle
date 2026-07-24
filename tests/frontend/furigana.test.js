@@ -61,6 +61,30 @@ describe('Furigana pure helpers', () => {
         expect(() => Furigana.buildFuriganaHtml([{ surface_form: '猫' }])).toThrow(TypeError);
         expect(() => Furigana.createService()).toThrow(TypeError);
     });
+
+    it('builds [surface, reading|null] pairs shared with the native overlay', () => {
+        // buildFuriganaPairs 是注音规则的唯一来源：原生悬浮窗经 window.__overlayFurigana
+        // 拿到的正是这里的输出，故须与 buildFuriganaHtml 的判定完全一致。
+        const pairs = Furigana.buildFuriganaPairs([
+            { surface_form: '', surface: '語', basic_form: 'ignored', reading: '', pronunciation: 'ゴ' },
+            { surface_form: 'かな', reading: 'カナ' },
+            { surface_form: 'カナ', reading: 'カナ' },
+            { surface_form: 'plain', reading: 'プレーン' },
+            { surface_form: '' },
+        ]);
+
+        expect(pairs).toEqual([
+            ['語', 'ご'],       // 汉字 + pronunciation 兜底
+            ['かな', null],     // 纯平假名不注音
+            ['カナ', 'かな'],   // 片假名注音为平假名
+            ['plain', null],    // 无汉字/片假名不注音
+        ]);                     // 空 surface 被跳过
+    });
+
+    it('returns an empty array for a non-array token list', () => {
+        expect(Furigana.buildFuriganaPairs(null)).toEqual([]);
+        expect(Furigana.buildFuriganaPairs(undefined)).toEqual([]);
+    });
 });
 
 describe('Furigana tokenizer service', () => {
@@ -81,6 +105,25 @@ describe('Furigana tokenizer service', () => {
         expect(builder).toHaveBeenCalledTimes(1);
         expect(builder).toHaveBeenCalledWith({ dicPath: '/kuromoji/dict/' });
         expect(build).toHaveBeenCalledTimes(1);
+    });
+
+    it('exposes the resolved tokenizer synchronously for the native overlay bridge', async () => {
+        const tokenizer = tokenizerFor([]);
+        let finishBuild;
+        const service = Furigana.createService({
+            kuromoji: {
+                builder: () => ({ build: (callback) => { finishBuild = callback; } }),
+            },
+            escapeHtml,
+        });
+
+        // window.__overlayFurigana 用它同步取已就绪的 tokenizer：构建完成前应为 null
+        service.getTokenizer();
+        expect(service.getReadyTokenizer()).toBe(null);
+
+        finishBuild(null, tokenizer);
+        await service.getTokenizer();
+        expect(service.getReadyTokenizer()).toBe(tokenizer);
     });
 
     it('honors an explicit dictionary path', async () => {
