@@ -936,6 +936,22 @@ def main():
                 os._exit(0)
         window = webview.create_window(window_title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
 
+        # 让原生悬浮窗复用本窗口已加载的 kuromoji 分词（假名注音），不必在 exe 里
+        # 另打包一份 Python 词典。悬浮窗 -> /furigana -> 这里 evaluate_js -> 网页版 tokenizer。
+        def _furigana_eval(text):
+            import json as _json
+            try:
+                arg = _json.dumps(text)
+                js = ("(function(){try{return window.__overlayFurigana?"
+                      f"window.__overlayFurigana({arg}):"
+                      "{ready:false,pairs:[]};}catch(e){return {ready:false,pairs:[]};}})()")
+                return window.evaluate_js(js)
+            except Exception:
+                return None
+
+        if web_server is not None:
+            web_server.set_furigana_evaluator(_furigana_eval)
+
         if not debug and os.name == 'nt':
             try:
                 import ctypes

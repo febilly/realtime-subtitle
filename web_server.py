@@ -1779,6 +1779,40 @@ class WebServer:
         })
         return web.json_response({"status": "ok", "use_bundled_cjk_fonts": enabled})
 
+    def set_furigana_evaluator(self, evaluator):
+        """注入一个 (text)->dict 的回调，用主窗口已加载的 kuromoji 分词。
+
+        由 server.py 在创建 pywebview 窗口后设置：内部调用 window.evaluate_js
+        执行 window.__overlayFurigana(text)。浏览器兜底模式（无主窗口）下不设置，
+        悬浮窗假名请求会拿到 ready:false 并降级为纯文本。
+        """
+        self.furigana_evaluator = evaluator
+
+    async def furigana_handler(self, request):
+        """原生悬浮窗的假名分词代理：转交主窗口 kuromoji，返回 [[surface, reading|null], ...]。"""
+        evaluator = getattr(self, "furigana_evaluator", None)
+        if evaluator is None:
+            return web.json_response({"ready": False, "pairs": []})
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        text = (payload.get("text") if isinstance(payload, dict) else None) or ""
+        if not text:
+            return web.json_response({"ready": True, "pairs": []})
+        try:
+            loop = asyncio.get_event_loop()
+            # evaluate_js 会阻塞到主窗口 GUI 线程返回结果，放到执行器线程里跑，避免卡事件循环。
+            result = await loop.run_in_executor(None, evaluator, text)
+        except Exception:
+            result = None
+        if not isinstance(result, dict):
+            return web.json_response({"ready": False, "pairs": []})
+        return web.json_response({
+            "ready": bool(result.get("ready")),
+            "pairs": result.get("pairs") or [],
+        })
+
     async def overlay_get_handler(self, request):
         """查询原生字幕悬浮窗当前是否打开。"""
         manager = self.overlay_manager
@@ -1954,6 +1988,7 @@ class WebServer:
         app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)
         app.router.add_get('/overlay', self.overlay_get_handler)
         app.router.add_post('/overlay', self.overlay_post_handler)
+        app.router.add_post('/furigana', self.furigana_handler)
         app.router.add_post('/shutdown', self.shutdown_handler)
         app.router.add_get('/fonts/NotoSansCJK-Regular.ttc', self.custom_font_file_handler)
         
