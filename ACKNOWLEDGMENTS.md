@@ -4,7 +4,7 @@ This project stands on the shoulders of giants. Below is the list of open-source
 
 - **[PySide6 / Qt6](https://www.qt.io/)** — Used for the native subtitle overlay window. Licensed under the [LGPLv3 License](https://www.gnu.org/licenses/lgpl-3.0.html).
 - **[Lucide Icons](https://lucide.dev/)** — Used for modern line icons in the UI and overlay window. Licensed under the [ISC License](https://github.com/lucide-icons/lucide/blob/main/LICENSE).
-- **[kuromoji.js](https://github.com/takuyaa/kuromoji.js)** — Used for Japanese tokenization in the browser. Licensed under the [Apache License 2.0](https://github.com/takuyaa/kuromoji.js/blob/master/LICENSE-2.0.txt).
+- **[kuromoji.js](https://github.com/takuyaa/kuromoji.js)** — Used for Japanese tokenization (furigana) in the browser and, via the main window, for the native subtitle overlay. Licensed under the [Apache License 2.0](https://github.com/takuyaa/kuromoji.js/blob/master/LICENSE-2.0.txt).
 - **[pywebview](https://pywebview.flowrl.com/)** — Used to build the main GUI window. Licensed under the [BSD 3-Clause License](https://github.com/r0xsh/pywebview/blob/master/LICENSE).
 - **[soundcard](https://github.com/bastibe/SoundCard)** — Used for system loopback and microphone audio capture. Licensed under the [BSD 3-Clause License](https://github.com/bastibe/SoundCard/blob/master/LICENSE).
 - **[websockets](https://github.com/python-websockets/websockets)** — Used for fast, real-time message broadcasting. Licensed under the [BSD 3-Clause License](https://github.com/python-websockets/websockets/blob/main/LICENSE).

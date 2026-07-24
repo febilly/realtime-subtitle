@@ -16,6 +16,10 @@
 import os
 import sys
 import json
+import math
+import time
+import queue
+import base64
 import argparse
 import asyncio
 import threading
@@ -36,6 +40,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPen,
     QPixmap,
+    QTextCharFormat,
     QTextCursor,
     QTextDocument,
 )
@@ -67,6 +72,8 @@ PLACEHOLDER_COLOR = "#9ca3af"  # 空状态 / 占位
 TAG_BG = "rgba(255,255,255,0.16)"
 TAG_FG = "#d1d5db"
 SPEAKER_COLOR = "#9ca3af"
+RUBY_RT_COLOR = "#9ca3af"      # 假名注音（与网页版 dark 主题 ruby rt 一致）
+RUBY_RT_SCALE = 0.7            # 注音/正文字号比（对齐 350px 宽主窗口的 0.7em）
 FONT_SC_FAMILY = "Noto Sans CJK SC"
 FONT_JP_FAMILY = "Noto Sans CJK JP"
 FONT_KR_FAMILY = "Noto Sans CJK KR"
@@ -172,6 +179,8 @@ _I18N_DATA = {
         "flow_down": "字幕向下流动 (点击改为向上流动)",
         "passthrough_off": "穿透模式：关闭 (开启后除按钮外鼠标均可穿透)",
         "passthrough_on": "穿透模式：开启 (关闭后鼠标无法穿透悬浮窗)",
+        "furigana_off": "开启假名注音",
+        "furigana_on": "关闭假名注音",
         "restart": "重启识别",
         "restarting": "正在重启识别",
         "restart_failed": "重启失败，点击重试",
@@ -193,6 +202,8 @@ _I18N_DATA = {
         "flow_down": "Subtitles flow downward (click to flow upward)",
         "passthrough_off": "Click-through mode: disabled (click to enable)",
         "passthrough_on": "Click-through mode: enabled (click to disable)",
+        "furigana_off": "Enable furigana for Japanese",
+        "furigana_on": "Disable furigana",
         "restart": "Restart recognition",
         "restarting": "Restarting recognition",
         "restart_failed": "Restart failed, click to retry",
@@ -214,6 +225,8 @@ _I18N_DATA = {
         "flow_down": "字幕は下方向に流れます (クリックで上方向に変更)",
         "passthrough_off": "マウスクリック透過：無効 (クリックで有効化)",
         "passthrough_on": "マウスクリック透過：有効 (クリックで無効化)",
+        "furigana_off": "ふりがな表示を有効にする",
+        "furigana_on": "ふりがな表示を無効にする",
         "restart": "認識を再起動",
         "restarting": "認識を再起動中",
         "restart_failed": "再起動に失敗、クリックして再試行",
@@ -235,6 +248,8 @@ _I18N_DATA = {
         "flow_down": "자막이 아래로 흐릅니다 (클릭하여 위로 변경)",
         "passthrough_off": "마우스 클릭 관통: 비활성화 (클릭 시 활성화)",
         "passthrough_on": "마우스 클릭 관통: 활성화 (클릭 시 비활성화)",
+        "furigana_off": "후리가나 활성화",
+        "furigana_on": "후리가나 비활성화",
         "restart": "인식 재시작",
         "restarting": "인식 재시작 중",
         "restart_failed": "재시작 실패, 클릭하여 재시도",
@@ -256,6 +271,8 @@ _I18N_DATA = {
         "flow_down": "Субтитры движутся вниз (нажмите, чтобы направить вверх)",
         "passthrough_off": "Режим сквозного клика: отключен (нажмите для включения)",
         "passthrough_on": "Режим сквозного клика: включен (нажмите для отключения)",
+        "furigana_off": "Включить фуригану для японского",
+        "furigana_on": "Выключить фуригану",
         "restart": "Перезапустить распознавание",
         "restarting": "Перезапуск распознавания...",
         "restart_failed": "Сбой перезапуска, нажмите для повтора",
@@ -277,6 +294,8 @@ _I18N_DATA = {
         "flow_down": "Los subtítulos fluyen hacia abajo (clic para invertir)",
         "passthrough_off": "Modo de paso del ratón: desactivado (clic para activar)",
         "passthrough_on": "Modo de paso del ratón: activado (clic para desactivar)",
+        "furigana_off": "Activar furigana para japonés",
+        "furigana_on": "Desactivar furigana",
         "restart": "Reiniciar reconocimiento",
         "restarting": "Reiniciando reconocimiento",
         "restart_failed": "Error al reiniciar, clic para reintentar",
@@ -298,6 +317,8 @@ _I18N_DATA = {
         "flow_down": "As legendas fluem para baixo (clique para inverter)",
         "passthrough_off": "Modo de passagem do mouse: desativado (clique para ativar)",
         "passthrough_on": "Modo de passagem do mouse: ativado (clique para desativar)",
+        "furigana_off": "Ativar furigana para japonês",
+        "furigana_on": "Desativar furigana",
         "restart": "Reiniciar reconhecimento",
         "restarting": "Reiniciando reconhecimento",
         "restart_failed": "Falha ao reiniciar, clique para tentar novamente",
@@ -634,6 +655,265 @@ def _font_stack_for_lang(lang, use_bundled_cjk_fonts: bool = False) -> str:
     return BUNDLED_CJK_FONT_STACK
 
 
+def _font_families_for_lang(lang, use_bundled_cjk_fonts: bool = False) -> list[str]:
+    """把 CSS 字体栈解析成 QFont.setFamilies 可用的家族列表。"""
+    stack = _font_stack_for_lang(lang, use_bundled_cjk_fonts)
+    families = []
+    for part in stack.split(","):
+        name = part.strip().strip("'\"")
+        if name and name != "sans-serif":
+            families.append(name)
+    return families
+
+
+# ===========================================================================
+# 日语假名注音（ふりがな）：行为对齐网页版 static/js/furigana.js。
+# 网页版用 kuromoji.js（mecab-ipadic 词典）分词后以 <ruby> 标注；QTextEdit 的
+# 富文本不支持 <ruby>，这里改为把整行 token 逐个画成「注音在上、正文在下」的
+# 内联图片（与语言标识 langtag 同一机制）。
+#
+# 分词不在本进程做：悬浮窗把整行文本 POST 到 server 的 /furigana，由主窗口里
+# 已加载的 kuromoji 分词后返回 [[表面形, 注音|null], ...]。这样 exe 里只保留网页版
+# 那一份 kuromoji 词典，不再打包 Python 词典，且分词/注音结果与网页版完全一致。
+# ===========================================================================
+class FuriganaService(QObject):
+    """假名注音服务：整行文本经 server 交给主窗口 kuromoji 分词，结果按行缓存。
+
+    语义对齐网页版 Furigana.createService：结果未就绪时 get_pairs 返回 None（调用方
+    先按普通文本渲染），拿到结果后发 ready 信号触发整体重渲染。分词是异步网络请求，
+    用单个后台工作线程串行处理，避免为每行文本各起一个线程。
+    """
+
+    ready = Signal()
+
+    # 主窗口词典异步加载中（ready:false）时的重试节奏：最多等约 6 秒。
+    _NOT_READY_RETRIES = 20
+    _NOT_READY_INTERVAL = 0.3
+    # 取词失败（无主窗口/请求失败）后的冷却：这段时间内该行直接按纯文本渲染，
+    # 不再阻塞帧、也不狂发请求；冷却过后再试一次。
+    _FAILED_COOLDOWN = 3.0
+
+    def __init__(self, fetch_pairs, parent=None):
+        super().__init__(parent)
+        # fetch_pairs(text) -> dict|None：执行一次 /furigana 请求，返回解析后的 JSON。
+        self._fetch_pairs = fetch_pairs
+        self._enabled = False
+        self._cache: dict[str, list] = {}
+        self._failed: dict[str, float] = {}
+        self._queue: "queue.Queue[str]" = queue.Queue()
+        self._queued: set[str] = set()
+        self._worker = None
+
+    def set_enabled(self, enabled: bool):
+        self._enabled = bool(enabled)
+        if self._enabled:
+            self._ensure_worker()
+        else:
+            self.clear()
+
+    def is_enabled(self) -> bool:
+        return self._enabled
+
+    def _ensure_worker(self):
+        if self._worker is None:
+            self._worker = threading.Thread(target=self._run, daemon=True)
+            self._worker.start()
+
+    def get_pairs(self, text):
+        """返回整行的 [(表面形, 注音|None), ...]；未就绪时返回 None 并排队获取。"""
+        if not text or not self._enabled:
+            return None
+        cached = self._cache.get(text)
+        if cached is not None:
+            return cached
+        if self._in_failed_cooldown(text):
+            return None                       # 近期取词失败：不再排队，交由调用方渲染纯文本
+        if text not in self._queued:
+            self._queued.add(text)
+            self._queue.put(text)
+        return None
+
+    def is_pending(self, text) -> bool:
+        """该行注音是否正在获取（值得阻塞本帧以避免"先纯文本后注音"的闪烁）。
+
+        已缓存或处于失败冷却期时返回 False——此时应直接渲染纯文本，而非继续等待。
+        """
+        if not text or not self._enabled:
+            return False
+        if text in self._cache:
+            return False
+        return not self._in_failed_cooldown(text)
+
+    def _in_failed_cooldown(self, text) -> bool:
+        ts = self._failed.get(text)
+        if ts is None:
+            return False
+        if time.time() - ts < self._FAILED_COOLDOWN:
+            return True
+        self._failed.pop(text, None)          # 冷却结束，允许再次尝试
+        return False
+
+    def _run(self):
+        while True:
+            text = self._queue.get()
+            try:
+                if not self._enabled:
+                    continue
+                pairs = self._resolve(text)
+                if pairs is not None:
+                    self._failed.pop(text, None)
+                    if len(self._cache) >= 500:
+                        self._cache.clear()
+                    self._cache[text] = pairs
+                else:
+                    # 取词失败：记下冷却时间戳，让该行改走纯文本渲染。
+                    if len(self._failed) >= 500:
+                        self._failed.clear()
+                    self._failed[text] = time.time()
+                # 无论成功与否都发信号：成功→补注音重渲染；失败→解除阻塞、渲染纯文本。
+                self.ready.emit()
+            except Exception:
+                pass
+            finally:
+                self._queued.discard(text)
+
+    def _resolve(self, text):
+        """向 server 请求分词；主窗口词典还在加载就重试，缺失主窗口则放弃。"""
+        for _ in range(self._NOT_READY_RETRIES):
+            if not self._enabled:
+                return None
+            resp = self._fetch_pairs(text)
+            if not isinstance(resp, dict):
+                return None                       # 无主窗口 / 请求失败：降级为纯文本
+            if resp.get("ready"):
+                pairs = []
+                for pair in resp.get("pairs") or []:
+                    if not pair:
+                        continue
+                    surface = pair[0] if len(pair) > 0 else ""
+                    reading = pair[1] if len(pair) > 1 else None
+                    if surface:
+                        pairs.append((surface, reading or None))
+                return pairs
+            time.sleep(self._NOT_READY_INTERVAL)  # 词典加载中，稍后重试
+        return None
+
+    def clear(self):
+        self._cache.clear()
+        self._failed.clear()
+        try:
+            while True:
+                self._queued.discard(self._queue.get_nowait())
+        except queue.Empty:
+            pass
+
+
+# 注音图块的 img src 方案（同 langtag 机制，由 SubtitleTextEdit.loadResource 提供）。
+_RUBY_SCHEME = "rubytk:"
+
+# _furigana_line_html 的哨兵返回值：该日语行注音仍在获取中，本帧应阻塞
+# （保持上一帧），等注音就绪后再整帧刷新，避免"先纯文本后注音"的闪烁。
+_FURIGANA_PENDING = object()
+
+
+# spec 只能用 URL 安全字符（QTextDocument 会把 img src 当 URL 规范化），
+# 所以用 '.' 作分隔符、base64url 去掉 '=' 填充。
+def _encode_ruby_spec(fs: int, non_final: bool, use_bundled: bool,
+                      surface: str, reading) -> str:
+    def b64(value):
+        raw = base64.urlsafe_b64encode((value or "").encode("utf-8")).decode("ascii")
+        return raw.rstrip("=")
+    return (f"{int(fs)}.{1 if non_final else 0}.{1 if use_bundled else 0}"
+            f".{b64(surface)}.{b64(reading or '')}")
+
+
+def _decode_ruby_spec(spec: str):
+    def unb64(value):
+        padded = value + "=" * (-len(value) % 4)
+        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    try:
+        fs_str, nf_str, bundled_str, surface_b64, reading_b64 = spec.split(".", 4)
+        return (int(fs_str), nf_str == "1", bundled_str == "1",
+                unb64(surface_b64), unb64(reading_b64))
+    except Exception:
+        return None
+
+
+# 用固定参考字串量各字体的「实际字形范围」（tight），而非 ascent/descent——后者含
+# 大量内部行距，会在注音与正文之间留下空隙。参考串覆盖较高/带浊半浊/有降部的字形。
+_KANA_REF = "あぁきさしせぬのゆよぐぱぽっ"
+_KANJI_REF = "漢国鬱薔曜同"
+_VISUAL_EXTENT_CACHE: dict = {}
+
+
+def _visual_extent(fm: QFontMetricsF, ref: str, key) -> tuple[float, float]:
+    """返回 (基线上方实际字形高度, 基线下方实际降部)，按 key 缓存。"""
+    cached = _VISUAL_EXTENT_CACHE.get(key)
+    if cached is None:
+        r = fm.tightBoundingRect(ref)
+        cached = (-r.top(), r.bottom())
+        _VISUAL_EXTENT_CACHE[key] = cached
+    return cached
+
+
+def _make_ruby_pixmap(surface: str, reading: str, fs: int, non_final: bool,
+                      use_bundled: bool, dpr: float = 1.0) -> QPixmap:
+    """画一个「注音在上、正文在下」的 token 图块。
+
+    同一行内所有 token（含无注音的）都用同一套竖直布局，保证注音基线、正文基线在
+    整行内对齐。竖直排布按各字体的实际字形范围（tight）计算，让注音直接贴住正文，
+    上下都不留字体内部行距造成的空隙。注音与正文水平居中（对应网页版 ruby-align:
+    center，注音更宽时正文居中其下）。
+    """
+    families = _font_families_for_lang("ja", use_bundled)
+    base_font = QFont()
+    base_font.setFamilies(families)
+    base_font.setPixelSize(int(fs))
+    rt_font = QFont(base_font)
+    # 主窗口宽 350px（server.py），命中网页版媒体查询 @media(max-width:768px)，
+    # 此时 ruby rt 为 0.7em（非默认 0.5em）；悬浮窗对齐主窗口观感取 0.7。
+    rt_px = max(6, round(fs * RUBY_RT_SCALE))
+    rt_font.setPixelSize(rt_px)
+
+    base_fm = QFontMetricsF(base_font)
+    rt_fm = QFontMetricsF(rt_font)
+    text = (surface or "").replace("\n", " ")
+    rt_text = reading or ""
+    base_w = base_fm.horizontalAdvance(text)
+    rt_w = rt_fm.horizontalAdvance(rt_text) if rt_text else 0.0
+    w = max(1.0, base_w, rt_w)
+
+    fam_key = tuple(families)
+    rt_asc, rt_desc = _visual_extent(rt_fm, _KANA_REF, ("rt", fam_key, rt_px))
+    base_asc, _base_desc = _visual_extent(base_fm, _KANJI_REF, ("base", fam_key, int(fs)))
+    base_desc = base_fm.descent()          # 正文降部沿用字体度量，保证与普通行竖直节奏一致
+
+    top_pad = max(1.0, fs * 0.03)          # 注音顶部一点点留白，别贴到上一行
+    gap = max(1.0, fs * 0.04)              # 注音底 → 正文顶 的小间隙（贴住即可）
+    rt_baseline = top_pad + rt_asc
+    base_top = rt_baseline + rt_desc + gap
+    base_baseline = base_top + base_asc
+    h = base_baseline + base_desc
+    dpr = dpr or 1.0
+
+    pm = QPixmap(max(1, math.ceil(w * dpr)), max(1, math.ceil(h * dpr)))
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(Qt.transparent)
+
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.TextAntialiasing)
+    if rt_text:
+        p.setFont(rt_font)
+        p.setPen(QColor(RUBY_RT_COLOR))
+        p.drawText(QPointF((w - rt_w) / 2, rt_baseline), rt_text)
+    p.setFont(base_font)
+    p.setPen(QColor(NONFINAL_COLOR if non_final else FINAL_COLOR))
+    p.drawText(QPointF((w - base_w) / 2, base_baseline), text)
+    p.end()
+    return pm
+
+
 def _ensure_speaker(spk):
     return "undefined" if spk is None else spk
 
@@ -868,6 +1148,7 @@ class SubtitleTextEdit(QTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._tag_cache = {}
+        self._ruby_cache = {}
         self._backdrop_enabled = False
         self._backdrop_alpha = 0
         self._backdrop_padding = 0
@@ -944,16 +1225,25 @@ class SubtitleTextEdit(QTextEdit):
                 name = char_format.toImageFormat().name()
                 if name.startswith(_TAG_SCHEME):
                     pixmap = self._tag_pixmap(name[len(_TAG_SCHEME):])
-                    image_height = pixmap.height() / max(1.0, pixmap.devicePixelRatio())
-                    item_top = line.y() + (line.height() - image_height) / 2
-                    item_bottom = item_top + image_height
+                elif name.startswith(_RUBY_SCHEME):
+                    pixmap = self._ruby_pixmap(name[len(_RUBY_SCHEME):])
                 else:
                     iterator += 1
                     continue
+                image_height = pixmap.height() / max(1.0, pixmap.devicePixelRatio())
+                if char_format.verticalAlignment() == QTextCharFormat.AlignMiddle:
+                    item_top = line.y() + (line.height() - image_height) / 2
+                else:
+                    # 无 vertical-align 的内联图片：底边落在文本基线上
+                    item_top = line.y() + line.ascent() - image_height
+                item_bottom = item_top + image_height
             else:
                 text_start = start - fragment_start
                 text_end = end - fragment_start
-                visible_text = fragment.text()[text_start:text_end].replace("\u2028", "")
+                # \u200b\uff1a\u5047\u540d\u884c token \u56fe\u5757\u95f4\u7684\u6362\u884c\u70b9\uff0c\u96f6\u5bbd\u4e0d\u53ef\u89c1\uff1b
+                # tightBoundingRect \u5bf9\u5b83\u8fd4\u56de (100000,100000) \u54e8\u5175\u503c\uff0c\u5fc5\u987b\u5254\u9664\u3002
+                visible_text = (fragment.text()[text_start:text_end]
+                                .replace("\u2028", "").replace("\u200b", ""))
                 if not visible_text:
                     iterator += 1
                     continue
@@ -989,6 +1279,8 @@ class SubtitleTextEdit(QTextEdit):
             s = str(name)
         if rtype == QTextDocument.ImageResource and s.startswith(_TAG_SCHEME):
             return self._tag_pixmap(s[len(_TAG_SCHEME):])
+        if rtype == QTextDocument.ImageResource and s.startswith(_RUBY_SCHEME):
+            return self._ruby_pixmap(s[len(_RUBY_SCHEME):])
         return super().loadResource(rtype, name)
 
     def _tag_pixmap(self, spec: str) -> QPixmap:
@@ -1002,6 +1294,23 @@ class SubtitleTextEdit(QTextEdit):
             fs = 12
         pm = _make_tag_pixmap(text, fs, self.devicePixelRatioF())
         self._tag_cache[spec] = pm
+        return pm
+
+    def _ruby_pixmap(self, spec: str) -> QPixmap:
+        cached = self._ruby_cache.get(spec)
+        if cached is not None:
+            return cached
+        decoded = _decode_ruby_spec(spec)
+        if decoded is None:
+            pm = QPixmap(1, 1)
+            pm.fill(Qt.transparent)
+        else:
+            fs, non_final, use_bundled, surface, reading = decoded
+            pm = _make_ruby_pixmap(surface, reading, fs, non_final, use_bundled,
+                                   self.devicePixelRatioF())
+        if len(self._ruby_cache) >= 800:
+            self._ruby_cache.clear()
+        self._ruby_cache[spec] = pm
         return pm
 
 
@@ -1139,6 +1448,12 @@ class OverlayWindow(QWidget):
         self.flow_direction = str(self.settings.value("flow_direction", "up"))
         if self.flow_direction not in ("up", "down"):
             self.flow_direction = "up"
+        self.furigana_enabled = str(
+            self.settings.value("furigana_enabled", "false")).lower() in ("true", "1")
+        self.furigana = FuriganaService(self._fetch_furigana, self)
+        self.furigana.ready.connect(self._on_furigana_ready)
+        if self.furigana_enabled:
+            self.furigana.set_enabled(True)
         self.is_paused = False
         self.use_bundled_cjk_fonts = False
         self._restart_in_flight = False
@@ -1210,6 +1525,7 @@ class OverlayWindow(QWidget):
         self.btn_background = self._make_button(
             "", "", self._toggle_background_mode, icon="subtitles")
         self.btn_display = self._make_button("O/T", "", self._cycle_display)
+        self.btn_furigana = self._make_button("あ", "", self._toggle_furigana)
         self.btn_flow = self._make_button("", "", self._toggle_flow_direction,
                                           icon="arrow-up-from-line")
         self.btn_passthrough = self._make_button("", "", self._toggle_passthrough, icon="mouse-pointer-2")
@@ -1220,7 +1536,8 @@ class OverlayWindow(QWidget):
             self.btn_font_dec, self.btn_font_inc,
             self.btn_alpha_dec, self.btn_alpha_inc,
             self.btn_background,
-            self.btn_display, self.btn_flow, self.btn_passthrough,
+            self.btn_display, self.btn_furigana, self.btn_flow,
+            self.btn_passthrough,
             self.btn_restart, self.btn_pause, self.btn_close,
         )
         for b in self._all_buttons:
@@ -1230,8 +1547,8 @@ class OverlayWindow(QWidget):
             self.btn_font_dec, self.btn_font_inc,
             self.btn_alpha_dec, self.btn_alpha_inc,
             self.btn_background,
-            self.btn_display, self.btn_flow, self.btn_restart,
-            self.btn_pause, self.btn_close
+            self.btn_display, self.btn_furigana, self.btn_flow,
+            self.btn_restart, self.btn_pause, self.btn_close
         )
         self._btn_opacity_effects = {}
         for btn in self._other_buttons:
@@ -1241,6 +1558,7 @@ class OverlayWindow(QWidget):
 
         self._update_background_button()
         self._update_display_button()
+        self._update_furigana_button()
         self._update_flow_button()
         self._update_passthrough_button()
 
@@ -1310,6 +1628,7 @@ class OverlayWindow(QWidget):
                 (button is self.btn_background
                  and self.background_mode == BACKGROUND_MODE_TEXT)
                 or (button is self.btn_passthrough and self._passthrough)
+                or (button is self.btn_furigana and self.furigana_enabled)
             )
             button.setStyleSheet(self._button_style(active))
 
@@ -1520,6 +1839,33 @@ class OverlayWindow(QWidget):
         self._last_html = None   # 模式变了，强制重渲染
         self._render()
 
+    def _update_furigana_button(self):
+        self.btn_furigana.setStyleSheet(self._button_style(self.furigana_enabled))
+        self.btn_furigana.setToolTip(tr(
+            "furigana_on" if self.furigana_enabled else "furigana_off"))
+
+    def _toggle_furigana(self):
+        self.furigana_enabled = not self.furigana_enabled
+        self.settings.setValue("furigana_enabled", self.furigana_enabled)
+        # 与网页版 setEnabled 一致：关闭时清缓存并停止排队。
+        self.furigana.set_enabled(self.furigana_enabled)
+        self._update_furigana_button()
+        # 不强制清 _last_html：开启时保留当前纯文本帧，等注音就绪后整帧切换，
+        # 避免出现"无原文行→原文+注音"的中间态；关闭时 HTML 自然不同会重建。
+        self._render()
+
+    def _fetch_furigana(self, text):
+        """FuriganaService 的取词回调：POST /furigana，返回解析后的 JSON（或 None）。"""
+        return self._post_json("/furigana", {"text": text})
+
+    def _on_furigana_ready(self):
+        """收到一批注音结果（或取词失败）：重渲染一次。
+
+        不清 _last_html：让 _render 的 HTML 差异与阻塞判断自行决定——注音就绪则
+        整帧切换，仍有其他行未就绪则继续保持上一帧。
+        """
+        self._render()
+
     def _update_flow_button(self):
         flowing_down = self.flow_direction == "down"
         self.btn_flow.setIconName(
@@ -1622,6 +1968,22 @@ class OverlayWindow(QWidget):
             return True
         except Exception:
             return False
+
+    def _post_json(self, path, payload=None):
+        """POST 并返回解析后的 JSON 响应体；失败返回 None。"""
+        try:
+            data = b""
+            headers = {}
+            if payload is not None:
+                data = json.dumps(payload).encode("utf-8")
+                headers = {"Content-Type": "application/json"}
+            req = urllib.request.Request(
+                self.server_url + path, data=data, headers=headers, method="POST"
+            )
+            body = urllib.request.urlopen(req, timeout=8).read()
+            return json.loads(body.decode("utf-8"))
+        except Exception:
+            return None
 
     # --------------------------------------------------------------- WS ----
     def _init_ws(self):
@@ -1739,15 +2101,25 @@ class OverlayWindow(QWidget):
         max_lines = self._max_visible_lines()
         self._trim_tokens(max_lines)
         blocks = self.model.build_blocks()
-        line_groups = self._build_line_groups(blocks)
-        lines = [line for group in line_groups for line in group]
+        record_groups, blocked = self._build_line_groups(blocks)
+
+        sb = self.text.verticalScrollBar()
+        # 有日语行的注音仍在获取：保持上一帧，等注音就绪后（ready 信号）再刷新，
+        # 避免"先纯文本后注音"的闪烁。首帧尚无内容时不阻塞，先把已就绪的内容画出来。
+        if blocked and getattr(self, "_last_html", None) is not None:
+            target = sb.minimum() if self.flow_direction == "down" else sb.maximum()
+            if sb.value() != target:
+                sb.setValue(target)
+            return
+
+        has_content = any(record_groups)
         self.text.setTextBackdrop(
-            bool(lines) and self.background_mode == BACKGROUND_MODE_TEXT,
+            has_content and self.background_mode == BACKGROUND_MODE_TEXT,
             self.bg_alpha,
             max(5, round(self.font_size * 0.26)),
         )
 
-        if not lines:
+        if not has_content:
             fs = self.font_size
             # 占位文案垂直居中：QTextEdit 默认顶对齐，按可用高度补一段上边距。
             # 为了让 first block margin 正常生效，我们 prepend 一个 1px 的 spacer block。
@@ -1761,14 +2133,11 @@ class OverlayWindow(QWidget):
                 f'text-align:center; margin-top:{top}px;">等待字幕…</div>'
             )
         else:
-            # 只渲染最近的完整句子组，避免把一句切成残缺 token。
-            html = "".join(self._select_recent_lines(
-                line_groups,
-                max_lines,
-                newest_first=self.flow_direction == "down",
-            ))
-
-        sb = self.text.verticalScrollBar()
+            # 只渲染最近的完整句子组，避免把一句切成残缺 token；排好流向后再敲定行距。
+            ordered_groups = self._select_recent_groups(
+                record_groups, max_lines, newest_first=self.flow_direction == "down")
+            records = [rec for group in ordered_groups for rec in group]
+            html = self._render_records(records)
 
         # 内容没变就不重建文档（避免无谓重排导致的闪烁），但仍跟随流向端点。
         if html == getattr(self, "_last_html", None):
@@ -1792,56 +2161,138 @@ class OverlayWindow(QWidget):
         finally:
             self.text.setUpdatesEnabled(True)
 
-    def _select_recent_lines(self, line_groups, max_lines: int, newest_first=False):
+    def _select_recent_groups(self, groups, max_lines: int, newest_first=False):
+        """挑出最近若干个完整句组（不超过 max_lines 行），并按流向排好序返回。"""
         selected = []
         line_count = 0
-        for group in reversed(line_groups):
+        for group in reversed(groups):
             group_len = len(group)
             if selected and line_count + group_len > max_lines:
                 break
             selected.insert(0, group)
             line_count += group_len
-        ordered = reversed(selected) if newest_first else selected
-        return [line for group in ordered for line in group]
+        return list(reversed(selected)) if newest_first else selected
 
     def _build_line_groups(self, blocks):
-        """产出按显示句子分组的 HTML <div> 列表。
+        """产出按显示句子分组的「行记录」列表（不含 HTML）。
 
-        同一句的原文/译文贴紧（pair_mb），句与句之间留白（sent_mb），从而让一句的
-        原文+译文在视觉上成组。display_mode 控制只显示原文 / 只显示译文 / 两者都显示。
+        每条记录 = {kind, tokens/pairs, lang, base_mb}；同一句的原文/译文贴紧
+        （pair_mb），句与句之间留白（sent_mb）。display_mode 控制只显示原文 /
+        只显示译文 / 两者。真正的 HTML 与行距在 _render 里按渲染顺序敲定
+        （见 _render_records），因为行距是渲染相邻行之间的关系，需在排好流向之后算。
         """
-        fs = self.font_size
-        tag_fs = max(9, int(fs * 0.55))
         pair_mb = 0                          # 同句原文↔译文：贴紧
-        sent_mb = max(5, int(fs * 0.45))     # 句与句之间：留白
+        sent_mb = max(5, int(self.font_size * 0.45))  # 句与句之间：留白
 
         show_orig = self.display_mode in ("both", "original")
         show_trans = self.display_mode in ("both", "translation")
 
-        groups = []
+        groups = []          # list[list[record]]
+        blocked = False
         for block in blocks:
             for sentence in block["sentences"]:
-                group = []
+                recs = []
                 orig = sentence["original"] if show_orig else []
                 trans = sentence["translation"] if show_trans else []
                 # LLM 译文更新优先于 STT 内置译文；准确模式下 trans 为空，靠它补出译文行。
                 override = self._sentence_translation_override(sentence) if show_trans else None
                 has_trans = bool(trans) or override is not None
                 if orig:
-                    mb = pair_mb if has_trans else sent_mb
-                    group.append(self._line_html(
-                        orig, sentence["original_lang"], fs, mb, tag_fs))
+                    base_mb = pair_mb if has_trans else sent_mb
+                    lang = sentence["original_lang"]
+                    pairs = self._furigana_pairs_for(orig, lang) if self.furigana_enabled else None
+                    if pairs is _FURIGANA_PENDING:
+                        # 注音未就绪：不渲染纯文本，标记阻塞，本帧交由 _render 丢弃。
+                        blocked = True
+                    elif pairs:
+                        recs.append({"kind": "furigana", "pairs": pairs, "tokens": orig,
+                                     "lang": lang, "base_mb": base_mb})
+                    else:
+                        recs.append({"kind": "plain", "tokens": orig,
+                                     "lang": lang, "base_mb": base_mb})
                 if override is not None:
                     text, lang = override
-                    group.append(self._line_html(
-                        [{"text": text, "is_final": True}], lang, fs, sent_mb, tag_fs))
+                    recs.append({"kind": "plain",
+                                 "tokens": [{"text": text, "is_final": True}],
+                                 "lang": lang, "base_mb": sent_mb})
                 elif trans:
-                    group.append(self._line_html(
-                        trans, sentence["translation_lang"], fs, sent_mb, tag_fs))
-                group = [line for line in group if line]
-                if group:
-                    groups.append(group)
-        return groups
+                    recs.append({"kind": "plain", "tokens": trans,
+                                 "lang": sentence["translation_lang"], "base_mb": sent_mb})
+                if recs:
+                    groups.append(recs)
+        return groups, blocked
+
+    def _render_records(self, records):
+        """把渲染顺序排好的行记录生成 HTML，并按相邻关系敲定行距。
+
+        开注音时假名行比普通文字行高出一个「假名带」。为不额外顶宽行距，凡「下方
+        相邻行是假名行」，就把本行下边距收窄为 furigana_gap，让假名带落进原本的行间
+        空白里；非假名处的间距保持不变，与不开注音时视觉一致。（Qt 不认负 margin，
+        只能缩小上一行的下边距来实现。）
+        """
+        fs = self.font_size
+        tag_fs = max(9, int(fs * 0.55))
+        # 假名行上方目标间距（上一行底 → 本行假名顶），刻意小于 sent_mb。
+        furigana_gap = max(2, int(fs * 0.12))
+
+        parts = []
+        for i, rec in enumerate(records):
+            nxt = records[i + 1] if i + 1 < len(records) else None
+            mb = rec["base_mb"]
+            if self.furigana_enabled and nxt is not None and nxt["kind"] == "furigana":
+                mb = min(mb, furigana_gap)
+            if rec["kind"] == "furigana":
+                html = self._furigana_line_html(
+                    rec["pairs"], rec["tokens"], rec["lang"], fs, mb, tag_fs)
+            else:
+                html = self._line_html(rec["tokens"], rec["lang"], fs, mb, tag_fs)
+            if html:
+                parts.append(html)
+        return "".join(parts)
+
+    def _furigana_pairs_for(self, tokens, lang):
+        """判断日语原文行是否走假名渲染，返回三态：
+
+          * 注音对列表 [(表面形, 注音|None), ...] —— 已就绪且整行至少一处需注音；
+          * None                —— 不适用（非日语/空行/已就绪但整行无需注音），走普通渲染；
+          * _FURIGANA_PENDING   —— 注音仍在获取，本帧应阻塞（避免先纯文本后注音的闪烁）。
+        """
+        if _subtitle_font_lang(lang) != "ja":
+            return None
+        plain = "".join(tk.get("text") or "" for tk in tokens)
+        if not plain.strip():
+            return None
+        pairs = self.furigana.get_pairs(plain)
+        if pairs is None:
+            # 未就绪：仍在取词就阻塞本帧；已放弃（无主窗口等）则回退纯文本。
+            return _FURIGANA_PENDING if self.furigana.is_pending(plain) else None
+        if not any(reading for _, reading in pairs):
+            return None
+        return pairs
+
+    def _furigana_line_html(self, pairs, tokens, lang, fs, margin_bottom, tag_fs):
+        """把已就绪的注音对列表渲染成一行假名 HTML。
+
+        与网页版一致：整行 token 逐个画成「注音在上、正文在下」的内联图块；行内有
+        非 final token 时整行按进行中着色。
+        """
+        non_final = any(not tk.get("is_final", True) for tk in tokens)
+        imgs = []
+        for surface, reading in pairs:
+            spec = _encode_ruby_spec(
+                fs, non_final, self.use_bundled_cjk_fonts, surface, reading)
+            imgs.append(f'<img src="{_RUBY_SCHEME}{spec}">')
+        tag_html = ""
+        if lang:
+            # 与网页版假名行一致：语言标识行内基线对齐（不再垂直居中）。
+            spec = f"{tag_fs}-{_html_escape(str(lang)).upper()}"
+            tag_html = f'<img src="{_TAG_SCHEME}{spec}">'
+        font_stack = _font_stack_for_lang(lang, self.use_bundled_cjk_fonts)
+        style = (f"margin:0 0 {margin_bottom}px 0; line-height:110%; "
+                 f"font-size:{fs}px; color:{FINAL_COLOR}; font-family:{font_stack};")
+        # 图块之间插入零宽空格，保证 QTextEdit 能在 token 边界换行。
+        content = f'{tag_html}{"&#8203;".join(imgs)}'
+        return f'<div{_lang_attr(lang)} style="{style}">{content}</div>'
 
     def _line_html(self, tokens, lang, fs, margin_bottom, tag_fs):
         spans = []
