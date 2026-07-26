@@ -153,6 +153,10 @@ python build_exe.py
 
 The executable will be located at `dist/RealtimeSubtitle.exe`.
 
+## License
+
+This project is licensed under the GNU Affero General Public License version 3 or later. See [LICENSE](LICENSE) for details.
+
 ## Acknowledgements
 
 This project stands on the shoulders of giants. A complete list of all third-party open-source libraries, dependencies, and their verified licenses can be found in the [ACKNOWLEDGMENTS.md](file:///c:/Users/hsxxs/Desktop/STT/soniox/realtime-subtitle/ACKNOWLEDGMENTS.md) file.
