@@ -1870,6 +1870,9 @@
             speaker_labels_setting: 'Rótulos de falante',
             speaker_labels_enabled: 'Mostrar',
             speaker_labels_disabled: 'Ocultar',
+            interrupt_repair_setting: 'Reconectar frases interrompidas',
+            interrupt_repair_enabled: 'Ativada',
+            interrupt_repair_disabled: 'Desativada',
             segment_mode_setting: 'Modo de segmentação',
             segment_mode_translation: 'Por tradução',
             segment_mode_endpoint: 'Por endpoint',
@@ -1931,6 +1934,7 @@
             backend_segment_mode_disabled: 'A troca do modo de segmentação está desativada pela configuração do servidor',
             backend_speaker_labels_disabled: 'A troca de rótulos de falante está desativada pela configuração do servidor',
             backend_auto_sleep_disabled: 'A troca da suspensão automática está desativada pela configuração do servidor',
+            backend_interrupt_repair_disabled: 'A reconstrução de frases interrompidas está desativada pela configuração do servidor',
             backend_llm_refine_disabled: 'O alternador de melhoria LLM está desativado pela configuração do servidor',
             backend_furigana_unavailable: 'O recurso de furigana não está disponível',
 
