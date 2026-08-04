@@ -170,6 +170,8 @@ describe('settings-store typed preferences', () => {
         expect(store.loadDisplayMode()).toBe('both');
         expect(store.loadSubtitleFlowDirection()).toBe('up');
         expect(store.loadAutoRestartEnabled()).toBe(true);
+        expect(store.readInterruptRepairEnabled()).toBeNull();
+        expect(store.loadInterruptRepairEnabled()).toBe(true);
         expect(store.loadBottomSafeAreaEnabled()).toBe(false);
         expect(store.loadBundledCjkFontEnabled()).toBe(false);
         expect(store.loadAudioSource()).toBe('system');
@@ -183,6 +185,7 @@ describe('settings-store typed preferences', () => {
         expect(store.saveSubtitleFlowDirection('down')).toBe(true);
         expect(store.saveAutoRestartEnabled(false)).toBe(true);
         expect(store.saveSleepOnSilenceEnabled(false)).toBe(true);
+        expect(store.saveInterruptRepairEnabled(false)).toBe(true);
         expect(store.saveBottomSafeAreaEnabled(true)).toBe(true);
         expect(store.saveBundledCjkFontEnabled(true)).toBe(true);
         expect(store.saveAudioSource('mix')).toBe(true);
@@ -197,6 +200,8 @@ describe('settings-store typed preferences', () => {
         expect(store.loadAutoRestartEnabled()).toBe(false);
         expect(store.readSleepOnSilenceEnabled()).toBe(false);
         expect(store.loadSleepOnSilenceEnabled()).toBe(false);
+        expect(store.readInterruptRepairEnabled()).toBe(false);
+        expect(store.loadInterruptRepairEnabled()).toBe(false);
         expect(store.loadBottomSafeAreaEnabled()).toBe(true);
         expect(store.loadBundledCjkFontEnabled()).toBe(true);
         expect(store.loadAudioSource()).toBe('mix');

@@ -305,6 +305,7 @@
             setText('autoRestartSettingLabel', 'auto_restart_setting');
             setText('sleepOnSilenceSettingLabel', 'auto_sleep_setting');
             setText('speakerLabelsSettingLabel', 'speaker_labels_setting');
+            setText('interruptRepairSettingLabel', 'interrupt_repair_setting');
             setText('segmentModeSettingLabel', 'segment_mode_setting');
             setText('translationModeSettingLabel', 'translation_mode_setting');
             setText('appearanceLabel', 'appearance');

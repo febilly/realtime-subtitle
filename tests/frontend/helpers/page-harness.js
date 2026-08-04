@@ -72,6 +72,8 @@ function defaultFetchResponse(url, options = {}) {
         languages: ['en', 'zh', 'ja'],
         relay_available: false,
         lock_manual_controls: false,
+        interrupt_repair_supported: true,
+        interrupt_repair_enabled: true,
         ...(options.uiConfig || {}),
     };
     const payloads = {

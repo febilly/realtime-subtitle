@@ -14,6 +14,7 @@
         subtitleFlowDirection: 'subtitleFlowDirection',
         autoRestartEnabled: 'autoRestartEnabled',
         sleepOnSilenceEnabled: 'sleepOnSilenceEnabled',
+        interruptRepairEnabled: 'interruptRepairEnabled',
         bottomSafeAreaEnabled: 'bottomSafeAreaEnabled',
         bundledCjkFontEnabled: 'useBundledCjkFont',
         theme: 'theme',
@@ -308,6 +309,12 @@
             },
             loadSleepOnSilenceEnabled: () => loadBoolean(KEYS.sleepOnSilenceEnabled, true),
             saveSleepOnSilenceEnabled: (value) => saveBoolean(KEYS.sleepOnSilenceEnabled, value),
+            readInterruptRepairEnabled: () => {
+                const value = read(KEYS.interruptRepairEnabled);
+                return value === null ? null : value === 'true';
+            },
+            loadInterruptRepairEnabled: () => loadBoolean(KEYS.interruptRepairEnabled, true),
+            saveInterruptRepairEnabled: (value) => saveBoolean(KEYS.interruptRepairEnabled, value),
             loadBottomSafeAreaEnabled: () => loadBoolean(KEYS.bottomSafeAreaEnabled, false),
             saveBottomSafeAreaEnabled: (value) => saveBoolean(KEYS.bottomSafeAreaEnabled, value),
             loadBundledCjkFontEnabled: () => loadBoolean(KEYS.bundledCjkFontEnabled, false),

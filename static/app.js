@@ -172,6 +172,7 @@ const controlPorts = {
     updateAudioSourceButton: () => { runtimeControls.updateAudioSourceButton(); },
     setTranslationUiMode: (mode, options = {}) => translationModeController.setTranslationUiMode(mode, options),
     setSleepOnSilenceEnabled: (enabled) => setSleepOnSilenceEnabled(enabled),
+    setInterruptRepairEnabled: (enabled) => setInterruptRepairEnabled(enabled),
     setSpeakerLabelsHidden: (hidden) => speakerLabelController.setHidden(hidden),
     setSegmentMode: (mode) => segmentModeController.setMode(mode),
     updateFuriganaButton: () => furiganaToggleController.updateButton(),
@@ -233,6 +234,8 @@ const settingsRuntime = SettingsRuntime.create({
         sleepOnSilencePickerHost,
         speakerLabelsSettingField,
         speakerLabelsPickerHost,
+        interruptRepairSettingField: document.getElementById('interruptRepairSettingField'),
+        interruptRepairPickerHost: document.getElementById('interruptRepairPicker'),
         bundledCjkFontPickerHost,
         bundledCjkFontHint: document.getElementById('bundledCjkFontHint'),
         translationModeSection,
@@ -247,6 +250,8 @@ const settingsRuntime = SettingsRuntime.create({
         get providerSettings() { return settingsPorts.loadProviderSettings(); },
         get autoRestartEnabled() { return autoRestartEnabled; },
         get sleepOnSilenceEnabled() { return sleepOnSilenceEnabled; },
+        get interruptRepairEnabled() { return interruptRepairEnabled; },
+        get interruptRepairSupported() { return interruptRepairSupported; },
         get hideSpeakerLabels() { return speakerLabelController.isHidden(); },
         get customFontAvailable() { return customFontAvailable; },
         get useBundledCjkFont() { return useBundledCjkFont; },
@@ -266,6 +271,9 @@ const settingsRuntime = SettingsRuntime.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'sleepOnSilenceEnabled')) {
             sleepOnSilenceEnabled = patch.sleepOnSilenceEnabled;
         }
+        if (Object.prototype.hasOwnProperty.call(patch, 'interruptRepairEnabled')) {
+            interruptRepairEnabled = patch.interruptRepairEnabled;
+        }
         if (Object.prototype.hasOwnProperty.call(patch, 'useBundledCjkFont')) {
             useBundledCjkFont = patch.useBundledCjkFont;
         }
@@ -273,6 +281,7 @@ const settingsRuntime = SettingsRuntime.create({
     actions: {
         updateAutoRestartButton: controlPorts.updateAutoRestartButton,
         setSleepOnSilenceEnabled: controlPorts.setSleepOnSilenceEnabled,
+        setInterruptRepairEnabled: controlPorts.setInterruptRepairEnabled,
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
         setTranslationUiMode: controlPorts.setTranslationUiMode,
@@ -457,6 +466,8 @@ let displayMode = settingsStore.loadDisplayMode();
 // 自动重启识别开关（默认开启；已有保存值优先）
 let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
 let sleepOnSilenceEnabled = settingsStore.loadSleepOnSilenceEnabled();
+let interruptRepairEnabled = settingsStore.loadInterruptRepairEnabled();
+let interruptRepairSupported = translationProvider === 'soniox';
 
 async function setSleepOnSilenceEnabled(enabled) {
     try {
@@ -487,6 +498,44 @@ function applySleepOnSilenceConfig(data = {}) {
         && stored !== data.sleep_on_silence_enabled
     ) {
         void setSleepOnSilenceEnabled(stored);
+    }
+}
+
+async function setInterruptRepairEnabled(enabled) {
+    try {
+        const response = await fetch('/interrupt-repair', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!enabled }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        interruptRepairEnabled = typeof data.enabled === 'boolean'
+            ? data.enabled
+            : !!enabled;
+        settingsStore.saveInterruptRepairEnabled(interruptRepairEnabled);
+        settingsRuntime.renderInterruptRepairPicker();
+        return true;
+    } catch (error) {
+        console.error('Error setting interrupted sentence repair:', error);
+        return false;
+    }
+}
+
+function applyInterruptRepairConfig(data = {}) {
+    if (typeof data.interrupt_repair_supported === 'boolean') {
+        interruptRepairSupported = data.interrupt_repair_supported;
+    }
+    if (typeof data.interrupt_repair_enabled !== 'boolean') return;
+    const stored = settingsStore.readInterruptRepairEnabled();
+    interruptRepairEnabled = stored === null ? data.interrupt_repair_enabled : stored;
+    if (
+        stored !== null
+        && interruptRepairSupported
+        && !lockManualControls
+        && stored !== data.interrupt_repair_enabled
+    ) {
+        void setInterruptRepairEnabled(stored);
     }
 }
 
@@ -979,6 +1028,8 @@ function updateUiConfigState(patch) {
             case 'currentTranslationTargetLang': currentTranslationTargetLang = value; break;
             case 'translationProvider': translationProvider = value; break;
             case 'segmentModeSupported': segmentModeSupported = value; break;
+            case 'interruptRepairSupported': interruptRepairSupported = value; break;
+            case 'interruptRepairEnabled': interruptRepairEnabled = value; break;
             case 'twoWaySupported': twoWaySupported = value; break;
             case 'backendBootId': backendBootId = value; break;
             case 'setupRequired': setupRequired = value; break;
@@ -1033,6 +1084,7 @@ const uiConfigController = UiConfigController.create({
         updateSettingsButtonVisibility: settingsPorts.updateSettingsButtonVisibility,
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
         applySleepOnSilenceConfig,
+        applyInterruptRepairConfig,
         renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,

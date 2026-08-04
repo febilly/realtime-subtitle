@@ -17,6 +17,7 @@ function setup(overrides = {}) {
         <div id="autoRestart"></div>
         <div id="sleepOnSilence"></div>
         <label id="speakerField"><div id="speakerPicker"></div></label>
+        <label id="interruptField"><div id="interruptPicker"></div></label>
         <div id="fontPicker"></div><p id="fontHint"></p>
         <section id="translationSection"><label id="translationField"><div id="translationPicker"></div></label><p id="translationHint"></p></section>
         <label id="segmentField"><div id="segmentPicker"></div></label>
@@ -27,6 +28,8 @@ function setup(overrides = {}) {
         providerSettings: {},
         autoRestartEnabled: true,
         sleepOnSilenceEnabled: true,
+        interruptRepairEnabled: true,
+        interruptRepairSupported: true,
         hideSpeakerLabels: false,
         customFontAvailable: true,
         useBundledCjkFont: false,
@@ -59,6 +62,7 @@ function setup(overrides = {}) {
     const actions = {
         updateAutoRestartButton: vi.fn(() => calls.push('auto')),
         setSleepOnSilenceEnabled: vi.fn(async () => { calls.push('sleep'); return true; }),
+        setInterruptRepairEnabled: vi.fn(async () => { calls.push('interrupt'); return true; }),
         setSpeakerLabelsHidden: vi.fn(async () => { calls.push('speaker'); return true; }),
         setSegmentMode: vi.fn(async () => { calls.push('segment'); return true; }),
         setTranslationUiMode: vi.fn(async () => { calls.push('translation'); return true; }),
@@ -88,6 +92,8 @@ function setup(overrides = {}) {
             sleepOnSilencePickerHost: document.getElementById('sleepOnSilence'),
             speakerLabelsSettingField: document.getElementById('speakerField'),
             speakerLabelsPickerHost: document.getElementById('speakerPicker'),
+            interruptRepairSettingField: document.getElementById('interruptField'),
+            interruptRepairPickerHost: document.getElementById('interruptPicker'),
             bundledCjkFontPickerHost: document.getElementById('fontPicker'),
             bundledCjkFontHint: document.getElementById('fontHint'),
             translationModeSection: document.getElementById('translationSection'),
@@ -138,6 +144,7 @@ describe('SettingsRuntime picker state', () => {
         expect(pickers.autoRestart.value).toBe('true');
         expect(pickers.sleepOnSilence.value).toBe('true');
         expect(pickers.speakerLabels.value).toBe('hide');
+        expect(pickers.interruptRepair.value).toBe('true');
         expect(pickers.bundledCjkFont.value).toBe('false');
         expect(pickers.translationMode.value).toBe('hybrid');
         expect(pickers.segmentMode.value).toBe('punctuation');
@@ -152,6 +159,7 @@ describe('SettingsRuntime picker state', () => {
                 selectedProvider: 'gemini',
                 llmRefineAvailable: false,
                 segmentModeSupported: false,
+                interruptRepairSupported: false,
                 customFontAvailable: false,
             },
         });
@@ -160,6 +168,8 @@ describe('SettingsRuntime picker state', () => {
 
         expect(page.document.getElementById('speakerField').hidden).toBe(true);
         expect(pickers.speakerLabels).toBeNull();
+        expect(page.document.getElementById('interruptField').hidden).toBe(true);
+        expect(pickers.interruptRepair).toBeNull();
         expect(page.document.getElementById('translationSection').hidden).toBe(true);
         expect(pickers.translationMode).toBeNull();
         expect(page.document.getElementById('segmentField').hidden).toBe(true);
@@ -269,22 +279,25 @@ describe('SettingsRuntime microphone and font effects', () => {
 });
 
 describe('SettingsRuntime save orchestration', () => {
-    it('applies auto restart, auto sleep, speaker, segment, and translation in order', async () => {
+    it('applies auto restart, auto sleep, speaker, interrupt repair, segment, and translation in order', async () => {
         const page = setup();
         page.controller.renderSettingsPickers();
         const pickers = page.controller.getPickers();
         pickers.autoRestart.choose('false');
         pickers.sleepOnSilence.choose('false');
         pickers.speakerLabels.choose('hide');
+        pickers.interruptRepair.choose('false');
         pickers.segmentMode.choose('endpoint');
         pickers.translationMode.choose('accurate');
 
         await expect(page.controller.applyRuntimeControlSettings()).resolves.toEqual({ ok: true });
         expect(page.state.autoRestartEnabled).toBe(false);
         expect(page.state.sleepOnSilenceEnabled).toBe(false);
+        expect(page.state.interruptRepairEnabled).toBe(false);
         expect(page.dom.window.localStorage.getItem('autoRestartEnabled')).toBe('false');
         expect(page.dom.window.localStorage.getItem('sleepOnSilenceEnabled')).toBe('false');
-        expect(page.calls).toEqual(['auto', 'sleep', 'speaker', 'segment', 'translation']);
+        expect(page.dom.window.localStorage.getItem('interruptRepairEnabled')).toBe('false');
+        expect(page.calls).toEqual(['auto', 'sleep', 'speaker', 'interrupt', 'segment', 'translation']);
         expect(page.actions.setTranslationUiMode).toHaveBeenCalledWith('accurate', {
             restartIfNeeded: true,
         });

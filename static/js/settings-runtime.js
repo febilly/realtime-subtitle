@@ -47,6 +47,7 @@
             autoRestart: null,
             sleepOnSilence: null,
             speakerLabels: null,
+            interruptRepair: null,
             bundledCjkFont: null,
             translationMode: null,
             segmentMode: null,
@@ -87,6 +88,10 @@
                     'speakerLabels',
                     draft.hideSpeakerLabels ? 'hide' : 'show',
                 ) === 'hide',
+                interruptRepairEnabled: pickerValue(
+                    'interruptRepair',
+                    draft.interruptRepairEnabled === false ? 'false' : 'true',
+                ) !== 'false',
                 useBundledCjkFont: pickerValue(
                     'bundledCjkFont',
                     draft.useBundledCjkFont ? 'true' : 'false',
@@ -375,6 +380,31 @@
             });
         }
 
+        function renderInterruptRepairPicker() {
+            const current = state();
+            const supported = current.interruptRepairSupported !== false
+                && selectedProvider() === 'soniox';
+            if (elements.interruptRepairSettingField) {
+                elements.interruptRepairSettingField.hidden = !supported;
+            }
+            if (!supported) {
+                if (elements.interruptRepairPickerHost) {
+                    elements.interruptRepairPickerHost.innerHTML = '';
+                }
+                pickers.interruptRepair = null;
+                return null;
+            }
+            const enabled = current.interruptRepairEnabled !== false;
+            setDraft({ interruptRepairEnabled: enabled });
+            return replaceHost(elements.interruptRepairPickerHost, 'interruptRepair', [
+                { value: 'true', label: t('interrupt_repair_enabled') },
+                { value: 'false', label: t('interrupt_repair_disabled') },
+            ], {
+                value: enabled ? 'true' : 'false',
+                onChange: (value) => setDraft({ interruptRepairEnabled: value !== 'false' }),
+            });
+        }
+
         function renderBundledCjkFontPicker() {
             const host = elements.bundledCjkFontPickerHost;
             if (!host) {
@@ -543,6 +573,7 @@
             renderAutoRestartPicker();
             renderSleepOnSilencePicker();
             renderSpeakerLabelsPicker();
+            renderInterruptRepairPicker();
             renderSegmentModePicker();
         }
 
@@ -599,6 +630,16 @@
                 }
             }
 
+            if (pickers.interruptRepair && currentProvider === 'soniox') {
+                const enabled = getDraft().interruptRepairEnabled;
+                if (enabled !== (state().interruptRepairEnabled !== false)) {
+                    const ok = await actionSucceeded('setInterruptRepairEnabled', enabled);
+                    if (!ok) return { ok: false, message: t('backend_interrupt_repair_disabled') };
+                    updateState({ interruptRepairEnabled: enabled });
+                }
+                storage.setItem('interruptRepairEnabled', enabled ? 'true' : 'false');
+            }
+
             const segmentModes = getSegmentModes();
             const requestedSegmentMode = getDraft().segmentMode;
             if (
@@ -642,6 +683,7 @@
             renderSleepOnSilencePicker,
             getStoredHideSpeakerLabelsSetting,
             renderSpeakerLabelsPicker,
+            renderInterruptRepairPicker,
             renderBundledCjkFontPicker,
             syncBundledCjkFontPreference,
             applyBundledCjkFontPreference,
