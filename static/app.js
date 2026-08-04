@@ -1448,6 +1448,7 @@ hostedAccount = HostedAccount.create({
         firstBonusHint: document.getElementById('firstRedeemBonusHint'),
         balanceHint: document.getElementById('accountBalanceHint'),
         freePools: document.getElementById('accountFreePools'),
+        subscriptionPools: document.getElementById('accountSubscriptionPools'),
         redeemButton: document.getElementById('redeemButton'),
         redeemInput: document.getElementById('redeemInput'),
         redeemPasteButton: document.getElementById('redeemPasteButton'),

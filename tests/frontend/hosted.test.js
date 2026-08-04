@@ -35,19 +35,46 @@ describe('Hosted.Billing metering', () => {
         expect(Billing.estimatedSessionCost(1000, 0)).toBe(0);
     });
 
-    it('deducts finite free pools before prepaid without mutating input', () => {
+    it('spends free pools, then subscription quota, then prepaid, without mutating input', () => {
         const input = {
             prepaid_balance: 10,
             free: { pools: [{ remaining: 2 }, { remaining: 3 }] },
-            subscriptions: [{ remaining_credits: 50 }],
+            subscriptions: [{ remaining_credits: 50, quota_credits: 50 }],
         };
         const output = Billing.applyEstimatedDeduction(input, 7);
         expect(output).toEqual({
-            prepaid_balance: 8,
+            // The subscription covers the 2 credits the free pools could not,
+            // so the prepaid balance is untouched.
+            prepaid_balance: 10,
             free: { pools: [{ remaining: 0 }, { remaining: 0 }] },
-            subscriptions: [{ remaining_credits: 50 }],
+            subscriptions: [{ remaining_credits: 48, quota_credits: 50 }],
         });
         expect(input.free.pools.map((pool) => pool.remaining)).toEqual([2, 3]);
+        expect(input.subscriptions[0].remaining_credits).toBe(50);
+    });
+
+    it('falls through to prepaid once free and subscription quota are both spent', () => {
+        const output = Billing.applyEstimatedDeduction({
+            prepaid_balance: 10,
+            free: { pools: [{ remaining: 2 }] },
+            subscriptions: [{ remaining_credits: 3, quota_credits: 20 }],
+        }, 9);
+        expect(output.free.pools[0].remaining).toBe(0);
+        expect(output.subscriptions[0].remaining_credits).toBe(0);
+        expect(output.prepaid_balance).toBe(6);
+    });
+
+    it('treats an unlimited subscription pool as inexhaustible, not as empty', () => {
+        // The server reports an unlimited pool as a -1 quota with null remaining.
+        const unlimited = {
+            prepaid_balance: 0,
+            free: { pools: [] },
+            subscriptions: [{ remaining_credits: null, quota_credits: -1 }],
+        };
+        expect(Billing.isAccountExhausted(unlimited)).toBe(false);
+        expect(Billing.balanceTotalRemaining(unlimited)).toBe(Infinity);
+        expect(Billing.hasAtLeastCredits(unlimited, 9999)).toBe(true);
+        expect(Billing.applyEstimatedDeduction(unlimited, 9999).prepaid_balance).toBe(0);
     });
 
     it('lets an unlimited pool absorb the remainder and then deducts LLM only from prepaid', () => {
@@ -68,7 +95,15 @@ describe('Hosted.Billing metering', () => {
         expect(Billing.isAccountExhausted({ prepaid_balance: 0, free: { pools: [] }, subscriptions: [] })).toBe(true);
         expect(Billing.isAccountExhausted({ prepaid_balance: 0, free: { pools: [{ unlimited: true }] } })).toBe(false);
         expect(Billing.isAccountExhausted({ prepaid_balance: 0, subscriptions: [{ remaining_credits: 1 }] })).toBe(false);
-        expect(Billing.balanceTotalRemaining({ prepaid_balance: 2, free: { pools: [{ remaining: 3 }, { unlimited: true }] } })).toBe(5);
+        expect(Billing.balanceTotalRemaining({ prepaid_balance: 2, free: { pools: [{ remaining: 3 }] } })).toBe(5);
+        expect(Billing.balanceTotalRemaining({
+            prepaid_balance: 2,
+            free: { pools: [{ remaining: 3 }] },
+            subscriptions: [{ remaining_credits: 4, quota_credits: 10 }],
+        })).toBe(9);
+        // An unlimited pool has no total to report; saying 5 would let a caller
+        // comparing two totals conclude the account is running low.
+        expect(Billing.balanceTotalRemaining({ prepaid_balance: 2, free: { pools: [{ remaining: 3 }, { unlimited: true }] } })).toBe(Infinity);
     });
 
     it('checks the recovery threshold across prepaid, free, and subscription quota', () => {

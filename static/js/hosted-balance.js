@@ -164,6 +164,55 @@
             }
         }
 
+        function subscriptionPoolLabel(period) {
+            if (period === 'weekly') return t('balance_subscription_week');
+            if (period === 'monthly') return t('balance_subscription_month');
+            return t('balance_subscription_day');
+        }
+
+        function subscriptionPoolValue(pool) {
+            if (Billing.subscriptionIsUnlimited(pool)) return t('balance_free_unlimited');
+            return t('balance_free_remaining', {
+                remaining: formatCredits(pool.remaining_credits),
+                cap: formatCredits(pool.quota_credits),
+            });
+        }
+
+        function formatExpiry(value) {
+            if (!value) return '';
+            const parsed = new Date(value);
+            if (Number.isNaN(parsed.getTime())) return '';
+            return parsed.toLocaleDateString();
+        }
+
+        /**
+         * Unlike the free pools this renders nothing when there is no
+         * subscription: a missing free allowance is worth telling the user
+         * about, not having bought a plan is not.
+         */
+        function renderSubscriptionPools(container, pools, { detailed = false } = {}) {
+            if (!container) return;
+            container.innerHTML = '';
+            if (!Array.isArray(pools) || !pools.length) return;
+            for (const pool of pools) {
+                const item = documentRef.createElement('span');
+                item.className = 'balance-item';
+                const label = documentRef.createElement('span');
+                label.className = 'balance-label';
+                label.textContent = detailed && pool.plan_name
+                    ? `${pool.plan_name} · ${subscriptionPoolLabel(pool.period)}`
+                    : subscriptionPoolLabel(pool.period);
+                const value = documentRef.createElement('span');
+                value.className = 'balance-value';
+                const expiry = detailed ? formatExpiry(pool.expires_at) : '';
+                value.textContent = expiry
+                    ? `${subscriptionPoolValue(pool)} (${t('balance_subscription_expires', { date: expiry })})`
+                    : subscriptionPoolValue(pool);
+                item.append(label, value);
+                container.appendChild(item);
+            }
+        }
+
         function sttRateMultiplier() {
             const current = runtimeState();
             return Billing.sttRateMultiplier({
@@ -250,22 +299,11 @@
                 documentRef.getElementById('freePools'),
                 view.free && view.free.pools,
             );
+            renderSubscriptionPools(
+                documentRef.getElementById('subscriptionPools'),
+                view.subscriptions,
+            );
             onAccountBalanceChanged();
-            const subscriptionItem = documentRef.getElementById('subItem');
-            if (subscriptionItem) {
-                const subscriptions = Array.isArray(view.subscriptions) ? view.subscriptions : [];
-                if (subscriptions.length) {
-                    const subscription = subscriptions[0];
-                    subscriptionItem.hidden = false;
-                    setText('subLabel', t('balance_subscription'));
-                    setText('subValue', t('balance_free_remaining', {
-                        remaining: formatCredits(subscription.remaining_credits),
-                        cap: formatCredits(subscription.quota_credits),
-                    }));
-                } else {
-                    subscriptionItem.hidden = true;
-                }
-            }
         }
 
         function renderBalance(data) {
@@ -435,6 +473,7 @@
             renderBalance,
             renderBalanceView,
             renderFreePools,
+            renderSubscriptionPools,
             resetFirstRedeemBonus,
             scheduleBalancePolling,
             sessionCostPause,

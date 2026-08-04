@@ -63,6 +63,13 @@
             return formatted == null ? String(value == null ? '' : value) : formatted;
         }
 
+        function formatExpiryDate(value) {
+            if (!value) return '';
+            const parsed = new Date(value);
+            if (Number.isNaN(parsed.getTime())) return '';
+            return parsed.toLocaleDateString();
+        }
+
         function isSignedIn(server = loadServerSettings()) {
             return !!runtimeState().backendLoggedIn || !!server.token;
         }
@@ -211,6 +218,7 @@
         function updateBalance() {
             const balanceHint = elements.balanceHint || null;
             const poolsBox = elements.freePools || null;
+            const subscriptionPoolsBox = elements.subscriptionPools || null;
             const server = loadServerSettings();
             const signedIn = isSignedIn(server);
             const view = balanceCall('currentBalanceView');
@@ -228,6 +236,11 @@
             if (poolsBox) {
                 const pools = signedIn && view && view.free ? view.free.pools : null;
                 balanceCall('renderFreePools', poolsBox, pools);
+            }
+            if (subscriptionPoolsBox) {
+                const pools = signedIn && view ? view.subscriptions : null;
+                // The panel has room for the plan name and expiry the bar omits.
+                balanceCall('renderSubscriptionPools', subscriptionPoolsBox, pools, { detailed: true });
             }
         }
 
@@ -288,16 +301,34 @@
                 const data = await response.json().catch(() => ({}));
                 if (response.ok && data && data.success) {
                     if (redeemInput) redeemInput.value = '';
-                    call('showToast', t('account_redeem_success', {
-                        credits: formatCredits(data.granted_credits),
-                        balance: formatCredits(data.new_balance),
-                    }), false, { timeoutMs: 5000 });
+                    // A subscription code buys time, not credits, so it reports
+                    // a plan and an expiry where a credits code reports a balance.
+                    const message = data.kind === 'subscription'
+                        ? t('account_redeem_subscription_success', {
+                            plan: String(data.plan_name || ''),
+                            days: formatCredits(data.added_days),
+                            expires: formatExpiryDate(data.expires_at),
+                        })
+                        : t('account_redeem_success', {
+                            credits: formatCredits(data.granted_credits),
+                            balance: formatCredits(data.new_balance),
+                        });
+                    call('showToast', message, false, { timeoutMs: 5000 });
                     balanceCall('resetFirstRedeemBonus', data.first_redeem_bonus_credits);
                     updateSection();
                     void balanceCall('fetchBalance');
                 } else {
-                    const message = data && (data.detail || data.message);
-                    call('showToast', localizeBackendMessage(message || t('connection_error_try_again')), true);
+                    const detail = data && (data.detail || data.message);
+                    // The stacking cap is the one redemption error the client can
+                    // explain better than the server's English sentence.
+                    if (response.status === 400 && data && data.max_accumulated_days != null) {
+                        call('showToast', t('account_redeem_subscription_capped', {
+                            remaining: formatCredits(data.remaining_days),
+                            max: formatCredits(data.max_accumulated_days),
+                        }), true);
+                    } else {
+                        call('showToast', localizeBackendMessage(detail || t('connection_error_try_again')), true);
+                    }
                 }
             } catch (error) {
                 call('showToast', String(error), true);

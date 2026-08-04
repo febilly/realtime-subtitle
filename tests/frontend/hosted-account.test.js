@@ -11,6 +11,7 @@ function setup(overrides = {}) {
         <p id="purchaseCreditsHint" hidden><a id="purchaseCreditsLink"></a></p>
         <span id="firstRedeemBonusHint" hidden></span>
         <span id="accountBalanceHint" hidden></span><div id="accountFreePools"></div>
+        <div id="accountSubscriptionPools"></div>
         <input id="redeemInput"><button id="redeemButton"></button>
         <button id="redeemPasteButton"></button><button id="reLoginButton"></button>
         <button id="logoutButton"></button><button id="copyInviteButton"></button>
@@ -47,6 +48,9 @@ function setup(overrides = {}) {
         })),
         renderFreePools: vi.fn((container, pools) => {
             container.textContent = Array.isArray(pools) ? `pools:${pools.length}` : '';
+        }),
+        renderSubscriptionPools: vi.fn((container, pools) => {
+            container.textContent = Array.isArray(pools) ? `subs:${pools.length}` : '';
         }),
         resetFirstRedeemBonus: vi.fn(),
         fetchBalance: vi.fn().mockResolvedValue(true),
@@ -89,6 +93,7 @@ function setup(overrides = {}) {
             firstBonusHint: document.getElementById('firstRedeemBonusHint'),
             balanceHint: document.getElementById('accountBalanceHint'),
             freePools: document.getElementById('accountFreePools'),
+            subscriptionPools: document.getElementById('accountSubscriptionPools'),
             redeemButton: document.getElementById('redeemButton'),
             redeemInput: document.getElementById('redeemInput'),
             redeemPasteButton: document.getElementById('redeemPasteButton'),
@@ -236,6 +241,73 @@ describe('HostedAccount actions', () => {
         );
         expect(page.balance.resetFirstRedeemBonus).toHaveBeenCalledWith(5);
         expect(page.balance.fetchBalance).toHaveBeenCalledOnce();
+        page.dom.window.close();
+    });
+
+    it('reports an activated plan rather than a credit balance for a subscription code', async () => {
+        const fetch = vi.fn().mockResolvedValue(response({
+            success: true,
+            kind: 'subscription',
+            plan_name: 'Monthly',
+            added_days: 30,
+            expires_at: '2026-11-02T00:00:00.000Z',
+            first_redeem_bonus_credits: 5,
+        }));
+        const page = setup({ fetch });
+        page.document.getElementById('redeemInput').value = 'sub-code';
+
+        await page.controller.handleRedeem();
+
+        const [message] = page.actions.showToast.mock.calls[0];
+        expect(message).toContain('account_redeem_subscription_success');
+        expect(message).toContain('plan=Monthly');
+        expect(message).toContain('days=C30');
+        expect(page.balance.fetchBalance).toHaveBeenCalledOnce();
+        page.dom.window.close();
+    });
+
+    it('explains the stacking cap instead of passing through the English refusal', async () => {
+        const fetch = vi.fn().mockResolvedValue(response({
+            detail: 'Subscription already has more remaining time than this plan allows to stack',
+            remaining_days: 90,
+            max_accumulated_days: 60,
+        }, { ok: false, status: 400 }));
+        const page = setup({ fetch });
+        page.document.getElementById('redeemInput').value = 'sub-code';
+
+        await page.controller.handleRedeem();
+
+        expect(page.actions.showToast).toHaveBeenCalledWith(
+            'account_redeem_subscription_capped|remaining=C90|max=C60',
+            true,
+        );
+        // The code is not consumed, so the input is left alone to retry later.
+        expect(page.document.getElementById('redeemInput').value).toBe('sub-code');
+        page.dom.window.close();
+    });
+
+    it('lists subscription pools in the account panel', () => {
+        const page = setup({
+            balance: {
+                currentBalanceView: vi.fn(() => ({
+                    prepaid_balance: 120,
+                    free: { pools: [{ period: 'daily', remaining: 5 }] },
+                    subscriptions: [
+                        { period: 'daily', remaining_credits: 600, quota_credits: 600 },
+                        { period: 'monthly', remaining_credits: 18000, quota_credits: 18000 },
+                    ],
+                })),
+            },
+        });
+
+        page.controller.updateSection();
+
+        expect(page.document.getElementById('accountSubscriptionPools').textContent).toBe('subs:2');
+        expect(page.balance.renderSubscriptionPools).toHaveBeenCalledWith(
+            page.document.getElementById('accountSubscriptionPools'),
+            expect.any(Array),
+            { detailed: true },
+        );
         page.dom.window.close();
     });
 

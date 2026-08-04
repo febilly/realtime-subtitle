@@ -22,7 +22,7 @@ function setup(overrides = {}) {
             <span id="balanceLabel"></span><span id="balanceValue"></span>
             <span id="sessionLabel"></span><span id="sessionValue"></span>
             <div id="freePools"></div>
-            <div id="subItem" hidden><span id="subLabel"></span><span id="subValue"></span></div>
+            <div id="subscriptionPools"></div>
             <div id="balanceActionItem" hidden></div>
             <button id="balanceOpenSettingsButton"></button>
         </div>
@@ -196,13 +196,19 @@ describe('HostedBalance rendering and metering', () => {
                     { period: 'weekly', unlimited: true, max_credits: 0 },
                 ],
             },
-            subscriptions: [{ remaining_credits: 4, quota_credits: 20 }],
+            subscriptions: [
+                { period: 'daily', remaining_credits: 4, quota_credits: 20 },
+                { period: 'monthly', remaining_credits: 300, quota_credits: 600 },
+            ],
         }));
         expect(page.document.querySelectorAll('#freePools .balance-item')).toHaveLength(2);
-        expect(page.document.getElementById('subItem').hidden).toBe(false);
+        // One entry per period, not just the first pool.
+        expect(page.document.querySelectorAll('#subscriptionPools .balance-item')).toHaveLength(2);
         expect(page.document.getElementById('balanceActionItem').hidden).toBe(true);
 
         page.controller.renderBalance(balance({ prepaid_balance: 0 }));
+        // Nothing is rendered for an account that has no subscription at all.
+        expect(page.document.querySelectorAll('#subscriptionPools .balance-item')).toHaveLength(0);
         expect(page.document.getElementById('balanceActionItem').hidden).toBe(false);
         page.dom.window.close();
     });

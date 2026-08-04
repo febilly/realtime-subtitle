@@ -930,7 +930,13 @@ class WebServer:
             if api.get("name") == provider or api.get("provider") == provider:
                 if api.get("prepaid_balance") is not None:
                     prepaid = api.get("prepaid_balance")
-                subscriptions = api.get("subscriptions") or []
+                # One subscription can fund several models; quota attached to a
+                # model this session will not use must neither be displayed nor
+                # counted towards whether the session can afford to start.
+                subscriptions = [
+                    pool for pool in (api.get("subscriptions") or [])
+                    if not pool.get("model_name") or pool.get("model_name") == model
+                ]
                 for m in api.get("models", []):
                     if m.get("model_name") == model:
                         price_per_second = m.get("price_per_second", 1.0)

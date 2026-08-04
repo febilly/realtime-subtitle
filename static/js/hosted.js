@@ -51,9 +51,30 @@
         return pools.some((pool) => pool.unlimited || Number(pool.remaining || 0) > 0);
     }
 
+    function subscriptionPools(data) {
+        return data && Array.isArray(data.subscriptions) ? data.subscriptions : [];
+    }
+
+    /**
+     * The server reports an unlimited pool as a -1 quota with a null remaining.
+     * Reading that as 0 would treat the most generous plan there is as the most
+     * exhausted one, so it has to be normalized before any arithmetic.
+     */
+    function subscriptionIsUnlimited(pool) {
+        return !!pool
+            && (pool.remaining_credits === null
+                || pool.remaining_credits === undefined
+                || Number(pool.quota_credits) < 0);
+    }
+
+    function subscriptionRemaining(pool) {
+        if (subscriptionIsUnlimited(pool)) return Infinity;
+        return Math.max(0, Number(pool.remaining_credits || 0));
+    }
+
     function hasUsableSubscription(subscriptions) {
         return Array.isArray(subscriptions)
-            && subscriptions.some((subscription) => Number(subscription.remaining_credits || 0) > 0);
+            && subscriptions.some((pool) => subscriptionRemaining(pool) > 0);
     }
 
     function isAccountExhausted(data) {
@@ -63,12 +84,23 @@
             && !hasUsableSubscription(data.subscriptions);
     }
 
+    /**
+     * Everything the account can still spend, across all three tiers. Unlimited
+     * pools return Infinity rather than a large number so callers comparing two
+     * totals cannot conclude that an unlimited account is running low.
+     */
     function balanceTotalRemaining(data) {
         if (!data) return 0;
         let total = Math.max(0, Number(data.prepaid_balance || 0));
         const pools = data.free && Array.isArray(data.free.pools) ? data.free.pools : [];
         for (const pool of pools) {
-            if (!pool.unlimited) total += Math.max(0, Number(pool.remaining || 0));
+            if (pool.unlimited) return Infinity;
+            total += Math.max(0, Number(pool.remaining || 0));
+        }
+        for (const pool of subscriptionPools(data)) {
+            const remaining = subscriptionRemaining(pool);
+            if (!Number.isFinite(remaining)) return Infinity;
+            total += remaining;
         }
         return total;
     }
@@ -76,14 +108,7 @@
     function hasAtLeastCredits(data, minimum) {
         if (!data) return false;
         const required = Math.max(0, Number(minimum) || 0);
-        const pools = data.free && Array.isArray(data.free.pools) ? data.free.pools : [];
-        if (pools.some((pool) => pool.unlimited)) return true;
-        let total = balanceTotalRemaining(data);
-        const subscriptions = Array.isArray(data.subscriptions) ? data.subscriptions : [];
-        for (const subscription of subscriptions) {
-            total += Math.max(0, Number(subscription.remaining_credits || 0));
-        }
-        return total >= required;
+        return balanceTotalRemaining(data) >= required;
     }
 
     /**
@@ -125,6 +150,12 @@
         return Math.max(0, Math.round(Number(elapsedMs || 0) / 1000) * price);
     }
 
+    /**
+     * Mirrors the server's billing waterfall so the bar can show what a running
+     * session has spent before the next poll: free pools, then subscription
+     * quota, then the prepaid balance. Skipping the middle tier would show the
+     * balance draining while a subscription is in fact paying.
+     */
     function applyEstimatedDeduction(data, estimatedCost) {
         if (!data) return data;
         let remaining = Math.max(0, Number(estimatedCost) || 0);
@@ -145,6 +176,23 @@
                 }
             }
             output.free = Object.assign({}, data.free, { pools });
+        }
+        if (Array.isArray(data.subscriptions)) {
+            const pools = data.subscriptions.map((pool) => Object.assign({}, pool));
+            for (const pool of pools) {
+                if (remaining <= 0) break;
+                if (subscriptionIsUnlimited(pool)) {
+                    remaining = 0;
+                    break;
+                }
+                const available = Math.max(0, Number(pool.remaining_credits || 0));
+                const taken = Math.min(available, remaining);
+                if (taken > 0) {
+                    pool.remaining_credits = available - taken;
+                    remaining -= taken;
+                }
+            }
+            output.subscriptions = pools;
         }
         if (remaining > 0) {
             const prepaid = Math.max(0, Number(data.prepaid_balance || 0));
@@ -230,6 +278,8 @@
         hasPositiveCredits,
         hasUsableFreePool,
         hasUsableSubscription,
+        subscriptionIsUnlimited,
+        subscriptionRemaining,
         isAccountExhausted,
         isBalanceLow,
         balanceTotalRemaining,
