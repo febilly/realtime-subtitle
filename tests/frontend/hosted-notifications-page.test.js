@@ -223,6 +223,52 @@ describe('hosted notification flows', () => {
         }
     });
 
+    it('offers Gemini funded by a subscription pool rather than a free pool', async () => {
+        const fetch = async (url, request = {}) => {
+            const parsed = new URL(String(url), 'http://localhost/');
+            if (parsed.pathname === '/account/invite') {
+                return { ok: true, status: 200, json: async () => ({ invited_users_count: 1 }) };
+            }
+            if (parsed.pathname === '/account/balance') {
+                // Gemini's free pool is spent too; only the subscription bought
+                // for it still has quota left.
+                const subscriptions = parsed.searchParams.get('provider') === 'gemini'
+                    ? [{ period: 'monthly', remaining_credits: 900, quota_credits: 18000 }]
+                    : [];
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({
+                        prepaid_balance: 0,
+                        subscriptions,
+                        free: { pools: [] },
+                    }),
+                };
+            }
+            return defaultFetchResponse(url, { ...request, uiConfig: hostedConfig });
+        };
+        const page = await createPageHarness({
+            fetch,
+            initialUiConfig: hostedConfig,
+            uiConfig: hostedConfig,
+            localStorage: storedHostedLogin(),
+        });
+        try {
+            await page.emitFrame({
+                type: 'session_disconnected',
+                code: 'billing_exhausted',
+                relay_terminal: true,
+            });
+            await page.flush(6);
+
+            const toast = page.document.getElementById('toast');
+            expect(toast.textContent).toContain('switch to Gemini');
+            expect(toast.textContent).not.toContain('Credits or free quota exhausted.');
+        } finally {
+            page.close();
+        }
+    });
+
     it('offers Credits, invite rewards, or Gemini when a purchase URL is configured', async () => {
         const config = {
             ...hostedConfig,

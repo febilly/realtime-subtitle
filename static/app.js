@@ -873,7 +873,15 @@ async function handleBillingExhausted() {
     checkingGeminiQuota = true;
     const geminiBalance = await hostedBalance.fetchProviderBalance('gemini');
     checkingGeminiQuota = false;
-    if (!geminiBalance || !Hosted.Billing.hasUsableFreePool(geminiBalance.free)) {
+    // A subscription funds Gemini just as well as its free pool does, and the
+    // balance endpoint already narrows the pools to the model this switch would
+    // use, so quota bought for Gemini must not be overlooked here. Prepaid
+    // credits are deliberately left out: the offer only ever proposes quota the
+    // account has already paid for or been given.
+    const geminiIsUsable = !!geminiBalance
+        && (Hosted.Billing.hasUsableFreePool(geminiBalance.free)
+            || Hosted.Billing.hasUsableSubscription(geminiBalance.subscriptions));
+    if (!geminiIsUsable) {
         showStandardBillingExhaustedToast();
         return;
     }
