@@ -47,6 +47,8 @@
         let pricePerSecond = 0;
         let lastBalanceData = null;
         let balanceBaseline = null;
+        let balanceBaselineSttCost = 0;
+        let balanceBaselineLlmCost = 0;
         let sessionLlmCost = 0;
         let sessionHadLlmCost = false;
         let firstRedeemBonusCredits = 0;
@@ -261,9 +263,15 @@
             return Billing.currentBalanceView({
                 balanceBaseline,
                 lastBalanceData,
-                estimatedCost: estimatedSessionCost(),
-                sessionLlmCost,
+                estimatedCost: Math.max(0, estimatedSessionCost() - balanceBaselineSttCost),
+                sessionLlmCost: Math.max(0, sessionLlmCost - balanceBaselineLlmCost),
             });
+        }
+
+        function reanchorBalance(data) {
+            balanceBaseline = data;
+            balanceBaselineSttCost = estimatedSessionCost();
+            balanceBaselineLlmCost = sessionLlmCost;
         }
 
         function updateSessionCostDisplay() {
@@ -308,9 +316,19 @@
 
         function renderBalance(data) {
             lastBalanceData = data;
+            const baselineTotal = Billing.balanceTotalRemaining(balanceBaseline);
+            const nextTotal = Billing.balanceTotalRemaining(data);
+            const unlimitedAllowanceExpired = !Number.isFinite(baselineTotal)
+                && Number.isFinite(nextTotal);
             if (!balanceBaseline
                 || estimatedSessionCost() <= 0
-                || Billing.balanceTotalRemaining(data) >= Billing.balanceTotalRemaining(balanceBaseline)) {
+                || unlimitedAllowanceExpired
+                || nextTotal > baselineTotal) {
+                reanchorBalance(data);
+            } else if (nextTotal === baselineTotal) {
+                // Refresh plan metadata without forgiving cost accrued since
+                // the current anchor; an equal server snapshot may simply lag
+                // behind the client-side estimate.
                 balanceBaseline = data;
             }
             renderBalanceView();
@@ -383,7 +401,7 @@
                 clearIntervalRef(sessionCostTimer);
                 sessionCostTimer = null;
             }
-            balanceBaseline = lastBalanceData;
+            reanchorBalance(lastBalanceData);
             renderBalanceView();
             scheduleBalancePolling();
             void fetchBalance();
@@ -426,6 +444,8 @@
                 firstRedeemBonusEligible,
                 lastBalanceData,
                 balanceBaseline,
+                balanceBaselineSttCost,
+                balanceBaselineLlmCost,
             };
         }
 

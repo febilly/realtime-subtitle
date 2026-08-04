@@ -280,6 +280,44 @@ describe('HostedBalance rendering and metering', () => {
 
         await page.controller.fetchBalance({ force: true });
         expect(page.controller.getDebugState().balanceBaseline.prepaid_balance).toBe(120);
+        expect(page.controller.currentBalanceView().prepaid_balance).toBe(120);
+        page.dom.window.close();
+    });
+
+    it('reanchors when an unlimited subscription expires during a session', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response(balance({
+                prepaid_balance: 100,
+                subscriptions: [{ remaining_credits: null, quota_credits: -1 }],
+            })))
+            .mockResolvedValueOnce(response(balance({
+                prepaid_balance: 99,
+                subscriptions: [],
+            })));
+        const page = setup({ fetch });
+        await page.controller.fetchBalance({ force: true });
+        page.controller.sessionCostResume();
+        page.advance(2000);
+
+        await page.controller.fetchBalance({ force: true });
+
+        expect(page.controller.getDebugState().balanceBaseline.subscriptions).toEqual([]);
+        expect(page.controller.currentBalanceView().prepaid_balance).toBe(99);
+        page.dom.window.close();
+    });
+
+    it('does not forgive estimated cost when a server poll returns the same total', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response(balance({ prepaid_balance: 100 })))
+            .mockResolvedValueOnce(response(balance({ prepaid_balance: 100 })));
+        const page = setup({ fetch });
+        await page.controller.fetchBalance({ force: true });
+        page.controller.sessionCostResume();
+        page.advance(2000);
+
+        await page.controller.fetchBalance({ force: true });
+
+        expect(page.controller.currentBalanceView().prepaid_balance).toBe(98);
         page.dom.window.close();
     });
 
