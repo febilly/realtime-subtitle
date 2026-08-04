@@ -900,7 +900,7 @@ class WebServer:
     @staticmethod
     def _active_relay_model(provider):
         return (
-            "models/gemini-3.5-live-translate-preview"
+            f"models/{config.GEMINI_MODEL}"
             if provider == "gemini" else "stt-rt-v5"
         )
 

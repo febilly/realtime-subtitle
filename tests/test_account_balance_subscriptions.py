@@ -73,13 +73,13 @@ SUMMARY = {
 }
 
 
-async def _balance_payload(config, WebServer, monkeypatch, summary):
+async def _balance_payload(config, WebServer, monkeypatch, summary, query=None):
     monkeypatch.setattr(config, "RELAY_AVAILABLE", True, raising=False)
     monkeypatch.setattr(config, "TRANSLATION_PROVIDER", "soniox", raising=False)
     server = WebServer(MagicMock(), MagicMock())
     server.provider_manager = SimpleNamespace(relay_token="ss_test")
     server._server_request = AsyncMock(return_value=(200, summary))
-    request = SimpleNamespace(query={})
+    request = SimpleNamespace(query=query or {})
 
     response = await server.account_balance_handler(request)
 
@@ -122,3 +122,47 @@ async def test_no_subscription_yields_an_empty_list(monkeypatch, web_server_runt
     payload = await _balance_payload(config, WebServer, monkeypatch, summary)
 
     assert payload["subscriptions"] == []
+
+
+@pytest.mark.asyncio
+async def test_gemini_uses_the_configured_relay_model_for_subscription_filtering(
+    monkeypatch, web_server_runtime
+):
+    config, WebServer = web_server_runtime
+    monkeypatch.setattr(config, "GEMINI_MODEL", "gemini-custom-live", raising=False)
+    summary = {
+        "prepaid_balance": 0,
+        "apis": [
+            {
+                "name": "gemini",
+                "provider": "gemini",
+                "subscriptions": [
+                    {
+                        "model_name": "models/gemini-3.5-live-translate-preview",
+                        "remaining_credits": 100,
+                    },
+                    {
+                        "model_name": "models/gemini-custom-live",
+                        "remaining_credits": 200,
+                    },
+                ],
+                "models": [
+                    {
+                        "model_name": "models/gemini-custom-live",
+                        "price_per_second": 0.75,
+                        "free": {"pools": []},
+                    }
+                ],
+            }
+        ],
+    }
+
+    payload = await _balance_payload(
+        config, WebServer, monkeypatch, summary, {"provider": "gemini"}
+    )
+
+    assert payload["model"] == "models/gemini-custom-live"
+    assert [pool["model_name"] for pool in payload["subscriptions"]] == [
+        "models/gemini-custom-live"
+    ]
+    assert payload["price_per_second"] == 0.75
