@@ -231,6 +231,39 @@ def test_relay_http_402_broadcasts_billing_exhausted_disconnect(monkeypatch):
     assert session.last_disconnect_payload == updates[-1]
 
 
+def test_relay_http_402_concurrency_code_broadcasts_concurrency_disconnect(monkeypatch):
+    """Admission answers a concurrency cap with the same 402 as an exhausted
+    allowance, so only the close code in the body tells the two apart."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+    from relay_errors import RelayConnectionRequestError
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "AudioSendRouter", MagicMock())
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session._open_soniox_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
+        402,
+        '{"detail":"Concurrent session limit reached","relay_close_code":4005}',
+    ))
+    session._stop_audio_streamer = MagicMock()
+
+    session._run_session("key", "pcm_s16le", "one_way", "zh", object())
+
+    assert updates[-1] == {
+        "type": "session_disconnected",
+        "reason": "relay: concurrency_limit",
+        "code": "concurrency_limit",
+        "relay_terminal": True,
+        "message": "Too many simultaneous recognition sessions.",
+    }
+
+
 def _feed_original(session, text, language):
     return session._process_soniox_response(
         {

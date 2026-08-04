@@ -8,6 +8,8 @@ maps to a localized message, plus a "terminal" flag telling the client whether
 auto-restart should be suppressed.
 """
 
+import json
+
 # code -> (tag, terminal)
 # terminal=True means retrying immediately is pointless (login/billing/model);
 # the client should stop auto-restart and usually prompt the user.
@@ -25,8 +27,24 @@ RELAY_TAG_MESSAGES = {
     "upstream_key_error": "No upstream key available; please try again later.",
     "forbidden": "Login expired or account not allowed; please sign in again.",
     "model_not_allowed": "The server does not allow this model.",
-    "concurrency_limit": "Too many simultaneous free sessions.",
+    "concurrency_limit": "Too many simultaneous recognition sessions.",
 }
+
+
+def _close_code_from_detail(detail):
+    """Read the relay close code the REST endpoint echoes in its error body.
+
+    The connection-ticket endpoint answers every admission failure with an HTTP
+    status plus a `relay_close_code` naming the exact reason, so a rejection can
+    be reported as precisely as a WebSocket close of the same kind.
+    """
+    try:
+        body = json.loads(detail)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    return body.get("relay_close_code")
 
 
 class RelayConnectionRequestError(RuntimeError):
@@ -35,6 +53,7 @@ class RelayConnectionRequestError(RuntimeError):
     def __init__(self, status_code, detail):
         self.status_code = int(status_code)
         self.detail = str(detail or "").strip()
+        self.relay_close_code = _close_code_from_detail(self.detail)
         super().__init__(
             f"Relay connection request failed ({self.status_code}): {self.detail}"
         )
@@ -60,6 +79,12 @@ def relay_close_info(code):
 def relay_error_info(error):
     """Map either a WebSocket close or relay REST failure to frontend metadata."""
     info = relay_close_info(getattr(error, "code", None))
+    if info is not None:
+        return info
+    # A ticket rejection names its own reason: a stream blocked only by a
+    # concurrency cap must not be reported as exhausted credits, since the
+    # quota it was denied is still there once another session ends.
+    info = relay_close_info(getattr(error, "relay_close_code", None))
     if info is not None:
         return info
     try:

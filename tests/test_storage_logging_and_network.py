@@ -331,3 +331,31 @@ def test_relay_http_402_maps_to_billing_exhausted():
         True,
         "Credits or free quota exhausted.",
     )
+
+
+def test_relay_http_error_prefers_the_close_code_in_the_body():
+    """A ticket refused over a concurrency cap still has quota left, so it must
+    not be reported as exhausted credits even though it arrives as a 402."""
+    from relay_errors import RelayConnectionRequestError, relay_error_info
+
+    error = RelayConnectionRequestError(
+        402,
+        '{"detail":"Concurrent session limit reached","relay_close_code":4005}',
+    )
+
+    assert error.relay_close_code == 4005
+    assert relay_error_info(error) == (
+        "concurrency_limit",
+        True,
+        "Too many simultaneous recognition sessions.",
+    )
+
+
+@pytest.mark.parametrize("detail", ["", "Payment Required", "{not json}", "[4005]"])
+def test_relay_http_error_falls_back_to_the_status_code(detail):
+    from relay_errors import RelayConnectionRequestError, relay_error_info
+
+    error = RelayConnectionRequestError(402, detail)
+
+    assert error.relay_close_code is None
+    assert relay_error_info(error)[0] == "billing_exhausted"
