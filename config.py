@@ -660,8 +660,11 @@ DEFAULT_SEGMENT_MODE = _env_str("DEFAULT_SEGMENT_MODE", "punctuation")
 # timestamps prove B was brief and A resumes quickly, the UI retracts A1 and the
 # LLM receives A1+A2 as one source sentence.
 SONIOX_INTERRUPT_REPAIR_ENABLED = _env_bool("SONIOX_INTERRUPT_REPAIR_ENABLED", True)
+# Keep the timing gates bounded: this repair retracts a sentence that may
+# already be visible, so duration, adjacency, overlap, and whitelist evidence
+# are evaluated together. Deployments can still override either time window.
 SONIOX_INTERRUPT_MAX_DURATION_MS = max(0, _env_int("SONIOX_INTERRUPT_MAX_DURATION_MS", 800))
-SONIOX_INTERRUPT_RESUME_GAP_MS = max(0, _env_int("SONIOX_INTERRUPT_RESUME_GAP_MS", 1500))
+SONIOX_INTERRUPT_RESUME_GAP_MS = max(0, _env_int("SONIOX_INTERRUPT_RESUME_GAP_MS", 800))
 SONIOX_INTERRUPT_FILLER_WHITELIST_ENABLED = _env_bool("SONIOX_INTERRUPT_FILLER_WHITELIST_ENABLED", True)
 SONIOX_INTERRUPT_FILLER_WHITELIST = _env_str(
     "SONIOX_INTERRUPT_FILLER_WHITELIST",

@@ -1393,29 +1393,37 @@ class SonioxSession:
         if max_duration_ms <= 0 or resume_gap_ms <= 0:
             return None
 
-        for index in range(len(self._recent_finalized_sentences) - 1, 0, -1):
-            interrupt = self._recent_finalized_sentences[index]
-            previous = self._recent_finalized_sentences[index - 1]
-            if interrupt.retracted or previous.retracted:
-                continue
-            if previous.speaker != str(current_speaker):
-                continue
-            if interrupt.speaker == str(current_speaker):
-                continue
-            duration = self._source_duration_ms(interrupt)
-            if duration is None or duration > max_duration_ms:
-                continue
-            if not self._interrupt_text_matches_whitelist(interrupt):
-                continue
-            overlap_tolerance_ms = 250.0
-            if interrupt.source_start_ms - previous.source_end_ms > resume_gap_ms:
-                continue
-            if current_start_ms + overlap_tolerance_ms < interrupt.source_end_ms:
-                continue
-            if current_start_ms - interrupt.source_end_ms > resume_gap_ms:
-                continue
-            return previous, interrupt
-        return None
+        # Only the two latest active sentences may form A1 -> B. Searching
+        # farther back can incorrectly revive an old A1/B pair after another
+        # sentence has already occurred.
+        active = [
+            snapshot
+            for snapshot in self._recent_finalized_sentences
+            if not snapshot.retracted
+        ]
+        if len(active) < 2:
+            return None
+        previous, interrupt = active[-2:]
+        if previous.speaker != str(current_speaker):
+            return None
+        if interrupt.speaker == str(current_speaker):
+            return None
+        duration = self._source_duration_ms(interrupt)
+        if duration is None or duration > max_duration_ms:
+            return None
+        if not self._interrupt_text_matches_whitelist(interrupt):
+            return None
+
+        # Allow only small timestamp jitter/overlap at both handoffs. Large
+        # overlap is ordinary cross-talk, not a brief interruption to repair.
+        overlap_tolerance_ms = 120.0
+        previous_to_interrupt_ms = interrupt.source_start_ms - previous.source_end_ms
+        interrupt_to_current_ms = current_start_ms - interrupt.source_end_ms
+        if not -overlap_tolerance_ms <= previous_to_interrupt_ms <= resume_gap_ms:
+            return None
+        if not -overlap_tolerance_ms <= interrupt_to_current_ms <= resume_gap_ms:
+            return None
+        return previous, interrupt
 
     def _maybe_merge_interrupted_sentence(
         self,
@@ -1477,6 +1485,30 @@ class SonioxSession:
         for restored in restored_original + restored_translation:
             outgoing_final_tokens.append(self._minify_token(restored, is_final=True))
         return merged_sentence_id
+
+    def _maybe_merge_from_non_final_tokens(
+        self,
+        non_final_tokens: list[dict],
+        outgoing_final_tokens: list[dict],
+    ) -> str | None:
+        """Repair as soon as the resumed speaker's first interim source arrives.
+
+        The continuation itself remains non-final for display. Restoring A1 here
+        makes the same update frame render A1+A2 immediately and seeds the
+        pairer before speculative translation inspects the live source.
+        """
+        for token in non_final_tokens or []:
+            if token.get("translation_status") == "translation":
+                continue
+            speaker = token.get("speaker")
+            if speaker is None or speaker == "":
+                continue
+            merged_sentence_id = self._maybe_merge_interrupted_sentence(
+                str(speaker), token, outgoing_final_tokens
+            )
+            if merged_sentence_id:
+                return merged_sentence_id
+        return None
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """Close the speaker's DISPLAY sentence: decides whether a separator
@@ -2470,9 +2502,6 @@ class SonioxSession:
                 else:
                     self._pending_endpoint_speakers.add(speaker_value)
 
-        self._maybe_send_live_osc_translation(non_final_tokens)
-        self._maybe_speculative_translate(non_final_tokens)
-
         if (new_final_tokens or endpoint_detected) and not interleaved_punctuation:
             if self._segment_mode == "translation":
                 translation_hit = any(
@@ -2546,6 +2575,16 @@ class SonioxSession:
                     continue
                 if not self._is_internal_soniox_token(token):
                     outgoing_final_tokens.append(self._minify_token(token, is_final=True))
+
+        # Do this after all final-token boundary work so an interrupt finalized
+        # in the same Soniox frame is already present in the snapshot history.
+        # It still precedes speculative translation, ensuring that the live LLM
+        # source contains the restored first fragment from its very first call.
+        self._maybe_merge_from_non_final_tokens(
+            non_final_tokens, outgoing_final_tokens
+        )
+        self._maybe_send_live_osc_translation(non_final_tokens)
+        self._maybe_speculative_translate(non_final_tokens)
 
         # 将新的final tokens写入日志
         loggable_tokens = [t for t in new_final_tokens if not self._is_internal_soniox_token(t)]

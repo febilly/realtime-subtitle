@@ -2234,6 +2234,99 @@ def test_short_interrupt_retracts_first_fragment_and_llm_uses_merged_source(monk
     assert "I was saying" in final_texts
 
 
+def test_short_interrupt_merges_on_first_non_final_continuation(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._suppress_soniox_translation = True
+
+    all_final_tokens = []
+    sent_count = _feed_timed_tokens(
+        session, all_final_tokens, 0,
+        [_timed_token("The first half.", "1", 0, 1000)],
+    )
+    sent_count = _feed_timed_tokens(
+        session, all_final_tokens, sent_count,
+        [_timed_token("uh.", "2", 1050, 1250)],
+    )
+    interim = _timed_token(" continues", "1", 1300, 1450)
+    interim["is_final"] = False
+    _feed_timed_tokens(session, all_final_tokens, sent_count, [interim])
+
+    retracts = [update for update in updates if update.get("type") == "subtitle_retract"]
+    assert len(retracts) == 1
+    live_update = updates[-1]
+    assert [token["text"] for token in live_update["non_final_tokens"]] == [" continues"]
+    assert "The first half" in [
+        token.get("text")
+        for token in live_update["final_tokens"]
+        if not token.get("is_separator")
+    ]
+
+
+def test_short_interrupt_does_not_search_past_a_newer_sentence(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._suppress_soniox_translation = True
+
+    all_final_tokens = []
+    sent_count = _feed_timed_tokens(session, all_final_tokens, 0, [_timed_token("A one.", "1", 0, 500)])
+    sent_count = _feed_timed_tokens(session, all_final_tokens, sent_count, [_timed_token("uh.", "2", 520, 650)])
+    sent_count = _feed_timed_tokens(session, all_final_tokens, sent_count, [_timed_token("C speaks.", "3", 660, 760)])
+    _feed_timed_tokens(session, all_final_tokens, sent_count, [_timed_token("A resumes.", "1", 770, 900)])
+
+    assert not [update for update in updates if update.get("type") == "subtitle_retract"]
+
+
+def test_short_interrupt_large_overlap_is_not_repaired(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._suppress_soniox_translation = True
+
+    all_final_tokens = []
+    sent_count = _feed_timed_tokens(session, all_final_tokens, 0, [_timed_token("A one.", "1", 0, 1000)])
+    sent_count = _feed_timed_tokens(session, all_final_tokens, sent_count, [_timed_token("uh.", "2", 700, 900)])
+    _feed_timed_tokens(session, all_final_tokens, sent_count, [_timed_token("A two.", "1", 920, 1100)])
+
+    assert not [update for update in updates if update.get("type") == "subtitle_retract"]
+
+
 def test_short_interrupt_whitelist_ignores_case_and_punctuation(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

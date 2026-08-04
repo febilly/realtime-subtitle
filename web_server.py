@@ -310,6 +310,10 @@ class WebServer:
             "soniox_no_translation_factor": float(config.HOSTED_SONIOX_NO_TRANSLATION_FACTOR),
             "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
             "hide_speaker_labels": bool(config.HIDE_SPEAKER_LABELS),
+            "interrupt_repair_supported": bool(
+                provider == "soniox" and config.ENABLE_SPEAKER_DIARIZATION
+            ),
+            "interrupt_repair_enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
             "sleep_on_silence_enabled": config.get_sleep_on_silence_enabled(provider),
             "soniox_region": config.SONIOX_REGION,
             "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
@@ -1202,6 +1206,51 @@ class WebServer:
             "effective": bool(effective),
         })
 
+    def _supports_interrupt_repair(self) -> bool:
+        return (
+            config.TRANSLATION_PROVIDER == "soniox"
+            and bool(config.ENABLE_SPEAKER_DIARIZATION)
+        )
+
+    async def interrupt_repair_get_handler(self, request):
+        """Return the hot-applied interrupted-sentence repair preference."""
+        return web.json_response({
+            "status": "ok",
+            "supported": self._supports_interrupt_repair(),
+            "enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
+        })
+
+    async def interrupt_repair_set_handler(self, request):
+        """Hot-apply interrupted-sentence repair without restarting Soniox."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not self._supports_interrupt_repair():
+            return web.json_response(
+                {"status": "error", "message": "Interrupted sentence repair not supported"},
+                status=404,
+            )
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Interrupted sentence repair switching is disabled by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
+            return web.json_response(
+                {"status": "error", "message": "Missing or invalid 'enabled' field"},
+                status=400,
+            )
+
+        config.SONIOX_INTERRUPT_REPAIR_ENABLED = payload["enabled"]
+        return web.json_response({
+            "status": "ok",
+            "supported": True,
+            "enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
+        })
+
     async def llm_refine_get_handler(self, request):
         """获取 LLM 改进开关状态"""
         mode = self.session.get_llm_refine_mode()
@@ -1946,6 +1995,8 @@ class WebServer:
         app.router.add_post('/speaker-labels', self.speaker_labels_set_handler)
         app.router.add_get('/sleep-on-silence', self.sleep_on_silence_get_handler)
         app.router.add_post('/sleep-on-silence', self.sleep_on_silence_set_handler)
+        app.router.add_get('/interrupt-repair', self.interrupt_repair_get_handler)
+        app.router.add_post('/interrupt-repair', self.interrupt_repair_set_handler)
         app.router.add_get('/llm-refine', self.llm_refine_get_handler)
         app.router.add_post('/llm-refine', self.llm_refine_set_handler)
         app.router.add_post('/translation-mode', self.translation_mode_set_handler)
