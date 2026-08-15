@@ -55,3 +55,8 @@ scratch/
 
 # Claude helper directories
 .claude/
+
+.agents/
+
+# pytest temporary sandboxes
+.pytest-tmp*/
