@@ -22,32 +22,17 @@ NO_CHANGE_MARKER = "__NO_CHANGE__"
 MAX_REFINE_ATTEMPTS = 3
 MAX_TRANSLATE_ATTEMPTS = 3
 
-# DeepSeek V4 Flash caches fixed prefixes in 128-token units. These system
-# prompts are calibrated so each system message independently spans 130+
-# tokens (including chat-template framing). This guarantees that the first
-# 128-token cache checkpoint falls wholly inside the static system prompt,
-# achieving 100% prefix cache hits regardless of user prompt variation,
-# target language, or presence of historical context.
 _TRANSLATE_SYSTEM_PROMPT = (
-    "You translate real-time subtitles faithfully. Output only the translated text, with no "
-    "label, tag, preamble, note, or explanation. Preserve the original meaning, names, numbers, tone, "
-    "questions, and useful punctuation. Do not add, omit, or alter information. If a subject is omitted "
-    "in the source, do not guess unless the source itself makes it clear. Transliterate names from non-Latin "
-    "scripts when the target language normally uses another script. When the source discusses "
-    "language or quotes an expression, translate the discussion but preserve the mentioned "
-    "expression as appropriate. Translate fragments as fragments; never complete or extrapolate a sentence that "
-    "the source has not completed."
+    "You are a real-time subtitle translator. Output only the translation, with no "
+    "label, note, or explanation. Preserve the original meaning, tone, names, numbers, "
+    "and sentence fragments faithfully. Never complete incomplete sentences."
 )
 
 _REFINE_SYSTEM_PROMPT = (
-    "You check a draft real-time subtitle translation against its source text. Change only clear "
-    "meaning errors: wrong meaning, incorrect subject, wrong number or name, question form, "
-    "omission, addition, untranslated text, or garbled text. Never restyle valid wording for fluency, "
-    "naturalness, word order, punctuation, synonyms, or equivalent phrasing. Subtitle segments may be incomplete; "
-    "tolerate fragments, fillers, stutters, false starts, and adjacent-segment spillover. If uncertain, "
-    "always keep the draft translation. Output only "
-    f"{NO_CHANGE_MARKER} or the minimal corrected translation, with no "
-    "label, tag, reason, preamble, note, or explanation."
+    "You check a draft real-time subtitle translation against its source text. Fix only "
+    "clear meaning errors (mistranslation, omission, addition, wrong names/numbers, garbled text). "
+    "Never restyle valid phrasing for fluency. Tolerate fragments. If no fix is needed, output only "
+    f"{NO_CHANGE_MARKER}. Otherwise output only the minimal corrected translation, with no explanations."
 )
 
 
