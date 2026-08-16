@@ -67,10 +67,13 @@ def get_api_key() -> str:
         print(f"✅ Using API Key from environment variable")
         return api_key
 
+    if not GEMINI_TEMP_KEY_URL:
+        raise RuntimeError("GEMINI_API_KEY is not configured in environment or settings")
+
     print("⏳ API Key not found in environment, fetching temporary key...")
     try:
         headers = _get_temp_key_request_headers()
-        request_kwargs = {"timeout": 10}
+        request_kwargs = {"timeout": 5}
         if headers:
             request_kwargs["headers"] = headers
 
@@ -296,7 +299,7 @@ def connect_live(
     raise RuntimeError(f"Gemini setup failed for all known layouts: {last_error}")
 
 
-def validate_api_key(api_key: str, timeout_seconds: float = 10.0) -> tuple[bool, str | None]:
+def validate_api_key(api_key: str, timeout_seconds: float = 5.0) -> tuple[bool, str | None]:
     """通过REST端点快速校验API key是否可用。"""
     try:
         response = requests.get(
@@ -305,7 +308,7 @@ def validate_api_key(api_key: str, timeout_seconds: float = 10.0) -> tuple[bool,
             timeout=timeout_seconds,
         )
     except requests.RequestException as error:
-        return False, str(error)
+        return False, f"无法连接到 Gemini 验证服务器（请检查网络或代理）: {error}"
 
     if response.status_code == 200:
         return True, None

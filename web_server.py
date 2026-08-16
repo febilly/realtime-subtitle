@@ -491,7 +491,9 @@ class WebServer:
 
         # Validate the key (if provided) before activating it.
         if api_key is not None:
-            ok, error = self._validate_provider_key(provider, api_key, soniox_region=soniox_region)
+            ok, error = await asyncio.to_thread(
+                self._validate_provider_key, provider, api_key, soniox_region=soniox_region
+            )
             if not ok:
                 return web.json_response(
                     {"status": "error", "message": error or "API key validation failed"},
