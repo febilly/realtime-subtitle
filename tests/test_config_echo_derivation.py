@@ -135,3 +135,28 @@ def test_runtime_sleep_preference_defaults_on_and_survives_key_type_changes(
     assert config.SONIOX_SLEEP_ON_SILENCE is False
     config.set_uses_temp_api_key("soniox", False)
     assert config.SONIOX_SLEEP_ON_SILENCE is True
+
+
+def test_language_english_name_zh_defaults_to_simplified_unless_traditional_locale(
+    monkeypatch, restore_config_module
+):
+    # 1. Simplified Chinese system locale
+    monkeypatch.setenv("LANG", "zh_CN.UTF-8")
+    monkeypatch.setattr("locale.getlocale", lambda: ("zh_CN", "UTF-8"))
+    monkeypatch.setattr("locale.getdefaultlocale", lambda: ("zh_CN", "UTF-8"))
+    config = _reload_config(monkeypatch, "smart")
+    assert config.language_english_name("zh") == "Chinese (Simplified)"
+    assert config.language_english_name("zh-hans") == "Chinese (Simplified)"
+    assert config.language_english_name("zh-hant") == "Chinese (Traditional)"
+    assert config.describe_target_language("zh") == "zh (Chinese (Simplified))"
+
+    # 2. Traditional Chinese system locale (Taiwan)
+    monkeypatch.setenv("LANG", "zh_TW.UTF-8")
+    monkeypatch.setattr("locale.getlocale", lambda: ("zh_TW", "UTF-8"))
+    monkeypatch.setattr("locale.getdefaultlocale", lambda: ("zh_TW", "UTF-8"))
+    config = _reload_config(monkeypatch, "smart")
+    assert config.language_english_name("zh") == "Chinese (Traditional)"
+    assert config.language_english_name("zh-hans") == "Chinese (Simplified)"
+    assert config.language_english_name("zh-hant") == "Chinese (Traditional)"
+    assert config.describe_target_language("zh") == "zh (Chinese (Traditional))"
+

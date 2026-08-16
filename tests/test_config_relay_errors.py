@@ -19,3 +19,13 @@ def test_relay_connect_info_preserves_http_status(monkeypatch):
 
     assert caught.value.status_code == 402
     assert caught.value.detail == '{"detail":"Insufficient credits"}'
+
+
+def test_relay_mode_prefers_server_context_bounds(monkeypatch):
+    monkeypatch.setattr(config, "RELAY_MODE", True)
+    monkeypatch.setattr(config, "LLM_REFINE_CONTEXT_MIN_COUNT", 0)
+    monkeypatch.setattr(config, "LLM_REFINE_CONTEXT_MAX_COUNT", 0)
+    monkeypatch.setattr(config, "HOSTED_LLM_CONTEXT_MIN", 10)
+    monkeypatch.setattr(config, "HOSTED_LLM_CONTEXT_MAX", 30)
+
+    assert config.llm_context_bounds() == (10, 30)

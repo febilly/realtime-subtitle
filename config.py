@@ -153,6 +153,29 @@ def canonicalize_target_lang(lang: str, provider: str | None = None) -> str:
     return canonicalize_language_code(lang) if p == "gemini" else normalize_language_code(lang)
 
 
+def is_system_traditional_chinese() -> bool:
+    """Return True if the host system locale is set to Traditional Chinese."""
+    try:
+        for env_var in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+            val = (os.environ.get(env_var) or "").strip().lower()
+            if any(loc in val for loc in _TRADITIONAL_CHINESE_LOCALES) or "traditional" in val:
+                return True
+        try:
+            loc = str(locale.getlocale()[0] or "").lower()
+        except Exception:
+            loc = ""
+        if not loc:
+            try:
+                loc = str(locale.getdefaultlocale()[0] or "").lower()
+            except Exception:
+                loc = ""
+        if any(loc.startswith(t) or loc == t for t in _TRADITIONAL_CHINESE_LOCALES) or "traditional" in loc or "tw" in loc or "hk" in loc or "mo" in loc or "hant" in loc:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # English display names for language codes, used to enrich LLM translate/refine
 # prompts so the model is told the full language name, not just the code.
 # Mirrors the English names in the frontend LANGUAGE_NAME_MAP (static/app.js).
@@ -160,7 +183,8 @@ LANGUAGE_ENGLISH_NAMES = {
     "af": "Afrikaans", "ak": "Akan", "sq": "Albanian", "am": "Amharic",
     "ar": "Arabic", "hy": "Armenian", "az": "Azerbaijani", "eu": "Basque",
     "be": "Belarusian", "bn": "Bengali", "bs": "Bosnian", "bg": "Bulgarian",
-    "my": "Burmese", "ca": "Catalan", "zh": "Chinese",
+    "my": "Burmese", "ca": "Catalan",
+    "zh": "Chinese (Traditional)" if is_system_traditional_chinese() else "Chinese (Simplified)",
     "zh-hans": "Chinese (Simplified)", "zh-hant": "Chinese (Traditional)",
     "hr": "Croatian", "cs": "Czech", "da": "Danish", "nl": "Dutch",
     "en": "English", "et": "Estonian", "fil": "Filipino", "fi": "Finnish",
@@ -190,9 +214,14 @@ def language_english_name(lang: str) -> str:
     raw = str(lang or "").strip().lower()
     if not raw:
         return ""
+    if raw == "zh":
+        return "Chinese (Traditional)" if is_system_traditional_chinese() else "Chinese (Simplified)"
     if raw in LANGUAGE_ENGLISH_NAMES:
         return LANGUAGE_ENGLISH_NAMES[raw]
-    return LANGUAGE_ENGLISH_NAMES.get(normalize_language_code(raw), "")
+    norm = normalize_language_code(raw)
+    if norm == "zh":
+        return "Chinese (Traditional)" if is_system_traditional_chinese() else "Chinese (Simplified)"
+    return LANGUAGE_ENGLISH_NAMES.get(norm, "")
 
 
 def describe_target_language(lang: str) -> str:
@@ -722,15 +751,15 @@ LLM_PROMPT_SUFFIX = _env_str("LLM_PROMPT_SUFFIX", "")
 # LLM temperature (0.0-2.0). Lower is more deterministic.
 LLM_TEMPERATURE = min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.2)))
 
-# Context item range used for LLM refine / translate (completed pairs: source + translation).
+# Context item range used for LLM refine / translate (completed recent source lines).
 # Strategy:
 # - each request starts from min count and increases by +1 up to max count
 # - after reaching max, next request resets to min and then grows again
 # This keeps prefixes relatively stable while periodically controlling context length.
-_LLM_REFINE_CONTEXT_MIN_COUNT_RAW = _env_int("LLM_REFINE_CONTEXT_MIN_COUNT", 5)
-_LLM_REFINE_CONTEXT_MAX_COUNT_RAW = _env_int("LLM_REFINE_CONTEXT_MAX_COUNT", 5)
+_LLM_REFINE_CONTEXT_MIN_COUNT_RAW = _env_int("LLM_REFINE_CONTEXT_MIN_COUNT", 0)
+_LLM_REFINE_CONTEXT_MAX_COUNT_RAW = _env_int("LLM_REFINE_CONTEXT_MAX_COUNT", 0)
 
-LLM_REFINE_CONTEXT_MIN_COUNT = max(1, _LLM_REFINE_CONTEXT_MIN_COUNT_RAW)
+LLM_REFINE_CONTEXT_MIN_COUNT = max(0, _LLM_REFINE_CONTEXT_MIN_COUNT_RAW)
 LLM_REFINE_CONTEXT_MAX_COUNT = max(LLM_REFINE_CONTEXT_MIN_COUNT, _LLM_REFINE_CONTEXT_MAX_COUNT_RAW)
 
 # Maximum output tokens for LLM refine.
@@ -818,7 +847,7 @@ def set_hosted_llm_config(cfg) -> None:
     try:
         cmin = int(cfg.get("context_min", HOSTED_LLM_CONTEXT_MIN))
         cmax = int(cfg.get("context_max", HOSTED_LLM_CONTEXT_MAX))
-        HOSTED_LLM_CONTEXT_MIN = max(1, cmin)
+        HOSTED_LLM_CONTEXT_MIN = max(0, cmin)
         HOSTED_LLM_CONTEXT_MAX = max(HOSTED_LLM_CONTEXT_MIN, cmax)
     except Exception:
         pass
