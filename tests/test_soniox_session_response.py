@@ -1534,34 +1534,14 @@ def test_hybrid_finalize_with_interim_translation_keeps_stt_when_refine_no_chang
     assert refined[-1]["refined_translation"] is None
 
 
-def test_perform_refine_keeps_uncited_change_as_no_change(monkeypatch):
-    """A changed answer without a recognized <error> category is discarded."""
+def test_perform_refine_accepts_plain_replacement(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
 
     session = module.SonioxSession(MagicMock(), MagicMock())
 
     async def fake_llm_chat(*args, **kwargs):
-        return "<check>none</check>\n<answer>更自然的译文。</answer>"
-
-    session._llm_chat = fake_llm_chat
-
-    result = asyncio.run(session._perform_refine("Hello there.", "你好。", []))
-
-    assert result == {"status": "ok", "no_change": True}
-
-
-def test_perform_refine_accepts_cited_error_replacement(monkeypatch):
-    _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
-
-    session = module.SonioxSession(MagicMock(), MagicMock())
-
-    async def fake_llm_chat(*args, **kwargs):
-        return (
-            "<check>mistranslation: greeting reversed</check>\n"
-            "<answer>更准确的译文。</answer>\n<error>mistranslation</error>"
-        )
+        return "更自然的译文。"
 
     session._llm_chat = fake_llm_chat
 
@@ -1570,9 +1550,24 @@ def test_perform_refine_accepts_cited_error_replacement(monkeypatch):
     assert result == {
         "status": "ok",
         "no_change": False,
-        "refined_translation": "更准确的译文。",
-        "error_category": "mistranslation",
+        "refined_translation": "更自然的译文。",
     }
+
+
+def test_perform_refine_accepts_plain_no_change_marker(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), MagicMock())
+
+    async def fake_llm_chat(*args, **kwargs):
+        return "__NO_CHANGE__"
+
+    session._llm_chat = fake_llm_chat
+
+    result = asyncio.run(session._perform_refine("Hello there.", "你好。", []))
+
+    assert result == {"status": "ok", "no_change": True}
 
 
 def test_accurate_mode_speculative_translation_fires_instantly_and_reuses_cache(monkeypatch):

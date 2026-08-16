@@ -1046,8 +1046,10 @@ class GeminiSession:
         )
 
         self._refine_context_history.append({"source": source, "translation": refined_translation})
-        max_history = max(1, int(self._context_bounds()[1]))
-        if len(self._refine_context_history) > max_history:
+        max_history = max(0, int(self._context_bounds()[1]))
+        if max_history == 0:
+            self._refine_context_history.clear()
+        elif len(self._refine_context_history) > max_history:
             self._refine_context_history = self._refine_context_history[-max_history:]
 
     def _get_dynamic_context_items(self) -> list[dict]:
@@ -1057,8 +1059,10 @@ class GeminiSession:
             return []
 
         bound_min, bound_max = self._context_bounds()
-        min_count = max(1, int(bound_min))
+        min_count = max(0, int(bound_min))
         max_count = max(min_count, int(bound_max))
+        if max_count == 0:
+            return []
 
         if len(history) < min_count:
             return history
@@ -1067,7 +1071,7 @@ class GeminiSession:
         current = max(min_count, min(current, max_count))
 
         use_count = min(current, len(history))
-        items = history[-use_count:]
+        items = [] if use_count == 0 else history[-use_count:]
 
         if current >= max_count:
             self._llm_context_cycle_count = min_count
