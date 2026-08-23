@@ -117,9 +117,9 @@ def test_runtime_sleep_preference_defaults_on_and_survives_key_type_changes(
     assert config.SONIOX_SLEEP_ON_SILENCE is True
     assert config.GEMINI_SLEEP_ON_SILENCE is True
     assert config.SLEEP_SPEECH_GRACE_SECONDS == 0.45
-    assert config.SLEEP_SPEECH_WINDOW_SECONDS == 1.2
+    assert config.SLEEP_SPEECH_WINDOW_SECONDS == 0.9
     assert config.SLEEP_WAKE_SPEECH_SECONDS == 0.65
-    assert config.SLEEP_WAKE_SPEECH_WINDOW_SECONDS == 1.5
+    assert config.SLEEP_WAKE_SPEECH_WINDOW_SECONDS == 0.9
     assert config.SLEEP_VAD_THRESHOLD == 0.5
     assert config.SLEEP_WAKE_VAD_THRESHOLD == 0.6
 

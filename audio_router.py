@@ -391,7 +391,7 @@ class AudioSendRouter:
         vad_speech_threshold: float = 0.5,
         vad_backend: str | None = None,
         sleep_idle_seconds: float | None = None,
-        sleep_pre_roll_seconds: float = 1.0,
+        sleep_pre_roll_seconds: float = 0.45,
         sleep_speech_grace_seconds: float = 0.5,
         sleep_speech_window_seconds: float = 0.75,
         sleep_vad_threshold: float | None = None,

@@ -387,14 +387,14 @@ SUPPORTED_LANGUAGE_CODES = get_supported_language_codes(TRANSLATION_PROVIDER)
 # AudioSendRouter for both Soniox and Gemini. Prefer SLEEP_* names; provider
 # specific *_SLEEP_* names remain accepted as compatibility aliases.
 SLEEP_IDLE_SECONDS = max(1.0, _env_float_any(_provider_sleep_env_names("IDLE_SECONDS"), 30.0))
-SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float_any(_provider_sleep_env_names("PRE_ROLL_SECONDS"), 1.0))
+SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float_any(_provider_sleep_env_names("PRE_ROLL_SECONDS"), 0.45))
 SLEEP_SPEECH_GRACE_SECONDS = max(
     0.0,
     _env_float_any(_provider_sleep_env_names("SPEECH_GRACE_SECONDS"), 0.45),
 )
 SLEEP_SPEECH_WINDOW_SECONDS = max(
     SLEEP_SPEECH_GRACE_SECONDS,
-    _env_float_any(_provider_sleep_env_names("SPEECH_WINDOW_SECONDS"), 1.2),
+    _env_float_any(_provider_sleep_env_names("SPEECH_WINDOW_SECONDS"), 0.9),
 )
 SLEEP_WAKE_SPEECH_SECONDS = max(
     SLEEP_SPEECH_GRACE_SECONDS,
@@ -402,7 +402,7 @@ SLEEP_WAKE_SPEECH_SECONDS = max(
 )
 SLEEP_WAKE_SPEECH_WINDOW_SECONDS = max(
     SLEEP_WAKE_SPEECH_SECONDS,
-    _env_float_any(_provider_sleep_env_names("WAKE_SPEECH_WINDOW_SECONDS"), 1.5),
+    _env_float_any(_provider_sleep_env_names("WAKE_SPEECH_WINDOW_SECONDS"), 0.9),
 )
 SLEEP_VAD_THRESHOLD = min(
     1.0,
