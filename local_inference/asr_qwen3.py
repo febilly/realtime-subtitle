@@ -142,6 +142,23 @@ class Qwen3ASREngine:
         """整句边界：丢弃上一句的草稿，避免拿旧句子的译文去推测新句子。"""
         self._draft_tokens = []
 
+    def probe_transcribe(self, audio: np.ndarray) -> dict | None:
+        """Transcribe an audio prefix without changing live streaming state.
+
+        The semantic-boundary locator occasionally probes shorter prefixes to
+        bracket a punctuation boundary when no timestamp sidecar is available.
+        Those probes must not become speculative-decoding drafts for the real
+        stream or clear its prompt context.
+        """
+        saved_draft = list(self._draft_tokens)
+        saved_context = self._context
+        try:
+            self._draft_tokens = []
+            return self.transcribe(audio, update_context=False)
+        finally:
+            self._draft_tokens = saved_draft
+            self._context = saved_context
+
     def set_language(self, language: str) -> None:
         self.language = language if language != "auto" else None
 

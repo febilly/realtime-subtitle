@@ -158,6 +158,7 @@ class LocalInferenceSession(SonioxSession):
         )
 
     def _run_local_session(self) -> None:
+        run_stop_event = self._local_stop_event
         translator: HyMT2API | None = None
         recognizer: LocalQwenRecognizer | None = None
         try:
@@ -220,7 +221,24 @@ class LocalInferenceSession(SonioxSession):
             if translator is not None:
                 translator.close()
             self._translator = None
+            self._clear_stopped_local_state(run_stop_event)
             logger.info("Local inference session stopped")
+
+    def _clear_stopped_local_state(
+        self, expected_stop_event: threading.Event | None
+    ) -> None:
+        """Clear one completed run without clobbering a newer session."""
+        if self._local_stop_event is not expected_stop_event:
+            return
+        self._local_stop_event = None
+        self.stop_event = None
+        self.ws = None
+        self.thread = None
+        self._sentence_buffers.clear()
+        self._pending_endpoint_speakers.clear()
+        self._pairer.flush_all()
+        self._pending_boundaries.clear()
+        self._reset_osc_live_state()
 
     def start(
         self,
@@ -291,16 +309,17 @@ class LocalInferenceSession(SonioxSession):
         thread = self.thread
         if thread and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=15.0)
-        if thread and not thread.is_alive():
-            self.thread = None
-        self._local_stop_event = None
-        self.stop_event = None
-        self.ws = None
-        self._sentence_buffers.clear()
-        self._pending_endpoint_speakers.clear()
-        self._pairer.flush_all()
-        self._pending_boundaries.clear()
-        self._reset_osc_live_state()
+        if thread is None or not thread.is_alive():
+            self._clear_stopped_local_state(stop_event)
+        else:
+            # recognizer.stop() deliberately drains the serialized ASR/final
+            # chain.  Keep its event and presentation executor reachable until
+            # the run thread finishes, even when a slow CPU final exceeds this
+            # caller's bounded join.
+            logger.warning(
+                "Local inference session is still draining after 15 seconds; "
+                "final state will be cleared by the run thread"
+            )
 
     def pause(self) -> bool:
         if self.is_paused:

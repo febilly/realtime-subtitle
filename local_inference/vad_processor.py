@@ -226,6 +226,60 @@ class VADProcessor:
             return 0.0
         return self._silence_counter * self._chunk_duration
 
+    @property
+    def speech_samples(self) -> int:
+        """Number of samples in the current uncommitted speech window."""
+        return self._speech_samples
+
+    def trim_prefix(self, samples_to_remove: int) -> int:
+        """Drop a confirmed prefix while keeping the current VAD segment open.
+
+        Semantic sentence commits happen without silence, so flushing the VAD
+        would throw away the already-buffered beginning of the next sentence.
+        This method removes only the confirmed PCM prefix and leaves the replay
+        tail, confidence history and speaking state intact.
+
+        Returns the exact number of samples removed.
+        """
+        requested = max(0, int(samples_to_remove))
+        if requested <= 0 or not self._speech_buffer:
+            return 0
+
+        # A semantic cut always retains pre-roll.  Still keep one sample if a
+        # bad locator asks to remove the whole window; losing the live segment
+        # is a much worse failure mode than doing a little redundant work.
+        remaining_to_remove = min(requested, max(0, self._speech_samples - 1))
+        removed = 0
+        new_buffer: list[np.ndarray] = []
+        new_confidences: list[float] = []
+        for chunk, confidence in zip(self._speech_buffer, self._confidence_history):
+            if remaining_to_remove >= len(chunk):
+                remaining_to_remove -= len(chunk)
+                removed += len(chunk)
+                continue
+            if remaining_to_remove > 0:
+                removed += remaining_to_remove
+                chunk = chunk[remaining_to_remove:]
+                remaining_to_remove = 0
+            new_buffer.append(chunk)
+            new_confidences.append(confidence)
+
+        self._speech_buffer = new_buffer
+        self._confidence_history = new_confidences
+        self._speech_samples = sum(len(chunk) for chunk in new_buffer)
+        self._is_speaking = bool(new_buffer)
+        if self._is_speaking:
+            effective_threshold = self.threshold if self.mode == "silero" else 0.5
+            trailing_silence = 0
+            for confidence in reversed(new_confidences):
+                if confidence >= effective_threshold:
+                    break
+                trailing_silence += 1
+            self._silence_counter = trailing_silence
+        else:
+            self._silence_counter = 0
+        return removed
+
     def _flush_segment(self) -> np.ndarray | None:
         if not self._speech_buffer:
             return None

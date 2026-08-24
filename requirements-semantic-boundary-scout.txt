@@ -1,0 +1,3 @@
+# Optional A/B timestamp sidecar. The production default uses Qwen prefix
+# search and does not need this package or the 600M Nemotron model.
+sherpa-onnx>=1.13.3,<2

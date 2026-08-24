@@ -23,6 +23,15 @@ QWEN_LLAMA_VULKAN_BIN_DIR_NAME = "qwen_llama_vulkan_bin"
 SILERO_VAD_DIR_NAME = "silero_vad"
 SILERO_VAD_ONNX_NAME = "silero_vad_16k_op15.onnx"
 HYMT2_DIR_NAME = "hymt2"
+NEMOTRON_BOUNDARY_DIR_NAME = (
+    "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
+)
+NEMOTRON_BOUNDARY_FILES = (
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+    "joiner.int8.onnx",
+    "tokens.txt",
+)
 QWEN3_ASR_FILES = (
     "qwen3_asr_encoder_frontend.int4.onnx",
     "qwen3_asr_encoder_backend.int4.onnx",
@@ -192,6 +201,40 @@ def get_local_model_path(engine: str) -> str | None:
         return None
     found = _find_dir(QWEN3_ASR_DIR_NAME, _qwen_model_ready)
     return str(found) if found else None
+
+
+def _nemotron_boundary_ready(path: Path) -> bool:
+    return path.is_dir() and all(
+        (path / filename).is_file() for filename in NEMOTRON_BOUNDARY_FILES
+    )
+
+
+def get_semantic_boundary_model_path(explicit: str | None = None) -> Path | None:
+    """Find the optional Nemotron timestamp sidecar without downloading it."""
+    candidates: list[Path] = []
+    runtime_root = (
+        Path(sys.executable).resolve().parent
+        if getattr(sys, "frozen", False)
+        else PROJECT_ROOT
+    )
+    raw = str(explicit or "").strip()
+    if raw:
+        configured = Path(os.path.expandvars(os.path.expanduser(raw)))
+        if not configured.is_absolute():
+            configured = runtime_root / configured
+        candidates.append(configured)
+    candidates.append(runtime_root / "models" / NEMOTRON_BOUNDARY_DIR_NAME)
+    candidates.extend(root / NEMOTRON_BOUNDARY_DIR_NAME for root in model_roots())
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _nemotron_boundary_ready(resolved):
+            return resolved
+    return None
 
 
 def _silero_ready(path: Path) -> bool:

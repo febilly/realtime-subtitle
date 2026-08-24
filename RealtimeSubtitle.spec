@@ -15,6 +15,7 @@ hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dot
                  'local_session', 'local_client', 'local_inference.recognizer',
                  'local_inference.asr_qwen3', 'local_inference.vad_processor',
                  'local_inference.gpu_devices', 'local_inference.spec_decode',
+                 'local_inference.semantic_boundary', 'local_inference.boundary_scout',
                  'streaming_translation.api.hymt2',
                  'onnxruntime', 'gguf', 'gguf.constants',
                  'soniox_key_setup', 'gemini_key_setup',
@@ -28,6 +29,11 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pythonosc')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ten_vad')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Optional semantic-boundary sidecar imports sherpa_onnx dynamically.  Keep the
+# base EXE build working when it is absent; when the optional requirements are
+# installed, collect its native libraries and package data as well.
+tmp_ret = collect_all('sherpa_onnx')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # tmp_ret = collect_all('streamlink')
 # datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
