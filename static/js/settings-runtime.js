@@ -336,6 +336,13 @@
         }
 
         function renderAutoRestartPicker() {
+            const supported = selectedProvider() !== 'local';
+            if (elements.autoRestartSettingField) elements.autoRestartSettingField.hidden = !supported;
+            if (!supported) {
+                if (elements.autoRestartPickerHost) elements.autoRestartPickerHost.innerHTML = '';
+                pickers.autoRestart = null;
+                return null;
+            }
             const enabled = !!state().autoRestartEnabled;
             setDraft({ autoRestartEnabled: enabled });
             return replaceHost(elements.autoRestartPickerHost, 'autoRestart', [
@@ -348,6 +355,13 @@
         }
 
         function renderSleepOnSilencePicker() {
+            const supported = selectedProvider() !== 'local';
+            if (elements.sleepOnSilenceSettingField) elements.sleepOnSilenceSettingField.hidden = !supported;
+            if (!supported) {
+                if (elements.sleepOnSilencePickerHost) elements.sleepOnSilencePickerHost.innerHTML = '';
+                pickers.sleepOnSilence = null;
+                return null;
+            }
             const enabled = state().sleepOnSilenceEnabled !== false;
             setDraft({ sleepOnSilenceEnabled: enabled });
             return replaceHost(elements.sleepOnSilencePickerHost, 'sleepOnSilence', [
@@ -507,7 +521,9 @@
 
         function renderTranslationModePicker() {
             const current = state();
-            const shown = !!current.llmRefineAvailable && !current.lockManualControls;
+            const shown = selectedProvider() !== 'local'
+                && !!current.llmRefineAvailable
+                && !current.lockManualControls;
             if (elements.translationModeSection) elements.translationModeSection.hidden = !shown;
             if (elements.translationModeSettingField) elements.translationModeSettingField.hidden = !shown;
             if (!shown) {
@@ -569,7 +585,9 @@
         }
 
         function renderRuntimeSettingsPickers() {
-            if (elements.runtimeControlsSection) elements.runtimeControlsSection.hidden = false;
+            if (elements.runtimeControlsSection) {
+                elements.runtimeControlsSection.hidden = selectedProvider() === 'local';
+            }
             renderAutoRestartPicker();
             renderSleepOnSilencePicker();
             renderSpeakerLabelsPicker();

@@ -132,6 +132,10 @@
                     <input type="radio" name="provider" value="gemini" id="providerGemini">
                     <span id="providerGeminiLabel">Gemini</span>
                 </label>
+                <label class="segmented-option">
+                    <input type="radio" name="provider" value="local" id="providerLocal">
+                    <span id="providerLocalLabel">Local</span>
+                </label>
             </fieldset>
             <p class="field-hint" id="providerDescription"></p>
 
@@ -181,6 +185,41 @@
                     <span id="sonioxRegionLabel">API region</span>
                     <div id="sonioxRegionPicker"></div>
                 </div>
+            </section>
+
+            <section class="auth-section" id="localInferenceSection" hidden>
+                <div class="settings-section-label" id="localInferenceLabel">Local models</div>
+                <div class="local-model-card">
+                    <div class="local-model-header">
+                        <strong>Qwen3-ASR 1.7B</strong>
+                        <span class="local-model-status" id="localAsrStatus">Checking…</span>
+                    </div>
+                    <p class="field-hint" id="localAsrPath"></p>
+                    <button class="secondary-button" id="localAsrDownloadButton" type="button">Download Qwen3-ASR</button>
+                </div>
+                <div class="local-model-card">
+                    <div class="local-model-header">
+                        <strong>Hy-MT2 1.8B GGUF</strong>
+                        <span class="local-model-status" id="localTranslationStatus">Checking…</span>
+                    </div>
+                    <p class="field-hint" id="localTranslationPath"></p>
+                </div>
+                <label class="form-field" for="localAsrDevice">
+                    <span id="localAsrDeviceLabel">Qwen decoder device</span>
+                    <select id="localAsrDevice"></select>
+                </label>
+                <label class="form-field" for="localEncoderDevice">
+                    <span id="localEncoderDeviceLabel">Qwen audio encoder device</span>
+                    <select id="localEncoderDevice">
+                        <option value="auto">Auto</option>
+                        <option value="gpu">GPU (DirectML)</option>
+                        <option value="cpu">CPU</option>
+                    </select>
+                </label>
+                <label class="form-field" for="localTranslationDevice">
+                    <span id="localTranslationDeviceLabel">Hy-MT2 device</span>
+                    <select id="localTranslationDevice"></select>
+                </label>
             </section>
 
             <section class="auth-section" id="outputDeviceSection">

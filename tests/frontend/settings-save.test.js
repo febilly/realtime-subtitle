@@ -82,6 +82,27 @@ function setup(overrides = {}) {
 }
 
 describe('SettingsSave direct mode', () => {
+    it('starts the local provider without requiring an API key', async () => {
+        const localConfig = {
+            asr_device: 'vulkan:0', encoder_device: 'gpu', translation_device: 'cpu',
+        };
+        const page = setup({
+            draft: { provider: 'local', apiKey: '', localConfig },
+            providerSettings: { keys: {} },
+        });
+
+        await expect(page.controller.handleSubmit()).resolves.toEqual({
+            status: 'saved', mode: 'direct', provider: 'local',
+        });
+
+        expect(page.setup.directNeedsSetup).not.toHaveBeenCalled();
+        expect(page.setup.push).toHaveBeenCalledWith('local', null, {
+            silent: false, mode: 'direct', localConfig,
+        });
+        expect(page.actions.hideSettingsPanel).toHaveBeenCalledOnce();
+        expect(page.actions.clearSubtitleState).toHaveBeenCalledOnce();
+    });
+
     it('persists a trimmed key and pushes the exact direct setup request', async () => {
         const page = setup();
         const event = { preventDefault: vi.fn() };

@@ -33,6 +33,7 @@
         let forcedOpen = false;
         let relayPricing = null;
         let sonioxRegionPicker = null;
+        let localStatusLoaded = false;
 
         function state() {
             const value = getState();
@@ -91,7 +92,9 @@
         }
 
         function getProviderDisplayName(provider) {
-            return provider === 'gemini' ? t('provider_gemini') : t('provider_soniox');
+            if (provider === 'gemini') return t('provider_gemini');
+            if (provider === 'local') return t('provider_local');
+            return t('provider_soniox');
         }
 
         function formatRate(value) {
@@ -215,6 +218,110 @@
             }
         }
 
+        function localDeviceOptions(devices) {
+            const options = [
+                { value: 'auto', label: t('local_device_auto') },
+                { value: 'cpu', label: 'CPU' },
+            ];
+            for (const device of Array.isArray(devices) ? devices : []) {
+                const index = Number(device && device.index);
+                if (!Number.isInteger(index) || index < 0) continue;
+                const name = String(device.description || device.name || `GPU ${index}`);
+                options.push({ value: `vulkan:${index}`, label: `GPU ${index} · ${name}` });
+            }
+            return options;
+        }
+
+        function populateNativeSelect(select, options, value) {
+            if (!select) return;
+            select.innerHTML = '';
+            for (const option of options) {
+                const element = documentRef.createElement('option');
+                element.value = option.value;
+                element.textContent = option.label;
+                select.appendChild(element);
+            }
+            select.value = value || 'auto';
+            if (!select.value) select.value = 'auto';
+        }
+
+        function renderModelState(element, ready) {
+            if (!element) return;
+            element.textContent = t(ready ? 'local_model_ready' : 'local_model_missing');
+            element.classList.toggle('ready', !!ready);
+            element.classList.toggle('missing', !ready);
+        }
+
+        async function refreshLocalInferenceStatus({ refreshDevices = false } = {}) {
+            if (!fetchRef) return false;
+            try {
+                const suffix = refreshDevices ? '?refresh_devices=1' : '';
+                const response = await fetchRef(`/local-inference/status${suffix}`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'status failed');
+                const models = data.models || {};
+                const asr = models.asr && models.asr['qwen3-asr'] || {};
+                const translation = models.translation && models.translation.hymt2 || {};
+                renderModelState(elements.localAsrStatus, !!asr.ready);
+                renderModelState(elements.localTranslationStatus, !!translation.ready);
+                if (elements.localAsrPath) {
+                    elements.localAsrPath.textContent = asr.model_path || models.models_dir || '';
+                }
+                if (elements.localTranslationPath) {
+                    elements.localTranslationPath.textContent = translation.model_path
+                        || t('local_hymt_install_path', { path: translation.install_dir || '' });
+                }
+                if (elements.localAsrDownloadButton) {
+                    elements.localAsrDownloadButton.hidden = !!asr.ready;
+                }
+                const options = localDeviceOptions(data.devices);
+                const localConfig = data.config || {};
+                populateNativeSelect(elements.localAsrDevice, options, localConfig.asr_device);
+                populateNativeSelect(
+                    elements.localTranslationDevice,
+                    options,
+                    localConfig.translation_device,
+                );
+                if (elements.localEncoderDevice) {
+                    elements.localEncoderDevice.value = localConfig.encoder_device || 'auto';
+                }
+                localStatusLoaded = true;
+                return true;
+            } catch (error) {
+                if (elements.localAsrStatus) {
+                    elements.localAsrStatus.textContent = String(error);
+                    elements.localAsrStatus.classList.add('missing');
+                }
+                return false;
+            }
+        }
+
+        async function downloadLocalAsr() {
+            const button = elements.localAsrDownloadButton;
+            if (button) {
+                button.disabled = true;
+                button.textContent = t('local_model_downloading');
+            }
+            setError('');
+            try {
+                const response = await fetchRef('/local-inference/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ component: 'qwen3-asr' }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'download failed');
+                await refreshLocalInferenceStatus();
+            } catch (error) {
+                setError(String(error));
+            } finally {
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = t('local_asr_download');
+                }
+            }
+        }
+
         function setMode(mode) {
             if (!elements.form) return;
             elements.form.querySelectorAll('input[name="connmode"]').forEach((radio) => {
@@ -223,6 +330,7 @@
         }
 
         function getMode() {
+            if (getSelectedProvider() === 'local') return 'direct';
             const current = state();
             if (!current.relayAvailable) return 'direct';
             if (elements.form) {
@@ -233,25 +341,39 @@
         }
 
         function getDraft() {
-            return {
-                provider: getSelectedProvider(),
+            const provider = getSelectedProvider();
+            const draft = {
+                provider,
                 region: getSelectedSonioxRegion(),
                 mode: getMode(),
                 apiKey: elements.apiKeyInput ? elements.apiKeyInput.value : '',
             };
+            if (provider === 'local') {
+                draft.localConfig = {
+                    asr_device: elements.localAsrDevice ? elements.localAsrDevice.value : 'auto',
+                    encoder_device: elements.localEncoderDevice ? elements.localEncoderDevice.value : 'auto',
+                    translation_device: elements.localTranslationDevice
+                        ? elements.localTranslationDevice.value
+                        : 'auto',
+                };
+            }
+            return draft;
         }
 
         function applyModeVisibility(mode) {
             const current = state();
-            if (elements.modeSection) elements.modeSection.hidden = !current.relayAvailable;
-            const relay = mode === 'relay';
+            const local = getSelectedProvider() === 'local';
+            if (elements.modeSection) elements.modeSection.hidden = local || !current.relayAvailable;
+            const relay = !local && mode === 'relay';
             if (elements.accountSection) elements.accountSection.hidden = !relay;
-            if (elements.apiKeySection) elements.apiKeySection.hidden = relay;
+            if (elements.apiKeySection) elements.apiKeySection.hidden = relay || local;
+            if (elements.localInferenceSection) elements.localInferenceSection.hidden = !local;
             if (elements.modeDescription) {
-                elements.modeDescription.textContent = t(
-                    relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc',
+                elements.modeDescription.textContent = local ? '' : t(
+                    relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc'
                 );
             }
+            if (local && !localStatusLoaded) void refreshLocalInferenceStatus();
         }
 
         function populate() {
@@ -298,6 +420,12 @@
             setText('providerLabel', 'api_selection');
             setText('providerSonioxLabel', 'provider_soniox');
             setText('providerGeminiLabel', 'provider_gemini');
+            setText('providerLocalLabel', 'provider_local');
+            setText('localInferenceLabel', 'local_models');
+            setText('localAsrDownloadButton', 'local_asr_download');
+            setText('localAsrDeviceLabel', 'local_asr_device');
+            setText('localEncoderDeviceLabel', 'local_encoder_device');
+            setText('localTranslationDeviceLabel', 'local_translation_device');
             setText('sonioxRegionLabel', 'soniox_region');
             setText('microphoneDeviceLabel', 'microphone_device');
             setText('outputDeviceLabel', 'output_device');
@@ -368,7 +496,9 @@
         function updateProviderFields(provider) {
             updateApiKeyField(provider);
             updateSonioxRegion(provider);
+            applyModeVisibility(getMode());
             call('renderRuntimeSettingsPickers');
+            call('renderTranslationModePicker');
         }
 
         function refreshProviderFields(provider) {
@@ -416,6 +546,7 @@
                     bind(radio, 'change', handleModeChange);
                 });
             }
+            bind(elements.localAsrDownloadButton, 'click', downloadLocalAsr);
             return true;
         }
 
@@ -446,6 +577,7 @@
             getDebugState,
             getDraft,
             getMode,
+            refreshLocalInferenceStatus,
             getProviderDescription,
             getSelectedProvider,
             getSelectedSonioxRegion,

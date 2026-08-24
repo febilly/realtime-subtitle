@@ -675,6 +675,14 @@ body.dark-theme .panel-close-button {
     background: rgba(0, 0, 0, 0.04);
 }
 
+#providerFieldset {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+#providerFieldset .segmented-option {
+    min-width: 0;
+}
+
 body.dark-theme .segmented-control {
     border-color: rgba(255, 255, 255, 0.12);
     background: rgba(255, 255, 255, 0.06);
@@ -818,6 +826,46 @@ body.dark-theme .checkbox-field {
 
 .settings-error:empty {
     display: none;
+}
+
+.local-model-card {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.10);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.45);
+}
+
+body.dark-theme .local-model-card {
+    border-color: rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.local-model-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 13px;
+}
+
+.local-model-status {
+    color: #6b7280;
+    white-space: nowrap;
+}
+
+.local-model-status.ready {
+    color: #16a34a;
+}
+
+.local-model-status.missing {
+    color: #dc2626;
+}
+
+.local-model-card .secondary-button {
+    align-self: flex-start;
 }
 
 #loginPanel .settings-form {

@@ -80,6 +80,7 @@
                 settings,
                 previousProviderKey,
                 apiKey: String(draft.apiKey || '').trim(),
+                localConfig: draft.localConfig || null,
             });
         }
 
@@ -135,6 +136,7 @@
             settings,
             previousProviderKey,
             apiKey,
+            localConfig,
         }) {
             if (apiKey) {
                 settings.keys[provider] = apiKey;
@@ -143,7 +145,7 @@
             }
             const hasOverride = !!settings.keys[provider];
             const envKeyPresent = state().envKeyPresent || {};
-            if (!hasOverride && !envKeyPresent[provider]) {
+            if (provider !== 'local' && !hasOverride && !envKeyPresent[provider]) {
                 setError(t('api_key_required'));
                 return { status: 'api_key_required', mode: 'direct', provider };
             }
@@ -159,6 +161,22 @@
             }
 
             const apiKeyToPush = settings.keys[provider] || null;
+            if (provider === 'local') {
+                const result = await setup.push('local', null, {
+                    silent: false,
+                    mode: 'direct',
+                    localConfig,
+                });
+                setSaving(false);
+                if (!result.ok) {
+                    const message = result.data && result.data.message;
+                    setError(localizeBackendMessage(message || t('local_model_missing')));
+                    return { status: 'setup_error', mode: 'direct', provider };
+                }
+                call('hideSettingsPanel');
+                call('clearSubtitleState');
+                return { status: 'saved', mode: 'direct', provider };
+            }
             if (!setup.directNeedsSetup({
                 provider,
                 region,

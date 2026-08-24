@@ -43,6 +43,7 @@
         mode = null,
         token = null,
         sleepOnSilence = null,
+        localConfig = null,
     } = {}) {
         const body = { provider };
         if (mode) {
@@ -57,6 +58,9 @@
         }
         if (provider === 'soniox' && region) {
             body.soniox_region = region;
+        }
+        if (provider === 'local' && localConfig && typeof localConfig === 'object') {
+            body.local_config = localConfig;
         }
         if (typeof sleepOnSilence === 'boolean') {
             body.sleep_on_silence = sleepOnSilence;

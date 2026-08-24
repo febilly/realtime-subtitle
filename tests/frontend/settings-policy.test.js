@@ -57,6 +57,17 @@ describe('settings policy setup payload', () => {
         ['automatic sleep preference', ['gemini', 'key', { sleepOnSilence: false }], {
             provider: 'gemini', api_key: 'key', sleep_on_silence: false,
         }],
+        ['local device allocation', ['local', null, {
+            mode: 'direct',
+            localConfig: {
+                asr_device: 'vulkan:0', encoder_device: 'gpu', translation_device: 'cpu',
+            },
+        }], {
+            provider: 'local', mode: 'direct',
+            local_config: {
+                asr_device: 'vulkan:0', encoder_device: 'gpu', translation_device: 'cpu',
+            },
+        }],
     ])('%s', (_label, args, expected) => {
         expect(buildSetupBody(...args)).toEqual(expected);
     });
