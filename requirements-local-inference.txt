@@ -1,0 +1,5 @@
+# Local provider dependencies. These are also part of requirements.txt so the
+# packaged desktop app can expose Qwen3-ASR + Hy-MT2 without a second install.
+numpy<2.0.0
+onnxruntime-directml>=1.19.0
+gguf>=0.18.0

@@ -1,11 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('static', 'static'), ('ACKNOWLEDGMENTS.md', '.')]
+datas = [
+    ('static', 'static'),
+    ('ACKNOWLEDGMENTS.md', '.'),
+    # Dynamic qwen_asr_gguf import: keep the vendored Python package as files so
+    # ensure_vendor_sources() can validate it in the one-file extraction dir.
+    ('local_inference/vendor/qwen_asr_gguf', 'local_inference/vendor/qwen_asr_gguf'),
+]
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',
                  'provider_setup', 'soniox_session', 'gemini_session', 'soniox_client', 'gemini_client',
+                 'local_session', 'local_client', 'local_inference.recognizer',
+                 'local_inference.asr_qwen3', 'local_inference.vad_processor',
+                 'local_inference.gpu_devices', 'local_inference.spec_decode',
+                 'streaming_translation.api.hymt2',
+                 'onnxruntime', 'gguf', 'gguf.constants',
                  'soniox_key_setup', 'gemini_key_setup',
                  'overlay_window']
 tmp_ret = collect_all('soundcard')

@@ -1,6 +1,9 @@
 websockets
 soundcard
 numpy<2.0.0
+# On-device Qwen3-ASR + Hy-MT2 runtime (models are downloaded/installed separately).
+onnxruntime-directml>=1.19.0
+gguf>=0.18.0
 ten-vad
 # Optional alternative VAD backend (not bundled in the packaged exe).
 # Install this and set DEFAULT_VAD_BACKEND="silero" in audio_router.py to switch.

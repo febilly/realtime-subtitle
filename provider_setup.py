@@ -1,7 +1,7 @@
 """
 Non-interactive translation-provider resolution for startup.
 
-Resolves which backend (soniox | gemini) to use, without prompting the terminal
+Resolves which backend (soniox | gemini | local) to use, without prompting the terminal
 and without writing to .env. Resolution order:
 1. If TRANSLATION_PROVIDER is set (env/.env/CLI), use it.
 2. Otherwise infer from whichever provider already has a usable env key.
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-VALID_PROVIDERS = ("soniox", "gemini")
+VALID_PROVIDERS = ("soniox", "gemini", "local")
 
 
 def _normalize(value) -> str:

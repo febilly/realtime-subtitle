@@ -291,13 +291,13 @@ class WebServer:
             await self._refresh_hosted_llm_config()
         payload = {
             "provider": provider,
-            "providers": ["soniox", "gemini"],
+            "providers": ["soniox", "gemini", "local"],
             "capabilities": capabilities,
             "languages": get_language_codes_ordered(provider),
             "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
             "enable_chroma_theme": bool(ENABLE_CHROMA_THEME),
             "translation_target_lang": self.session.get_translation_target_lang(),
-            "llm_refine_available": bool(is_llm_refine_available()),
+            "llm_refine_available": bool(provider != "local" and is_llm_refine_available()),
             "llm_refine_mode": self.session.get_llm_refine_mode(),
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
             "llm_refine_context_min_count": int(config.llm_context_bounds()[0]),
@@ -368,6 +368,7 @@ class WebServer:
                 "env_key_present": {
                     "soniox": manager.env_key_present("soniox"),
                     "gemini": manager.env_key_present("gemini"),
+                    "local": True,
                 },
                 "mode": manager.mode,
                 "logged_in": bool(manager.relay_token),
@@ -380,7 +381,7 @@ class WebServer:
                 "boot_id": "",
                 "setup_required": False,
                 "key_source": "env",
-                "env_key_present": {"soniox": False, "gemini": False},
+                "env_key_present": {"soniox": False, "gemini": False, "local": True},
                 "mode": "direct",
                 "logged_in": False,
                 "translation_mode": str(getattr(self.session, "translation", None) or TRANSLATION_MODE),
@@ -427,8 +428,21 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
 
         provider = str(payload.get("provider") or "").strip().lower()
-        if provider not in ("soniox", "gemini"):
+        if provider not in ("soniox", "gemini", "local"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
+
+        if provider == "local":
+            local_config = payload.get("local_config")
+            if local_config is not None and not isinstance(local_config, dict):
+                return web.json_response(
+                    {"status": "error", "message": "Invalid local_config"}, status=400
+                )
+            local_config = local_config or {}
+            config.set_local_inference_config(
+                asr_device=local_config.get("asr_device"),
+                encoder_device=local_config.get("encoder_device"),
+                translation_device=local_config.get("translation_device"),
+            )
 
         if "sleep_on_silence" in payload:
             if not isinstance(payload.get("sleep_on_silence"), bool):
@@ -441,6 +455,8 @@ class WebServer:
         # Connection mode: "direct" (own provider key) or "relay" (hosted).
         mode = str(payload.get("mode") or "").strip().lower()
         if mode not in ("direct", "relay"):
+            mode = "direct"
+        if provider == "local":
             mode = "direct"
 
         # Soniox regional endpoint (us | eu | jp); ignored for other providers.
@@ -550,7 +566,7 @@ class WebServer:
             payload = {}
 
         provider = str((payload or {}).get("provider") or config.TRANSLATION_PROVIDER).strip().lower()
-        if provider not in ("soniox", "gemini"):
+        if provider not in ("soniox", "gemini", "local"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
 
         soniox_region = str((payload or {}).get("soniox_region") or "").strip().lower() or None
@@ -574,6 +590,8 @@ class WebServer:
         provider: str, api_key: str, *, soniox_region: str | None = None
     ) -> tuple[bool, str | None]:
         try:
+            if provider == "local":
+                return True, None
             if provider == "gemini":
                 from gemini_key_setup import validate_gemini_api_key
                 return validate_gemini_api_key(api_key)
@@ -583,6 +601,61 @@ class WebServer:
             return validate_soniox_api_key(api_key, websocket_url)
         except Exception as error:
             return False, str(error)
+
+    async def local_inference_status_handler(self, request):
+        """Return model/runtime/device state without loading either model."""
+        from local_inference.gpu_devices import probe_gpu_devices
+        from local_inference.model_manager import get_all_local_models_status
+        from streaming_translation import get_local_engine_runtime_status
+
+        refresh = str(request.query.get("refresh_devices") or "").lower() in ("1", "true", "yes")
+        devices = await asyncio.to_thread(probe_gpu_devices, refresh=refresh)
+        return web.json_response({
+            "status": "ok",
+            "models": get_all_local_models_status(),
+            "runtime": {
+                "translation": get_local_engine_runtime_status(),
+                "session_running": bool(
+                    config.TRANSLATION_PROVIDER == "local"
+                    and getattr(self.session, "thread", None)
+                    and self.session.thread.is_alive()
+                ),
+            },
+            "devices": devices,
+            "config": {
+                "asr_device": config.LOCAL_INFERENCE_DEVICE,
+                "encoder_device": config.LOCAL_QWEN_ENCODER_DEVICE,
+                "translation_device": config.LOCAL_TRANSLATION_DEVICE,
+            },
+        })
+
+    async def local_inference_download_handler(self, request):
+        """Download the redistributable Qwen3-ASR, Silero and llama runtime."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Configuration is locked by server config"},
+                status=403,
+            )
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        component = str((payload or {}).get("component") or "qwen3-asr").strip().lower()
+        if component != "qwen3-asr":
+            return web.json_response(
+                {"status": "error", "message": "Hy-MT2 must be installed as a local GGUF file"},
+                status=400,
+            )
+        try:
+            from local_inference.model_manager import get_all_local_models_status, prepare_engine
+            await asyncio.to_thread(prepare_engine, "qwen3-asr")
+            return web.json_response({"status": "ok", "models": get_all_local_models_status()})
+        except Exception as error:
+            return web.json_response(
+                {"status": "error", "message": str(error)}, status=500
+            )
 
     # ===================== Subtitle-server relay (hosted) =====================
 
@@ -2011,6 +2084,8 @@ class WebServer:
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
         app.router.add_post('/setup', self.setup_handler)
         app.router.add_post('/use-env', self.use_env_handler)
+        app.router.add_get('/local-inference/status', self.local_inference_status_handler)
+        app.router.add_post('/local-inference/download', self.local_inference_download_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
         app.router.add_post('/account/login-code', self.account_login_code_handler)
         app.router.add_post('/account/login-begin', self.account_login_begin_handler)

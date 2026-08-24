@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 
 # ======================== Supported languages (per provider) ========================
-# Two providers are supported and each accepts a different set of target languages.
+# Providers accept different target-language sets.
 # The active set/list is selected by TRANSLATION_PROVIDER (resolved further below).
 
 # Soniox-supported languages (ISO 639-1). Source: docs/supported-languages.mdx
@@ -62,6 +62,16 @@ GEMINI_LANGUAGE_CODES_ORDERED = [
     "mn", "ne", "no", "fa", "pl", "pt", "pa", "ro", "ru", "sr",
     "sd", "si", "sk", "sl", "es", "su", "sw", "sv", "ta", "te",
     "th", "tr", "uk", "ur", "uz", "vi", "zu",
+]
+
+# Qwen3-ASR + Hy-MT2 languages.  Qwen can recognize more languages, but the
+# local provider deliberately exposes only the intersection that has been
+# exercised by the bundled Hy-MT2 prompt format.
+LOCAL_SUPPORTED_LANGUAGE_CODES = {
+    "zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru", "it",
+}
+LOCAL_LANGUAGE_CODES_ORDERED = [
+    "zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru", "it",
 ]
 
 # ISO 639-1 (normalized) -> Gemini BCP-47 target language code mapping.
@@ -133,13 +143,21 @@ def to_gemini_language_code(lang: str) -> str:
 def get_supported_language_codes(provider: str | None = None) -> set:
     """Return the validation set of supported (normalized) codes for a provider."""
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
-    return GEMINI_SUPPORTED_LANGUAGE_CODES if p == "gemini" else SONIOX_SUPPORTED_LANGUAGE_CODES
+    if p == "gemini":
+        return GEMINI_SUPPORTED_LANGUAGE_CODES
+    if p == "local":
+        return LOCAL_SUPPORTED_LANGUAGE_CODES
+    return SONIOX_SUPPORTED_LANGUAGE_CODES
 
 
 def get_language_codes_ordered(provider: str | None = None) -> list:
     """Return the ordered list of display language codes for the frontend dropdown."""
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
-    return list(GEMINI_LANGUAGE_CODES_ORDERED if p == "gemini" else SONIOX_LANGUAGE_CODES_ORDERED)
+    if p == "gemini":
+        return list(GEMINI_LANGUAGE_CODES_ORDERED)
+    if p == "local":
+        return list(LOCAL_LANGUAGE_CODES_ORDERED)
+    return list(SONIOX_LANGUAGE_CODES_ORDERED)
 
 
 def is_supported_language_code(lang: str, provider: str | None = None) -> bool:
@@ -334,15 +352,95 @@ def _env_json(name: str, default: dict | None = None) -> dict:
         return default
 
 # ======================== Translation provider selection ========================
-# Which STT/translation backend to use: "soniox" | "gemini".
+# Which STT/translation backend to use: "soniox" | "gemini" | "local".
 # Normally resolved interactively at startup (see provider_setup.py) and persisted
 # to .env as TRANSLATION_PROVIDER. If unset/invalid here, default to "soniox".
 _TRANSLATION_PROVIDER_RAW = _env_str("TRANSLATION_PROVIDER", "")
 TRANSLATION_PROVIDER = str(_TRANSLATION_PROVIDER_RAW).strip().lower()
-if TRANSLATION_PROVIDER not in ("soniox", "gemini"):
+if TRANSLATION_PROVIDER not in ("soniox", "gemini", "local"):
     if _TRANSLATION_PROVIDER_RAW.strip():
         print(f"⚠️  Invalid TRANSLATION_PROVIDER: {_TRANSLATION_PROVIDER_RAW}, fallback to: soniox")
     TRANSLATION_PROVIDER = "soniox"
+
+
+# ======================== Local Qwen3-ASR + Hy-MT2 ========================
+# These settings intentionally live in the shared configuration module so the
+# Web UI can update them without restarting the HTTP server.  Models and native
+# runtimes are resolved lazily by local_inference.model_manager.
+VAD_ENABLED = _env_bool("LOCAL_VAD_ENABLED", True)
+LOCAL_VAD_MODE = _env_str("LOCAL_VAD_MODE", "silero").strip().lower() or "silero"
+LOCAL_VAD_THRESHOLD = min(1.0, max(0.0, _env_float("LOCAL_VAD_THRESHOLD", 0.5)))
+LOCAL_VAD_MIN_SPEECH_DURATION = max(0.05, _env_float("LOCAL_VAD_MIN_SPEECH_DURATION", 1.0))
+LOCAL_VAD_MAX_SPEECH_DURATION = max(
+    LOCAL_VAD_MIN_SPEECH_DURATION,
+    _env_float("LOCAL_VAD_MAX_SPEECH_DURATION", 30.0),
+)
+LOCAL_VAD_SILENCE_DURATION = max(0.05, _env_float("LOCAL_VAD_SILENCE_DURATION", 0.8))
+VAD_PRE_SPEECH_DURATION = max(0.0, _env_float("LOCAL_VAD_PRE_SPEECH_DURATION", 0.5))
+
+LOCAL_INFERENCE_DEVICE = _env_str("LOCAL_INFERENCE_DEVICE", "auto").strip().lower() or "auto"
+LOCAL_QWEN_ENCODER_DEVICE = (
+    _env_str("LOCAL_QWEN_ENCODER_DEVICE", "auto").strip().lower() or "auto"
+)
+LOCAL_TRANSLATION_DEVICE = _env_str("LOCAL_TRANSLATION_DEVICE", "auto").strip().lower() or "auto"
+
+LOCAL_INCREMENTAL_ASR = _env_bool("LOCAL_INCREMENTAL_ASR", True)
+LOCAL_INCREMENTAL_TRIGGER_SILENCE_MS = max(
+    0, _env_int("LOCAL_INCREMENTAL_TRIGGER_SILENCE_MS", 10)
+)
+LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL = max(
+    0.1, _env_float("LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL", 3.0)
+)
+LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL = max(
+    LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL,
+    _env_float("LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL", 4.0),
+)
+
+LOCAL_QWEN_ASR_N_CTX = max(512, _env_int("LOCAL_QWEN_ASR_N_CTX", 2048))
+LOCAL_QWEN_CONTEXT_MAX_TOKENS = max(0, _env_int("LOCAL_QWEN_CONTEXT_MAX_TOKENS", 1024))
+LOCAL_QWEN_LOG_PIPELINE_TIMING = _env_bool("LOCAL_QWEN_LOG_PIPELINE_TIMING", True)
+LOCAL_SPECULATIVE_DECODE = _env_bool("LOCAL_SPECULATIVE_DECODE", True)
+LOCAL_MT_PROMPT_CACHE = _env_bool("LOCAL_MT_PROMPT_CACHE", True)
+
+# Conservative estimates used only for GPU auto-selection.
+QWEN3_ASR_VRAM_MB = max(0, _env_int("QWEN3_ASR_VRAM_MB", 1612))
+QWEN3_ASR_ENCODER_VRAM_MB = max(0, _env_int("QWEN3_ASR_ENCODER_VRAM_MB", 465))
+HYMT2_VRAM_MB = max(0, _env_int("HYMT2_VRAM_MB", 1402))
+
+
+def sanitize_local_device(value: str) -> str:
+    """Normalize a llama.cpp local-device selector."""
+    from local_inference.gpu_devices import sanitize_device
+    return sanitize_device(value)
+
+
+def sanitize_qwen_encoder_device(value: str) -> str:
+    """Normalize the ONNX encoder execution-provider selector."""
+    normalized = str(value or "auto").strip().lower()
+    if normalized == "directml":
+        normalized = "gpu"
+    return normalized if normalized in {"auto", "cpu", "gpu"} else "auto"
+
+
+def set_local_inference_config(
+    *,
+    asr_device: str | None = None,
+    encoder_device: str | None = None,
+    translation_device: str | None = None,
+) -> dict:
+    """Apply local engine device choices for the next local session."""
+    global LOCAL_INFERENCE_DEVICE, LOCAL_QWEN_ENCODER_DEVICE, LOCAL_TRANSLATION_DEVICE
+    if asr_device is not None:
+        LOCAL_INFERENCE_DEVICE = sanitize_local_device(asr_device)
+    if encoder_device is not None:
+        LOCAL_QWEN_ENCODER_DEVICE = sanitize_qwen_encoder_device(encoder_device)
+    if translation_device is not None:
+        LOCAL_TRANSLATION_DEVICE = sanitize_local_device(translation_device)
+    return {
+        "asr_device": LOCAL_INFERENCE_DEVICE,
+        "encoder_device": LOCAL_QWEN_ENCODER_DEVICE,
+        "translation_device": LOCAL_TRANSLATION_DEVICE,
+    }
 
 
 def _provider_sleep_env_names(suffix: str) -> tuple[str, str, str]:
@@ -974,6 +1072,11 @@ PROVIDER_CAPABILITIES = {
         "speaker_diarization": False,
         "two_way_translation": False,
     },
+    "local": {
+        "segment_mode": False,
+        "speaker_diarization": False,
+        "two_way_translation": False,
+    },
 }
 
 
@@ -989,8 +1092,8 @@ def get_capabilities(provider: str | None = None) -> dict:
 # created sessions reflect the new provider immediately.
 
 def _compute_enable_speaker_diarization(provider: str) -> bool:
-    """Diarization is Soniox-only; Gemini Live Translation forces it off."""
-    if provider == "gemini":
+    """Diarization is Soniox-only."""
+    if provider in ("gemini", "local"):
         return False
     return _env_bool("ENABLE_SPEAKER_DIARIZATION", True)
 
@@ -1014,7 +1117,7 @@ def set_active_provider(provider: str) -> str:
     global ENABLE_SPEAKER_DIARIZATION, TRANSLATION_TARGET_LANG
 
     p = str(provider or "").strip().lower()
-    if p not in ("soniox", "gemini"):
+    if p not in ("soniox", "gemini", "local"):
         p = "soniox"
 
     TRANSLATION_PROVIDER = p
