@@ -344,6 +344,17 @@ if TRANSLATION_PROVIDER not in ("soniox", "gemini"):
         print(f"⚠️  Invalid TRANSLATION_PROVIDER: {_TRANSLATION_PROVIDER_RAW}, fallback to: soniox")
     TRANSLATION_PROVIDER = "soniox"
 
+# VR overlay 开关 (Settings 面板热切换; env 只读回退, 照 TRANSLATION_PROVIDER 模式)。
+VR_OVERLAY_ENABLED = _env_bool("VR_OVERLAY_ENABLED", False)
+# VR 镜像模式 (默认开): 头显直接照搬桌面浮窗的同一条广播流 (update/refine_result/
+# clear + 同一份 subtitle_model 分句), 内容与顺序天然一致;
+# 关闭则回退旧的 ForeignSpeech 独立事件线 (仅调试用)。
+VR_MIRROR_MODE = _env_bool("VR_MIRROR_MODE", True)
+# 镜像模式已固定为「单块双行」(主行=译文, 副行=原文), 无可配窗口参数;
+# 历史 VR_MAX_SENTENCES 已废除 (旧的 1/2 句窗口模型已被用户废弃)。
+# RinBridgeOverlay.exe 路径覆盖 (默认 vr_overlay/target/release/RinBridgeOverlay.exe)。
+VR_OVERLAY_EXE = _env_str("VR_OVERLAY_EXE", "")
+
 
 def _provider_sleep_env_names(suffix: str) -> tuple[str, str, str]:
     active_prefix = TRANSLATION_PROVIDER.upper()
@@ -915,6 +926,19 @@ def get_resource_path(relative_path):
         return os.path.join(sys._MEIPASS, relative_path)
     # Development environment
     return os.path.join(os.path.abspath('.'), relative_path)
+
+
+def get_vr_overlay_exe_path():
+    """Resolve the bundled SteamVR overlay executable in source and frozen runs."""
+    relative_path = os.path.join("vr_overlay", "RinBridgeOverlay.exe")
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, relative_path)
+    root = os.path.dirname(os.path.abspath(__file__))
+    bundled = os.path.join(root, relative_path)
+    if os.path.exists(bundled):
+        return bundled
+    # Source runs build the overlay with cargo, which emits into target/release.
+    return os.path.join(root, "vr_overlay", "target", "release", "RinBridgeOverlay.exe")
 
 
 def get_system_language(provider: str | None = None) -> str:

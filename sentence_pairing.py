@@ -69,7 +69,10 @@ QUIET_CLOSE_SECONDS = 0.90
 # intentionally skip this extra grace.
 SOURCE_CLOSE_GRACE_SECONDS = RESYNC_GAP_SECONDS
 # Source closed this long with no translation at all -> give up waiting.
-MAX_WAIT_SECONDS = 3.0
+# Soniox may commit a translation several seconds after the source endpoint;
+# keeping the FIFO head open prevents that late draft being attributed to the
+# following sentence during continuous speech.
+MAX_WAIT_SECONDS = 8.0
 # A translation arriving within this long after an entry timed out empty
 # revives that entry, provided nothing else awaits a translation. Soniox can
 # emit a fragment's translation seconds late (only after later speech makes

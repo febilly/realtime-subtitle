@@ -29,6 +29,7 @@ class YakutanMessage:
 class ForeignSpeech:
     source_text: str
     detected_language: Optional[str] = None
+    translation: Optional[str] = None
     type: MessageType = MessageType.FOREIGN_SPEECH
 
 @dataclass

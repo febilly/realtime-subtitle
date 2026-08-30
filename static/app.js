@@ -111,6 +111,7 @@ const outputDeviceHint = document.getElementById('outputDeviceHint');
 const bundledCjkFontPickerHost = document.getElementById('bundledCjkFontPicker');
 const runtimeControlsSection = document.getElementById('runtimeControlsSection');
 const autoRestartPickerHost = document.getElementById('autoRestartPicker');
+const vrOverlayPickerHost = document.getElementById('vrOverlayPicker');
 const sleepOnSilencePickerHost = document.getElementById('sleepOnSilencePicker');
 const speakerLabelsSettingField = document.getElementById('speakerLabelsSettingField');
 const speakerLabelsPickerHost = document.getElementById('speakerLabelsPicker');
@@ -172,6 +173,7 @@ const controlPorts = {
     updateAudioSourceButton: () => { runtimeControls.updateAudioSourceButton(); },
     setTranslationUiMode: (mode, options = {}) => translationModeController.setTranslationUiMode(mode, options),
     setSleepOnSilenceEnabled: (enabled) => setSleepOnSilenceEnabled(enabled),
+    setVrOverlayEnabled: (enabled) => setVrOverlayEnabled(enabled),
     setInterruptRepairEnabled: (enabled) => setInterruptRepairEnabled(enabled),
     setSpeakerLabelsHidden: (hidden) => speakerLabelController.setHidden(hidden),
     setSegmentMode: (mode) => segmentModeController.setMode(mode),
@@ -231,6 +233,7 @@ const settingsRuntime = SettingsRuntime.create({
         outputDevicePickerHost,
         outputDeviceHint,
         autoRestartPickerHost,
+        vrOverlayPickerHost,
         sleepOnSilencePickerHost,
         speakerLabelsSettingField,
         speakerLabelsPickerHost,
@@ -249,6 +252,7 @@ const settingsRuntime = SettingsRuntime.create({
         get selectedProvider() { return settingsPorts.getSelectedProvider(); },
         get providerSettings() { return settingsPorts.loadProviderSettings(); },
         get autoRestartEnabled() { return autoRestartEnabled; },
+        get vrOverlayEnabled() { return vrOverlayEnabled; },
         get sleepOnSilenceEnabled() { return sleepOnSilenceEnabled; },
         get interruptRepairEnabled() { return interruptRepairEnabled; },
         get interruptRepairSupported() { return interruptRepairSupported; },
@@ -271,6 +275,9 @@ const settingsRuntime = SettingsRuntime.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'sleepOnSilenceEnabled')) {
             sleepOnSilenceEnabled = patch.sleepOnSilenceEnabled;
         }
+        if (Object.prototype.hasOwnProperty.call(patch, 'vrOverlayEnabled')) {
+            vrOverlayEnabled = patch.vrOverlayEnabled;
+        }
         if (Object.prototype.hasOwnProperty.call(patch, 'interruptRepairEnabled')) {
             interruptRepairEnabled = patch.interruptRepairEnabled;
         }
@@ -281,6 +288,7 @@ const settingsRuntime = SettingsRuntime.create({
     actions: {
         updateAutoRestartButton: controlPorts.updateAutoRestartButton,
         setSleepOnSilenceEnabled: controlPorts.setSleepOnSilenceEnabled,
+        setVrOverlayEnabled: controlPorts.setVrOverlayEnabled,
         setInterruptRepairEnabled: controlPorts.setInterruptRepairEnabled,
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
@@ -465,6 +473,7 @@ let displayMode = settingsStore.loadDisplayMode();
 
 // 自动重启识别开关（默认开启；已有保存值优先）
 let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
+let vrOverlayEnabled = settingsStore.loadVrOverlayEnabled();
 let sleepOnSilenceEnabled = settingsStore.loadSleepOnSilenceEnabled();
 let interruptRepairEnabled = settingsStore.loadInterruptRepairEnabled();
 let interruptRepairSupported = translationProvider === 'soniox';
@@ -498,6 +507,38 @@ function applySleepOnSilenceConfig(data = {}) {
         && stored !== data.sleep_on_silence_enabled
     ) {
         void setSleepOnSilenceEnabled(stored);
+    }
+}
+
+async function setVrOverlayEnabled(enabled) {
+    try {
+        const response = await fetch('/vr-overlay', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!enabled }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        vrOverlayEnabled = typeof data.enabled === 'boolean' ? data.enabled : !!enabled;
+        settingsStore.saveVrOverlayEnabled(vrOverlayEnabled);
+        settingsRuntime.renderVrOverlayPicker();
+        return true;
+    } catch (error) {
+        console.error('Error setting VR overlay:', error);
+        return false;
+    }
+}
+
+function applyVrOverlayConfig(data = {}) {
+    if (typeof data.vr_overlay_enabled !== 'boolean') return;
+    const stored = settingsStore.readVrOverlayEnabled();
+    vrOverlayEnabled = stored === null ? data.vr_overlay_enabled : stored;
+    if (
+        stored !== null
+        && !lockManualControls
+        && stored !== data.vr_overlay_enabled
+    ) {
+        void setVrOverlayEnabled(stored);
     }
 }
 
@@ -1091,6 +1132,7 @@ const uiConfigController = UiConfigController.create({
         updateAccountSection: hostedPorts.updateAccountSection,
         updateSettingsButtonVisibility: settingsPorts.updateSettingsButtonVisibility,
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
+        applyVrOverlayConfig,
         applySleepOnSilenceConfig,
         applyInterruptRepairConfig,
         renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,

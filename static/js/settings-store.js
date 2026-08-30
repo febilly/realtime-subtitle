@@ -13,6 +13,7 @@
         displayMode: 'displayMode',
         subtitleFlowDirection: 'subtitleFlowDirection',
         autoRestartEnabled: 'autoRestartEnabled',
+        vrOverlayEnabled: 'vrOverlayEnabled',
         sleepOnSilenceEnabled: 'sleepOnSilenceEnabled',
         interruptRepairEnabled: 'interruptRepairEnabled',
         bottomSafeAreaEnabled: 'bottomSafeAreaEnabled',
@@ -309,6 +310,12 @@
             },
             loadSleepOnSilenceEnabled: () => loadBoolean(KEYS.sleepOnSilenceEnabled, true),
             saveSleepOnSilenceEnabled: (value) => saveBoolean(KEYS.sleepOnSilenceEnabled, value),
+            readVrOverlayEnabled: () => {
+                const value = read(KEYS.vrOverlayEnabled);
+                return value === null ? null : value === 'true';
+            },
+            loadVrOverlayEnabled: () => loadBoolean(KEYS.vrOverlayEnabled, false),
+            saveVrOverlayEnabled: (value) => saveBoolean(KEYS.vrOverlayEnabled, value),
             readInterruptRepairEnabled: () => {
                 const value = read(KEYS.interruptRepairEnabled);
                 return value === null ? null : value === 'true';
