@@ -45,6 +45,7 @@
             output: null,
             microphone: null,
             autoRestart: null,
+            vrOverlay: null,
             sleepOnSilence: null,
             speakerLabels: null,
             interruptRepair: null,
@@ -83,6 +84,10 @@
                 sleepOnSilenceEnabled: pickerValue(
                     'sleepOnSilence',
                     draft.sleepOnSilenceEnabled === false ? 'false' : 'true',
+                ) !== 'false',
+                vrOverlayEnabled: pickerValue(
+                    'vrOverlay',
+                    draft.vrOverlayEnabled === false ? 'false' : 'true',
                 ) !== 'false',
                 hideSpeakerLabels: pickerValue(
                     'speakerLabels',
@@ -359,6 +364,18 @@
             });
         }
 
+        function renderVrOverlayPicker() {
+            const enabled = state().vrOverlayEnabled === true;
+            setDraft({ vrOverlayEnabled: enabled });
+            return replaceHost(elements.vrOverlayPickerHost, 'vrOverlay', [
+                { value: 'true', label: t('vr_overlay_enabled') },
+                { value: 'false', label: t('vr_overlay_disabled') },
+            ], {
+                value: enabled ? 'true' : 'false',
+                onChange: (value) => setDraft({ vrOverlayEnabled: value !== 'false' }),
+            });
+        }
+
         function renderSpeakerLabelsPicker() {
             const supported = selectedProvider() === 'soniox';
             if (elements.speakerLabelsSettingField) {
@@ -571,6 +588,7 @@
         function renderRuntimeSettingsPickers() {
             if (elements.runtimeControlsSection) elements.runtimeControlsSection.hidden = false;
             renderAutoRestartPicker();
+            renderVrOverlayPicker();
             renderSleepOnSilencePicker();
             renderSpeakerLabelsPicker();
             renderInterruptRepairPicker();
@@ -619,6 +637,16 @@
                     updateState({ sleepOnSilenceEnabled: enabled });
                 }
                 storage.setItem('sleepOnSilenceEnabled', enabled ? 'true' : 'false');
+            }
+
+            if (pickers.vrOverlay && typeof pickers.vrOverlay.value === 'string') {
+                const enabled = getDraft().vrOverlayEnabled;
+                if (enabled !== (state().vrOverlayEnabled === true)) {
+                    const ok = await actionSucceeded('setVrOverlayEnabled', enabled);
+                    if (!ok) return { ok: false, message: t('backend_vr_overlay_disabled') };
+                    updateState({ vrOverlayEnabled: enabled });
+                }
+                storage.setItem('vrOverlayEnabled', enabled ? 'true' : 'false');
             }
 
             const currentProvider = selectedProvider();
@@ -680,6 +708,7 @@
             fetchMicrophoneDevices,
             saveMicrophoneDeviceSelection,
             renderAutoRestartPicker,
+            renderVrOverlayPicker,
             renderSleepOnSilencePicker,
             getStoredHideSpeakerLabelsSetting,
             renderSpeakerLabelsPicker,

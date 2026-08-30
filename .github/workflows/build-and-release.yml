@@ -26,6 +26,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+
+    - name: Build SteamVR overlay
+      working-directory: vr_overlay
+      run: cargo build --release
     
     - name: Build executable with PyInstaller
       run: |

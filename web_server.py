@@ -35,6 +35,7 @@ from audio_capture import (
 from llm_client import close_llm_http_session
 import local_store
 import desktop_shortcut
+from vr_overlay import VROverlay
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -97,6 +98,19 @@ class WebServer:
         # The web page bounces the login code back to /account/login-callback and
         # the frontend polls /account/login-poll to complete sign-in.
         self._login_states = {}
+
+        # VR 浮层 (RinBridgeOverlay) 后端协议: auth + snapshot 推送。
+        # token 优先取 env (Rust 侧经 manifest 下发), 否则随机生成 (仅本进程内有效)。
+        self.vr_token = os.environ.get("VR_OVERLAY_TOKEN") or secrets.token_hex(16)
+        self._vr_clients = set()
+        self.vr_overlay = VROverlay(self._broadcast_vr)
+
+        # VR 浮层进程管理 (由 server.py 注入; None = 未接线)。
+        self.vr_overlay_manager = None
+
+        # VR 镜像模式: 订阅与桌面浮窗同一条广播 (update/refine_result/clear),
+        # 保证头显与桌面内容/顺序一致 (由 server.py 按配置注入)。
+        self.vr_subtitle_mirror = None
 
     def set_window_on_top_callback(self, callback):
         self.window_on_top_callback = callback
@@ -164,6 +178,16 @@ class WebServer:
                 *[client.send_str(message) for client in self.websocket_clients],
                 return_exceptions=True
             )
+        # VR 镜像旁路: 与浮窗收到同一消息、同一顺序 (失败不影响广播)。
+        if self.vr_subtitle_mirror is not None and data.get("type") in (
+            "update",
+            "refine_result",
+            "clear",
+        ):
+            try:
+                await self.vr_subtitle_mirror.handle_broadcast(data)
+            except Exception as exc:  # noqa: BLE001
+                self.logger.error(f"VR mirror push failed: {exc}")
     
     async def websocket_handler(self, request):
         """WebSocket处理函数"""
@@ -236,7 +260,55 @@ class WebServer:
             print(f"Client disconnected. Total clients: {len(self.websocket_clients)}")
         
         return ws
-    
+
+    async def vr_ws_handler(self, request):
+        """VR 浮层 WebSocket: 先 auth, 后推送 snapshot (协议见设计文档 §4)。"""
+        ws = web.WebSocketResponse(max_msg_size=4 * 1024)
+        await ws.prepare(request)
+        try:
+            first = await ws.receive(timeout=10.0)
+            if first.type != WSMsgType.TEXT:
+                return ws
+            try:
+                message = json.loads(first.data)
+            except json.JSONDecodeError:
+                return ws
+            token = message.get("session_token") if message.get("type") == "auth" else None
+            if not token or token != self.vr_token:
+                await ws.send_str(json.dumps({"type": "auth_error"}))
+                return ws
+            print(f"VR overlay client connected. Total: {len(self._vr_clients) + 1}")
+            # 连接即推送当前快照 (重连后状态同步, 不依赖下一条字幕)
+            await ws.send_str(json.dumps(self.vr_overlay.latest_snapshot()))
+            self._vr_clients.add(ws)
+
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    try:
+                        message = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        continue
+                    if message.get("type") == "status":
+                        print(f"VR overlay status: {message.get('state')}")
+        except Exception as e:
+            print(f"VR WebSocket error: {e}")
+        finally:
+            self._vr_clients.discard(ws)
+            print(f"VR overlay client disconnected. Total: {len(self._vr_clients)}")
+        return ws
+
+    async def _broadcast_vr(self, payload: dict) -> None:
+        """推送 snapshot 给所有 VR 浮层客户端 (尽力而为, 失败剔除)。"""
+        message = json.dumps(payload)
+        stale = []
+        for client in list(self._vr_clients):
+            try:
+                await client.send_str(message)
+            except Exception:
+                stale.append(client)
+        for client in stale:
+            self._vr_clients.discard(client)
+
     async def health_handler(self, request):
         """健康检查端点 - 用于浏览器定期检测服务器是否存活"""
         return web.json_response({"status": "ok"})
@@ -315,6 +387,11 @@ class WebServer:
             ),
             "interrupt_repair_enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
             "sleep_on_silence_enabled": config.get_sleep_on_silence_enabled(provider),
+            # VR 浮层真实状态 (开关初始值以此为准, 防 localStorage 与后端脱节)。
+            "vr_overlay_enabled": (
+                getattr(self, "vr_overlay_manager", None) is not None
+                and self.vr_overlay_manager.status not in ("stopped", "crashed")
+            ),
             "soniox_region": config.SONIOX_REGION,
             "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
             # Subtitle-server relay (hosted mode) availability. The server URL is
@@ -1214,6 +1291,46 @@ class WebServer:
             "effective": bool(effective),
         })
 
+    async def vr_overlay_get_handler(self, request):
+        """VR overlay 开关状态查询。"""
+        manager = getattr(self, "vr_overlay_manager", None)
+        return web.json_response({
+            "enabled": manager is not None and manager.status not in ("stopped", "crashed"),
+            "status": manager.status if manager is not None else "stopped",
+        })
+
+    async def vr_overlay_set_handler(self, request):
+        """热切换 VR overlay: 开 → spawn, 关 → kill。
+
+        优先走 server.py 注入的编排闭包 (互斥: VR 开 → 桌面浮层退出);
+        未接线时回退到 manager 自身。
+        """
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        manager = getattr(self, "vr_overlay_manager", None)
+        if manager is None:
+            return web.json_response({"status": "error", "message": "VR overlay not wired"}, status=400)
+        if payload.get("enabled"):
+            start = getattr(self, "vr_overlay_start", None)
+            if start is not None:
+                start()
+            else:
+                manager.start()
+        else:
+            stop = getattr(self, "vr_overlay_stop", None)
+            if stop is not None:
+                stop()
+            else:
+                manager.close()
+        return web.json_response({
+            "enabled": manager.status not in ("stopped", "crashed"),
+            "status": manager.status,
+        })
+
     def _supports_interrupt_repair(self) -> bool:
         return (
             config.TRANSLATION_PROVIDER == "soniox"
@@ -1992,6 +2109,9 @@ class WebServer:
         # 路由设置
         app.router.add_get('/', self.index_handler)
         app.router.add_get('/ws', self.websocket_handler)
+        app.router.add_get('/vr_ws', self.vr_ws_handler)
+        app.router.add_get('/vr-overlay', self.vr_overlay_get_handler)
+        app.router.add_post('/vr-overlay', self.vr_overlay_set_handler)
         app.router.add_get('/health', self.health_handler)
         app.router.add_get('/local-store', self.local_store_get_handler)
         app.router.add_post('/local-store', self.local_store_post_handler)

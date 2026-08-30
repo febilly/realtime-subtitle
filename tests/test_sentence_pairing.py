@@ -123,7 +123,7 @@ def test_pairing_deadline_tracks_quiet_and_empty_waits():
 
     pairer.route_source_token({"text": "empty"}, "1")
     pairer.close_source("1")
-    assert 2.99 <= pairer.seconds_until_next_deadline() <= 3.01
+    assert 7.99 <= pairer.seconds_until_next_deadline() <= 8.01
 
 
 def test_resync_gap_moves_next_translation_to_next_sentence():
@@ -277,7 +277,7 @@ def test_punct_handoff_needs_a_closed_later_source():
     assert [e.translation_text() for e in completed] == ["因为A。所以B。"]
 
 
-def test_missing_translation_times_out_and_completes_empty():
+def test_missing_translation_waits_eight_seconds_then_completes_empty():
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)
 
@@ -285,7 +285,9 @@ def test_missing_translation_times_out_and_completes_empty():
     pairer.close_source("1")
 
     assert pairer.collect_completed() == []
-    clock["t"] += 3.5  # MAX_WAIT_SECONDS elapsed
+    clock["t"] += 3.5
+    assert pairer.collect_completed() == []
+    clock["t"] += 4.6  # MAX_WAIT_SECONDS elapsed
     completed = pairer.collect_completed()
     assert len(completed) == 1
     assert completed[0].translation_text() == ""
@@ -305,7 +307,7 @@ def test_late_translation_revives_timed_out_sentence():
     pairer.route_source_token(frag, "1")
     pairer.close_source("1", reason="endpoint")
 
-    clock["t"] += 3.5  # MAX_WAIT elapses while another speaker talks
+    clock["t"] += 8.1  # MAX_WAIT elapses while another speaker talks
     timed_out = pairer.collect_completed()
     assert [e.translation_close_reason for e in timed_out] == ["timeout_empty"]
 
@@ -335,7 +337,7 @@ def test_revival_window_expires():
     pairer = _make_pairer(clock)
     pairer.route_source_token({"text": "こんにちは"}, "1")
     pairer.close_source("1")
-    clock["t"] += 3.5
+    clock["t"] += 8.1
     assert pairer.collect_completed()[0].translation_close_reason == "timeout_empty"
 
     clock["t"] += 10.0  # beyond REVIVE_WINDOW_SECONDS
@@ -352,7 +354,7 @@ def test_revival_yields_to_awaiting_sentence():
     pairer = _make_pairer(clock)
     pairer.route_source_token({"text": "古い文"}, "1")
     pairer.close_source("1")
-    clock["t"] += 3.5
+    clock["t"] += 8.1
     assert pairer.collect_completed()[0].translation_close_reason == "timeout_empty"
 
     newer = {"text": "新しい文。"}
@@ -374,7 +376,7 @@ def test_revival_precedes_newer_open_source_without_translation():
     old = {"text": "おー。"}
     pairer.route_source_token(old, "1")
     pairer.close_source("1")
-    clock["t"] += 3.1
+    clock["t"] += 8.1
     assert pairer.collect_completed()[0].translation_close_reason == "timeout_empty"
 
     newer = {"text": "これさ、ここがごちゃってなるのめっちゃ嫌だから、"}
@@ -436,7 +438,7 @@ def test_close_reasons_and_timing_metrics_are_recorded():
     # empty timeout
     pairer.route_source_token({"text": "え"}, "1")
     pairer.close_source("1")
-    clock["t"] = 106.0
+    clock["t"] = 110.1
     done = pairer.collect_completed()
     assert [e.translation_close_reason for e in done] == ["timeout_empty"]
 
@@ -1058,8 +1060,19 @@ def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
     async def broadcast(data):
         updates.append(data)
 
+    class CapturingIpc:
+        def __init__(self):
+            self.messages = []
+
+        async def broadcast_foreign_speech(
+            self, source, language, translation, finalized=True, vr=True
+        ):
+            self.messages.append((source, language, translation))
+
     monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
     monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+    ipc = CapturingIpc()
+    monkeypatch.setattr(module, "ipc_server", ipc)
 
     now = {"t": 100.0}
     monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
@@ -1100,7 +1113,7 @@ def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
           {"text": "<end>", "is_final": True, "speaker": "1",
            "translation_status": "original"}])
     # A's entry times out empty while B speaks.
-    feed([], advance=3.5)
+    feed([], advance=8.1)
     # Speaker B: complete sentence with its translation.
     feed([tok("これで完成です。", "2", "original", "ja"),
           tok("这样就完成了。", "2", "translation", "zh")])
@@ -1125,6 +1138,7 @@ def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
     assert frag_id and frag_id == late_id, (frag_id, late_id)
     refined_ids = [u["sentence_id"] for u in updates if u.get("type") == "refine_result"]
     assert frag_id in refined_ids
+    assert ("鉄の供給も", "ja", "铁的供应也。") in ipc.messages
 
 
 def test_session_late_short_translation_does_not_swap_with_open_next_sentence(monkeypatch):
@@ -1175,7 +1189,7 @@ def test_session_late_short_translation_does_not_swap_with_open_next_sentence(mo
         )[0]
 
     feed([tok("おー。", "original")])
-    feed([], advance=3.1)  # timeout_empty, still revivable
+    feed([], advance=8.1)  # timeout_empty, still revivable
     feed([tok("これさ、ここがごちゃってなるのめっちゃ嫌だから、", "original")], advance=1.0)
     feed([tok("哦。", "translation", "zh")], advance=0.4)
     feed([tok("这个啊，这里会变得乱糟糟的我特别讨厌，", "translation", "zh")], advance=0.2)

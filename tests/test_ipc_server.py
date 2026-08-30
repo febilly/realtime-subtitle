@@ -228,6 +228,72 @@ class TestIPCServerBroadcast:
             await server.stop()
 
     @pytest.mark.asyncio
+    async def test_broadcast_foreign_speech_carries_translation(self):
+        server = IPCServer()
+        try:
+            await server.start()
+            r1, w1 = await asyncio.open_connection(mock_config.IPC_HOST, server._port)
+            await asyncio.sleep(0.1)
+            while r1._buffer:
+                await r1.readline()
+
+            await server.broadcast_foreign_speech("bonjour", "fr", "你好")
+            line = await asyncio.wait_for(r1.readline(), timeout=1.0)
+            data = deserialize_message(line.decode("utf-8"))
+
+            assert data["type"] == "FOREIGN_SPEECH"
+            assert data["source_text"] == "bonjour"
+            assert data["translation"] == "你好"
+
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_vr_overlay_hook_fires_without_ipc_clients(self):
+        from unittest.mock import AsyncMock
+
+        server = IPCServer()
+        server.vr_overlay = AsyncMock()
+        try:
+            await server.start()
+            # 无 IPC 客户端也要推给 VR (独立订阅者, 不受早期 return 影响)
+            await server.broadcast_foreign_speech("bonjour", "fr", "你好")
+            await asyncio.sleep(0)  # 让 fire-and-forget 的 VR push task 跑完
+            server.vr_overlay.push.assert_awaited_once_with(
+                "bonjour", "fr", "你好", finalized=True
+            )
+        finally:
+            await server.stop()
+
+    @pytest.mark.asyncio
+    async def test_vr_overlay_hook_does_not_break_broadcast(self):
+        from unittest.mock import AsyncMock
+
+        server = IPCServer()
+        failing_vr = AsyncMock()
+        failing_vr.push.side_effect = RuntimeError("vr push crashed")
+        server.vr_overlay = failing_vr
+        try:
+            await server.start()
+            r1, w1 = await asyncio.open_connection(mock_config.IPC_HOST, server._port)
+            await asyncio.sleep(0.1)
+            while r1._buffer:
+                await r1.readline()
+
+            # VR 挂掉不影响 IPC 广播
+            await server.broadcast_foreign_speech("bonjour", "fr", "你好")
+            line = await asyncio.wait_for(r1.readline(), timeout=1.0)
+            data = deserialize_message(line.decode("utf-8"))
+            assert data["source_text"] == "bonjour"
+
+            w1.close()
+            await w1.wait_closed()
+        finally:
+            await server.stop()
+
+    @pytest.mark.asyncio
     async def test_broadcast_with_no_clients(self):
         server = IPCServer()
         try:

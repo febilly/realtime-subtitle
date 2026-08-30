@@ -983,7 +983,7 @@ class GeminiSession:
         if ipc_server and hasattr(ipc_server, "broadcast_foreign_speech"):
             try:
                 detected_lang = self._infer_source_language(original_tokens)
-                asyncio.create_task(ipc_server.broadcast_foreign_speech(source, detected_lang))
+                asyncio.create_task(ipc_server.broadcast_foreign_speech(source, detected_lang, translation))
             except Exception as e:
                 print(f"⚠️ [IPC] Failed to fire-and-forget broadcast: {e}")
 
@@ -1030,6 +1030,24 @@ class GeminiSession:
                     refined_translation = translation
                     no_change = False
                 print(f"LLM refine error: {error}")
+
+        # The desktop receives this later LLM result via refine_result. VR must
+        # also receive it, or it stays on the earlier source-only snapshot.
+        if (
+            ipc_server
+            and hasattr(ipc_server, "broadcast_foreign_speech")
+            and refined_translation
+            and refined_translation != translation
+        ):
+            try:
+                detected_lang = self._infer_source_language(original_tokens)
+                asyncio.create_task(
+                    ipc_server.broadcast_foreign_speech(
+                        source, detected_lang, refined_translation
+                    )
+                )
+            except Exception as e:
+                print(f"⚠️ [IPC] Failed to broadcast refined VR translation: {e}")
 
         await self.broadcast_callback({
             "type": "refine_result",

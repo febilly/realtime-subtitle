@@ -1014,6 +1014,66 @@ class SonioxSession:
             if speaker not in active_speakers:
                 self._osc_live_last_text_by_speaker.pop(speaker, None)
 
+    def _maybe_send_live_vr_caption(
+        self,
+        non_final_tokens: list[dict],
+        loop: asyncio.AbstractEventLoop,
+        final_tokens: list[dict] | None = None,
+    ) -> None:
+        """Push Soniox's current draft to VR instead of waiting for finalization."""
+        if not ipc_server or not hasattr(ipc_server, "broadcast_foreign_speech"):
+            return
+
+        non_final_translation_by_speaker: dict[str, list[str]] = {}
+        non_final_original_by_speaker: dict[str, list[dict]] = {}
+        for token in non_final_tokens:
+            text = token.get("text")
+            if text is None or self._is_internal_soniox_token(text):
+                continue
+            speaker = str(token.get("speaker", "?"))
+            if token.get("translation_status") == "translation":
+                non_final_translation_by_speaker.setdefault(speaker, []).append(str(text))
+            else:
+                non_final_original_by_speaker.setdefault(speaker, []).append(token)
+
+        # The desktop consumes final tokens immediately.  Include speakers
+        # whose translation just became final so VR receives the same draft
+        # instead of waiting for the sentence pairer to close the line.
+        final_translation_speakers = {
+            str(token.get("speaker", "?"))
+            for token in (final_tokens or [])
+            if token.get("text") is not None
+            and not self._is_internal_soniox_token(token.get("text", ""))
+            and token.get("translation_status") == "translation"
+        }
+        active_speakers = (
+            set(non_final_translation_by_speaker)
+            | set(non_final_original_by_speaker)
+            | final_translation_speakers
+        )
+        for speaker in active_speakers:
+            buffer = self._sentence_buffers.get(speaker) or {}
+            source_tokens = list(buffer.get("original_tokens") or []) + list(
+                non_final_original_by_speaker.get(speaker, [])
+            )
+            source_text = self._join_token_texts(source_tokens)
+            if not source_text:
+                continue
+            translation_text = self._join_token_texts(buffer.get("translation_tokens") or [])
+            translation_text += "".join(non_final_translation_by_speaker.get(speaker, []))
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    ipc_server.broadcast_foreign_speech(
+                        source_text,
+                        self._infer_source_language(source_tokens),
+                        translation_text or None,
+                        finalized=False,
+                    ),
+                    loop,
+                )
+            except Exception as error:
+                print(f"⚠️ [VR] Failed to push live caption: {error}")
+
     def _maybe_speculative_translate(self, non_final_tokens: list[dict]) -> None:
         """准确 mode: fire the LLM for sentences already complete in the
         not-yet-final text so the translation is ready (cached + previewed)
@@ -1557,10 +1617,16 @@ class SonioxSession:
         if sentence_id and str(sentence_id) in self._retracted_sentence_ids:
             return
 
-        if announce and ipc_server and hasattr(ipc_server, "broadcast_foreign_speech"):
+        # A revived sentence was already announced when it timed out empty, but
+        # its late translation is a real content update that VR/IPC must receive.
+        if (announce or translation) and ipc_server and hasattr(ipc_server, "broadcast_foreign_speech"):
             try:
                 detected_lang = self._infer_source_language(original_tokens)
-                asyncio.create_task(ipc_server.broadcast_foreign_speech(source, detected_lang))
+                asyncio.create_task(
+                    ipc_server.broadcast_foreign_speech(
+                        source, detected_lang, translation, vr=False
+                    )
+                )
             except Exception as e:
                 print(f"⚠️ [IPC] Failed to fire-and-forget broadcast: {e}")
 
@@ -1673,6 +1739,33 @@ class SonioxSession:
                 source=source,
             )
             return
+
+        # VR's finalized packet is the desktop's complete packet: same moment
+        # as refine_result below, same content. Push it unconditionally so
+        # every sentence ends with exactly one finalized=True event (the 8s
+        # clear timer only arms on finalized). no_change, LLM-off and same-
+        # language fallback all still deliver a finalized packet. Content is
+        # always >= what the live draft showed, so VR can never roll back.
+        vr_final_translation = refined_translation or (
+            source if fallback_to_source else ""
+        )
+        if (
+            ipc_server
+            and hasattr(ipc_server, "broadcast_foreign_speech")
+            and vr_final_translation
+        ):
+            try:
+                detected_lang = self._infer_source_language(original_tokens)
+                same_language = vr_final_translation.strip() == source.strip()
+                asyncio.create_task(
+                    ipc_server.broadcast_foreign_speech(
+                        source,
+                        detected_lang,
+                        None if same_language else vr_final_translation,
+                    )
+                )
+            except Exception as e:
+                print(f"⚠️ [IPC] Failed to broadcast finalized VR caption: {e}")
 
         await self.broadcast_callback({
             "type": "refine_result",
@@ -2315,6 +2408,7 @@ class SonioxSession:
                 if token.get("text") is None:
                     continue
                 self._process_token_for_sentence(token)
+            self._maybe_send_live_vr_caption([], loop, new_final_tokens)
 
         if interleaved_punctuation and new_final_tokens:
             # When the speech is already in the target language there are no
@@ -2393,6 +2487,10 @@ class SonioxSession:
                             finalized_speakers,
                         )
                 self._process_token_for_sentence(token)
+                if is_translation:
+                    # Push while the display buffer still contains this
+                    # sentence. Boundary handling below may pop it.
+                    self._maybe_send_live_vr_caption([], loop, [token])
                 if is_translation and has_sentence_punctuation and token_speaker:
                     # Translation punctuation already closes the DISPLAY
                     # sentence below. Keep the semantic pairer aligned with
@@ -2588,6 +2686,7 @@ class SonioxSession:
             non_final_tokens, outgoing_final_tokens
         )
         self._maybe_send_live_osc_translation(non_final_tokens)
+        self._maybe_send_live_vr_caption(non_final_tokens, loop)
         self._maybe_speculative_translate(non_final_tokens)
 
         # 将新的final tokens写入日志

@@ -1140,6 +1140,210 @@ def _feed_non_final_translation(session, text, language):
     )
 
 
+def test_non_final_translation_is_pushed_to_vr_without_waiting_for_sentence_end(monkeypatch):
+    """Regression: VR must receive the live Soniox draft, not only finalized sentences."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    class CapturingIpc:
+        def __init__(self):
+            self.messages = []
+
+        async def broadcast_foreign_speech(
+            self, source_text, detected_language, translation, finalized=True
+        ):
+            self.messages.append(
+                (source_text, detected_language, translation, finalized)
+            )
+
+    async def broadcast(_data):
+        return None
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    ipc = CapturingIpc()
+    monkeypatch.setattr(module, "ipc_server", ipc)
+    session = module.SonioxSession(MagicMock(), broadcast)
+
+    session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": "Good evening",
+                    "is_final": False,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": "en",
+                    "source_language": "en",
+                },
+                {
+                    "text": "晚上好",
+                    "is_final": False,
+                    "speaker": "1",
+                    "translation_status": "translation",
+                    "language": "zh",
+                    "source_language": "en",
+                },
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+    assert ipc.messages == [("Good evening", "en", "晚上好", False)]
+
+
+def test_final_translation_is_pushed_to_vr_without_waiting_for_sentence_end(monkeypatch):
+    """Desktop renders final tokens immediately; VR must receive that same draft."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    class CapturingIpc:
+        def __init__(self):
+            self.messages = []
+
+        async def broadcast_foreign_speech(
+            self, source_text, detected_language, translation, finalized=True
+        ):
+            self.messages.append(
+                (source_text, detected_language, translation, finalized)
+            )
+
+    async def broadcast(_data):
+        return None
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    ipc = CapturingIpc()
+    monkeypatch.setattr(module, "ipc_server", ipc)
+    session = module.SonioxSession(MagicMock(), broadcast)
+
+    session._process_soniox_response(
+        {
+            "tokens": [
+                {
+                    "text": "Good evening",
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": "en",
+                    "source_language": "en",
+                },
+                {
+                    "text": "晚上好",
+                    "is_final": True,
+                    "speaker": "1",
+                    "translation_status": "translation",
+                    "language": "zh",
+                    "source_language": "en",
+                },
+            ]
+        },
+        [],
+        0,
+        object(),
+    )
+
+    assert ipc.messages == [("Good evening", "en", "晚上好", False)]
+
+
+def test_punctuation_finalization_does_not_resend_stale_vr_caption(monkeypatch):
+    """Continuous-stream contract: A live bilingual → A finalized complete
+    packet → B source-only (never carrying A's translation) → B live bilingual
+    → B finalized. Exactly one finalized=True packet per sentence, emitted at
+    the same moment the desktop's refine_result complete packet is sent."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    class CapturingIpc:
+        def __init__(self):
+            self.messages = []
+
+        async def broadcast_foreign_speech(
+            self,
+            source_text,
+            detected_language,
+            translation,
+            finalized=True,
+            vr=True,
+        ):
+            self.messages.append(
+                (source_text, detected_language, translation, finalized, vr)
+            )
+
+    async def broadcast(_data):
+        return None
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    ipc = CapturingIpc()
+    monkeypatch.setattr(module, "ipc_server", ipc)
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    all_final = []
+    sent = 0
+
+    def feed(tokens):
+        nonlocal sent
+        sent = session._process_soniox_response(
+            {"tokens": tokens}, all_final, sent, object()
+        )[0]
+
+    def final_pair(source, translation):
+        return [
+            {
+                "text": source,
+                "is_final": True,
+                "speaker": "1",
+                "translation_status": "original",
+                "language": "en",
+                "source_language": "en",
+            },
+            {
+                "text": translation,
+                "is_final": True,
+                "speaker": "1",
+                "translation_status": "translation",
+                "language": "zh",
+                "source_language": "en",
+            },
+        ]
+
+    feed(final_pair("First sentence.", "第一句。"))
+    feed([
+        {
+            "text": "Second sentence",
+            "is_final": False,
+            "speaker": "1",
+            "translation_status": "original",
+            "language": "en",
+            "source_language": "en",
+        }
+    ])
+    feed(final_pair("Second sentence.", "第二句。"))
+
+    vr_messages = [message for message in ipc.messages if message[4]]
+    assert vr_messages == [
+        # A: live draft, then the finalized complete packet (same content).
+        ("First sentence.", "en", "第一句。", False, True),
+        ("First sentence.", "en", "第一句。", True, True),
+        # B: live original must stay pure — never A's translation re-flashed.
+        ("Second sentence", "en", None, False, True),
+        ("Second sentence.", "en", "第二句。", False, True),
+        ("Second sentence.", "en", "第二句。", True, True),
+    ]
+    # Exactly one finalized packet per sentence; it is the desktop's complete
+    # packet re-sent to VR, so the 8s clear timer always arms.
+    finalized_packets = [m for m in vr_messages if m[3]]
+    assert [m[0] for m in finalized_packets] == ["First sentence.", "Second sentence."]
+    assert [message[0] for message in ipc.messages if not message[4]] == [
+        "First sentence.",
+        "Second sentence.",
+    ]
+
+
 def _feed_original_and_translation(session, source, translation, source_language="en", translation_language="zh"):
     return session._process_soniox_response(
         {
@@ -1640,6 +1844,16 @@ def test_accurate_mode_finalize_broadcasts_pending_placeholder(monkeypatch):
     monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
     monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
 
+    class CapturingIpc:
+        def __init__(self):
+            self.messages = []
+
+        async def broadcast_foreign_speech(self, source, language, translation):
+            self.messages.append((source, language, translation))
+
+    ipc = CapturingIpc()
+    monkeypatch.setattr(module, "ipc_server", ipc)
+
     session = module.SonioxSession(MagicMock(), broadcast)
     session.translation = "one_way"
     session.translation_target_lang = "zh"
@@ -1663,6 +1877,7 @@ def test_accurate_mode_finalize_broadcasts_pending_placeholder(monkeypatch):
     pending = [u for u in updates if u.get("type") == "spec_translation_pending"]
     assert pending[0]["source"] == "Hello there."
     assert pending[0]["target_lang"] == "zh"
+    assert ipc.messages[-1] == ("Hello there.", "en", "你好。")
 
 
 def test_accurate_mode_speculative_cooldown_limits_flip_flop_requests(monkeypatch):

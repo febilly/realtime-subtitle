@@ -196,38 +196,68 @@ class IPCServer:
                         pass
 
     async def broadcast_foreign_speech(
-        self, source_text: str, detected_language: Optional[str] = None
+        self,
+        source_text: str,
+        detected_language: Optional[str] = None,
+        translation: Optional[str] = None,
+        finalized: bool = True,
+        vr: bool = True,
     ) -> None:
         """Broadcast a ForeignSpeech message to all connected clients."""
-        if not self._clients:
-            return
+        if self._clients:
+            message = ForeignSpeech(
+                source_text=source_text,
+                detected_language=detected_language,
+                translation=translation,
+            )
+            payload = serialize_message(message).encode("utf-8")
 
-        message = ForeignSpeech(
-            source_text=source_text,
-            detected_language=detected_language,
-        )
-        payload = serialize_message(message).encode("utf-8")
+            disconnected: List[asyncio.StreamWriter] = []
+            for writer in list(self._clients):
+                try:
+                    writer.write(payload)
+                    await writer.drain()
+                except Exception as exc:
+                    logger.warning("[IPC] Failed to broadcast to client: %s", exc)
+                    disconnected.append(writer)
 
-        disconnected: List[asyncio.StreamWriter] = []
-        for writer in list(self._clients):
-            try:
-                writer.write(payload)
-                await writer.drain()
-            except Exception as exc:
-                logger.warning("[IPC] Failed to broadcast to client: %s", exc)
-                disconnected.append(writer)
+            if disconnected:
+                async with self._lock:
+                    for writer in disconnected:
+                        if writer in self._clients:
+                            self._clients.remove(writer)
+                    for writer in disconnected:
+                        try:
+                            writer.close()
+                            await writer.wait_closed()
+                        except Exception:
+                            pass
 
-        if disconnected:
-            async with self._lock:
-                for writer in disconnected:
-                    if writer in self._clients:
-                        self._clients.remove(writer)
-                for writer in disconnected:
-                    try:
-                        writer.close()
-                        await writer.wait_closed()
-                    except Exception:
-                        pass
+        # VR 浮层订阅 (可选模块, 由 server.py 注入)。与 IPC 客户端独立:
+        # 无 IPC 客户端也要推; fire-and-forget, VR 慢客户端反压绝不停顿 IPC 广播。
+        vr_overlay = getattr(self, "vr_overlay", None)
+        if vr and vr_overlay is not None:
+            asyncio.create_task(
+                self._push_vr(
+                    vr_overlay, source_text, detected_language, translation, finalized
+                )
+            )
+
+    async def _push_vr(
+        self,
+        vr_overlay,
+        source_text: str,
+        detected_language: Optional[str],
+        translation: Optional[str],
+        finalized: bool,
+    ) -> None:
+        """把事件推给 VR 浮层 (独立任务, 异常只记日志, 不波及 IPC)。"""
+        try:
+            await vr_overlay.push(
+                source_text, detected_language, translation, finalized=finalized
+            )
+        except Exception as exc:
+            logger.warning("[IPC] VR overlay push failed: %s", exc)
 
     async def stop(self) -> None:
         """Stop the server and clean up the discovery file."""

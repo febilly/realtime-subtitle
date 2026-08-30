@@ -60,3 +60,14 @@ scratch/
 
 # pytest temporary sandboxes
 .pytest-tmp*/
+
+# Rust overlay crate build output
+vr_overlay/target/
+
+# VR overlay runtime artifacts (written by vr_overlay_manager.py)
+overlay_manifest.json
+overlay-logs/
+
+# Local tool caches / agent scratch
+.pnpm-store/
+.sisyphus/

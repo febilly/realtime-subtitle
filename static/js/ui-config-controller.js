@@ -175,6 +175,7 @@
             call('renderBundledCjkFontPicker');
 
             speakerLabels.applyBackendConfig(data);
+            call('applyVrOverlayConfig', data);
             call('applySleepOnSilenceConfig', data);
             call('applyInterruptRepairConfig', data);
             call('renderRuntimeSettingsPickers');

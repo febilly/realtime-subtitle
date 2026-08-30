@@ -1,7 +1,32 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sys
+
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('static', 'static'), ('ACKNOWLEDGMENTS.md', '.')]
+datas = [
+    ('static', 'static'),
+    ('ACKNOWLEDGMENTS.md', '.'),
+]
+
+# SteamVR overlay bundle: cargo release build + vendored Valve OpenVR loader.
+# Both inputs are required together; when either is missing (e.g. a machine
+# without Rust, or a half-set-up CI cache) emit a warning and build the
+# Python-only exe instead of failing the whole PyInstaller run.
+_spec_root = globals().get('SPECPATH', '.') or '.'
+_vr_overlay_exe = os.path.join(_spec_root, 'vr_overlay', 'target', 'release', 'RinBridgeOverlay.exe')
+_vr_overlay_dll = os.path.join(_spec_root, 'vr_overlay', 'vendor', 'openvr_api.dll')
+if os.path.exists(_vr_overlay_exe) and os.path.exists(_vr_overlay_dll):
+    datas += [
+        (_vr_overlay_exe, 'vr_overlay'),
+        (_vr_overlay_dll, 'vr_overlay'),
+    ]
+else:
+    _missing = [p for p in (_vr_overlay_exe, _vr_overlay_dll) if not os.path.exists(p)]
+    print(
+        'WARNING [spec]: building WITHOUT the VR overlay; missing: ' + ', '.join(_missing),
+        file=sys.stderr,
+    )
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',
