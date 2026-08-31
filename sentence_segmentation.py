@@ -41,7 +41,10 @@ def is_sentence_ender_at(value: str, index: int) -> bool:
         return False
     if ch == ".":
         prev_ch = value[index - 1] if index > 0 else ""
-        next_ch = value[index + 1] if index + 1 < len(value) else ""
+        next_index = index + 1
+        while next_index < len(value) and value[next_index].isspace():
+            next_index += 1
+        next_ch = value[next_index] if next_index < len(value) else ""
         if prev_ch == "." or next_ch == ".":
             return False  # part of an ASCII ellipsis ".." / "..."
         if prev_ch.isdigit() and next_ch.isdigit():
@@ -309,12 +312,21 @@ class PendingBoundaryState:
             return True
         if next_text is not None and next_text.startswith("."):
             return False  # an ASCII ellipsis is still streaming ("." + "..")
-        prev_ch = stripped[-2] if len(stripped) >= 2 else ""
+        # Soniox can finalize the number and period as separate tokens:
+        # ``"5"`` + ``"."`` + ``"3%"``. Use the accumulated context so the
+        # numeric character before a punctuation-only token remains visible.
+        context_value = str(context_text or "")
+        context_stripped = context_value.rstrip()
+        prev_ch = (
+            context_stripped[-2]
+            if len(context_stripped) >= 2 and context_stripped.endswith(".")
+            else ""
+        )
         if not prev_ch.isdigit():
             return True
         if next_text is None:
             return False
-        return not token_text_continues_decimal(text, next_text)
+        return not token_text_continues_decimal(context_value, next_text)
 
     def flush_before_token(self, token: dict) -> bool:
         key = self.key(token)
@@ -379,10 +391,11 @@ class PendingBoundaryState:
         if self._has_unresolved_numeric_period(
             tokens,
             index,
+            context_text=context_text,
             is_internal_token=is_internal_token,
             source_as_output=source_as_output,
         ):
-            self.numeric_period_tokens[key] = dict(token)
+            self.numeric_period_tokens[key] = {"text": context_text}
 
     def _pending_quote_boundary(
         self,
@@ -403,7 +416,12 @@ class PendingBoundaryState:
             return None
         stripped = text.strip()
         if stripped.endswith("."):
-            prev_ch = stripped[-2] if len(stripped) >= 2 else ""
+            context_stripped = str(context_text or "").rstrip()
+            prev_ch = (
+                context_stripped[-2]
+                if len(context_stripped) >= 2 and context_stripped.endswith(".")
+                else ""
+            )
             if prev_ch.isdigit():
                 return None
         next_text = self.next_compatible_text(
@@ -436,12 +454,11 @@ class PendingBoundaryState:
         tokens: list[dict],
         index: int,
         *,
+        context_text: str,
         is_internal_token: Callable[[object], bool],
         source_as_output: bool,
     ) -> bool:
-        token = tokens[index]
-        text = str(token.get("text") or "")
-        stripped = text.rstrip()
+        stripped = str(context_text or "").rstrip()
         if len(stripped) < 2 or not stripped.endswith(".") or not stripped[-2].isdigit():
             return False
         next_text = self.next_compatible_text(
@@ -456,4 +473,17 @@ class PendingBoundaryState:
 def token_text_continues_decimal(previous_text: str, next_text: str) -> bool:
     if not previous_text or not next_text:
         return False
-    return not previous_text[-1].isspace() and not next_text[0].isspace() and next_text[0].isdigit()
+    # Soniox may put cosmetic leading whitespace on a new streamed token even
+    # when it continues the fractional part of the previous numeric token
+    # (e.g. ``"7."`` + ``" 2%,"``).  Whitespace after the period still means
+    # the previous token really ended; whitespace before the next token does
+    # not reliably describe the spoken-text boundary.
+    next_value = next_text.lstrip()
+    return (
+        len(previous_text) >= 2
+        and not previous_text[-1].isspace()
+        and previous_text[-1] == "."
+        and previous_text[-2].isdigit()
+        and bool(next_value)
+        and next_value[0].isdigit()
+    )

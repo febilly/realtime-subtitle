@@ -975,6 +975,56 @@ def test_session_mid_token_period_still_splits_sentences(monkeypatch):
     ], calls
 
 
+def test_session_mid_token_decimal_stays_one_sentence(monkeypatch):
+    """A finalized Soniox token can contain ``5. 3%`` with token-formatting
+    whitespace. It must reach pairing and LLM translation as one sentence."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    async def broadcast(_data):
+        return None
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    now = {"t": 100.0}
+    monkeypatch.setattr(module.time, "monotonic", lambda: now["t"])
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    session._llm_refine_mode = "translate"
+    session._suppress_soniox_translation = True
+
+    calls = []
+
+    async def fake_translate(source, context_items, target_lang=None):
+        calls.append(source)
+        return {"status": "ok", "translation": "月度营收增长了5.3个百分点。"}
+
+    session._perform_translate = fake_translate
+
+    text = "Monthly revenue grew by 5. 3% points."
+    token = {
+        "text": text,
+        "is_final": True,
+        "speaker": "1",
+        "translation_status": "original",
+        "language": "en",
+        "source_language": "en",
+    }
+    all_final = []
+    sent = session._process_soniox_response(
+        {"tokens": [token]}, all_final, 0, object()
+    )[0]
+    now["t"] += 2.0
+    session._process_soniox_response({"tokens": []}, all_final, sent, object())
+
+    assert calls == [text], calls
+
+
 def test_session_quoted_passage_stays_one_pair(monkeypatch):
     """Live 2026-07-12 (llm_20260712_083348 ids 30-39, 混合 mode): the source
     split at the 。 inside 「だめ、だめ、だめ。それ、スズメバチ。」 while

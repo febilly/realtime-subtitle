@@ -30,7 +30,9 @@
         if (ch === '…') return false;
         if (ch === '.') {
             const previous = index > 0 ? value[index - 1] : '';
-            const next = index + 1 < value.length ? value[index + 1] : '';
+            let nextIndex = index + 1;
+            while (nextIndex < value.length && /\s/u.test(value[nextIndex])) nextIndex += 1;
+            const next = nextIndex < value.length ? value[nextIndex] : '';
             if (previous === '.' || next === '.') return false;
             if (isDigit(previous) && isDigit(next)) return false;
         }
@@ -79,7 +81,17 @@
 
     function tokenTextContinuesDecimal(previousText, nextText) {
         if (!previousText || !nextText) return false;
-        return !/\s$/u.test(previousText) && !/^\s/u.test(nextText) && isDigit(nextText[0]);
+        // Streaming tokens may carry cosmetic leading whitespace even when
+        // they continue a decimal (for example "7." + " 2%,"). Whitespace
+        // after the period remains a real break; ignore only token-leading
+        // whitespace before checking the fractional digit.
+        const nextValue = String(nextText).trimStart();
+        return previousText.length >= 2
+            && !/\s$/u.test(previousText)
+            && previousText.at(-1) === '.'
+            && isDigit(previousText.at(-2))
+            && !!nextValue
+            && isDigit(nextValue[0]);
     }
 
     function tokenTextStartsWithClosingQuote(previousText, nextText) {

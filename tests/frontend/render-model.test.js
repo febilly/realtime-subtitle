@@ -199,6 +199,30 @@ describe('RenderModel speculative token stream', () => {
         expect(tokens).toEqual(values);
     });
 
+    it('keeps a decimal together when the fractional token has leading whitespace', () => {
+        const values = [
+            original('误差从21%降到7.', { is_final: false, language: 'zh' }),
+            original(' 2%，', { is_final: false, language: 'zh' }),
+            original('也就是之前的一个门槛', { is_final: false, language: 'zh' }),
+        ];
+        const tokens = RenderModel.buildRenderTokens({ currentNonFinalTokens: values });
+
+        expect(tokens).toEqual(values);
+        expect(tokens.some((token) => token.is_separator)).toBe(false);
+    });
+
+    it('keeps a decimal together when the period is a standalone token', () => {
+        const values = [
+            original('Monthly revenue grew by 5', { is_final: false, language: 'en' }),
+            original('.', { is_final: false, language: 'en' }),
+            original('3% points.', { is_final: false, language: 'en' }),
+        ];
+        const tokens = RenderModel.buildRenderTokens({ currentNonFinalTokens: values });
+
+        expect(tokens).toEqual(values);
+        expect(tokens.some((token) => token.is_separator)).toBe(false);
+    });
+
     it('does not split punctuation inside an opener from an earlier token', () => {
         const values = [
             original('「だめ、', { is_final: false, language: 'ja' }),

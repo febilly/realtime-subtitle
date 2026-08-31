@@ -756,7 +756,7 @@ def test_same_language_decimal_does_not_segment_across_gemini_batches(monkeypatc
         object(),
     )
     sent_count, *_ = session._process_stream_response(
-        {"serverContent": {"inputTranscription": {"text": "5.", "languageCode": "en"}}},
+        {"serverContent": {"inputTranscription": {"text": " 5.", "languageCode": "en"}}},
         all_final_tokens,
         sent_count,
         object(),
@@ -770,7 +770,7 @@ def test_same_language_decimal_does_not_segment_across_gemini_batches(monkeypatc
 
     final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
     kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
-    assert kinds == ["Back during the CS 1.", "5.", "SEP", " Next sentence"], kinds
+    assert kinds == ["Back during the CS 1.", " 5.", "SEP", " Next sentence"], kinds
 
 
 def test_same_language_am_pm_does_not_segment_across_gemini_batches(monkeypatch):

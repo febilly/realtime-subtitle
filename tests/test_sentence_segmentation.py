@@ -169,6 +169,43 @@ def test_streamed_ellipsis_dots_do_not_close_mid_run():
     assert check([trans("好。"), trans("下一句")], 0, "很好。")
 
 
+def test_standalone_period_token_uses_numeric_context():
+    state = seg.PendingBoundaryState()
+
+    def original(text):
+        return {"text": text, "speaker": "1", "translation_status": "original"}
+
+    tokens = [original("每月营收增长了5"), original("."), original("3%。")]
+    assert not state.is_token_sentence_ending(
+        tokens,
+        1,
+        context_text="每月营收增长了5.",
+        is_internal_token=lambda _t: False,
+        source_as_output=True,
+    )
+
+    # If the fractional token has not arrived yet, remember the accumulated
+    # numeric context behind the standalone period.
+    period = [original(".")]
+    state.mark_after_token(
+        period,
+        0,
+        context_text="每月营收增长了5.",
+        is_internal_token=lambda _t: False,
+        source_as_output=True,
+    )
+    assert not state.flush_before_token(original("3%。"))
+
+    state.mark_after_token(
+        period,
+        0,
+        context_text="共有5.",
+        is_internal_token=lambda _t: False,
+        source_as_output=True,
+    )
+    assert state.flush_before_token(original(" 下一句"))
+
+
 def test_fragmented_word_suffix_period_uses_full_context_for_abbreviations():
     """Live 2026-07-13: Soniox finalized here. as "her" + "e."."""
     state = seg.PendingBoundaryState()

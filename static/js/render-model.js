@@ -76,7 +76,9 @@
         // "。" + "…" are trailing-off runs rather than sentence boundaries.
         if (startsPunctuationRun(following)) return false;
         if (Segmentation.tokenTextStartsWithClosingQuote(value, following)) return false;
-        if (Segmentation.tokenTextContinuesDecimal(value, following)) return false;
+        // The period itself can be a standalone token ("5" + "." + "3%").
+        // Use accumulated context so the digit before that token is visible.
+        if (Segmentation.tokenTextContinuesDecimal(context, following)) return false;
         if (Segmentation.textContinuesAbbreviation(context, following)) return false;
         return true;
     }

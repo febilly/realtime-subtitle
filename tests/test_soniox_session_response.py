@@ -448,6 +448,57 @@ def test_punctuation_does_not_split_unspaced_decimal_point(monkeypatch):
     assert kinds == ["version 3.", "10", " is out.", "SEP"], kinds
 
 
+def test_punctuation_does_not_split_spaced_decimal_inside_one_chinese_token(monkeypatch):
+    """Soniox can finalize one token containing ``5. 3%``. The space is token
+    formatting inside the decimal, not a sentence boundary."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    text = "每月营收增长了5. 3%。"
+    _feed_original_batch(session, [text], "zh")
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
+    assert kinds == [text, "SEP"], kinds
+
+
+def test_punctuation_does_not_split_chinese_decimal_with_standalone_period_token(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    _feed_original_batch(session, ["每月营收增长了5", ".", "3%。"], "zh")
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
+    assert kinds == ["每月营收增长了5", ".", "3%。", "SEP"], kinds
+
+
 def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
@@ -485,7 +536,9 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
         {
             "tokens": [
                 {
-                    "text": "5.",
+                    # Soniox can prefix a streamed fractional token with a
+                    # cosmetic space even though it continues ``1.5``.
+                    "text": " 5.",
                     "is_final": True,
                     "speaker": "1",
                     "translation_status": "original",
@@ -521,7 +574,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
     ]
     assert kinds == [
         "Back during the CS 1.",
-        "5.",
+        " 5.",
         "SEP",
         " But the game is actually about",
     ], kinds
