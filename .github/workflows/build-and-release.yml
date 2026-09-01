@@ -27,6 +27,39 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
+    - name: Print dependency versions
+      shell: bash
+      run: |
+        python --version
+        pip --version
+        echo "::group::Top-level dependency versions"
+        python - <<'PY'
+        import re
+        from importlib.metadata import PackageNotFoundError, version
+
+        names = []
+        with open("requirements.txt", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name = re.split(r"[\s<>=!~;\[@]", line, 1)[0]
+                if name:
+                    names.append(name)
+
+        width = max(len(n) for n in names)
+        for name in names:
+            try:
+                installed = version(name)
+            except PackageNotFoundError:
+                installed = "NOT INSTALLED"
+            print(f"{name.ljust(width)}  {installed}")
+        PY
+        echo "::endgroup::"
+        echo "::group::Full pip freeze"
+        pip freeze
+        echo "::endgroup::"
+
     - name: Build executable with PyInstaller
       run: |
         python build_exe.py
