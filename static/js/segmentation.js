@@ -25,6 +25,11 @@
         return !!value && /\p{L}/u.test(value);
     }
 
+    function textEndsWithNumericPeriod(text) {
+        const value = String(text || '').trimEnd();
+        return value.length >= 2 && value.endsWith('.') && isDigit(value.at(-2));
+    }
+
     function isSentenceEnderAt(value, index) {
         const ch = value[index];
         if (ch === '…') return false;
@@ -34,7 +39,7 @@
             while (nextIndex < value.length && /\s/u.test(value[nextIndex])) nextIndex += 1;
             const next = nextIndex < value.length ? value[nextIndex] : '';
             if (previous === '.' || next === '.') return false;
-            if (isDigit(previous) && isDigit(next)) return false;
+            if (textEndsWithNumericPeriod(value.slice(0, index + 1)) && isDigit(next)) return false;
         }
         return SENTENCE_END_CHARS.has(ch);
     }
@@ -86,10 +91,8 @@
         // after the period remains a real break; ignore only token-leading
         // whitespace before checking the fractional digit.
         const nextValue = String(nextText).trimStart();
-        return previousText.length >= 2
-            && !/\s$/u.test(previousText)
-            && previousText.at(-1) === '.'
-            && isDigit(previousText.at(-2))
+        return !/\s$/u.test(previousText)
+            && textEndsWithNumericPeriod(previousText)
             && !!nextValue
             && isDigit(nextValue[0]);
     }
@@ -192,6 +195,7 @@
         QUOTE_PAIRS,
         SENTENCE_END_ABBREVIATION_EXCEPTIONS,
         SENTENCE_END_ABBREVIATION_PREFIXES,
+        textEndsWithNumericPeriod,
         isSentenceEnderAt,
         textEndsWithEllipsis,
         textHasUnclosedQuote,

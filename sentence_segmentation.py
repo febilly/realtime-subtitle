@@ -1,6 +1,8 @@
 """Shared sentence-boundary helpers for punctuation-based subtitle splitting."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Literal
 
 # "…" stays in this set so punctuation-run scans treat it as punctuation
 # (e.g. "。…" is one trailing-off run, not a boundary), but
@@ -31,6 +33,12 @@ SENTENCE_END_ABBREVIATION_PREFIXES = {
 }
 
 
+def text_ends_with_numeric_period(text: str) -> bool:
+    """Whether the visible text ends in an ambiguous ``digit + period``."""
+    value = str(text or "").rstrip()
+    return len(value) >= 2 and value.endswith(".") and value[-2].isdigit()
+
+
 def is_sentence_ender_at(value: str, index: int) -> bool:
     ch = value[index]
     # Ellipses mean the speaker trailed off, not that the sentence ended.
@@ -47,7 +55,7 @@ def is_sentence_ender_at(value: str, index: int) -> bool:
         next_ch = value[next_index] if next_index < len(value) else ""
         if prev_ch == "." or next_ch == ".":
             return False  # part of an ASCII ellipsis ".." / "..."
-        if prev_ch.isdigit() and next_ch.isdigit():
+        if text_ends_with_numeric_period(value[: index + 1]) and next_ch.isdigit():
             return False
     return ch in SENTENCE_END_CHARS
 
@@ -211,6 +219,13 @@ def split_into_sentence_lines(text: str) -> list[str]:
     ]
 
 
+@dataclass(frozen=True)
+class _PendingBoundary:
+    kind: Literal["numeric", "abbreviation", "quote"]
+    context_text: str
+    awaiting_quote: bool = False
+
+
 class PendingBoundaryState:
     """Track sentence boundaries that need one more token before cutting.
 
@@ -221,25 +236,19 @@ class PendingBoundaryState:
     """
 
     def __init__(self) -> None:
-        self.numeric_period_tokens: dict[tuple[str, str], dict] = {}
-        self.abbreviation_prefix_tokens: dict[tuple[str, str], dict] = {}
-        self.quote_boundary_tokens: dict[tuple[str, str], dict] = {}
+        # One stream can wait on exactly one boundary interpretation. Keeping
+        # this as a single state prevents quote/abbreviation/numeric rules from
+        # competing through an accidental dictionary lookup order.
+        self._pending: dict[tuple[str, str], _PendingBoundary] = {}
 
     def clear(self) -> None:
-        self.numeric_period_tokens.clear()
-        self.abbreviation_prefix_tokens.clear()
-        self.quote_boundary_tokens.clear()
+        self._pending.clear()
 
     def clear_speaker(self, speaker: str) -> None:
         speaker_value = str(speaker)
-        for store in (
-            self.numeric_period_tokens,
-            self.abbreviation_prefix_tokens,
-            self.quote_boundary_tokens,
-        ):
-            for key in list(store.keys()):
-                if key[0] == speaker_value:
-                    store.pop(key, None)
+        for key in list(self._pending):
+            if key[0] == speaker_value:
+                self._pending.pop(key, None)
 
     def key(self, token: dict) -> tuple[str, str]:
         speaker = str(token.get("speaker", "?"))
@@ -316,13 +325,7 @@ class PendingBoundaryState:
         # ``"5"`` + ``"."`` + ``"3%"``. Use the accumulated context so the
         # numeric character before a punctuation-only token remains visible.
         context_value = str(context_text or "")
-        context_stripped = context_value.rstrip()
-        prev_ch = (
-            context_stripped[-2]
-            if len(context_stripped) >= 2 and context_stripped.endswith(".")
-            else ""
-        )
-        if not prev_ch.isdigit():
+        if not text_ends_with_numeric_period(context_value):
             return True
         if next_text is None:
             return False
@@ -330,35 +333,35 @@ class PendingBoundaryState:
 
     def flush_before_token(self, token: dict) -> bool:
         key = self.key(token)
-        quote = self.quote_boundary_tokens.pop(key, None)
-        if quote:
-            if quote.get("awaiting_quote") and token_text_starts_with_closing_quote(
-                str(quote.get("context_text") or ""),
+        pending = self._pending.pop(key, None)
+        if pending is None:
+            return False
+
+        if pending.kind == "quote":
+            if pending.awaiting_quote and token_text_starts_with_closing_quote(
+                pending.context_text,
                 str(token.get("text") or ""),
             ):
-                self.quote_boundary_tokens[key] = {
-                    "context_text": f"{quote.get('context_text') or ''}{token.get('text') or ''}",
-                    "awaiting_quote": False,
-                }
+                self._pending[key] = _PendingBoundary(
+                    kind="quote",
+                    context_text=f"{pending.context_text}{token.get('text') or ''}",
+                )
                 return False
             return True
 
-        abbreviation = self.abbreviation_prefix_tokens.pop(key, None)
-        if abbreviation:
-            if text_continues_abbreviation(
-                str(abbreviation.get("context_text") or ""),
-                str(token.get("text") or ""),
-            ):
-                return False
-            return True
-
-        numeric = self.numeric_period_tokens.pop(key, None)
-        if numeric:
-            return not token_text_continues_decimal(
-                str(numeric.get("text") or ""),
+        if pending.kind == "abbreviation":
+            return not text_continues_abbreviation(
+                pending.context_text,
                 str(token.get("text") or ""),
             )
-        return False
+
+        if pending.kind == "numeric":
+            return not token_text_continues_decimal(
+                pending.context_text,
+                str(token.get("text") or ""),
+            )
+
+        raise AssertionError(f"Unsupported pending boundary kind: {pending.kind}")
 
     def mark_after_token(
         self,
@@ -375,8 +378,13 @@ class PendingBoundaryState:
             return
 
         key = self.key(token)
+        self._pending.pop(key, None)
         if text_ends_with_abbreviation_prefix(context_text):
-            self.abbreviation_prefix_tokens[key] = {"context_text": context_text}
+            self._pending[key] = _PendingBoundary(
+                kind="abbreviation",
+                context_text=context_text,
+            )
+            return
 
         quote_boundary = self._pending_quote_boundary(
             tokens,
@@ -386,7 +394,8 @@ class PendingBoundaryState:
             source_as_output=source_as_output,
         )
         if quote_boundary:
-            self.quote_boundary_tokens[key] = quote_boundary
+            self._pending[key] = quote_boundary
+            return
 
         if self._has_unresolved_numeric_period(
             tokens,
@@ -395,7 +404,10 @@ class PendingBoundaryState:
             is_internal_token=is_internal_token,
             source_as_output=source_as_output,
         ):
-            self.numeric_period_tokens[key] = {"text": context_text}
+            self._pending[key] = _PendingBoundary(
+                kind="numeric",
+                context_text=context_text,
+            )
 
     def _pending_quote_boundary(
         self,
@@ -405,25 +417,21 @@ class PendingBoundaryState:
         context_text: str,
         is_internal_token: Callable[[object], bool],
         source_as_output: bool,
-    ) -> dict | None:
+    ) -> _PendingBoundary | None:
         token = tokens[index]
         if text_ends_with_closing_quote_after_sentence_punctuation(context_text):
-            return {"context_text": context_text, "awaiting_quote": False}
-        if text_ends_with_abbreviation_exception(context_text) or text_ends_with_abbreviation_prefix(context_text):
+            return _PendingBoundary(kind="quote", context_text=context_text)
+        if (
+            text_ends_with_abbreviation_exception(context_text)
+            or text_ends_with_abbreviation_prefix(context_text)
+        ):
             return None
         text = str(token.get("text") or "")
         if not has_sentence_ending_punctuation(text):
             return None
         stripped = text.strip()
-        if stripped.endswith("."):
-            context_stripped = str(context_text or "").rstrip()
-            prev_ch = (
-                context_stripped[-2]
-                if len(context_stripped) >= 2 and context_stripped.endswith(".")
-                else ""
-            )
-            if prev_ch.isdigit():
-                return None
+        if stripped.endswith(".") and text_ends_with_numeric_period(context_text):
+            return None
         next_text = self.next_compatible_text(
             tokens,
             index,
@@ -432,20 +440,31 @@ class PendingBoundaryState:
         )
         if next_text is not None:
             if token_text_starts_with_closing_quote(text, next_text):
-                return {"context_text": context_text, "awaiting_quote": True}
+                return _PendingBoundary(
+                    kind="quote",
+                    context_text=context_text,
+                    awaiting_quote=True,
+                )
             return None
         if stripped == ".":
-            return {"context_text": context_text, "awaiting_quote": True}
+            return _PendingBoundary(
+                kind="quote",
+                context_text=context_text,
+                awaiting_quote=True,
+            )
         return None
 
-    def flush_stale_quote_boundaries_before_incompatible_token(self, token: dict) -> list[str]:
+    def flush_stale_quote_boundaries_before_incompatible_token(
+        self,
+        token: dict,
+    ) -> list[str]:
         """Flush quote waits that this token cannot possibly satisfy."""
         current_key = self.key(token)
         speakers: list[str] = []
-        for key in list(self.quote_boundary_tokens.keys()):
-            if key == current_key:
+        for key, pending in list(self._pending.items()):
+            if key == current_key or pending.kind != "quote":
                 continue
-            self.quote_boundary_tokens.pop(key, None)
+            self._pending.pop(key, None)
             speakers.append(key[0])
         return speakers
 
@@ -458,8 +477,7 @@ class PendingBoundaryState:
         is_internal_token: Callable[[object], bool],
         source_as_output: bool,
     ) -> bool:
-        stripped = str(context_text or "").rstrip()
-        if len(stripped) < 2 or not stripped.endswith(".") or not stripped[-2].isdigit():
+        if not text_ends_with_numeric_period(context_text):
             return False
         next_text = self.next_compatible_text(
             tokens,
@@ -480,10 +498,8 @@ def token_text_continues_decimal(previous_text: str, next_text: str) -> bool:
     # not reliably describe the spoken-text boundary.
     next_value = next_text.lstrip()
     return (
-        len(previous_text) >= 2
-        and not previous_text[-1].isspace()
-        and previous_text[-1] == "."
-        and previous_text[-2].isdigit()
+        not previous_text[-1].isspace()
+        and text_ends_with_numeric_period(previous_text)
         and bool(next_value)
         and next_value[0].isdigit()
     )
