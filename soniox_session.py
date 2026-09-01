@@ -6,12 +6,11 @@ import threading
 import asyncio
 import time
 import re
-import concurrent.futures
 import logging
 import unicodedata
 import uuid
 from dataclasses import dataclass
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 from websockets import ConnectionClosed, ConnectionClosedOK
 from websockets.sync.client import connect as sync_connect
@@ -38,12 +37,8 @@ from config import (
     DEFAULT_SEGMENT_MODE,
     is_llm_refine_available,
     LLM_REFINE_CONTEXT_MIN_COUNT,
-    LLM_REFINE_CONTEXT_MAX_COUNT,
-    LLM_PROMPT_SUFFIX,
-    LLM_REFINE_MAX_TOKENS,
     LLM_BASE_URL,
     LLM_MODEL,
-    LLM_TEMPERATURE,
     LLM_REQUEST_HEADERS,
     LLM_REQUEST_JSON,
     get_llm_api_key,
@@ -54,13 +49,28 @@ from config import (
 )
 ipc_server = None
 from audio_router import AudioSendRouter
-from relay_errors import relay_error_info
+from stream_session_runtime import (
+    RealtimeSilenceSender as _RealtimeSilenceSender,
+    StreamState as _SonioxStreamState,
+    STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
+    STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS,
+    STREAM_ROLLOVER_FORCE_GUARD_SECONDS,
+    STREAM_ROLLOVER_NEAR_LIMIT_RATIO,
+    STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
+    STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
+    STREAM_ROLLOVER_SWITCH_PATIENCE_SECONDS,
+    STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT,
+    StreamRuntimeSettings,
+    StreamSessionHooks,
+    normalize_east_asian_translation_spacing,
+    run_stream_session,
+)
 from soniox_client import get_config
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from osc_draft import OscDraftPublisher
-from llm_client import LlmConfig, chat_completion, extract_answer_tag, LlmError
-from hosted_llm import HostedLlmTransport, HostedLlmError, HostedLlmDisabled
+from llm_client import LlmConfig, chat_completion
+from hosted_llm import HostedLlmTransport
 import sentence_segmentation
 import llm_refine
 import llm_log
@@ -73,39 +83,6 @@ logger = logging.getLogger(__name__)
 LLM_REFINE_MODES = ("off", "refine", "translate")
 
 
-def _is_api_key_error_reason(reason: str) -> bool:
-    """Heuristically detect API-key/auth failures from a disconnect reason string."""
-    text = str(reason or "").lower()
-    if not text:
-        return False
-    needles = (
-        "api key", "api_key", "apikey", "unauthorized", "authentication",
-        "invalid key", "invalid api", "permission", "forbidden",
-        "401", "403",
-    )
-    return any(needle in text for needle in needles)
-EAST_ASIAN_TIGHT_SPACING_CLASS = (
-    r"\u3000-\u303F"
-    r"\u3040-\u30FF"
-    r"\u31F0-\u31FF"
-    r"\u3400-\u4DBF"
-    r"\u4E00-\u9FFF"
-    r"\uF900-\uFAFF"
-    r"\uFF01-\uFF60"
-    r"\uFF66-\uFF9D"
-    r"\uFFE0-\uFFEE"
-)
-EAST_ASIAN_TIGHT_SPACING_RE = re.compile(
-    rf"([{EAST_ASIAN_TIGHT_SPACING_CLASS}])\s+([{EAST_ASIAN_TIGHT_SPACING_CLASS}])"
-)
-STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS = 0.25
-STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS = 1.5
-STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS = 200
-STREAM_ROLLOVER_NEAR_LIMIT_RATIO = 0.8
-STREAM_ROLLOVER_SWITCH_PATIENCE_SECONDS = 25.0
-STREAM_ROLLOVER_FORCE_GUARD_SECONDS = 2.0
-STREAM_ROLLOVER_SILENCE_HOLD_SECONDS = 0.5
-STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT = 8
 SONIOX_INTERNAL_TOKEN_TEXTS = {"<end>", "<fin>"}
 
 # 准确 (accurate) mode speculative translation: a sentence that is already
@@ -131,83 +108,6 @@ class _FinalizedSentenceSnapshot:
     source_start_ms: float
     source_end_ms: float
     retracted: bool = False
-
-
-class _RealtimeSilenceSender:
-    """Send realtime-paced PCM silence to a warming Soniox stream."""
-
-    def __init__(
-        self,
-        ws,
-        *,
-        bytes_per_chunk: int,
-        chunk_interval_seconds: float,
-        session_stop_event: threading.Event | None,
-    ):
-        self.ws = ws
-        self.payload = b"\0" * max(2, int(bytes_per_chunk))
-        self.chunk_interval_seconds = max(0.01, float(chunk_interval_seconds))
-        self.session_stop_event = session_stop_event
-        self.error: Exception | None = None
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="SonioxRolloverSilence",
-            daemon=True,
-        )
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        thread = self._thread
-        if thread and thread.is_alive() and thread is not threading.current_thread():
-            thread.join(timeout=1.0)
-        self._thread = None
-
-    def _run(self) -> None:
-        next_send_at = time.monotonic()
-        while not self._stop_event.is_set():
-            if self.session_stop_event and self.session_stop_event.is_set():
-                break
-
-            try:
-                self.ws.send(self.payload)
-            except Exception as error:
-                self.error = error
-                break
-
-            next_send_at += self.chunk_interval_seconds
-            delay = next_send_at - time.monotonic()
-            if delay < 0:
-                next_send_at = time.monotonic()
-                delay = self.chunk_interval_seconds
-            self._stop_event.wait(delay)
-
-
-@dataclass
-class _SonioxStreamState:
-    ws: Any
-    index: int
-    api_key: str
-    started_at: float
-    all_final_tokens: list[dict]
-    sent_count: int = 0
-    ready_at: float | None = None
-    silence_sender: _RealtimeSilenceSender | None = None
-    silence_started_at: float = 0.0  # monotonic timestamp when silence sender started
-
-
-def normalize_east_asian_translation_spacing(text: str) -> str:
-    value = "" if text is None else str(text)
-    if not value:
-        return ""
-    return EAST_ASIAN_TIGHT_SPACING_RE.sub(r"\1\2", value)
 
 
 class SonioxSession:
@@ -1996,6 +1896,7 @@ class SonioxSession:
             bytes_per_chunk=bytes_per_chunk,
             chunk_interval_seconds=chunk_interval_seconds,
             session_stop_event=self.stop_event,
+            thread_name="SonioxRolloverSilence",
         )
 
     def _open_soniox_stream_state(
@@ -2250,6 +2151,264 @@ class SonioxSession:
             clones.append(clone)
         return clones
 
+    def _process_interleaved_punctuation_tokens(
+        self,
+        new_final_tokens: list[dict],
+    ) -> tuple[list[dict], str | None, set[str]]:
+        outgoing_final_tokens: list[dict] = []
+        last_real_speaker: str | None = None
+        finalized_speakers: set[str] = set()
+        source_as_output = self._source_drives_segmentation(new_final_tokens)
+        for index, token in enumerate(new_final_tokens):
+            text = token.get("text")
+            if text is None:
+                continue
+            is_internal = self._is_internal_soniox_token(token)
+            is_translation = token.get("translation_status") == "translation"
+            abbreviation_context_text = "" if is_internal else self._sentence_context_text_for_token(token)
+
+            # A pending endpoint means an earlier <end> fired before this
+            # sentence's translation had streamed in, so the line break was
+            # deferred (see the <end> branch below). The first *original*
+            # token of the next sentence is the signal that the previous
+            # sentence — together with whatever translation has since been
+            # buffered — is complete: finalize it now and break the line
+            # before this new token, so the late translation stays attached
+            # to the previous sentence instead of merging into this one.
+            if (not is_internal) and (not is_translation) and self._pending_endpoint_speakers:
+                spk = token.get("speaker")
+                pending_speaker = str(spk) if (spk is not None and spk != "") else last_real_speaker
+                if pending_speaker is None and len(self._pending_endpoint_speakers) == 1:
+                    pending_speaker = next(iter(self._pending_endpoint_speakers))
+                if pending_speaker in self._pending_endpoint_speakers:
+                    self._pending_endpoint_speakers.discard(pending_speaker)
+                    if self._trigger_sentence_finalization(pending_speaker):
+                        finalized_speakers.add(pending_speaker)
+                        self._clear_pending_boundaries_for_speaker(pending_speaker)
+                        outgoing_final_tokens.append(
+                            self._minify_token(self._make_separator_token("endpoint"))
+                        )
+
+            has_sentence_punctuation = (
+                not is_internal
+                and self._token_text_is_sentence_ending(
+                    new_final_tokens,
+                    index,
+                    source_as_output=source_as_output,
+                )
+            )
+            is_boundary = (text == "<end>") or has_sentence_punctuation
+            defer_source_punctuation = (
+                has_sentence_punctuation
+                and not is_translation
+                and not source_as_output
+            )
+            if not is_internal:
+                spk = token.get("speaker")
+                token_speaker = str(spk) if (spk is not None and spk != "") else None
+                # A new speaker's token means the previous speaker is done:
+                # finalize their still-open sentence (triggers the LLM) before
+                # this speaker's token joins the outgoing stream.
+                if token_speaker and token_speaker != last_real_speaker:
+                    self._finalize_superseded_speakers(
+                        token_speaker, outgoing_final_tokens, finalized_speakers
+                    )
+                    if not is_translation:
+                        self._maybe_merge_interrupted_sentence(
+                            token_speaker, token, outgoing_final_tokens
+                        )
+                if token_speaker:
+                    self._flush_stale_quote_boundaries(
+                        token,
+                        outgoing_final_tokens,
+                        finalized_speakers,
+                    )
+                    self._flush_pending_boundary(
+                        token,
+                        outgoing_final_tokens,
+                        finalized_speakers,
+                    )
+            self._process_token_for_sentence(token)
+            if is_translation and has_sentence_punctuation and token_speaker:
+                # Translation punctuation already closes the DISPLAY
+                # sentence below. Keep the semantic pairer aligned with
+                # that boundary too, otherwise the next source sentence
+                # inherits the same llm_sentence_id and one refine result
+                # is rendered under both display blocks. Only close when
+                # this translation belongs to the currently open source;
+                # a late translation for an older FIFO entry must never
+                # close a newer sentence.
+                open_entry = self._pairer.open_entry(token_speaker)
+                token_sentence_id = token.get("llm_sentence_id")
+                if (
+                    open_entry is not None
+                    and token_sentence_id
+                    and open_entry.sentence_id == str(token_sentence_id)
+                    and open_entry.source_tokens
+                    # A source still inside an unclosed 「」-style quote is
+                    # not done even if its translation-so-far ends a
+                    # sentence: the quotation's remaining source (and its
+                    # translation tail) still belongs to this entry.
+                    and not self._open_source_in_unclosed_quote(token_speaker)
+                ):
+                    self._pairing_close_source(
+                        token_speaker,
+                        reason="translation_punctuation",
+                    )
+            if not is_internal:
+                outgoing_final_tokens.append(self._minify_token(token, is_final=True))
+                if token_speaker:
+                    last_real_speaker = token_speaker
+                self._pending_boundaries.mark_after_token(
+                    new_final_tokens,
+                    index,
+                    context_text=abbreviation_context_text,
+                    is_internal_token=self._is_internal_soniox_token,
+                    source_as_output=source_as_output,
+                )
+            if not is_boundary:
+                continue
+            spk = token.get("speaker")
+            speaker_value = str(spk) if (spk is not None and spk != "") else last_real_speaker
+            if speaker_value is None and self._sentence_buffers:
+                speaker_value = next(iter(self._sentence_buffers.keys()))
+            if not speaker_value:
+                continue
+            # Two source sentences finalized in ONE batch usually get ONE
+            # glued zero-gap translation burst, which no time-based rule
+            # can split (live 2026-07-11, llm_20260711_210847: the first
+            # sentence swallowed both translations and every later pair
+            # shifted). The display already keeps them on one line (the
+            # break defers until translation text arrives), so keep the
+            # semantic sentence together too: skip this close and let the
+            # batch's LAST complete sentence close the merged entry. The
+            # refine LLM then sees both sentences with both translations.
+            if defer_source_punctuation and self._batch_completes_another_sentence(
+                new_final_tokens, index, speaker_value
+            ):
+                continue
+            # A source-side boundary (source punctuation or <end>) ends
+            # the sentence semantically right here, even when the display
+            # line break is deferred until translation text shows up.
+            if not is_translation:
+                self._pairing_close_source(
+                    speaker_value,
+                    reason="endpoint" if text == "<end>" else "punctuation",
+                )
+            if defer_source_punctuation:
+                self._pending_endpoint_speakers.add(speaker_value)
+                continue
+            if self._trigger_sentence_finalization(speaker_value):
+                finalized_speakers.add(speaker_value)
+                outgoing_final_tokens.append(
+                    self._minify_token(self._make_separator_token("punctuation"))
+                )
+            elif text == "<end>" or has_sentence_punctuation:
+                # The source/endpoint says the sentence ended, but the
+                # translation may not have arrived yet. Defer the line break:
+                # finalize as soon as this batch (or a later batch) has a
+                # translation, or at the latest before the next source
+                # sentence starts.
+                self._pending_endpoint_speakers.add(speaker_value)
+
+        for pending_speaker in list(self._pending_endpoint_speakers):
+            if pending_speaker in finalized_speakers:
+                continue
+            buffer = self._sentence_buffers.get(pending_speaker)
+            if not buffer:
+                self._pending_endpoint_speakers.discard(pending_speaker)
+                continue
+            translation_tokens = buffer.get("translation_tokens") or []
+            original_tokens = buffer.get("original_tokens") or []
+            if not translation_tokens and not self._source_drives_segmentation(original_tokens):
+                continue
+            self._pending_endpoint_speakers.discard(pending_speaker)
+            if self._trigger_sentence_finalization(pending_speaker):
+                finalized_speakers.add(pending_speaker)
+                outgoing_final_tokens.append(
+                    self._minify_token(self._make_separator_token("punctuation"))
+                )
+        return outgoing_final_tokens, last_real_speaker, finalized_speakers
+
+    def _process_non_interleaved_tokens(
+        self,
+        new_final_tokens: list[dict],
+        endpoint_detected: bool,
+    ) -> tuple[list[dict], list[dict]]:
+        outgoing_final_tokens: list[dict] = []
+        separator_tokens: list[dict] = []
+        for token in new_final_tokens:
+            if token.get("text") is None:
+                continue
+            self._process_token_for_sentence(token)
+        if self._segment_mode == "translation":
+            translation_hit = any(
+                t.get("text") is not None
+                and not self._is_internal_soniox_token(t)
+                and t.get("translation_status") == "translation"
+                for t in new_final_tokens
+            )
+            # Same-language speech produces no translation tokens; fall back
+            # to sentence-ending punctuation in the source (used as output)
+            # so it still segments instead of growing without bound.
+            if not translation_hit and self._source_drives_segmentation(new_final_tokens):
+                translation_hit = any(
+                    t.get("text")
+                    and not self._is_internal_soniox_token(t)
+                    and t.get("translation_status") != "translation"
+                    and self._token_text_is_sentence_ending(
+                        new_final_tokens,
+                        index,
+                        source_as_output=True,
+                    )
+                    for index, t in enumerate(new_final_tokens)
+                )
+            if translation_hit:
+                speaker_value = None
+                for token in reversed(new_final_tokens):
+                    if token.get("translation_status") == "translation":
+                        spk = token.get("speaker")
+                        if spk is not None and spk != "":
+                            speaker_value = str(spk)
+                            break
+                if speaker_value is None:
+                    for token in reversed(new_final_tokens):
+                        spk = token.get("speaker")
+                        if spk is not None and spk != "":
+                            speaker_value = str(spk)
+                            break
+                if speaker_value is None and self._sentence_buffers:
+                    speaker_value = next(iter(self._sentence_buffers.keys()))
+                if speaker_value:
+                    self._pairing_close_source(speaker_value)
+                    self._trigger_sentence_finalization(speaker_value)
+                separator_tokens.append(self._make_separator_token("translation"))
+
+        elif self._segment_mode == "endpoint":
+            endpoint_hit = endpoint_detected or any(
+                t.get("text") == "<end>"
+                for t in new_final_tokens
+            )
+            if endpoint_hit:
+                speaker_value = None
+                for token in reversed(new_final_tokens):
+                    spk = token.get("speaker")
+                    if spk is not None and spk != "":
+                        speaker_value = str(spk)
+                        break
+                if speaker_value is None and self._sentence_buffers:
+                    speaker_value = next(iter(self._sentence_buffers.keys()))
+                if speaker_value:
+                    self._pairing_close_source(speaker_value, reason="endpoint")
+                    self._trigger_sentence_finalization(speaker_value)
+                separator_tokens.append(self._make_separator_token("endpoint"))
+        for token in new_final_tokens:
+            if token.get("text") is None:
+                continue
+            if not self._is_internal_soniox_token(token):
+                outgoing_final_tokens.append(self._minify_token(token, is_final=True))
+        return outgoing_final_tokens, separator_tokens
+
     def _process_soniox_response(
         self,
         res: dict,
@@ -2310,188 +2469,12 @@ class SonioxSession:
         last_real_speaker = None
         finalized_speakers: set[str] = set()
 
-        if new_final_tokens and not interleaved_punctuation:
-            for token in new_final_tokens:
-                if token.get("text") is None:
-                    continue
-                self._process_token_for_sentence(token)
-
-        if interleaved_punctuation and new_final_tokens:
-            # When the speech is already in the target language there are no
-            # translation tokens, so the source text is used as the output;
-            # segment on punctuation in the original tokens too (gated by
-            # _can_use_source_as_translation so we never cut before a real
-            # translation arrives).
-            source_as_output = self._source_drives_segmentation(new_final_tokens)
-            for index, token in enumerate(new_final_tokens):
-                text = token.get("text")
-                if text is None:
-                    continue
-                is_internal = self._is_internal_soniox_token(token)
-                is_translation = token.get("translation_status") == "translation"
-                abbreviation_context_text = "" if is_internal else self._sentence_context_text_for_token(token)
-
-                # A pending endpoint means an earlier <end> fired before this
-                # sentence's translation had streamed in, so the line break was
-                # deferred (see the <end> branch below). The first *original*
-                # token of the next sentence is the signal that the previous
-                # sentence — together with whatever translation has since been
-                # buffered — is complete: finalize it now and break the line
-                # before this new token, so the late translation stays attached
-                # to the previous sentence instead of merging into this one.
-                if (not is_internal) and (not is_translation) and self._pending_endpoint_speakers:
-                    spk = token.get("speaker")
-                    pending_speaker = str(spk) if (spk is not None and spk != "") else last_real_speaker
-                    if pending_speaker is None and len(self._pending_endpoint_speakers) == 1:
-                        pending_speaker = next(iter(self._pending_endpoint_speakers))
-                    if pending_speaker in self._pending_endpoint_speakers:
-                        self._pending_endpoint_speakers.discard(pending_speaker)
-                        if self._trigger_sentence_finalization(pending_speaker):
-                            finalized_speakers.add(pending_speaker)
-                            self._clear_pending_boundaries_for_speaker(pending_speaker)
-                            outgoing_final_tokens.append(
-                                self._minify_token(self._make_separator_token("endpoint"))
-                            )
-
-                has_sentence_punctuation = (
-                    not is_internal
-                    and self._token_text_is_sentence_ending(
-                        new_final_tokens,
-                        index,
-                        source_as_output=source_as_output,
-                    )
-                )
-                is_boundary = (text == "<end>") or has_sentence_punctuation
-                defer_source_punctuation = (
-                    has_sentence_punctuation
-                    and not is_translation
-                    and not source_as_output
-                )
-                if not is_internal:
-                    spk = token.get("speaker")
-                    token_speaker = str(spk) if (spk is not None and spk != "") else None
-                    # A new speaker's token means the previous speaker is done:
-                    # finalize their still-open sentence (triggers the LLM) before
-                    # this speaker's token joins the outgoing stream.
-                    if token_speaker and token_speaker != last_real_speaker:
-                        self._finalize_superseded_speakers(
-                            token_speaker, outgoing_final_tokens, finalized_speakers
-                        )
-                        if not is_translation:
-                            self._maybe_merge_interrupted_sentence(
-                                token_speaker, token, outgoing_final_tokens
-                            )
-                    if token_speaker:
-                        self._flush_stale_quote_boundaries(
-                            token,
-                            outgoing_final_tokens,
-                            finalized_speakers,
-                        )
-                        self._flush_pending_boundary(
-                            token,
-                            outgoing_final_tokens,
-                            finalized_speakers,
-                        )
-                self._process_token_for_sentence(token)
-                if is_translation and has_sentence_punctuation and token_speaker:
-                    # Translation punctuation already closes the DISPLAY
-                    # sentence below. Keep the semantic pairer aligned with
-                    # that boundary too, otherwise the next source sentence
-                    # inherits the same llm_sentence_id and one refine result
-                    # is rendered under both display blocks. Only close when
-                    # this translation belongs to the currently open source;
-                    # a late translation for an older FIFO entry must never
-                    # close a newer sentence.
-                    open_entry = self._pairer.open_entry(token_speaker)
-                    token_sentence_id = token.get("llm_sentence_id")
-                    if (
-                        open_entry is not None
-                        and token_sentence_id
-                        and open_entry.sentence_id == str(token_sentence_id)
-                        and open_entry.source_tokens
-                        # A source still inside an unclosed 「」-style quote is
-                        # not done even if its translation-so-far ends a
-                        # sentence: the quotation's remaining source (and its
-                        # translation tail) still belongs to this entry.
-                        and not self._open_source_in_unclosed_quote(token_speaker)
-                    ):
-                        self._pairing_close_source(
-                            token_speaker,
-                            reason="translation_punctuation",
-                        )
-                if not is_internal:
-                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
-                    if token_speaker:
-                        last_real_speaker = token_speaker
-                    self._pending_boundaries.mark_after_token(
-                        new_final_tokens,
-                        index,
-                        context_text=abbreviation_context_text,
-                        is_internal_token=self._is_internal_soniox_token,
-                        source_as_output=source_as_output,
-                    )
-                if not is_boundary:
-                    continue
-                spk = token.get("speaker")
-                speaker_value = str(spk) if (spk is not None and spk != "") else last_real_speaker
-                if speaker_value is None and self._sentence_buffers:
-                    speaker_value = next(iter(self._sentence_buffers.keys()))
-                if not speaker_value:
-                    continue
-                # Two source sentences finalized in ONE batch usually get ONE
-                # glued zero-gap translation burst, which no time-based rule
-                # can split (live 2026-07-11, llm_20260711_210847: the first
-                # sentence swallowed both translations and every later pair
-                # shifted). The display already keeps them on one line (the
-                # break defers until translation text arrives), so keep the
-                # semantic sentence together too: skip this close and let the
-                # batch's LAST complete sentence close the merged entry. The
-                # refine LLM then sees both sentences with both translations.
-                if defer_source_punctuation and self._batch_completes_another_sentence(
-                    new_final_tokens, index, speaker_value
-                ):
-                    continue
-                # A source-side boundary (source punctuation or <end>) ends
-                # the sentence semantically right here, even when the display
-                # line break is deferred until translation text shows up.
-                if not is_translation:
-                    self._pairing_close_source(
-                        speaker_value,
-                        reason="endpoint" if text == "<end>" else "punctuation",
-                    )
-                if defer_source_punctuation:
-                    self._pending_endpoint_speakers.add(speaker_value)
-                    continue
-                if self._trigger_sentence_finalization(speaker_value):
-                    finalized_speakers.add(speaker_value)
-                    outgoing_final_tokens.append(
-                        self._minify_token(self._make_separator_token("punctuation"))
-                    )
-                elif text == "<end>" or has_sentence_punctuation:
-                    # The source/endpoint says the sentence ended, but the
-                    # translation may not have arrived yet. Defer the line break:
-                    # finalize as soon as this batch (or a later batch) has a
-                    # translation, or at the latest before the next source
-                    # sentence starts.
-                    self._pending_endpoint_speakers.add(speaker_value)
-
-            for pending_speaker in list(self._pending_endpoint_speakers):
-                if pending_speaker in finalized_speakers:
-                    continue
-                buffer = self._sentence_buffers.get(pending_speaker)
-                if not buffer:
-                    self._pending_endpoint_speakers.discard(pending_speaker)
-                    continue
-                translation_tokens = buffer.get("translation_tokens") or []
-                original_tokens = buffer.get("original_tokens") or []
-                if not translation_tokens and not self._source_drives_segmentation(original_tokens):
-                    continue
-                self._pending_endpoint_speakers.discard(pending_speaker)
-                if self._trigger_sentence_finalization(pending_speaker):
-                    finalized_speakers.add(pending_speaker)
-                    outgoing_final_tokens.append(
-                        self._minify_token(self._make_separator_token("punctuation"))
-                    )
+        if interleaved_punctuation:
+            (
+                outgoing_final_tokens,
+                last_real_speaker,
+                finalized_speakers,
+            ) = self._process_interleaved_punctuation_tokens(new_final_tokens)
 
         if interleaved_punctuation and endpoint_detected:
             speaker_value = last_real_speaker
@@ -2506,79 +2489,14 @@ class SonioxSession:
                 else:
                     self._pending_endpoint_speakers.add(speaker_value)
 
-        if (new_final_tokens or endpoint_detected) and not interleaved_punctuation:
-            if self._segment_mode == "translation":
-                translation_hit = any(
-                    t.get("text") is not None
-                    and not self._is_internal_soniox_token(t)
-                    and t.get("translation_status") == "translation"
-                    for t in new_final_tokens
-                )
-                # Same-language speech produces no translation tokens; fall back
-                # to sentence-ending punctuation in the source (used as output)
-                # so it still segments instead of growing without bound.
-                if not translation_hit and self._source_drives_segmentation(new_final_tokens):
-                    translation_hit = any(
-                        t.get("text")
-                        and not self._is_internal_soniox_token(t)
-                        and t.get("translation_status") != "translation"
-                        and self._token_text_is_sentence_ending(
-                            new_final_tokens,
-                            index,
-                            source_as_output=True,
-                        )
-                        for index, t in enumerate(new_final_tokens)
-                    )
-                if translation_hit:
-                    speaker_value = None
-                    for token in reversed(new_final_tokens):
-                        if token.get("translation_status") == "translation":
-                            spk = token.get("speaker")
-                            if spk is not None and spk != "":
-                                speaker_value = str(spk)
-                                break
-                    if speaker_value is None:
-                        for token in reversed(new_final_tokens):
-                            spk = token.get("speaker")
-                            if spk is not None and spk != "":
-                                speaker_value = str(spk)
-                                break
-                    if speaker_value is None and self._sentence_buffers:
-                        speaker_value = next(iter(self._sentence_buffers.keys()))
-                    if speaker_value:
-                        self._pairing_close_source(speaker_value)
-                        self._trigger_sentence_finalization(speaker_value)
-                    separator_tokens.append(self._make_separator_token("translation"))
-
-            elif self._segment_mode == "endpoint":
-                endpoint_hit = endpoint_detected or any(
-                    t.get("text") == "<end>"
-                    for t in new_final_tokens
-                )
-                if endpoint_hit:
-                    speaker_value = None
-                    for token in reversed(new_final_tokens):
-                        spk = token.get("speaker")
-                        if spk is not None and spk != "":
-                            speaker_value = str(spk)
-                            break
-                    if speaker_value is None and self._sentence_buffers:
-                        speaker_value = next(iter(self._sentence_buffers.keys()))
-                    if speaker_value:
-                        self._pairing_close_source(speaker_value, reason="endpoint")
-                        self._trigger_sentence_finalization(speaker_value)
-                    separator_tokens.append(self._make_separator_token("endpoint"))
-
-            # punctuation mode is handled by the interleaved pass above so the
-            # separator lands at the period's position within the batch.
-
-
-        if new_final_tokens and not interleaved_punctuation:
-            for token in new_final_tokens:
-                if token.get("text") is None:
-                    continue
-                if not self._is_internal_soniox_token(token):
-                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
+        if not interleaved_punctuation:
+            (
+                outgoing_final_tokens,
+                separator_tokens,
+            ) = self._process_non_interleaved_tokens(
+                new_final_tokens,
+                endpoint_detected,
+            )
 
         # Do this after all final-token boundary work so an interrupt finalized
         # in the same Soniox frame is already present in the snapshot history.
@@ -2717,54 +2635,26 @@ class SonioxSession:
         translation: str,
         translation_target_lang: str,
         loop: asyncio.AbstractEventLoop,
-    ):
-        """运行Soniox会话（内部方法）"""
-        if not api_key:
-            print("❌ _run_session called without API key. Exiting session thread.")
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast_callback({
-                    "type": "error",
-                    "code": "api_key",
-                    "message": "Soniox API key is missing. Please configure it in Settings."
-                }),
-                loop
-            )
-            return
+    ) -> None:
+        def adjust_receive_timeout(receive_timeout: float | None) -> float | None:
+            pairing_timeout = self._pairer.seconds_until_next_deadline()
+            if pairing_timeout is None:
+                return receive_timeout
+            # Avoid a zero-timeout spin while still waking at the semantic
+            # pairing deadline when Soniox goes quiet.
+            pairing_timeout = max(0.001, pairing_timeout)
+            if receive_timeout is None:
+                return pairing_timeout
+            return min(receive_timeout, pairing_timeout)
 
-        rollover_seconds = self._stream_rollover_seconds()
-        if rollover_seconds is not None:
-            print(f"🔁 Soniox stream rollover enabled: {rollover_seconds:.1f}s per stream")
-        sleep_idle_seconds = self._sleep_idle_seconds()
-        sleep_enabled = sleep_idle_seconds is not None
-        if sleep_idle_seconds is not None:
-            print(
-                f"💤 Soniox silence sleep enabled: {sleep_idle_seconds:.1f}s idle, "
-                f"{float(SLEEP_PRE_ROLL_SECONDS):.2f}s pre-roll, "
-                f"{float(SLEEP_SPEECH_GRACE_SECONDS):.2f}s speech/"
-                f"{float(SLEEP_SPEECH_WINDOW_SECONDS):.2f}s window, "
-                f"{float(SLEEP_WAKE_SPEECH_SECONDS):.2f}s wake speech/"
-                f"{float(SLEEP_WAKE_SPEECH_WINDOW_SECONDS):.2f}s wake window"
-            )
-
-        self.stop_event = threading.Event()
-        disconnect_reason = "connection ended"
-        notify_disconnect = True
-        relay_close = None  # (tag, terminal, message) when a relay code closes us
-        current_api_key = api_key
-        stream_index = 1
-        audio_stream_started = False
-        active_stream: _SonioxStreamState | None = None
-        warmup_stream: _SonioxStreamState | None = None
-        dormant_for_silence = False
-        next_prepare_attempt_at = 0.0
-        warmup_future: concurrent.futures.Future | None = None
-        key_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="soniox-key")
-        audio_router = AudioSendRouter(
-            max_buffered_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
-            sample_rate=self.sample_rate,
-            chunk_size=self.chunk_size,
+        settings = StreamRuntimeSettings(
+            provider_name="Soniox",
+            key_thread_prefix="soniox-key",
+            finalize_thread_prefix="soniox-finalize-",
+            recv_timeout_seconds=STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
+            audio_buffer_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
             silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
-            vad_speech_threshold=ROLLOVER_VAD_THRESHOLD,
+            rollover_vad_threshold=ROLLOVER_VAD_THRESHOLD,
             sleep_idle_seconds=float(SLEEP_IDLE_SECONDS),
             sleep_pre_roll_seconds=SLEEP_PRE_ROLL_SECONDS,
             sleep_speech_grace_seconds=SLEEP_SPEECH_GRACE_SECONDS,
@@ -2774,462 +2664,25 @@ class SonioxSession:
             sleep_wake_speech_window_seconds=SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
             sleep_wake_vad_threshold=SLEEP_WAKE_VAD_THRESHOLD,
         )
-
-        try:
-            try:
-                active_stream = self._open_soniox_stream_state(
-                    current_api_key,
-                    stream_index,
-                    audio_format,
-                    translation,
-                    translation_target_lang,
-                )
-            except ConnectionClosed as error:
-                info = relay_error_info(error)
-                if info is not None:
-                    relay_close = info
-                    disconnect_reason = f"relay: {info[0]}"
-                else:
-                    disconnect_reason = f"connection closed: {error}"
-                return
-            except Exception as error:
-                info = relay_error_info(error)
-                if info is not None:
-                    relay_close = info
-                    disconnect_reason = f"relay: {info[0]}"
-                else:
-                    disconnect_reason = f"connection error: {error}"
-                print(f"Error connecting to Soniox: {error}")
-                return
-            self.ws = active_stream.ws
-            self.last_sent_count = 0
-            self._notify_relay_session(loop, "session_connected")
-
-            if not audio_router.set_target(active_stream.ws):
-                disconnect_reason = "failed to attach audio to Soniox stream"
-                return
-
-            self._start_audio_streamer(audio_router)
-            audio_stream_started = True
-
-            while True:
-                if self.stop_event and self.stop_event.is_set():
-                    notify_disconnect = False
-                    break
-
-                current_sleep_enabled = self._sleep_idle_seconds() is not None
-                if current_sleep_enabled != sleep_enabled:
-                    sleep_enabled = current_sleep_enabled
-                    audio_router.reset_sleep_tracking()
-                    print(f"💤 Soniox automatic sleep {'enabled' if sleep_enabled else 'disabled'} at runtime.")
-
-                if active_stream is None:
-                    if dormant_for_silence:
-                        resume_because_disabled = not sleep_enabled
-                        if audio_router.wake_ready() or resume_because_disabled:
-                            buffered_count = audio_router.buffered_count()
-                            try:
-                                next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
-                                resumed_stream = self._open_soniox_stream_state(
-                                    next_api_key,
-                                    stream_index + 1,
-                                    audio_format,
-                                    translation,
-                                    translation_target_lang,
-                                )
-                                if not audio_router.set_target(resumed_stream.ws):
-                                    self._close_soniox_stream_state(resumed_stream)
-                                    disconnect_reason = "failed to attach audio after silence sleep"
-                                    break
-                                active_stream = resumed_stream
-                                stream_index = active_stream.index
-                                current_api_key = active_stream.api_key
-                                self.ws = active_stream.ws
-                                self.last_sent_count = active_stream.sent_count
-                                dormant_for_silence = False
-                                self._notify_relay_session(loop, "session_connected")
-                                disconnect_reason = "silence sleep resumed"
-                                if resume_because_disabled:
-                                    print(
-                                        f"▶️  Automatic sleep disabled; reopened Soniox stream "
-                                        f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
-                                    )
-                                else:
-                                    print(
-                                        f"▶️  Speech detected after silence; reopened Soniox stream "
-                                        f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
-                                    )
-                            except Exception as error:
-                                disconnect_reason = f"failed to reopen Soniox stream after silence: {error}"
-                                print(f"⚠️  {disconnect_reason}")
-                                break
-                        else:
-                            time.sleep(0.05)
-                            continue
-                    else:
-                        disconnect_reason = "stream rollover failed"
-                        break
-
-                if (
-                    sleep_enabled
-                    and not dormant_for_silence
-                    and active_stream is not None
-                    and audio_router.sleep_ready()
-                ):
-                    if warmup_stream is not None:
-                        if warmup_stream.silence_sender is not None:
-                            warmup_stream.silence_sender.stop()
-                            warmup_stream.silence_sender = None
-                        self._close_soniox_stream_state(warmup_stream)
-                        warmup_stream = None
-                    if warmup_future is not None:
-                        warmup_future.cancel()
-                        warmup_future = None
-
-                    print(
-                        f"💤 No speech detected for "
-                        f"{audio_router.sleep_confirmed_silence_seconds():.1f}s; closing Soniox stream."
-                    )
-                    sleeping_stream = active_stream
-                    if not audio_router.enter_sleep_buffering(sleeping_stream.ws):
-                        disconnect_reason = "failed to detach audio for silence sleep"
-                        break
-                    active_stream = None
-                    self.ws = None
-                    dormant_for_silence = True
-                    self._notify_relay_session(loop, "session_idle")
-                    sleeping_stream.sent_count = self._finalize_stream_before_rollover(
-                        sleeping_stream.ws,
-                        sleeping_stream.all_final_tokens,
-                        sleeping_stream.sent_count,
-                        loop,
-                    )
-                    self._close_soniox_stream_state(sleeping_stream, "silence_sleep")
-                    continue
-
-                if active_stream is None:
-                    disconnect_reason = "stream rollover failed"
-                    break
-
-                if (
-                    rollover_seconds is not None
-                    and warmup_stream is None
-                    and warmup_future is None
-                    and time.monotonic() >= next_prepare_attempt_at
-                    and self._should_prepare_rollover_stream(active_stream.started_at, rollover_seconds)
-                ):
-                    warmup_future = key_fetch_executor.submit(
-                        self._prepare_warmup_stream,
-                        current_api_key, stream_index, audio_format,
-                        translation, translation_target_lang,
-                    )
-                    stream_index += 1
-                    next_prepare_attempt_at = time.monotonic() + 1.0
-
-                if warmup_future is not None:
-                    if warmup_future.done():
-                        try:
-                            warmup_stream = warmup_future.result(timeout=0)
-                            warmup_future = None
-                            warmup_stream.silence_sender.start()
-                            warmup_stream.silence_started_at = time.monotonic()
-                            print(
-                                f"🔁 Soniox stream #{warmup_stream.index} is warming with realtime silence; "
-                                f"waiting for a quiet audio gap to switch."
-                            )
-                        except Exception as error:
-                            print(f"⚠️  Failed to prepare next Soniox stream for rollover: {error}")
-                            warmup_future = None
-                            warmup_stream = None
-                            stream_index -= 1
-                            next_prepare_attempt_at = time.monotonic() + 1.0
-                if (
-                    rollover_seconds is not None
-                    and warmup_stream is None
-                    and self._should_force_rollover_switch(active_stream.started_at, rollover_seconds)
-                ):
-                    switched = self._open_and_switch_to_replacement_stream(
-                        audio_router,
-                        active_stream,
-                        current_api_key,
-                        stream_index,
-                        audio_format,
-                        translation,
-                        translation_target_lang,
-                        loop,
-                        "rollover guard deadline without warmup",
-                    )
-                    if switched is None:
-                        disconnect_reason = "failed to switch Soniox stream before configured duration"
-                        break
-                    active_stream, current_api_key, stream_index = switched
-                    self.ws = active_stream.ws
-                    self.last_sent_count = active_stream.sent_count
-                    disconnect_reason = "stream rollover"
-                    continue
-
-                if warmup_stream is not None:
-                    warmup_alive = True
-                    silence_sender = warmup_stream.silence_sender
-                    if silence_sender is not None and silence_sender.error is not None:
-                        print(f"⚠️  Soniox warmup silence failed: {silence_sender.error}")
-                        warmup_alive = False
-                    elif not self._drain_warmup_stream(warmup_stream):
-                        warmup_alive = False
-
-                    if not warmup_alive:
-                        self._close_soniox_stream_state(warmup_stream)
-                        warmup_stream = None
-                        next_prepare_attempt_at = time.monotonic() + 1.0
-                    else:
-                        switch_on_silence = audio_router.silence_ready(min_observed_at=warmup_stream.ready_at)
-                        force_switch = self._should_force_rollover_switch(
-                            active_stream.started_at,
-                            rollover_seconds,
-                        )
-                        silence_elapsed = time.monotonic() - warmup_stream.silence_started_at if warmup_stream.silence_started_at else 0.0
-                        if silence_elapsed >= 2.0 and (switch_on_silence or force_switch):
-                            switch_reason = (
-                                f"quiet gap ({audio_router.consecutive_silence_seconds():.2f}s, silence sent {silence_elapsed:.1f}s)"
-                                if switch_on_silence
-                                else "rollover guard deadline"
-                            )
-                            print(
-                                f"🔁 Switching Soniox audio from stream #{active_stream.index} "
-                                f"to stream #{warmup_stream.index} at {switch_reason}."
-                            )
-
-                            old_stream = active_stream
-                            if warmup_stream.silence_sender is not None:
-                                warmup_stream.silence_sender.stop()
-                                warmup_stream.silence_sender = None
-
-                            if not audio_router.switch_target(
-                                warmup_stream.ws,
-                                expected_current=old_stream.ws,
-                            ):
-                                disconnect_reason = "failed to switch audio to warmed Soniox stream"
-                                break
-
-                            active_stream = warmup_stream
-                            warmup_stream = None
-                            current_api_key = active_stream.api_key
-                            self.ws = active_stream.ws
-                            self.last_sent_count = active_stream.sent_count
-
-                            # Finalize old stream in background so main loop
-                            # immediately starts processing new stream responses.
-                            threading.Thread(
-                                target=self._finalize_and_close_stream,
-                                args=(old_stream, loop),
-                                daemon=True,
-                                name=f"soniox-finalize-{old_stream.index}",
-                            ).start()
-                            disconnect_reason = "stream rollover"
-                            continue
-
-                try:
-                    recv_timeout = (
-                        STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS
-                        if rollover_seconds is not None or sleep_enabled
-                        else None
-                    )
-                    pairing_timeout = self._pairer.seconds_until_next_deadline()
-                    if pairing_timeout is not None:
-                        # Avoid a zero-timeout spin while still waking at the
-                        # semantic pairing deadline when Soniox goes quiet.
-                        pairing_timeout = max(0.001, pairing_timeout)
-                        recv_timeout = (
-                            pairing_timeout
-                            if recv_timeout is None
-                            else min(recv_timeout, pairing_timeout)
-                        )
-                    message = active_stream.ws.recv(timeout=recv_timeout)
-                except TimeoutError:
-                    # Time-based pairer rules must progress even when there is
-                    # no subsequent Soniox frame to trigger response handling.
-                    self._dispatch_paired_sentences()
-                    continue
-                except ConnectionClosed as error:
-                    if rollover_seconds is not None and self._stream_is_near_rollover_limit(
-                        active_stream.started_at,
-                        rollover_seconds,
-                    ):
-                        print(
-                            f"🔁 Soniox stream #{active_stream.index} closed near configured duration; "
-                            "rolling over..."
-                        )
-                        audio_router.clear_target(active_stream.ws)
-                        self._close_soniox_stream_state(active_stream, "rollover")
-
-                        if warmup_stream is not None:
-                            if warmup_stream.silence_sender is not None:
-                                warmup_stream.silence_sender.stop()
-                                warmup_stream.silence_sender = None
-                            active_stream = warmup_stream
-                            warmup_stream = None
-                            current_api_key = active_stream.api_key
-                            self.ws = active_stream.ws
-                            self.last_sent_count = active_stream.sent_count
-                            if not audio_router.set_target(active_stream.ws):
-                                disconnect_reason = "failed to attach warmed Soniox stream after closure"
-                                break
-                            continue
-
-                        try:
-                            replacement = self._open_and_switch_to_replacement_stream(
-                                audio_router,
-                                active_stream,
-                                current_api_key,
-                                stream_index,
-                                audio_format,
-                                translation,
-                                translation_target_lang,
-                                loop,
-                                "stream closed near configured duration",
-                            )
-                            if replacement is None:
-                                disconnect_reason = "failed to attach replacement Soniox stream"
-                                break
-                            active_stream, current_api_key, stream_index = replacement
-                            self.ws = active_stream.ws
-                            self.last_sent_count = active_stream.sent_count
-                            continue
-                        except Exception as reconnect_error:
-                            disconnect_reason = f"connection closed during rollover and reconnect failed: {reconnect_error}"
-                            print(f"Error reconnecting to Soniox after rollover closure: {reconnect_error}")
-                            break
-
-                    info = relay_error_info(error)
-                    if info is not None:
-                        relay_close = info
-                        disconnect_reason = f"relay: {info[0]}"
-                    else:
-                        disconnect_reason = f"connection closed: {error}"
-                    break
-                except KeyboardInterrupt:
-                    disconnect_reason = "interrupted by user"
-                    notify_disconnect = False
-                    print("\n⏹️ Interrupted by user.")
-                    if self.stop_event:
-                        self.stop_event.set()
-                    break
-                except Exception as error:
-                    disconnect_reason = f"connection error: {error}"
-                    print(f"Error connecting to Soniox: {error}")
-                    break
-
-                try:
-                    res = json.loads(message)
-                except Exception as error:
-                    print(f"⚠️  Failed to parse Soniox response: {error}")
-                    continue
-
-                if isinstance(res, dict) and self._hosted_llm.handle_frame(res):
-                    continue
-
-                active_stream.sent_count, should_end, reason = self._process_soniox_response(
-                    res,
-                    active_stream.all_final_tokens,
-                    active_stream.sent_count,
-                    loop,
-                )
-                if should_end:
-                    disconnect_reason = reason or "stream ended"
-                    if rollover_seconds is not None and self._stream_is_near_rollover_limit(
-                        active_stream.started_at,
-                        rollover_seconds,
-                    ):
-                        print(
-                            f"🔁 Soniox stream #{active_stream.index} ended near configured duration; "
-                            "rolling over..."
-                        )
-                        audio_router.clear_target(active_stream.ws)
-                        self._close_soniox_stream_state(active_stream, "rollover")
-
-                        if warmup_stream is not None:
-                            if warmup_stream.silence_sender is not None:
-                                warmup_stream.silence_sender.stop()
-                                warmup_stream.silence_sender = None
-                            active_stream = warmup_stream
-                            warmup_stream = None
-                            current_api_key = active_stream.api_key
-                            self.ws = active_stream.ws
-                            self.last_sent_count = active_stream.sent_count
-                            if not audio_router.set_target(active_stream.ws):
-                                disconnect_reason = "failed to attach warmed Soniox stream after finish"
-                                break
-                            continue
-                        replacement = self._open_and_switch_to_replacement_stream(
-                            audio_router,
-                            active_stream,
-                            current_api_key,
-                            stream_index,
-                            audio_format,
-                            translation,
-                            translation_target_lang,
-                            loop,
-                            "stream finished near configured duration",
-                        )
-                        if replacement is None:
-                            disconnect_reason = "failed to attach replacement Soniox stream after finish"
-                            break
-                        active_stream, current_api_key, stream_index = replacement
-                        self.ws = active_stream.ws
-                        self.last_sent_count = active_stream.sent_count
-                        disconnect_reason = "stream rollover"
-                        continue
-                    break
-
-        finally:
-            # Clean up background warmup future
-            if warmup_future is not None:
-                if warmup_future.done() and not warmup_future.cancelled():
-                    try:
-                        leaked = warmup_future.result(timeout=0)
-                        self._close_soniox_stream_state(leaked)
-                    except Exception:
-                        pass
-                else:
-                    warmup_future.cancel()
-                warmup_future = None
-            key_fetch_executor.shutdown(wait=False)
-            self._relay_session_active = False
-            audio_router.close()
-            self._stop_audio_streamer()
-            # Serialize this decision with stop(): whichever path claims the
-            # close first determines whether it is a natural end or user_stop.
-            with self._stream_close_lock:
-                stop_requested = bool(self.stop_event and self.stop_event.is_set())
-                if self.stop_event:
-                    self.stop_event.set()
-                close_reason = "user_stop" if stop_requested else "stream_close"
-                if warmup_stream is not None:
-                    self._close_soniox_stream_state(warmup_stream, close_reason)
-                if active_stream is not None:
-                    self._close_soniox_stream_state(active_stream, close_reason)
-                self.stop_event = None
-                self.ws = None
-            self.thread = None
-            if notify_disconnect and not stop_requested:
-                try:
-                    disconnect_payload = {
-                        "type": "session_disconnected",
-                        "reason": disconnect_reason,
-                    }
-                    if relay_close is not None:
-                        tag, terminal, message = relay_close
-                        disconnect_payload["code"] = tag
-                        disconnect_payload["relay_terminal"] = bool(terminal)
-                        disconnect_payload["message"] = message
-                    elif _is_api_key_error_reason(disconnect_reason):
-                        disconnect_payload["code"] = "api_key"
-                    self.last_disconnect_payload = disconnect_payload
-                    asyncio.run_coroutine_threadsafe(
-                        self.broadcast_callback(disconnect_payload),
-                        loop,
-                    )
-                except Exception as notify_error:
-                    print(f"⚠️  Failed to notify clients about Soniox disconnect: {notify_error}")
-            elif stop_requested:
-                self.last_disconnect_payload = None
+        hooks = StreamSessionHooks(
+            open_stream=self._open_soniox_stream_state,
+            close_stream=self._close_soniox_stream_state,
+            process_response=self._process_soniox_response,
+            adjust_receive_timeout=adjust_receive_timeout,
+            on_receive_timeout=self._dispatch_paired_sentences,
+            should_rollover_finished=lambda _reason, started_at, rollover: (
+                self._stream_is_near_rollover_limit(started_at, rollover)
+            ),
+            finished_rollover_description=lambda _reason: "near configured duration",
+        )
+        run_stream_session(
+            self,
+            api_key,
+            audio_format,
+            translation,
+            translation_target_lang,
+            loop,
+            settings=settings,
+            hooks=hooks,
+            audio_router_factory=AudioSendRouter,
+        )

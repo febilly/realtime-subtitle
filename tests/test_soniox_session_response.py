@@ -1993,6 +1993,54 @@ def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
     assert {reason for _code, reason in close_calls} == {"user_stop"}
 
 
+def test_run_session_wakes_at_sentence_pairing_deadline(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    recv_timeouts = []
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def set_target(self, _ws):
+            return True
+
+        def close(self):
+            return None
+
+    class FakeWs:
+        def recv(self, timeout=None):
+            recv_timeouts.append(timeout)
+            session.stop_event.set()
+            raise TimeoutError()
+
+    monkeypatch.setattr(module, "AudioSendRouter", FakeRouter)
+
+    session = module.SonioxSession(MagicMock(), MagicMock())
+    session._start_audio_streamer = MagicMock()
+    session._stop_audio_streamer = MagicMock()
+    session._close_soniox_stream_state = MagicMock()
+    session._stream_rollover_seconds = MagicMock(return_value=None)
+    session._sleep_idle_seconds = MagicMock(return_value=None)
+    session._pairer.seconds_until_next_deadline = MagicMock(return_value=0.02)
+    session._dispatch_paired_sentences = MagicMock()
+    session._open_soniox_stream_state = MagicMock(return_value=module._SonioxStreamState(
+        ws=FakeWs(),
+        index=1,
+        api_key="key",
+        started_at=module.time.monotonic(),
+        ready_at=module.time.monotonic(),
+        all_final_tokens=[],
+    ))
+
+    session._run_session("key", "pcm_s16le", "one_way", "zh", object())
+
+    assert len(recv_timeouts) == 1
+    assert abs(recv_timeouts[0] - 0.02) < 1e-9
+    session._dispatch_paired_sentences.assert_called_once_with()
+
+
 def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
