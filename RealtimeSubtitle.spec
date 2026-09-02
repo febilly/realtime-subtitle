@@ -217,7 +217,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='NONE',
+    icon=os.path.join(SPECPATH, 'static', 'app.ico'),
     version=version_info,
 )
 
