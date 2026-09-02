@@ -17,4 +17,6 @@ zeroconf
 PySide6
 vrchat_oscquery @ git+https://github.com/theepicsnail/vrchat_oscquery@main
 # streamlink
-pyinstaller
+# 锁版本：不同 PyInstaller 版本的 bootloader 有不同的杀软误报情况，
+# 浮动版本会让"这次报毒/上次不报"变得无法复现。升级时请手工改这里。
+pyinstaller==6.22.2

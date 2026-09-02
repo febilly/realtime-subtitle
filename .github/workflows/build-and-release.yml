@@ -26,7 +26,54 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
+
+    # 官方 wheel 里的 bootloader（run.exe）是全世界所有 PyInstaller 打包产物共用
+    # 的同一份二进制，大量恶意样本也用它，因此被不少杀软直接按特征码报毒。
+    # 从源码重编译一份，产物的 bootloader 特征就与公版不同，可以躲掉这一类纯静态匹配。
+    #
+    # 注意：sdist 里同样附带了预编译的 bootloader，只加 --no-binary 是空操作，
+    # 必须同时设置 PYINSTALLER_COMPILE_BOOTLOADER 才会真正调用 waf 编译。
+    # 编译依赖 runner 自带的 MSVC 工具链。
+    - name: Rebuild the PyInstaller bootloader from source
+      shell: bash
+      env:
+        PYINSTALLER_COMPILE_BOOTLOADER: '1'
+      run: |
+        version=$(python -c "import PyInstaller; print(PyInstaller.__version__)")
+        echo "Recompiling bootloader for PyInstaller $version"
+        pip install --no-binary pyinstaller --no-cache-dir --force-reinstall --no-deps \
+          "pyinstaller==$version"
+
+    - name: Verify the bootloader is not the stock prebuilt one
+      shell: bash
+      run: |
+        python - <<'PY'
+        import hashlib
+        import io
+        import json
+        import urllib.request
+        import zipfile
+        from pathlib import Path
+
+        import PyInstaller
+
+        name = "PyInstaller/bootloader/Windows-64bit-intel/run.exe"
+        built = (Path(PyInstaller.__file__).parent / "bootloader/Windows-64bit-intel/run.exe").read_bytes()
+
+        with urllib.request.urlopen(f"https://pypi.org/pypi/pyinstaller/{PyInstaller.__version__}/json") as response:
+            metadata = json.load(response)
+        url = next(u["url"] for u in metadata["urls"] if u["filename"].endswith("win_amd64.whl"))
+        with urllib.request.urlopen(url) as response:
+            stock = zipfile.ZipFile(io.BytesIO(response.read())).read(name)
+
+        print("stock:", len(stock), hashlib.sha256(stock).hexdigest())
+        print("built:", len(built), hashlib.sha256(built).hexdigest())
+        if stock == built:
+            raise SystemExit("ERROR: bootloader was NOT recompiled from source")
+        print("OK: bootloader differs from the stock prebuilt binary")
+        PY
+
+
     - name: Print dependency versions
       shell: bash
       run: |

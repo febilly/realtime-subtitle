@@ -48,6 +48,24 @@ if not exist "%PY%" (
     echo [deps] Installing requirements.txt ...
     "%PY%" -m pip install -r requirements.txt
     if errorlevel 1 ( echo [error] Dependency install failed. & exit /b 1 )
+
+    REM --- Recompile the PyInstaller bootloader -------------------
+    REM  The stock wheel ships a bootloader binary shared by every PyInstaller
+    REM  build on earth (malware included), so plenty of AV engines flag it on
+    REM  sight. Rebuilding it here gives the shipped exe a different signature.
+    REM  Mirrors the same step in .github/workflows/build-and-release.yml.
+    REM  Requires MSVC build tools; the sdist bundles a prebuilt bootloader too,
+    REM  so PYINSTALLER_COMPILE_BOOTLOADER is what forces an actual compile.
+    REM  The reinstall is driven from Python so the pinned version can be read
+    REM  back without fighting cmd's quoting rules inside a for /f.
+    echo [deps] Recompiling PyInstaller bootloader from source ...
+    set "PYINSTALLER_COMPILE_BOOTLOADER=1"
+    "%PY%" -c "import subprocess,sys,PyInstaller; sys.exit(subprocess.call([sys.executable,'-m','pip','install','--no-binary','pyinstaller','--no-cache-dir','--force-reinstall','--no-deps','pyinstaller==' + PyInstaller.__version__]))"
+    set "PYINSTALLER_COMPILE_BOOTLOADER="
+    if errorlevel 1 (
+        echo [error] Bootloader compile failed. Are the MSVC build tools installed?
+        exit /b 1
+    )
 ) else (
     echo [venv] Reusing existing temp venv at "%VENV_DIR%".
     echo        Run "build_local.bat /fresh" to rebuild dependencies.
