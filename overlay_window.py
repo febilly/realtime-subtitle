@@ -26,6 +26,10 @@ import threading
 import urllib.request
 from html import escape as _html_escape
 
+# Win32 窗口样式相关调用集中在这个模块里，不要挪回本文件——火绒会对
+# overlay_window 的字节码误报 Trojan/Python.ShellLoader.am。详见该模块的注释。
+import win_overlay_native
+
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QPointF, QRect, QRectF, QSettings, QSize, QEvent, QLocale
 from PySide6.QtGui import (
     QCursor,
@@ -538,20 +542,7 @@ def is_parent_alive():
         if ppid <= 1:
             return False
         if os.name == "nt":
-            import ctypes
-            # Open process handle
-            PROCESS_QUERY_INFORMATION = 0x0400
-            SYNCHRONIZE = 0x00100000
-            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, False, ppid)
-            if not handle:
-                return False
-            # Check if it has exited
-            exit_code = ctypes.c_ulong()
-            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-            STILL_ACTIVE = 259
-            is_active = (exit_code.value == STILL_ACTIVE)
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return is_active
+            return win_overlay_native.is_process_alive(ppid)
         else:
             try:
                 os.kill(ppid, 0)
@@ -1314,113 +1305,6 @@ class SubtitleTextEdit(QTextEdit):
         return pm
 
 
-# ===========================================================================
-# Windows 专用：让窗口不抢焦点（点击不激活），并置顶。
-# ===========================================================================
-def _apply_no_activate_style(hwnd: int, app_window: bool = False):
-    """让窗口点击不激活并置顶。
-
-    app_window=True 时把窗口注册为任务栏窗口（WS_EX_APPWINDOW，去掉 WS_EX_TOOLWINDOW），
-    这样它会出现在 Windows 任务栏，并能被 OBS 等软件作为独立窗口捕捉；
-    False（默认）则保持工具窗口，不进任务栏。
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        import ctypes.wintypes
-
-        user32 = ctypes.windll.user32
-        is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
-
-        get_window_long = (
-            user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
-        )
-        set_window_long = (
-            user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
-        )
-        long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
-        get_window_long.restype = long_type
-        get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
-        set_window_long.restype = long_type
-        set_window_long.argtypes = (
-            ctypes.wintypes.HWND,
-            ctypes.c_int,
-            long_type,
-        )
-
-        GWL_EXSTYLE = -20
-        WS_EX_TOOLWINDOW = 0x00000080
-        WS_EX_APPWINDOW = 0x00040000
-        WS_EX_NOACTIVATE = 0x08000000
-        style = int(get_window_long(hwnd, GWL_EXSTYLE))
-        style |= WS_EX_NOACTIVATE
-        if app_window:
-            style |= WS_EX_APPWINDOW
-            style &= ~WS_EX_TOOLWINDOW
-        else:
-            style |= WS_EX_TOOLWINDOW
-        set_window_long(hwnd, GWL_EXSTYLE, long_type(style))
-
-        HWND_TOPMOST = -1
-        SWP_NOSIZE = 0x0001
-        SWP_NOMOVE = 0x0002
-        SWP_NOACTIVATE = 0x0010
-        SWP_FRAMECHANGED = 0x0020
-        user32.SetWindowPos(
-            ctypes.wintypes.HWND(hwnd),
-            ctypes.wintypes.HWND(HWND_TOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        )
-    except Exception:
-        pass
-
-
-def _set_click_through(hwnd: int, enabled: bool):
-    """切换 Windows 鼠标穿透（WS_EX_TRANSPARENT）。
-
-    开启后该窗口不再接收任何鼠标事件，点击会落到下方窗口；关闭则恢复正常。
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        import ctypes.wintypes
-
-        user32 = ctypes.windll.user32
-        is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
-
-        get_window_long = (
-            user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
-        )
-        set_window_long = (
-            user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
-        )
-        long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
-        get_window_long.restype = long_type
-        get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
-        set_window_long.restype = long_type
-        set_window_long.argtypes = (
-            ctypes.wintypes.HWND,
-            ctypes.c_int,
-            long_type,
-        )
-
-        GWL_EXSTYLE = -20
-        WS_EX_TRANSPARENT = 0x00000020
-        WS_EX_LAYERED = 0x00080000
-        style = int(get_window_long(hwnd, GWL_EXSTYLE))
-        if enabled:
-            style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
-        else:
-            style &= ~WS_EX_TRANSPARENT
-        set_window_long(hwnd, GWL_EXSTYLE, long_type(style))
-    except Exception:
-        pass
 
 
 # ===========================================================================
@@ -1574,7 +1458,7 @@ class OverlayWindow(QWidget):
 
     def _apply_windows_no_activate_style(self):
         """Keep clicks on the overlay from activating it on Windows fullscreen apps."""
-        _apply_no_activate_style(int(self.winId()), app_window=True)
+        win_overlay_native.apply_no_activate_style(int(self.winId()), app_window=True)
 
     _BTN_QSS = (
         "QPushButton {"
@@ -1894,7 +1778,7 @@ class OverlayWindow(QWidget):
         if enabled == self._click_through_on:
             return
         self._click_through_on = enabled
-        _set_click_through(int(self.winId()), enabled)
+        win_overlay_native.set_click_through(int(self.winId()), enabled)
 
     def _toggle_passthrough(self):
         self._passthrough = not self._passthrough
