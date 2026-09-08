@@ -439,6 +439,9 @@ class HyMT2API(BaseTranslationAPI):
             self._prev_translation: Optional[str] = None
             # 上一次中间译文的 token，作为下一次修订的推测解码草稿（仅 local 后端用）
             self._prev_tokens: List[int] = []
+            # The local final-reuse shortcut is safe only when all prompt
+            # background that can affect this row's translation is unchanged.
+            self._prev_local_context_signature = None
             self._last_final = True
             self._sent_any = False
             self._last_source_lang: Optional[str] = None
@@ -618,8 +621,23 @@ class HyMT2API(BaseTranslationAPI):
 
     # ── Translation entry point ────────────────────────────────────────
 
+    @staticmethod
+    def _local_context_signature(
+        history: List[List[str]], following_source: str
+    ) -> tuple[tuple[tuple[str, str], ...], str]:
+        """Return the local prompt inputs that must match for final reuse."""
+        return (
+            tuple((str(source), str(target)) for source, target in history),
+            following_source,
+        )
+
     def _try_reuse_final(
-        self, text: str, source_lang: str, target_lang: str
+        self,
+        text: str,
+        source_lang: str,
+        target_lang: str,
+        *,
+        local_context_signature=None,
     ) -> Optional[str]:
         """终句原文与上一次中间结果完全一致（且语言方向一致）时，跳过这次
         重复请求/推理，直接复用上一次的译文，并按终句方式收尾修订链
@@ -628,6 +646,11 @@ class HyMT2API(BaseTranslationAPI):
             if self._last_final or self._prev_source is None or self._prev_source != text:
                 return None
             if self._last_source_lang != source_lang or self._last_target_lang != target_lang:
+                return None
+            if (
+                local_context_signature is not None
+                and self._prev_local_context_signature != local_context_signature
+            ):
                 return None
             display = (self._prev_translation or "").strip()
             if not display or display.startswith("[ERROR]"):
@@ -639,6 +662,7 @@ class HyMT2API(BaseTranslationAPI):
             self._prev_source = None
             self._prev_translation = None
             self._prev_tokens = []
+            self._prev_local_context_signature = None
             self._last_final = True
             return display
 
@@ -661,9 +685,21 @@ class HyMT2API(BaseTranslationAPI):
             self._last_target_lang or self.DEFAULT_TARGET_LANG
         )
         history = self._history_from_context_pairs(context_pairs)
+        following_source = ""
+        local_context_signature = None
+        if self.backend in {"local", "remote"}:
+            following_source = str(kwargs.get("following_source") or "").strip()
+            local_context_signature = self._local_context_signature(
+                history, following_source
+            )
 
         if not is_partial:
-            reused = self._try_reuse_final(text, source_lang, target_lang)
+            reused = self._try_reuse_final(
+                text,
+                source_lang,
+                target_lang,
+                local_context_signature=local_context_signature,
+            )
             if reused is not None:
                 return reused
 
@@ -680,6 +716,8 @@ class HyMT2API(BaseTranslationAPI):
                     target_lang=target_lang,
                     is_partial=is_partial,
                     history=history,
+                    following_source=following_source,
+                    context_signature=local_context_signature,
                 )
             except Exception as e:
                 logger.warning("Hy-MT2 local translate failed: %s", e)
@@ -699,6 +737,10 @@ class HyMT2API(BaseTranslationAPI):
                 is_partial=is_partial,
                 history=history,
             )
+            if self.backend == "remote":
+                # Optional v1 extension. Older Yakutan servers ignore it and
+                # still accept the same source/history/revision payload.
+                payload["following_source"] = following_source
             reply = self._request(payload)
 
             committed = str(reply.get("committed_text") or "")
@@ -715,6 +757,8 @@ class HyMT2API(BaseTranslationAPI):
                 source_lang=source_lang,
                 target_lang=target_lang,
             )
+            if self.backend == "remote":
+                self._prev_local_context_signature = local_context_signature
             return display
 
         except Exception as e:
@@ -729,21 +773,24 @@ class HyMT2API(BaseTranslationAPI):
         target_lang: str,
         is_partial: bool,
         history: List[List[str]],
+        following_source: str,
+        context_signature,
     ) -> str:
         with self._lock:
             if self._last_final:
                 self._prev_source = None
                 self._prev_translation = None
                 self._prev_tokens = []
+                self._prev_local_context_signature = None
 
             prev_src = self._prev_source
             prev_trans = self._prev_translation
-            recent_history = [p[0] for p in (self._history + history)][-MAX_HISTORY:]
+            recent_history = (self._history + history)[-MAX_HISTORY:]
 
             source_name = LANGUAGE_NAMES.get(source_lang, source_lang)
             target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
 
-            if not recent_history and not prev_src and not prev_trans:
+            if not recent_history and not prev_src and not prev_trans and not following_source:
                 direction = f"from {source_name} into {target_name}"
                 content = (
                     f"Translate the following text {direction}. Note that you should "
@@ -753,8 +800,19 @@ class HyMT2API(BaseTranslationAPI):
             else:
                 background = []
                 if recent_history:
+                    rendered_history = []
+                    for source, translation in recent_history:
+                        rendered_history.append(f"Source: {source}")
+                        if translation:
+                            rendered_history.append(f"Translation: {translation}")
                     background.append(
-                        "Recent source utterances:\n" + "\n".join(recent_history)
+                        "Previous source/translation context:\n"
+                        + "\n".join(rendered_history)
+                    )
+                if following_source:
+                    background.append(
+                        "Following source context (reference only; do not translate or output):\n"
+                        + following_source
                     )
                 if prev_src:
                     background.append(
@@ -768,6 +826,10 @@ class HyMT2API(BaseTranslationAPI):
                     "When the source meaning has not changed, preserve the still-correct prefix "
                     "of the previous translation whenever possible. When content is added or "
                     "corrected, accuracy and completeness take priority."
+                )
+                background.append(
+                    "Translate only the [Source Text] below. Do not translate or output "
+                    "background information."
                 )
                 direction = f"from {source_name} into {target_name}"
                 content = (
@@ -796,6 +858,7 @@ class HyMT2API(BaseTranslationAPI):
 
             self._prev_source = text
             self._prev_translation = display
+            self._prev_local_context_signature = context_signature
             self._last_final = not is_partial
             self._last_source_lang = source_lang
             self._last_target_lang = target_lang
