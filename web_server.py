@@ -22,8 +22,6 @@ from config import (
 )
 from config import (
     is_llm_refine_available,
-    LLM_REFINE_CONTEXT_MIN_COUNT,
-    LLM_REFINE_CONTEXT_MAX_COUNT,
 )
 
 from audio_capture import (
@@ -393,6 +391,9 @@ class WebServer:
             payload["segment_mode"] = self.session.get_segment_mode()
         return web.json_response(payload)
 
+    # 未知来源值只告警一次，避免每次请求刷屏。
+    _warned_unknown_remotes: set = set()
+
     @staticmethod
     def _is_loopback_request(request) -> bool:
         """Whether the request originates from localhost (loopback)."""
@@ -400,7 +401,13 @@ class WebServer:
         if remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
             return True
         # aiohttp may report None for in-process/test transports.
-        return remote == "" or remote == "None"
+        if remote in ("", "None"):
+            cls = WebServer
+            if remote not in cls._warned_unknown_remotes:
+                cls._warned_unknown_remotes.add(remote)
+                print(f"⚠️  Request with unknown remote address treated as loopback ({remote!r})")
+            return True
+        return False
 
     async def setup_handler(self, request):
         """配置/切换 provider + API key（前端设置面板），在进程内热切换。"""
@@ -1424,11 +1431,13 @@ class WebServer:
                 self.provider_manager.target_lang_1 = l1
                 self.provider_manager.target_lang_2 = l2
 
-        # 先停止当前的Soniox会话
-        self.session.stop()
-        
-        # 关闭当前日志文件
-        self.logger.close_log_file()
+        # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
+        # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求
+        # 停滞），因此放到线程池里等待。
+        await asyncio.to_thread(self.session.stop)
+
+        # 关闭当前日志文件（同步文件 IO，同样移出事件循环）
+        await asyncio.to_thread(self.logger.close_log_file)
         
         if is_auto:
             await self.broadcast_to_clients({
@@ -1519,7 +1528,9 @@ class WebServer:
             )
 
         print("\n[Server] Received pause request...")
-        paused = self.session.pause()
+        # pause() -> stop() 会同步 join 会话/音频线程（最长约 4.5s），
+        # 移出事件循环避免阻塞其他请求。
+        paused = await asyncio.to_thread(self.session.pause)
 
         # 广播暂停状态给所有 WebSocket 客户端
         await self.broadcast_to_clients({
