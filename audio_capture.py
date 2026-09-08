@@ -262,11 +262,12 @@ class AudioStreamer:
     def _run(self) -> None:
         """音频线程主循环"""
         while not self._stop_event.is_set():
+            # 先清除切换信号再读取当前源：若 set_source() 恰好在"读取源"与
+            # "清除信号"之间执行，后清除会把切换信号抹掉，线程会带着旧源
+            # 继续运行，且再次设置同一源返回 False，卡死在错误源上。
+            self._source_changed_event.clear()
             with self._source_lock:
                 source = self._current_source
-
-            # 清除切换信号，准备开始当前音频源
-            self._source_changed_event.clear()
 
             if source == "mix":
                 self._run_mix_mode()
@@ -537,7 +538,10 @@ class AudioStreamer:
         if arr.ndim == 1:
             return arr
 
-        return arr[:, 0]
+        # 多声道下混取均值而不是只取左声道：环回采集设备常给立体声，
+        # 只取 arr[:, 0] 会让仅存在于右声道的内容（部分游戏/音频路由）
+        # 变成静音。单声道时 mean(axis=1) 等价于原数据。
+        return np.mean(arr, axis=1)
 
     def _resample_to_chunk(self, data: Optional[np.ndarray], target_length: int) -> np.ndarray:
         if data is None:
