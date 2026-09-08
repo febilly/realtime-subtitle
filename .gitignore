@@ -55,6 +55,9 @@ coverage/
 # Local scratch directory
 scratch/
 
+# Local provider evaluation datasets and benchmark scripts
+scratch-eval/
+
 *.ttc
 
 # Claude helper directories
