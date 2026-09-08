@@ -438,11 +438,17 @@ class WebServer:
                     {"status": "error", "message": "Invalid local_config"}, status=400
                 )
             local_config = local_config or {}
-            config.set_local_inference_config(
-                asr_device=local_config.get("asr_device"),
-                encoder_device=local_config.get("encoder_device"),
-                translation_device=local_config.get("translation_device"),
-            )
+            try:
+                config.set_local_inference_config(
+                    backend=local_config.get("backend"),
+                    server_url=local_config.get("server_url"),
+                    remote_timeout_seconds=local_config.get("remote_timeout_seconds"),
+                    asr_device=local_config.get("asr_device"),
+                    encoder_device=local_config.get("encoder_device"),
+                    translation_device=local_config.get("translation_device"),
+                )
+            except (ValueError, TypeError) as error:
+                return web.json_response({"status": "error", "message": str(error)}, status=400)
 
         if "sleep_on_silence" in payload:
             if not isinstance(payload.get("sleep_on_silence"), bool):
@@ -622,12 +628,37 @@ class WebServer:
                 ),
             },
             "devices": devices,
+            "remote_status": None,
             "config": {
+                "backend": config.LOCAL_INFERENCE_BACKEND,
+                "server_url": config.LOCAL_INFERENCE_SERVER_URL,
+                "remote_timeout_seconds": config.LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS,
                 "asr_device": config.LOCAL_INFERENCE_DEVICE,
                 "encoder_device": config.LOCAL_QWEN_ENCODER_DEVICE,
                 "translation_device": config.LOCAL_TRANSLATION_DEVICE,
             },
         })
+
+    async def local_inference_probe_handler(self, request):
+        """Explicit, bounded WebSocket health check; never changes settings."""
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "Local configuration only"}, status=403)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid payload")
+            from local_inference.remote_client import normalize_server_url, probe_remote_server, remote_readiness_error
+            url = normalize_server_url(payload.get("server_url"))
+            if not url:
+                raise ValueError("远程推理服务器地址为空")
+        except (ValueError, TypeError) as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=400)
+        result = await asyncio.to_thread(probe_remote_server, url, timeout=5)
+        error = remote_readiness_error(result, translation_enabled=True)
+        result = {**result, "ready": not bool(error)}
+        if error:
+            result["error"] = error
+        return web.json_response({"status": "ok", "remote_status": result})
 
     async def local_inference_download_handler(self, request):
         """Download the redistributable Qwen3-ASR, Silero and llama runtime."""
@@ -2085,6 +2116,7 @@ class WebServer:
         app.router.add_post('/setup', self.setup_handler)
         app.router.add_post('/use-env', self.use_env_handler)
         app.router.add_get('/local-inference/status', self.local_inference_status_handler)
+        app.router.add_post('/local-inference/probe', self.local_inference_probe_handler)
         app.router.add_post('/local-inference/download', self.local_inference_download_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
         app.router.add_post('/account/login-code', self.account_login_code_handler)

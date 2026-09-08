@@ -189,37 +189,61 @@
 
             <section class="auth-section" id="localInferenceSection" hidden>
                 <div class="settings-section-label" id="localInferenceLabel">Local models</div>
-                <div class="local-model-card">
-                    <div class="local-model-header">
-                        <strong>Qwen3-ASR 1.7B</strong>
-                        <span class="local-model-status" id="localAsrStatus">Checking…</span>
-                    </div>
-                    <p class="field-hint" id="localAsrPath"></p>
-                    <button class="secondary-button" id="localAsrDownloadButton" type="button">Download Qwen3-ASR</button>
-                </div>
-                <div class="local-model-card">
-                    <div class="local-model-header">
-                        <strong>Hy-MT2 1.8B GGUF</strong>
-                        <span class="local-model-status" id="localTranslationStatus">Checking…</span>
-                    </div>
-                    <p class="field-hint" id="localTranslationPath"></p>
-                </div>
-                <label class="form-field" for="localAsrDevice">
-                    <span id="localAsrDeviceLabel">Qwen decoder device</span>
-                    <select id="localAsrDevice"></select>
-                </label>
-                <label class="form-field" for="localEncoderDevice">
-                    <span id="localEncoderDeviceLabel">Qwen audio encoder device</span>
-                    <select id="localEncoderDevice">
-                        <option value="auto">Auto</option>
-                        <option value="gpu">GPU (DirectML)</option>
-                        <option value="cpu">CPU</option>
+                <label class="form-field" for="localInferenceBackend">
+                    <span id="localInferenceBackendLabel">Run location</span>
+                    <select id="localInferenceBackend">
+                        <option id="localInferenceBackendLocalOption" value="local">This computer</option>
+                        <option id="localInferenceBackendRemoteOption" value="remote">Remote inference server</option>
                     </select>
                 </label>
-                <label class="form-field" for="localTranslationDevice">
-                    <span id="localTranslationDeviceLabel">Hy-MT2 device</span>
-                    <select id="localTranslationDevice"></select>
-                </label>
+                <div id="localRemoteControls" hidden>
+                    <label class="form-field" for="localRemoteServerUrl">
+                        <span id="localRemoteServerUrlLabel">Remote server address</span>
+                        <input id="localRemoteServerUrl" type="url" inputmode="url" spellcheck="false"
+                               value="ws://127.0.0.1:18775">
+                    </label>
+                    <label class="form-field" for="localRemoteTimeoutSeconds">
+                        <span id="localRemoteTimeoutLabel">Connection timeout (seconds)</span>
+                        <input id="localRemoteTimeoutSeconds" type="number" min="1" max="600" step="1" placeholder="60">
+                    </label>
+                    <div class="local-model-header">
+                        <span class="local-model-status" id="localRemoteStatus">Not tested</span>
+                        <button class="secondary-button" id="localRemoteProbeButton" type="button">Test connection</button>
+                    </div>
+                </div>
+                <div id="localNativeControls">
+                    <div class="local-model-card">
+                        <div class="local-model-header">
+                            <strong>Qwen3-ASR 1.7B</strong>
+                            <span class="local-model-status" id="localAsrStatus">Checking…</span>
+                        </div>
+                        <p class="field-hint" id="localAsrPath"></p>
+                        <button class="secondary-button" id="localAsrDownloadButton" type="button">Download Qwen3-ASR</button>
+                    </div>
+                    <div class="local-model-card">
+                        <div class="local-model-header">
+                            <strong>Hy-MT2 1.8B GGUF</strong>
+                            <span class="local-model-status" id="localTranslationStatus">Checking…</span>
+                        </div>
+                        <p class="field-hint" id="localTranslationPath"></p>
+                    </div>
+                    <label class="form-field" for="localAsrDevice">
+                        <span id="localAsrDeviceLabel">Qwen decoder device</span>
+                        <select id="localAsrDevice"></select>
+                    </label>
+                    <label class="form-field" for="localEncoderDevice">
+                        <span id="localEncoderDeviceLabel">Qwen audio encoder device</span>
+                        <select id="localEncoderDevice">
+                            <option value="auto">Auto</option>
+                            <option value="gpu">GPU (DirectML)</option>
+                            <option value="cpu">CPU</option>
+                        </select>
+                    </label>
+                    <label class="form-field" for="localTranslationDevice">
+                        <span id="localTranslationDeviceLabel">Hy-MT2 device</span>
+                        <select id="localTranslationDevice"></select>
+                    </label>
+                </div>
             </section>
 
             <section class="auth-section" id="outputDeviceSection">

@@ -177,7 +177,8 @@
                 && settings.sonioxRegion
                 && desiredRegion !== backendSonioxRegion;
             const modeMismatch = backendMode !== 'direct';
-            if (!providerMismatch && !needKeyPush && !regionMismatch && !modeMismatch) {
+            const needLocalPush = desiredProvider === 'local' && settings.localConfig;
+            if (!providerMismatch && !needKeyPush && !regionMismatch && !modeMismatch && !needLocalPush) {
                 return null;
             }
             if (pushedOverrideBootId === backendBootId) {
@@ -190,6 +191,8 @@
                     silent: true,
                     mode: 'direct',
                     region: desiredRegion,
+                    ...(desiredProvider === 'local' && settings.localConfig
+                        ? { localConfig: settings.localConfig } : {}),
                 },
             };
         }

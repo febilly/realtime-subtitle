@@ -48,6 +48,9 @@
                 ? String(settings.keys[provider])
                 : '';
             settings.providerOverride = provider;
+            if (provider === 'local' && draft.localConfig) {
+                settings.localConfig = { ...(settings.localConfig || {}), ...draft.localConfig };
+            }
             if (region) settings.sonioxRegion = region;
             settings.keys = settings.keys || {};
             runtime.writeProviderSettingsDraft(settings, provider);

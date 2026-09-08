@@ -136,6 +136,14 @@ describe('settings policy save decisions', () => {
 });
 
 describe('settings policy provider synchronization', () => {
+    it('restores saved remote inference config once per backend boot', () => {
+        const localConfig = { backend: 'remote', server_url: 'ws://127.0.0.1:18775' };
+        const state = { translationProvider: 'local', connectionMode: 'direct', backendMode: 'direct',
+            providerSettings: { providerOverride: 'local', keys: {}, localConfig },
+            backendBootId: 'new-boot', pushedOverrideBootId: 'old-boot' };
+        expect(buildProviderSyncPlan(state)).toMatchObject({ provider: 'local', options: { localConfig } });
+        expect(buildProviderSyncPlan({ ...state, pushedOverrideBootId: 'new-boot' })).toBeNull();
+    });
     const directBaseline = {
         lockManualControls: false,
         providerSettings: { providerOverride: null, keys: {} },

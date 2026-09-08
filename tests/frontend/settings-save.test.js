@@ -82,6 +82,13 @@ function setup(overrides = {}) {
 }
 
 describe('SettingsSave direct mode', () => {
+    it('persists remote location and endpoint with the provider settings', async () => {
+        const localConfig = { backend: 'remote', server_url: 'ws://127.0.0.1:18775', remote_timeout_seconds: 60 };
+        const page = setup({ draft: { provider: 'local', apiKey: '', localConfig } });
+        await page.controller.handleSubmit();
+        expect(page.getProviderSettings().localConfig).toEqual(localConfig);
+        expect(page.setup.push).toHaveBeenCalledWith('local', null, expect.objectContaining({ localConfig }));
+    });
     it('starts the local provider without requiring an API key', async () => {
         const localConfig = {
             asr_device: 'vulkan:0', encoder_device: 'gpu', translation_device: 'cpu',

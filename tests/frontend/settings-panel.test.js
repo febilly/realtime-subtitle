@@ -13,10 +13,22 @@ function setup(overrides = {}) {
             <form id="settingsForm">
                 <input type="radio" name="provider" value="soniox">
                 <input type="radio" name="provider" value="gemini">
+                <input type="radio" name="provider" value="local">
                 <input type="radio" name="connmode" value="relay">
                 <input type="radio" name="connmode" value="direct">
                 <section id="modeSection"></section><section id="accountSection"></section>
                 <section id="apiKeySection"></section><span id="modeDescription"></span>
+                <section id="localInferenceSection">
+                    <select id="localInferenceBackend"><option value="local">Local</option><option value="remote">Remote</option></select>
+                    <div id="localNativeControls"></div><div id="localRemoteControls"></div>
+                    <input id="localRemoteServerUrl"><input id="localRemoteTimeoutSeconds">
+                    <span id="localRemoteStatus"></span><button id="localRemoteProbeButton"></button>
+                    <span id="localAsrStatus"></span><span id="localTranslationStatus"></span>
+                    <span id="localAsrPath"></span><span id="localTranslationPath"></span>
+                    <button id="localAsrDownloadButton"></button>
+                    <select id="localAsrDevice"></select><select id="localEncoderDevice"><option value="auto">Auto</option></select>
+                    <select id="localTranslationDevice"></select>
+                </section>
                 <label id="apiKeyLabel"></label><input id="apiKeyInput">
                 <span id="apiKeySourceHint"></span><span id="providerDescription"></span>
                 <p><a id="apiKeyGetLink"></a></p>
@@ -52,6 +64,7 @@ function setup(overrides = {}) {
         keys: {},
         ...overrides.providerSettings,
     };
+    const saveProviderSettings = vi.fn((value) => { providerSettings = value; });
     const fetch = overrides.fetch || vi.fn().mockResolvedValue(response({ pricing: {} }));
     const selectCalls = [];
     const buildCustomSelect = vi.fn((selectOptions, config = {}) => {
@@ -85,6 +98,7 @@ function setup(overrides = {}) {
             ...providerSettings,
             keys: { ...(providerSettings.keys || {}) },
         }),
+        saveProviderSettings,
         freePoolsSummary,
         getState: () => state,
         actions,
@@ -110,6 +124,22 @@ function setup(overrides = {}) {
             modeSection: document.getElementById('modeSection'),
             accountSection: document.getElementById('accountSection'),
             apiKeySection: document.getElementById('apiKeySection'),
+            localInferenceSection: document.getElementById('localInferenceSection'),
+            localInferenceBackend: document.getElementById('localInferenceBackend'),
+            localNativeControls: document.getElementById('localNativeControls'),
+            localRemoteControls: document.getElementById('localRemoteControls'),
+            localRemoteServerUrl: document.getElementById('localRemoteServerUrl'),
+            localRemoteTimeoutSeconds: document.getElementById('localRemoteTimeoutSeconds'),
+            localRemoteStatus: document.getElementById('localRemoteStatus'),
+            localRemoteProbeButton: document.getElementById('localRemoteProbeButton'),
+            localAsrStatus: document.getElementById('localAsrStatus'),
+            localAsrPath: document.getElementById('localAsrPath'),
+            localAsrDownloadButton: document.getElementById('localAsrDownloadButton'),
+            localTranslationStatus: document.getElementById('localTranslationStatus'),
+            localTranslationPath: document.getElementById('localTranslationPath'),
+            localAsrDevice: document.getElementById('localAsrDevice'),
+            localEncoderDevice: document.getElementById('localEncoderDevice'),
+            localTranslationDevice: document.getElementById('localTranslationDevice'),
             modeDescription: document.getElementById('modeDescription'),
             redeemPasteButton: document.getElementById('redeemPasteButton'),
             versionElement: document.getElementById('settingsVersion'),
@@ -124,12 +154,67 @@ function setup(overrides = {}) {
         fetch,
         freePoolsSummary,
         selectCalls,
+        saveProviderSettings,
         setProviderSettings(value) { providerSettings = value; },
         state,
     };
 }
 
 describe('SettingsPanel provider and mode drafts', () => {
+    it('restores remote settings after restart and preserves edits against late status', async () => {
+        let resolveStatus;
+        const fetch = vi.fn(() => new Promise((resolve) => { resolveStatus = resolve; }));
+        const page = setup({ fetch, providerSettings: { providerOverride: 'local',
+            localConfig: { backend: 'remote', server_url: 'ws://saved:18775' } } });
+        page.controller.init();
+        page.controller.populate();
+        expect(page.document.getElementById('localRemoteServerUrl').value).toBe('ws://saved:18775');
+        const input = page.document.getElementById('localRemoteServerUrl');
+        input.value = 'ws://edited:18775';
+        input.dispatchEvent(new page.dom.window.Event('input'));
+        resolveStatus(response({ config: { backend: 'local', server_url: 'ws://default:18775' } }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(input.value).toBe('ws://edited:18775');
+        page.dom.window.close();
+    });
+    it('renders remote inference controls without requiring local models and saves the remote draft', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response({
+                config: {
+                    backend: 'remote', server_url: 'ws://gpu.example:18775',
+                    remote_timeout_seconds: 45,
+                },
+                remote_status: { ready: false, error: 'not connected yet' },
+                models: { asr: {}, translation: {} }, devices: [],
+            }))
+            .mockResolvedValueOnce(response({
+                status: 'ok', remote_status: { ready: true, health: 'healthy' },
+            }));
+        const page = setup({ fetch });
+        page.controller.setProvider('local');
+
+        await expect(page.controller.refreshLocalInferenceStatus()).resolves.toBe(true);
+        expect(page.document.getElementById('localInferenceBackend').value).toBe('remote');
+        expect(page.document.getElementById('localNativeControls').hidden).toBe(true);
+        expect(page.document.getElementById('localRemoteControls').hidden).toBe(false);
+        expect(page.document.getElementById('localRemoteServerUrl').value).toBe('ws://gpu.example:18775');
+        expect(page.document.getElementById('localRemoteStatus').textContent).toBe('not connected yet');
+
+        const draft = page.controller.getDraft();
+        expect(draft.localConfig).toMatchObject({
+            backend: 'remote', server_url: 'ws://gpu.example:18775', remote_timeout_seconds: 45,
+        });
+        expect(page.saveProviderSettings).not.toHaveBeenCalled();
+
+        await expect(page.controller.probeRemoteInference()).resolves.toBe(true);
+        expect(fetch).toHaveBeenLastCalledWith('/local-inference/probe', expect.objectContaining({
+            method: 'POST', body: JSON.stringify({ server_url: 'ws://gpu.example:18775' }),
+        }));
+        expect(page.document.getElementById('localRemoteStatus').textContent)
+            .toBe('local_remote_ready');
+        page.dom.window.close();
+    });
+
     it('populates persisted provider, mode, key, region, and setup warning', () => {
         const page = setup({
             providerSettings: {

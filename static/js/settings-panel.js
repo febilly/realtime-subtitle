@@ -21,6 +21,7 @@
             throw new TypeError('SettingsPanel.create requires buildCustomSelect');
         }
         const loadProviderSettings = options.loadProviderSettings || (() => ({}));
+        const saveProviderSettings = options.saveProviderSettings || (() => {});
         const freePoolsSummary = typeof options.freePoolsSummary === 'function'
             ? options.freePoolsSummary
             : () => '';
@@ -34,6 +35,8 @@
         let relayPricing = null;
         let sonioxRegionPicker = null;
         let localStatusLoaded = false;
+        let localDraftDirty = false;
+        let lastLocalConfig = {};
 
         function state() {
             const value = getState();
@@ -252,6 +255,50 @@
             element.classList.toggle('missing', !ready);
         }
 
+        function normalizeLocalBackend(value) {
+            return String(value || '').toLowerCase() === 'remote' ? 'remote' : 'local';
+        }
+
+        function getLocalBackend() {
+            return normalizeLocalBackend(
+                elements.localInferenceBackend && elements.localInferenceBackend.value,
+            );
+        }
+
+        function updateLocalBackendVisibility(backend = getLocalBackend()) {
+            const remote = normalizeLocalBackend(backend) === 'remote';
+            if (elements.localNativeControls) elements.localNativeControls.hidden = remote;
+            if (elements.localRemoteControls) elements.localRemoteControls.hidden = !remote;
+        }
+
+        function renderRemoteStatus(remoteStatus) {
+            const element = elements.localRemoteStatus;
+            if (!element) return;
+            const status = remoteStatus && typeof remoteStatus === 'object' ? remoteStatus : null;
+            const ready = !!(status && status.ready);
+            const detail = status && (status.error || status.health);
+            element.textContent = ready
+                ? t('local_remote_ready')
+                : (detail ? String(detail) : t('local_remote_not_tested'));
+            element.classList.toggle('ready', ready);
+            element.classList.toggle('missing', !!status && !ready);
+        }
+
+        function applyLocalInferenceConfig(config = {}) {
+            const backend = normalizeLocalBackend(config.backend);
+            if (elements.localInferenceBackend) elements.localInferenceBackend.value = backend;
+            if (elements.localRemoteServerUrl) {
+                elements.localRemoteServerUrl.value = config.server_url || 'ws://127.0.0.1:18775';
+            }
+            if (elements.localRemoteTimeoutSeconds) {
+                const timeout = Number(config.remote_timeout_seconds);
+                elements.localRemoteTimeoutSeconds.value = Number.isFinite(timeout) && timeout > 0
+                    ? String(Math.floor(timeout))
+                    : '';
+            }
+            updateLocalBackendVisibility(backend);
+        }
+
         async function refreshLocalInferenceStatus({ refreshDevices = false } = {}) {
             if (!fetchRef) return false;
             try {
@@ -275,7 +322,10 @@
                     elements.localAsrDownloadButton.hidden = !!asr.ready;
                 }
                 const options = localDeviceOptions(data.devices);
-                const localConfig = data.config || {};
+                lastLocalConfig = data.config || {};
+                const localConfig = { ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) };
+                if (!localDraftDirty) applyLocalInferenceConfig(localConfig);
+                renderRemoteStatus(data.remote_status);
                 populateNativeSelect(elements.localAsrDevice, options, localConfig.asr_device);
                 populateNativeSelect(
                     elements.localTranslationDevice,
@@ -293,6 +343,34 @@
                     elements.localAsrStatus.classList.add('missing');
                 }
                 return false;
+            }
+        }
+
+        async function probeRemoteInference() {
+            if (!fetchRef) return false;
+            const button = elements.localRemoteProbeButton;
+            const serverUrl = elements.localRemoteServerUrl
+                ? elements.localRemoteServerUrl.value.trim() : 'ws://127.0.0.1:18775';
+            if (button) button.disabled = true;
+            try {
+                const response = await fetchRef('/local-inference/probe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        server_url: serverUrl,
+                    }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'probe failed');
+                if (!elements.localRemoteServerUrl || elements.localRemoteServerUrl.value.trim() === serverUrl) {
+                    renderRemoteStatus(data.remote_status);
+                }
+                return !!(data.remote_status && data.remote_status.ready);
+            } catch (error) {
+                renderRemoteStatus({ ready: false, error: String(error) });
+                return false;
+            } finally {
+                if (button) button.disabled = false;
             }
         }
 
@@ -349,13 +427,25 @@
                 apiKey: elements.apiKeyInput ? elements.apiKeyInput.value : '',
             };
             if (provider === 'local') {
+                const backend = getLocalBackend();
                 draft.localConfig = {
+                    backend,
                     asr_device: elements.localAsrDevice ? elements.localAsrDevice.value : 'auto',
                     encoder_device: elements.localEncoderDevice ? elements.localEncoderDevice.value : 'auto',
                     translation_device: elements.localTranslationDevice
                         ? elements.localTranslationDevice.value
                         : 'auto',
                 };
+                {
+                    draft.localConfig.server_url = elements.localRemoteServerUrl
+                        ? elements.localRemoteServerUrl.value.trim()
+                        : 'ws://127.0.0.1:18775';
+                    const timeout = Number(elements.localRemoteTimeoutSeconds
+                        && elements.localRemoteTimeoutSeconds.value);
+                    if (Number.isFinite(timeout) && timeout > 0) {
+                        draft.localConfig.remote_timeout_seconds = Math.floor(timeout);
+                    }
+                }
             }
             return draft;
         }
@@ -368,6 +458,7 @@
             if (elements.accountSection) elements.accountSection.hidden = !relay;
             if (elements.apiKeySection) elements.apiKeySection.hidden = relay || local;
             if (elements.localInferenceSection) elements.localInferenceSection.hidden = !local;
+            if (local) updateLocalBackendVisibility();
             if (elements.modeDescription) {
                 elements.modeDescription.textContent = local ? '' : t(
                     relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc'
@@ -378,6 +469,8 @@
 
         function populate() {
             const current = state();
+            localDraftDirty = false;
+            applyLocalInferenceConfig({ ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) });
             const provider = getDesiredProvider();
             setProvider(provider);
             const mode = current.relayAvailable && current.connectionMode === 'relay'
@@ -422,6 +515,12 @@
             setText('providerGeminiLabel', 'provider_gemini');
             setText('providerLocalLabel', 'provider_local');
             setText('localInferenceLabel', 'local_models');
+            setText('localInferenceBackendLabel', 'local_inference_backend');
+            setText('localInferenceBackendLocalOption', 'local_inference_local');
+            setText('localInferenceBackendRemoteOption', 'local_inference_remote');
+            setText('localRemoteServerUrlLabel', 'local_remote_server_url');
+            setText('localRemoteTimeoutLabel', 'local_remote_timeout');
+            setText('localRemoteProbeButton', 'local_remote_probe');
             setText('localAsrDownloadButton', 'local_asr_download');
             setText('localAsrDeviceLabel', 'local_asr_device');
             setText('localEncoderDeviceLabel', 'local_encoder_device');
@@ -547,6 +646,14 @@
                 });
             }
             bind(elements.localAsrDownloadButton, 'click', downloadLocalAsr);
+            bind(elements.localRemoteProbeButton, 'click', probeRemoteInference);
+            bind(elements.localInferenceBackend, 'change', () => {
+                localDraftDirty = true;
+                updateLocalBackendVisibility();
+            });
+            for (const field of [elements.localRemoteServerUrl, elements.localRemoteTimeoutSeconds]) {
+                bind(field, 'input', () => { localDraftDirty = true; renderRemoteStatus(null); });
+            }
             return true;
         }
 
@@ -578,6 +685,7 @@
             getDraft,
             getMode,
             refreshLocalInferenceStatus,
+            probeRemoteInference,
             getProviderDescription,
             getSelectedProvider,
             getSelectedSonioxRegion,
