@@ -75,6 +75,21 @@ def test_earliest_of_multiple_stable_boundaries_is_returned():
     assert decision.suffix == " Yes! We continue talking"
 
 
+def test_latest_confirmed_boundary_can_retire_multiple_completed_sentences():
+    detector = LocalAgreementBoundaryDetector(prefer_latest=True)
+    assert detector.observe("First sentence. Second sentence. Third is starting") is None
+    decision = detector.observe("First sentence. Second sentence. Third is growing")
+    assert decision.prefix == "First sentence. Second sentence."
+    assert decision.suffix == " Third is growing"
+
+
+def test_latest_policy_falls_back_when_later_sentence_is_still_changing():
+    detector = LocalAgreementBoundaryDetector(prefer_latest=True)
+    assert detector.observe("First sentence. Second draft. Next words") is None
+    decision = detector.observe("First sentence. Second revision. Next words")
+    assert decision.prefix == "First sentence."
+
+
 @pytest.mark.parametrize(
     "first,second",
     [
@@ -245,6 +260,68 @@ def test_known_replay_dedup_allows_english_case_and_punctuation_revision():
 
 def test_known_replay_dedup_keeps_short_legitimate_repetition():
     assert deduplicate_normalized_replay("我喜欢你", "你好吗") == "你好吗"
+
+
+def test_known_expected_suffix_removes_real_three_cjk_replay_tail():
+    committed = "今天天气很好，我们一起出去散步。"
+    expected = "昨天我买了一本新书，晚上准备认真阅读。"
+    replayed = "去散步。昨天我买了一本新书，晚上准备认真阅读。这个周。"
+
+    assert deduplicate_normalized_replay(
+        committed, replayed, expected_suffix=expected
+    ) == "昨天我买了一本新书，晚上准备认真阅读。这个周。"
+
+
+def test_known_expected_suffix_removes_real_two_cjk_replay_tail():
+    committed = "昨天我买了一本新书，晚上准备认真阅读。"
+    expected = "这个周末我会继续整理读书笔记。"
+
+    assert deduplicate_normalized_replay(
+        committed,
+        "阅读。这个周末我会继续整理读书笔记。",
+        expected_suffix=expected,
+    ) == expected
+
+
+def test_known_expected_suffix_does_not_make_unanchored_short_overlap_safe():
+    assert deduplicate_normalized_replay(
+        "昨天我买了一本新书，晚上准备认真阅读。",
+        "阅读。完全不同的新内容继续。",
+        expected_suffix="这个周末我会继续整理读书笔记。",
+    ) == "阅读。完全不同的新内容继续。"
+
+
+def test_known_expected_suffix_allows_one_complete_word_but_keeps_max_guard():
+    committed = "We will replay token"
+    expected = "expected suffix continues with enough evidence"
+    replayed = "token expected suffix continues with enough evidence now"
+
+    assert deduplicate_normalized_replay(
+        committed, replayed, expected_suffix=expected
+    ) == "expected suffix continues with enough evidence now"
+    assert deduplicate_normalized_replay(
+        committed,
+        replayed,
+        expected_suffix=expected,
+        max_overlap_lexical_chars=4,
+    ) == replayed
+
+
+def test_known_expected_suffix_at_input_start_preserves_legitimate_repetition():
+    expected = "昨天我买了一本新书，晚上准备认真阅读。"
+    assert deduplicate_normalized_replay(
+        "前一句昨天我买了一本新书，晚上准备认真阅读。",
+        expected + "这个周。",
+        expected_suffix=expected,
+    ) == expected + "这个周。"
+
+
+def test_short_expected_suffix_overlap_never_deletes_an_entire_hypothesis():
+    assert deduplicate_normalized_replay(
+        "我们去散步。",
+        "去散步。",
+        expected_suffix="昨天我买了一本新书，晚上准备认真阅读。",
+    ) == "去散步。"
 
 
 def test_known_replay_dedup_never_deletes_an_entire_identical_utterance():

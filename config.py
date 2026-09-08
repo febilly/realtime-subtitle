@@ -383,23 +383,29 @@ LOCAL_QWEN_ENCODER_DEVICE = (
     _env_str("LOCAL_QWEN_ENCODER_DEVICE", "auto").strip().lower() or "auto"
 )
 LOCAL_TRANSLATION_DEVICE = _env_str("LOCAL_TRANSLATION_DEVICE", "auto").strip().lower() or "auto"
+LOCAL_INFERENCE_BACKEND = "remote" if _env_str("LOCAL_INFERENCE_BACKEND", "local").strip().lower() == "remote" else "local"
+LOCAL_INFERENCE_SERVER_URL = _env_str("LOCAL_INFERENCE_SERVER_URL", "ws://127.0.0.1:18775").strip()
+LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS = max(1.0, _env_float("LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS", 60.0))
 
 LOCAL_INCREMENTAL_ASR = _env_bool("LOCAL_INCREMENTAL_ASR", True)
 LOCAL_INCREMENTAL_TRIGGER_SILENCE_MS = max(
     0, _env_int("LOCAL_INCREMENTAL_TRIGGER_SILENCE_MS", 10)
 )
 LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL = max(
-    0.1, _env_float("LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL", 3.0)
+    0.1, _env_float("LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL", 0.3)
 )
 LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL = max(
     LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL,
     _env_float("LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL", 4.0),
 )
 
-# Continuous-speech semantic commits.  Qwen partials are scanned more often
-# than they are presented for translation; only a punctuation boundary that is
-# internal, has right context and remains stable across revisions is committed.
-LOCAL_SEMANTIC_BOUNDARY_ENABLED = _env_bool("LOCAL_SEMANTIC_BOUNDARY_ENABLED", False)
+# Continuous-speech semantic commits. Qwen hypotheses are presented as they
+# are scanned; only a punctuation boundary that is internal, has right context
+# and remains stable across revisions is committed.
+LOCAL_SEMANTIC_BOUNDARY_ENABLED = _env_bool("LOCAL_SEMANTIC_BOUNDARY_ENABLED", True)
+LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS = max(
+    1.0, _env_float("LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS", 8.0)
+)
 LOCAL_SEMANTIC_BOUNDARY_SCAN_INTERVAL = max(
     0.5, _env_float("LOCAL_SEMANTIC_BOUNDARY_SCAN_INTERVAL", 1.0)
 )
@@ -459,12 +465,30 @@ def sanitize_qwen_encoder_device(value: str) -> str:
 
 def set_local_inference_config(
     *,
+    backend: str | None = None,
+    server_url: str | None = None,
+    remote_timeout_seconds: float | None = None,
     asr_device: str | None = None,
     encoder_device: str | None = None,
     translation_device: str | None = None,
 ) -> dict:
-    """Apply local engine device choices for the next local session."""
+    """Apply inference location and device choices for the next session."""
     global LOCAL_INFERENCE_DEVICE, LOCAL_QWEN_ENCODER_DEVICE, LOCAL_TRANSLATION_DEVICE
+    global LOCAL_INFERENCE_BACKEND, LOCAL_INFERENCE_SERVER_URL, LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS
+    selected_backend = LOCAL_INFERENCE_BACKEND if backend is None else str(backend).strip().lower()
+    if selected_backend not in {"local", "remote"}:
+        raise ValueError("Invalid inference backend")
+    from local_inference.remote_client import normalize_server_url
+    selected_url = normalize_server_url(LOCAL_INFERENCE_SERVER_URL if server_url is None else server_url)
+    if selected_backend == "remote" and not selected_url:
+        raise ValueError("远程推理服务器地址为空")
+    selected_timeout = (LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS if remote_timeout_seconds is None
+                        else float(remote_timeout_seconds))
+    if not 1 <= selected_timeout <= 600:
+        raise ValueError("远程推理超时须在 1–600 秒之间")
+    LOCAL_INFERENCE_BACKEND = selected_backend
+    LOCAL_INFERENCE_SERVER_URL = selected_url
+    LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS = selected_timeout
     if asr_device is not None:
         LOCAL_INFERENCE_DEVICE = sanitize_local_device(asr_device)
     if encoder_device is not None:
@@ -472,6 +496,9 @@ def set_local_inference_config(
     if translation_device is not None:
         LOCAL_TRANSLATION_DEVICE = sanitize_local_device(translation_device)
     return {
+        "backend": LOCAL_INFERENCE_BACKEND,
+        "server_url": LOCAL_INFERENCE_SERVER_URL,
+        "remote_timeout_seconds": LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS,
         "asr_device": LOCAL_INFERENCE_DEVICE,
         "encoder_device": LOCAL_QWEN_ENCODER_DEVICE,
         "translation_device": LOCAL_TRANSLATION_DEVICE,

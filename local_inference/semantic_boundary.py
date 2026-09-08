@@ -24,7 +24,7 @@ import sentence_segmentation
 
 @dataclass(frozen=True, slots=True)
 class BoundaryCommit:
-    """The earliest sentence prefix safe to commit from one hypothesis.
+    """A sentence prefix safe to commit from one hypothesis.
 
     ``prefix + suffix`` is always exactly the newest observed hypothesis.
     ``boundary_index`` is therefore also the prefix length in Python character
@@ -70,6 +70,9 @@ class LocalAgreementBoundaryDetector:
     :meth:`reset` is called.  This makes the audio-cut handoff explicit and
     prevents the same prefix from being emitted twice while a recognizer is
     being reset or replaying overlap audio.
+
+    ``prefer_latest`` selects the furthest stable sentence boundary so an audio
+    window can discard several completed sentences in one location operation.
     """
 
     def __init__(
@@ -79,6 +82,7 @@ class LocalAgreementBoundaryDetector:
         min_prefix_nonspace_chars: int = 1,
         min_right_context_nonspace_chars: int = 1,
         require_safe_replay_evidence: bool = False,
+        prefer_latest: bool = False,
     ) -> None:
         if agreement_count < 2:
             raise ValueError("agreement_count must be at least 2")
@@ -91,6 +95,7 @@ class LocalAgreementBoundaryDetector:
         self.min_prefix_nonspace_chars = int(min_prefix_nonspace_chars)
         self.min_right_context_nonspace_chars = int(min_right_context_nonspace_chars)
         self.require_safe_replay_evidence = bool(require_safe_replay_evidence)
+        self.prefer_latest = bool(prefer_latest)
         self._hypotheses: deque[str] = deque(maxlen=self.agreement_count)
         self._latched = False
         self._has_provisional_boundary = False
@@ -147,7 +152,10 @@ class LocalAgreementBoundaryDetector:
             value: frozenset(_sentence_boundary_indices(value)) for value in hypotheses
         }
 
-        for boundary_index in _sentence_boundary_indices(newest):
+        candidates = _sentence_boundary_indices(newest)
+        if self.prefer_latest:
+            candidates = tuple(reversed(candidates))
+        for boundary_index in candidates:
             prefix = newest[:boundary_index]
             if _nonspace_length(prefix) < self.min_prefix_nonspace_chars:
                 continue
@@ -353,6 +361,7 @@ def deduplicate_normalized_replay(
     committed_text: str | None,
     replayed_text: str | None,
     *,
+    expected_suffix: str | None = "",
     min_cjk_chars: int = 4,
     min_word_tokens: int = 2,
     max_overlap_lexical_chars: int | None = None,
@@ -364,6 +373,9 @@ def deduplicate_normalized_replay(
     pre-roll from ``committed_text``.  Matching ignores whitespace,
     punctuation and case, but still requires four CJK-like characters or two
     Unicode spaced-language words and chooses the longest lexical suffix/prefix match.
+    ``expected_suffix`` permits a shorter replay overlap only when its
+    following text strongly anchors to the suffix already known at the
+    semantic cut.
     """
     committed = str(committed_text or "")
     replayed = str(replayed_text or "")
@@ -385,6 +397,13 @@ def deduplicate_normalized_replay(
     left, left_offsets = lexical_with_offsets(committed)
     right, right_offsets = lexical_with_offsets(replayed)
     if not left or not right:
+        return replayed
+
+    expected, _expected_offsets = lexical_with_offsets(str(expected_suffix or ""))
+    expected_anchor_length = min(8, len(expected))
+    # Beginning with the known suffix is a legitimate continuation, not proof
+    # of replay.  Keeping it also prevents a repeated semantic tail vanishing.
+    if expected_anchor_length >= 6 and right.startswith(expected[:expected_anchor_length]):
         return replayed
 
     maximum = min(len(left), len(right))
@@ -416,8 +435,18 @@ def deduplicate_normalized_replay(
             continue
         cjk_count = sum(1 for char in overlap if _is_cjk_like(char))
         word_count = _word_token_count(original_overlap)
-        if cjk_count < min_cjk_chars and word_count < min_word_tokens:
-            continue
+        enough_standard_evidence = (
+            cjk_count >= min_cjk_chars or word_count >= min_word_tokens
+        )
+        if not enough_standard_evidence:
+            # Two CJK characters or one complete spaced word are too weak on
+            # their own.  They become safe only when the remainder starts with
+            # 6-8 lexical characters of the suffix known at the cut.
+            if not (cjk_count >= 2 or word_count >= 1) or expected_anchor_length < 6:
+                continue
+            remainder, _remainder_offsets = lexical_with_offsets(replayed[original_end:])
+            if not remainder.startswith(expected[:expected_anchor_length]):
+                continue
 
         # If the whole hypothesis matches the committed suffix, Qwen may have
         # suppressed pre-roll and recognized a legitimate repeated sentence.
