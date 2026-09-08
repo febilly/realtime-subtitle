@@ -209,6 +209,7 @@ def run_stream_session(
     active_stream: StreamState | None = None
     warmup_stream: StreamState | None = None
     dormant_for_silence = False
+    resume_reopen_failures = 0
     next_prepare_attempt_at = 0.0
     warmup_future: concurrent.futures.Future | None = None
     key_fetch_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix=settings.key_thread_prefix)
@@ -296,6 +297,7 @@ def run_stream_session(
                             active_stream = resumed_stream
                             stream_index = active_stream.index
                             current_api_key = active_stream.api_key
+                            resume_reopen_failures = 0
                             session.ws = active_stream.ws
                             session.last_sent_count = active_stream.sent_count
                             dormant_for_silence = False
@@ -312,6 +314,20 @@ def run_stream_session(
                                     f"#{active_stream.index} and flushed {buffered_count} buffered chunks."
                                 )
                         except Exception as error:
+                            # 瞬时网络抖动不应终止整个会话：有限次重试（音频仍
+                            # 在本地缓冲），连续失败才退出并通知断连。
+                            resume_reopen_failures += 1
+                            if (
+                                resume_reopen_failures < 3
+                                and session.stop_event
+                                and not session.stop_event.is_set()
+                            ):
+                                print(
+                                    f"⚠️  Failed to reopen {provider_name} stream after silence "
+                                    f"(attempt {resume_reopen_failures}/3): {error}; retrying..."
+                                )
+                                time.sleep(1.0)
+                                continue
                             disconnect_reason = f"failed to reopen {provider_name} stream after silence: {error}"
                             print(f"⚠️  {disconnect_reason}")
                             break
