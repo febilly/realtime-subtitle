@@ -1,10 +1,11 @@
 import importlib
+import asyncio
 import queue
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
@@ -15,10 +16,19 @@ import pytest
 _previous_config = sys.modules.pop("config", None)
 try:
     config = importlib.import_module("config")
+    # A preceding collection module may already have imported these modules
+    # against its own temporary real-config instance. Bind their runtime
+    # globals to this test module's deliberately retained config object so
+    # per-test monkeypatches affect the code under test.
+    from local_inference import asr_qwen3 as _asr_qwen3_module
+    from local_inference import recognizer as _recognizer_module
+    _asr_qwen3_module.config = config
+    _recognizer_module.config = config
     from local_inference.asr_qwen3 import Qwen3ASREngine
     from local_inference.recognizer import LocalQwenRecognizer
     from local_inference.semantic_boundary import BoundaryCommit
     from local_session import LocalInferenceSession
+    from local_inference.subtitle_pipeline import LocalSubtitlePipeline
 finally:
     if _previous_config is None:
         sys.modules.pop("config", None)
@@ -55,94 +65,76 @@ def test_local_device_config_is_normalized(monkeypatch):
     )
 
     assert result == {
+        "backend": config.LOCAL_INFERENCE_BACKEND,
+        "server_url": config.LOCAL_INFERENCE_SERVER_URL,
+        "remote_timeout_seconds": config.LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS,
         "asr_device": "vulkan:2",
         "encoder_device": "gpu",
         "translation_device": "auto",
     }
 
 
-def test_local_session_emits_source_and_hymt_translation_tokens():
+def test_local_session_emits_source_before_translation_and_preserves_final_side_effects():
     session = _session()
-    session.loop = object()
+    session.loop = asyncio.new_event_loop()
     session.translation = "one_way"
     session.translation_target_lang = "zh"
-    session._translator = Mock()
-    session._translator.translate.return_value = "你好，世界。"
+    translator = Mock()
+    translator.translate.return_value = "你好，世界。"
     captured = []
-    session._process_soniox_response = Mock(
-        side_effect=lambda response, *_args: (captured.append(response) or (0, False, None))
+    session.broadcast_callback = AsyncMock(side_effect=lambda frame: captured.append(frame))
+    session._finalize_sentence_async = AsyncMock()
+    session.get_osc_translation_enabled = Mock(return_value=False)
+    session._subtitle_pipeline = LocalSubtitlePipeline(
+        lambda: translator, session._publish_local_frame,
+        session._finalize_local_row, session._broadcast_local_error,
     )
-
-    session._present_recognition("Hello, world.", True, "en")
-
-    session._translator.translate.assert_called_once_with(
-        "Hello, world.",
-        source_language="en",
-        target_language="zh",
-        is_partial=False,
-    )
-    assert captured == [{
-        "tokens": [
-            {
-                "text": "Hello, world.",
-                "is_final": True,
-                "speaker": "0",
-                "translation_status": "original",
-                "language": "en",
-                "source_language": "en",
-            },
-            {
-                "text": "你好，世界。",
-                "is_final": True,
-                "speaker": "0",
-                "translation_status": "translation",
-                "language": "zh",
-                "source_language": "en",
-            },
-        ],
-        "endpoint_detected": True,
-    }]
+    try:
+        session._present_recognition("Hello, world.", True, "en")
+        session._subtitle_pipeline.close()
+        session.loop.run_until_complete(asyncio.sleep(0))
+        assert captured[0]["local_segments"][0]["source"] == "Hello, world."
+        assert captured[0]["local_segments"][0]["translation"] == ""
+        assert captured[1]["local_segments"][0]["translation"] == "你好，世界。"
+        assert captured[0]["local_segments"][0]["id"] == captured[1]["local_segments"][0]["id"]
+        session.logger.write_to_log.assert_called_once()
+        logged = session.logger.write_to_log.call_args.args[0]
+        assert [token["text"] for token in logged] == ["Hello, world.", "你好，世界。"]
+        session._finalize_sentence_async.assert_awaited_once()
+    finally:
+        session._subtitle_pipeline.close()
+        session.loop.close()
 
 
-def test_local_session_skips_translation_for_target_language():
+def test_local_session_passes_target_language_to_row_pipeline():
     session = _session()
     session.loop = object()
     session.translation = "one_way"
     session.translation_target_lang = "zh"
-    session._translator = Mock()
-    session._process_soniox_response = Mock(return_value=(0, False, None))
+    session._subtitle_pipeline = Mock()
 
     session._present_recognition("你好。", False, "zh")
 
-    session._translator.translate.assert_not_called()
-    response = session._process_soniox_response.call_args.args[0]
-    assert len(response["tokens"]) == 1
-    assert response["tokens"][0]["translation_status"] == "original"
-    assert response["endpoint_detected"] is False
+    session._subtitle_pipeline.update.assert_called_once_with(
+        "你好。", False, "zh", "zh", translation_enabled=True, semantic_suffix=None,
+    )
 
 
-def test_semantic_final_then_suffix_partial_reaches_translation_in_order():
+def test_semantic_final_passes_known_suffix_to_row_pipeline_before_next_partial():
     session = _session()
     session.loop = object()
     session.translation = "one_way"
     session.translation_target_lang = "zh"
-    session._translator = Mock()
-    session._translator.translate.side_effect = ["第一句。", "第二句"]
-    captured = []
-    session._process_soniox_response = Mock(
-        side_effect=lambda response, *_args: (captured.append(response) or (0, False, None))
-    )
+    session._subtitle_pipeline = Mock()
 
-    session._present_recognition("First sentence.", True, "en")
+    session._present_recognition("First sentence.", True, "en", {"semantic_suffix_text": "Second sentence"})
     session._present_recognition("Second sentence", False, "en")
 
-    assert session._translator.translate.call_args_list[0].kwargs["is_partial"] is False
-    assert session._translator.translate.call_args_list[1].kwargs["is_partial"] is True
-    assert [response["endpoint_detected"] for response in captured] == [True, False]
-    assert [response["tokens"][0]["text"] for response in captured] == [
-        "First sentence.",
-        "Second sentence",
-    ]
+    calls = session._subtitle_pipeline.update.call_args_list
+    assert calls[0].args == ("First sentence.", True, "en", "zh")
+    assert calls[0].kwargs["semantic_suffix"] == "Second sentence"
+    assert calls[1].args == ("Second sentence", False, "en", "zh")
+    assert calls[1].kwargs["semantic_suffix"] is None
 
 
 def test_reused_partial_keeps_detected_language_metadata():
@@ -433,7 +425,7 @@ def test_empty_suffix_final_ends_replay_epoch_before_next_utterance(monkeypatch)
 def test_session_stop_keeps_final_gate_when_run_thread_is_still_draining(monkeypatch):
     session = _session()
     stop_event = threading.Event()
-    presentation = Mock()
+    pipeline = Mock()
 
     class StillDrainingThread:
         def is_alive(self):
@@ -444,7 +436,8 @@ def test_session_stop_keeps_final_gate_when_run_thread_is_still_draining(monkeyp
 
     session._local_stop_event = stop_event
     session.stop_event = stop_event
-    session._presentation_executor = presentation
+    session._subtitle_pipeline = pipeline
+    session.loop = object()
     session.thread = StillDrainingThread()
     session.ws = object()
     session._stop_audio_streamer = Mock()
@@ -458,4 +451,4 @@ def test_session_stop_keeps_final_gate_when_run_thread_is_still_draining(monkeyp
 
     assert session._local_stop_event is stop_event
     assert session.ws is not None
-    presentation.submit.assert_called_once()
+    pipeline.update.assert_called_once()

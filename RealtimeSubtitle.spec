@@ -14,6 +14,8 @@ hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dot
                  'provider_setup', 'soniox_session', 'gemini_session', 'soniox_client', 'gemini_client',
                  'local_session', 'local_client', 'local_inference.recognizer',
                  'local_inference.asr_qwen3', 'local_inference.vad_processor',
+                 'local_inference.remote_client', 'local_inference.subtitle_pipeline',
+                 'local_inference.subtitle_segments',
                  'local_inference.gpu_devices', 'local_inference.spec_decode',
                  'local_inference.semantic_boundary', 'local_inference.boundary_scout',
                  'streaming_translation.api.hymt2',

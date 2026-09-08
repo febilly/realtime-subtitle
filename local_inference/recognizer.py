@@ -65,11 +65,17 @@ class LocalQwenRecognizer:
         *,
         source_language: str = "auto",
         corpus_text: str | None = None,
+        inference_backend: str | None = None,
+        server_url: str | None = None,
+        remote_timeout: float | None = None,
     ) -> None:
         self._on_result = on_result
         self._on_error = on_error
         self._source_language = source_language or "auto"
         self._corpus_text = (corpus_text or "").strip()
+        self._inference_backend = inference_backend or getattr(config, "LOCAL_INFERENCE_BACKEND", "local")
+        self._server_url = server_url if server_url is not None else getattr(config, "LOCAL_INFERENCE_SERVER_URL", "")
+        self._remote_timeout = remote_timeout if remote_timeout is not None else getattr(config, "LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS", 60)
         self._audio_queue: queue.Queue[bytes] = queue.Queue(maxsize=128)
         # ``send`` must never block behind model inference, but lifecycle
         # transitions still need a short gate around queue admission.  The
@@ -101,6 +107,7 @@ class LocalQwenRecognizer:
         self._stream_id = 0
         self._timeline_contiguous = True
         self._replayed_committed_text = ""
+        self._replay_expected_suffix = ""
         self._replay_max_lexical_chars = 0
         self._boundary_detector = LocalAgreementBoundaryDetector(
             agreement_count=int(
@@ -111,6 +118,7 @@ class LocalQwenRecognizer:
                 getattr(config, "LOCAL_SEMANTIC_BOUNDARY_MIN_RIGHT_CHARS", 2)
             ),
             require_safe_replay_evidence=True,
+            prefer_latest=True,
         )
         self._boundary_scout: NemotronBoundaryScout | None = None
         self._boundary_scout_disabled = False
@@ -151,6 +159,13 @@ class LocalQwenRecognizer:
     def _ensure_engine(self) -> Qwen3ASREngine:
         if self._engine is not None:
             return self._engine
+        if self._inference_backend == "remote":
+            from .remote_client import RemoteASREngine
+            engine = RemoteASREngine(self._server_url, timeout=self._remote_timeout,
+                                     corpus_text=self._corpus_text or None)
+            engine.set_language(self._source_language)
+            self._engine = engine
+            return engine
         if not is_asr_cached("qwen3-asr"):
             if not is_silero_cached():
                 raise RuntimeError("Silero VAD 尚未就绪，请先在本地模型设置中下载。")
@@ -173,6 +188,8 @@ class LocalQwenRecognizer:
         )
 
     def _ensure_boundary_scout(self) -> NemotronBoundaryScout | None:
+        if self._inference_backend == "remote":
+            return None  # Keep optional extra model inference off the client.
         if (
             not self._semantic_boundary_enabled()
             or not getattr(config, "LOCAL_SEMANTIC_BOUNDARY_SCOUT_ENABLED", True)
@@ -290,6 +307,7 @@ class LocalQwenRecognizer:
                 candidate = deduplicate_normalized_replay(
                     self._replayed_committed_text,
                     candidate,
+                    expected_suffix=self._replay_expected_suffix,
                     max_overlap_lexical_chars=self._replay_max_lexical_chars,
                 )
             return self._lexical_text(candidate).startswith(target)
@@ -387,6 +405,7 @@ class LocalQwenRecognizer:
         self._last_partial_voiced_seq = -1
         if not keep_replay:
             self._replayed_committed_text = ""
+            self._replay_expected_suffix = ""
             self._replay_max_lexical_chars = 0
         self._reset_engine_draft()
 
@@ -398,6 +417,7 @@ class LocalQwenRecognizer:
         deduplicated = deduplicate_normalized_replay(
             self._replayed_committed_text,
             text,
+            expected_suffix=self._replay_expected_suffix,
             max_overlap_lexical_chars=self._replay_max_lexical_chars,
         )
         if deduplicated == text:
@@ -460,6 +480,7 @@ class LocalQwenRecognizer:
         self._stream_id += 1
         self._reset_boundary_state()
         self._replayed_committed_text = commit.prefix
+        self._replay_expected_suffix = commit.suffix
         lexical_prefix_length = len(self._lexical_text(commit.prefix))
         lexical_per_second = lexical_prefix_length / max(0.5, boundary_seconds)
         self._replay_max_lexical_chars = max(
@@ -493,6 +514,9 @@ class LocalQwenRecognizer:
 
         final_raw = dict(raw or {})
         final_raw["text"] = commit.prefix
+        # The presentation layer uses this exact known suffix to hand the
+        # same subtitle stream from a semantic final to its live replacement.
+        final_raw["semantic_suffix_text"] = commit.suffix
         final_raw["semantic_boundary"] = {
             "method": method,
             "agreement_count": commit.agreement_count,
@@ -510,12 +534,30 @@ class LocalQwenRecognizer:
             boundary_offset / SAMPLE_RATE,
             commit.prefix,
         )
-        self._emit_final(commit.prefix, final_raw, keep_replay=True)
+        try:
+            self._emit_final(commit.prefix, final_raw, keep_replay=True)
 
-        self._last_partial_time = time.monotonic()
-        if tail_audio.size >= int(0.4 * SAMPLE_RATE):
-            self._last_boundary_scan_samples = tail_audio.size
-            self._enqueue_transcribe(tail_audio, is_final=False, present=True)
+            # Do not make the user wait for another Qwen pass over the replay
+            # tail. The detector's newest hypothesis already contains the
+            # suffix, and the queued tail pass can revise it if needed.
+            if commit.suffix.strip():
+                suffix_raw = dict(raw or {})
+                suffix_raw["text"] = commit.suffix
+                self._last_partial_text = commit.suffix
+                self._last_partial_raw = suffix_raw
+                self._last_emitted_partial_text = commit.suffix
+                # This is a text handoff, not a fresh recognition snapshot;
+                # endpointing must still enqueue the real tail final.
+                self._last_partial_voiced_seq = -1
+                self._on_result(commit.suffix, False, suffix_raw)
+        finally:
+            # Preserve the actual replay PCM even if presentation raises. The
+            # serialized queue remains the authority for later correction and
+            # finalization.
+            self._last_partial_time = time.monotonic()
+            if tail_audio.size >= int(0.4 * SAMPLE_RATE):
+                self._last_boundary_scan_samples = tail_audio.size
+                self._enqueue_transcribe(tail_audio, is_final=False, present=True)
         return True
 
     def _on_transcription_done(
@@ -542,25 +584,30 @@ class LocalQwenRecognizer:
                         self._last_partial_voiced_seq = request.voiced_seq
                         self._last_partial_raw = raw
                         self._last_partial_text = text
-                        committed = False
+                        decision: BoundaryCommit | None = None
                         if (
                             text
                             and self._semantic_boundary_enabled()
                             and self._vad.is_speaking
+                            and request.audio.size >= self._semantic_cut_min_samples()
                         ):
                             decision = self._boundary_detector.observe(text)
-                            if decision is not None:
-                                committed = self._commit_semantic_boundary(
-                                    decision, audio=request.audio, raw=raw
-                                )
+
+                        # Present the complete current hypothesis before any
+                        # physical boundary lookup. The Qwen-prefix locator can
+                        # run several independent probes, so it must never
+                        # delay source text we already know.
                         if (
-                            not committed
-                            and request.present
+                            request.present
                             and text
                             and text != self._last_emitted_partial_text
                         ):
                             self._last_emitted_partial_text = text
                             self._on_result(text, False, raw)
+                        if decision is not None:
+                            self._commit_semantic_boundary(
+                                decision, audio=request.audio, raw=raw
+                            )
                 elif request.is_final or request.stream_id == self._stream_id:
                     self._last_partial_voiced_seq = -1
             except Exception as error:
@@ -659,17 +706,21 @@ class LocalQwenRecognizer:
                 self._waiting_partial = request
             self._try_start_transcribe_locked()
 
+    def _semantic_cut_min_samples(self) -> int:
+        # Prefix location runs extra ASR probes. Amortize that work over a
+        # useful audio span, then cut at the latest confirmed sentence end.
+        # A shorter user-configured hard cap should still leave time to cut.
+        seconds = max(1.0, float(getattr(config, "LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS", 8.0)))
+        return min(int(seconds * SAMPLE_RATE), max(SAMPLE_RATE, self._input_cap_samples() // 2))
+
     def _maybe_emit_partial(self) -> None:
         if not config.LOCAL_INCREMENTAL_ASR or self._audio_queue.qsize() >= 8:
             return
         silence = self._vad.current_silence_duration
         if silence <= 0:
             self._silence_trigger_armed = True
-        peek = self._vad.peek_buffer()
-        if peek is None:
-            return
-        audio, duration = peek
-        if duration < 1.0:
+        window_samples = self._vad.speech_samples
+        if window_samples < SAMPLE_RATE:
             return
         now = time.monotonic()
         elapsed = now - self._last_partial_time
@@ -697,15 +748,30 @@ class LocalQwenRecognizer:
                         )
                     ),
                 )
+            else:
+                # Ordinary scans must not bypass the pause-first update
+                # cadence. A known boundary may still get a quick confirming
+                # scan so safe audio trimming does not wait another full gap.
+                scan_interval = max(scan_interval, fallback)
             scan_interval_samples = int(
                 scan_interval * SAMPLE_RATE
             )
             scan_due = (
-                audio.size - self._last_boundary_scan_samples
+                window_samples - self._last_boundary_scan_samples
                 >= max(VAD_CHUNK_SAMPLES, scan_interval_samples)
             )
-        if not present and not scan_due:
+        # Semantic scans are live source hypotheses, not invisible background
+        # work. Their result may revise the displayed text and is also what
+        # supplies the second agreement observation for a safe commit.
+        present = present or scan_due
+        if not present:
             return
+        # Building the VAD snapshot copies the full growing window. Do it only
+        # after the time/size gates above say that an ASR request is due.
+        peek = self._vad.peek_buffer()
+        if peek is None:
+            return
+        audio, _duration = peek
         if present and silence_hit:
             self._silence_trigger_armed = False
         if present:
@@ -862,6 +928,7 @@ class LocalQwenRecognizer:
             self._last_partial_voiced_seq = -1
             self._timeline_contiguous = True
             self._replayed_committed_text = ""
+            self._replay_expected_suffix = ""
             self._replay_max_lexical_chars = 0
             self._reset_boundary_state()
             self._waiting_partial = None

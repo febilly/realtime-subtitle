@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import logging
 import threading
 import time
@@ -12,6 +11,7 @@ import config
 import soniox_session
 from local_inference.model_manager import get_all_local_models_status
 from local_inference.recognizer import LocalQwenRecognizer
+from local_inference.subtitle_pipeline import LocalSubtitlePipeline
 from soniox_session import SonioxSession
 from streaming_translation import HyMT2API
 
@@ -29,19 +29,22 @@ def bind_ipc_server(server) -> None:
 class LocalInferenceSession(SonioxSession):
     """Drop-in session using local models and the existing subtitle protocol.
 
-    The inference pipeline is serialized in ASR event order.  This is important
-    for Hy-MT2's mutable per-utterance revision state: a final update can never
-    overtake an earlier partial update.
+    ASR publishes sticky source rows immediately. Translation runs separately,
+    with one revision chain per row and one shared local model.
     """
 
     def __init__(self, logger_obj, broadcast_callback):
         super().__init__(logger_obj, broadcast_callback)
         self._recognizer: LocalQwenRecognizer | None = None
         self._translator: HyMT2API | None = None
-        self._presentation_executor: ThreadPoolExecutor | None = None
-        self._all_final_tokens: list[dict] = []
+        self._subtitle_pipeline: LocalSubtitlePipeline | None = None
+        self._local_live_rows: dict[str, dict] = {}
         self._local_stop_event: threading.Event | None = None
         self._startup_error: str | None = None
+        self._inference_backend = getattr(config, "LOCAL_INFERENCE_BACKEND", "local")
+        self._server_url = getattr(config, "LOCAL_INFERENCE_SERVER_URL", "")
+        self._remote_timeout = getattr(config, "LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS", 60)
+        self._translation_device = config.LOCAL_TRANSLATION_DEVICE
         self._llm_refine_mode = "off"
         self._suppress_soniox_translation = False
         self._segment_mode = "punctuation"
@@ -103,99 +106,155 @@ class LocalInferenceSession(SonioxSession):
         }
 
     def _on_recognition_result(self, text: str, is_final: bool, raw: dict | None) -> None:
-        executor = self._presentation_executor
-        if executor is None or self._local_stop_event is None:
+        if self._subtitle_pipeline is None or self._local_stop_event is None:
             return
         if self._local_stop_event.is_set() and not is_final:
             return
         detected = config.normalize_language_code((raw or {}).get("language")) or "en"
-        try:
-            executor.submit(self._present_recognition, text, is_final, detected)
-        except RuntimeError:
-            pass
+        self._present_recognition(text, is_final, detected, raw)
 
-    def _present_recognition(self, text: str, is_final: bool, source_lang: str) -> None:
-        if not text or self.loop is None:
+    def _present_recognition(
+        self, text: str, is_final: bool, source_lang: str, raw: dict | None = None,
+    ) -> None:
+        pipeline = self._subtitle_pipeline
+        if not text or self.loop is None or pipeline is None:
             return
         target_lang = config.normalize_language_code(self.get_translation_target_lang()) or "zh"
-        tokens = [
-            self._token(
-                text,
-                final=is_final,
-                language=source_lang,
-                source_language=source_lang,
-                translation=False,
-            )
-        ]
-
         mode = str(self.translation or "one_way").strip().lower()
-        if mode != "none" and source_lang != target_lang and self._translator is not None:
-            translated = self._translator.translate(
-                text,
-                source_language=source_lang,
-                target_language=target_lang,
-                is_partial=not is_final,
-            ).strip()
-            if translated.startswith("[ERROR]"):
-                self._broadcast_local_error(translated)
-            elif translated:
-                tokens.append(
-                    self._token(
-                        translated,
-                        final=is_final,
-                        language=target_lang,
-                        source_language=source_lang,
-                        translation=True,
-                    )
-                )
-
-        response = {"tokens": tokens, "endpoint_detected": bool(is_final)}
-        self.last_sent_count, _should_end, _reason = self._process_soniox_response(
-            response,
-            self._all_final_tokens,
-            self.last_sent_count,
-            self.loop,
+        pipeline.update(
+            text, is_final, source_lang, target_lang,
+            translation_enabled=mode != "none",
+            semantic_suffix=(raw or {}).get("semantic_suffix_text") if is_final else None,
         )
+
+    def _make_row_translator(self) -> HyMT2API:
+        # Independent draft/history state; load_local_engine acquires the same
+        # registry entry held by the prewarmed session translator.
+        translator = HyMT2API(
+            backend=self._inference_backend, local_device=self._translation_device,
+            websocket_url=self._server_url if self._inference_backend == "remote" else "",
+            timeout=self._remote_timeout, max_retries=0 if self._inference_backend == "remote" else 3,
+        )
+        translator.load_local_engine()
+        return translator
+
+    def _check_models(self, translation_enabled: bool, *, prepare_remote: bool = False) -> None:
+        if self._inference_backend == "remote":
+            from local_inference.remote_client import normalize_server_url, probe_remote_server, remote_readiness_error
+            if not normalize_server_url(self._server_url):
+                raise RuntimeError("远程推理服务器地址为空")
+            if prepare_remote:
+                status = probe_remote_server(self._server_url)
+                error = remote_readiness_error(status, translation_enabled=translation_enabled)
+                if error:
+                    raise RuntimeError(error)
+                if config.VAD_ENABLED and config.LOCAL_VAD_MODE == "silero":
+                    # Only the small CPU pause detector remains on this PC.
+                    from local_inference.model_manager import download_silero
+                    download_silero()
+            return
+        status = get_all_local_models_status()
+        asr_status = status["asr"]["qwen3-asr"]
+        if not asr_status["ready"]:
+            issues = ", ".join(asr_status.get("runtime_issues") or [])
+            raise RuntimeError("Qwen3-ASR 未就绪" + (f"（缺少: {issues}）" if issues else ""))
+        if translation_enabled and not status["translation"]["hymt2"]["ready"]:
+            hymt = status["translation"]["hymt2"]
+            issues = ", ".join(hymt.get("runtime_issues") or [])
+            raise RuntimeError("Hy-MT2 未就绪；请把 GGUF 放入 "
+                               + str(hymt.get("install_dir") or "local_models/hymt2")
+                               + (f"（缺少: {issues}）" if issues else ""))
+
+    def _local_row_tokens(self, row: dict) -> list[dict]:
+        source = self._token(
+            row["source"], final=row["is_final"], language=row["source_language"],
+            source_language=row["source_language"], translation=False,
+        )
+        source["llm_sentence_id"] = row["id"]
+        tokens = [source]
+        if row["translation"]:
+            translated = self._token(
+                row["translation"], final=row["is_final"], language=row["target_language"],
+                source_language=row["source_language"], translation=True,
+            )
+            translated["llm_sentence_id"] = row["id"]
+            tokens.append(translated)
+        return tokens
+
+    def _publish_local_frame(self, frame: dict) -> None:
+        """Keep local row identities end-to-end; ordinary IPC tokens coexist."""
+        loop = self.loop
+        if loop is None or loop.is_closed():
+            return
+        for row_id in frame.get("local_removed_segment_ids", []):
+            self._local_live_rows.pop(row_id, None)
+        for row in frame.get("local_segments", []):
+            if row["is_final"]:
+                self._local_live_rows.pop(row["id"], None)
+            else:
+                self._local_live_rows[row["id"]] = row
+        with self._ipc_lock:
+            if self._ipc_pending_final:
+                frame["final_tokens"] = [self._minify_token({
+                    "text": self._ipc_pending_final, "speaker": "0",
+                    "translation_status": "original", "is_final": True,
+                }, is_final=True)]
+                self._ipc_pending_final = ""
+            frame["non_final_tokens"] = ([self._minify_token({
+                "text": self._ipc_ongoing_text, "speaker": "0",
+                "translation_status": "original", "is_final": False,
+            }, is_final=False)] if self._ipc_ongoing_text else [])
+        asyncio.run_coroutine_threadsafe(self.broadcast_callback(frame), loop)
+        if self.get_osc_translation_enabled():
+            lines = []
+            for row in sorted(self._local_live_rows.values(), key=lambda value: value["order"]):
+                tokens = self._local_row_tokens(row)
+                text = self._select_osc_text(row["translation"], row["source"], tokens[:1])
+                if text:
+                    lines.append(text)
+            key = "\n".join(lines)
+            if lines and self._osc_live_last_text_by_speaker.get("0") != key:
+                self._osc_live_last_text_by_speaker["0"] = key
+                soniox_session.osc_manager.send_preview_messages_with_history(lines, ongoing=True, speaker="0")
+
+    def _finalize_local_row(self, row: dict) -> None:
+        tokens = self._local_row_tokens(row)
+        if not self.is_paused:
+            self.logger.write_to_log(tokens)
+        if self.loop is not None and not self.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                self._finalize_sentence_async("0", tokens[:1], tokens[1:], row["id"]), self.loop,
+            )
 
     def _run_local_session(self) -> None:
         run_stop_event = self._local_stop_event
         translator: HyMT2API | None = None
         recognizer: LocalQwenRecognizer | None = None
         try:
-            status = get_all_local_models_status()
-            asr_status = status["asr"]["qwen3-asr"]
-            if not asr_status["ready"]:
-                issues = ", ".join(asr_status.get("runtime_issues") or [])
-                raise RuntimeError("Qwen3-ASR 未就绪" + (f"（缺少: {issues}）" if issues else ""))
-
             translation_enabled = str(self.translation or "one_way").strip().lower() != "none"
-            if translation_enabled and not status["translation"]["hymt2"]["ready"]:
-                hymt = status["translation"]["hymt2"]
-                issues = ", ".join(hymt.get("runtime_issues") or [])
-                raise RuntimeError(
-                    "Hy-MT2 未就绪；请把 GGUF 放入 "
-                    + str(hymt.get("install_dir") or "local_models/hymt2")
-                    + (f"（缺少: {issues}）" if issues else "")
-                )
+            self._check_models(translation_enabled, prepare_remote=True)
 
             if translation_enabled:
-                translator = HyMT2API(
-                    backend="local",
-                    local_device=config.LOCAL_TRANSLATION_DEVICE,
-                )
-                translator.load_local_engine()
+                translator = self._make_row_translator()
                 self._translator = translator
 
+            self._subtitle_pipeline = LocalSubtitlePipeline(
+                self._make_row_translator, self._publish_local_frame,
+                self._finalize_local_row, self._broadcast_local_error,
+            )
             recognizer = LocalQwenRecognizer(
                 self._on_recognition_result,
                 self._broadcast_local_error,
                 source_language="auto",
+                inference_backend=self._inference_backend,
+                server_url=self._server_url,
+                remote_timeout=self._remote_timeout,
             )
             recognizer.start()
             self._recognizer = recognizer
             self.ws = recognizer
             self._start_audio_streamer(recognizer)
-            logger.info("Local Qwen3-ASR session started")
+            logger.info("Qwen3-ASR session started (inference=%s)", self._inference_backend)
 
             stop_event = self._local_stop_event
             while stop_event is not None and not stop_event.wait(0.2):
@@ -213,10 +272,10 @@ class LocalInferenceSession(SonioxSession):
             self._recognizer = None
             self.ws = None
 
-            presentation = self._presentation_executor
-            if presentation is not None:
-                presentation.shutdown(wait=True)
-            self._presentation_executor = None
+            pipeline = self._subtitle_pipeline
+            if pipeline is not None:
+                pipeline.close()
+            self._subtitle_pipeline = None
 
             if translator is not None:
                 translator.close()
@@ -239,6 +298,7 @@ class LocalInferenceSession(SonioxSession):
         self._pairer.flush_all()
         self._pending_boundaries.clear()
         self._reset_osc_live_state()
+        self._local_live_rows.clear()
 
     def start(
         self,
@@ -250,22 +310,12 @@ class LocalInferenceSession(SonioxSession):
     ) -> bool:
         if self.thread and self.thread.is_alive():
             return False
-        status = get_all_local_models_status()
-        asr_status = status["asr"]["qwen3-asr"]
-        if not asr_status["ready"]:
-            issues = ", ".join(asr_status.get("runtime_issues") or [])
-            raise RuntimeError(
-                "Qwen3-ASR 未就绪" + (f"（缺少: {issues}）" if issues else "")
-            )
+        self._inference_backend = getattr(config, "LOCAL_INFERENCE_BACKEND", "local")
+        self._server_url = getattr(config, "LOCAL_INFERENCE_SERVER_URL", "")
+        self._remote_timeout = getattr(config, "LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS", 60)
+        self._translation_device = config.LOCAL_TRANSLATION_DEVICE
         requested_translation = str(translation or "one_way").strip().lower()
-        if requested_translation != "none" and not status["translation"]["hymt2"]["ready"]:
-            hymt = status["translation"]["hymt2"]
-            issues = ", ".join(hymt.get("runtime_issues") or [])
-            raise RuntimeError(
-                "Hy-MT2 未就绪；请把 GGUF 放入 "
-                + str(hymt.get("install_dir") or "local_models/hymt2")
-                + (f"（缺少: {issues}）" if issues else "")
-            )
+        self._check_models(requested_translation != "none")
         if translation_target_lang is not None:
             ok, message = self.set_translation_target_lang(translation_target_lang)
             if not ok:
@@ -279,7 +329,6 @@ class LocalInferenceSession(SonioxSession):
         self.loop = loop
         self.is_paused = False
         self.last_sent_count = 0
-        self._all_final_tokens = []
         self._startup_error = None
         self._sentence_buffers.clear()
         self._pending_endpoint_speakers.clear()
@@ -290,9 +339,6 @@ class LocalInferenceSession(SonioxSession):
             self.logger.init_log_file()
         self._local_stop_event = threading.Event()
         self.stop_event = self._local_stop_event
-        self._presentation_executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="local-subtitle"
-        )
         self.thread = threading.Thread(
             target=self._run_local_session,
             name="LocalInferenceSession",
@@ -313,7 +359,7 @@ class LocalInferenceSession(SonioxSession):
             self._clear_stopped_local_state(stop_event)
         else:
             # recognizer.stop() deliberately drains the serialized ASR/final
-            # chain.  Keep its event and presentation executor reachable until
+            # chain.  Keep its event and subtitle pipeline reachable until
             # the run thread finishes, even when a slow CPU final exceeds this
             # caller's bounded join.
             logger.warning(

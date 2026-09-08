@@ -924,6 +924,16 @@ class SubtitleModel:
     def __init__(self):
         self.final_tokens = []
         self.non_final_tokens = []
+        # Local ASR publishes authoritative row snapshots instead of the
+        # historic token stream.  Keep them independently so a translation
+        # revision replaces its source row rather than adding a second line.
+        self.local_segments = {}
+        self._local_segment_order = []
+        self._local_tombstones = set()
+        self._local_insert_counter = 0
+        self._arrival_counter = 0
+        self._ordinary_position = 0
+        self._last_arrival_kind = None
 
     def clear(self, preserve_existing=False):
         if preserve_existing:
@@ -936,15 +946,156 @@ class SubtitleModel:
             self.final_tokens = []
         self.non_final_tokens = []
 
+        if not preserve_existing:
+            self.local_segments.clear()
+            self._local_segment_order = []
+            self._local_tombstones.clear()
+            self._local_insert_counter = 0
+            self._arrival_counter = 0
+            self._ordinary_position = 0
+            self._last_arrival_kind = None
+
     def apply_update(self, data: dict):
-        for tk in (data.get("final_tokens") or []):
-            if tk.get("text") == "<end>":
+        # Match the browser: IPC/ordinary content in this frame precedes new
+        # local rows. Translation-only row revisions never interrupt it.
+        incoming_final = [tk for tk in (data.get("final_tokens") or []) if tk.get("text") != "<end>"]
+        incoming_live = [tk for tk in (data.get("non_final_tokens") or []) if tk.get("text") != "<end>"]
+        if incoming_final or incoming_live:
+            if self._last_arrival_kind != "ordinary":
+                self._arrival_counter += 1
+                self._ordinary_position = self._arrival_counter
+            self._last_arrival_kind = "ordinary"
+        self.final_tokens.extend(dict(tk, _overlay_position=self._ordinary_position) for tk in incoming_final)
+        if "non_final_tokens" in data:
+            self.non_final_tokens = [dict(tk, _overlay_position=self._ordinary_position) for tk in incoming_live]
+        self._apply_local_segments(data)
+
+    @staticmethod
+    def _normalise_local_segment(value):
+        if not isinstance(value, dict):
+            return None
+        identifier = str(value.get("id") or "").strip()
+        try:
+            revision = int(value.get("revision"))
+        except (TypeError, ValueError):
+            return None
+        if not identifier:
+            return None
+        try:
+            order = float(value.get("order"))
+        except (TypeError, ValueError):
+            order = None
+        if order is not None and not math.isfinite(order):
+            order = None
+        return {
+            "id": identifier,
+            "source": str(value.get("source") or ""),
+            "translation": str(value.get("translation") or ""),
+            "source_language": str(value.get("source_language") or ""),
+            "target_language": str(value.get("target_language") or ""),
+            "order": order,
+            "revision": revision,
+            "is_final": bool(value.get("is_final")),
+            "requires_translation": value.get("requires_translation") is not False,
+        }
+
+    def _sort_local_segments(self):
+        def key(identifier):
+            row = self.local_segments.get(identifier) or {}
+            order = row.get("order")
+            return (
+                float("inf") if order is None else order,
+                row.get("_insert_order", 0),
+            )
+        self._local_segment_order.sort(key=key)
+
+    def _apply_local_segments(self, data: dict):
+        if data.get("local_reset"):
+            self.local_segments.clear()
+            self._local_segment_order = []
+            self._local_tombstones.clear()
+            self._local_insert_counter = 0
+
+        for raw_id in data.get("local_removed_segment_ids") or []:
+            identifier = str(raw_id or "").strip()
+            if not identifier:
                 continue
-            self.final_tokens.append(tk)
-        self.non_final_tokens = [
-            tk for tk in (data.get("non_final_tokens") or [])
-            if tk.get("text") != "<end>"
-        ]
+            self._local_tombstones.add(identifier)
+            self.local_segments.pop(identifier, None)
+            self._local_segment_order = [
+                row_id for row_id in self._local_segment_order if row_id != identifier
+            ]
+
+        new_ids = set()
+        for raw in data.get("local_segments") or []:
+            row = self._normalise_local_segment(raw)
+            if row is None or row["id"] in self._local_tombstones:
+                continue
+            current = self.local_segments.get(row["id"])
+            if current is not None and row["revision"] <= current["revision"]:
+                continue
+            if current is None:
+                row["_insert_order"] = self._local_insert_counter
+                self._local_insert_counter += 1
+                self.local_segments[row["id"]] = row
+                self._local_segment_order.append(row["id"])
+                new_ids.add(row["id"])
+            else:
+                row["_insert_order"] = current["_insert_order"]
+                row["_display_position"] = current["_display_position"]
+                self.local_segments[row["id"]] = row
+        # Resolve positions after every row's order has been updated; a split
+        # can insert a row at the old order of its following neighbor.
+        self._sort_local_segments()
+        for identifier in self._local_segment_order:
+            if identifier in new_ids:
+                row = self.local_segments[identifier]
+                index = self._local_segment_order.index(row["id"])
+                previous = self.local_segments[self._local_segment_order[index - 1]] if index else None
+                following = next((self.local_segments[other] for other in self._local_segment_order[index + 1:]
+                                  if "_display_position" in self.local_segments[other]), None)
+                if previous and following:
+                    row["_display_position"] = (previous["_display_position"] + following["_display_position"]) / 2
+                elif following:
+                    row["_display_position"] = following["_display_position"] - 0.001
+                else:
+                    self._arrival_counter += 1
+                    row["_display_position"] = self._arrival_counter
+                    self._last_arrival_kind = "local"
+
+    def _local_render_tokens(self):
+        tokens = []
+        for identifier in self._local_segment_order:
+            row = self.local_segments.get(identifier)
+            if not row:
+                continue
+            final = row["is_final"]
+            tokens.append({
+                "text": row["source"],
+                "is_final": final,
+                "speaker": "0",
+                "language": row["source_language"],
+                "source_language": row["source_language"],
+                "translation_status": (
+                    "original" if row["requires_translation"] else "none"
+                ),
+                "llm_sentence_id": identifier,
+            })
+            if row["translation"]:
+                tokens.append({
+                    "text": row["translation"],
+                    "is_final": final,
+                    "speaker": "0",
+                    "language": row["target_language"],
+                    "source_language": row["source_language"],
+                    "translation_status": "translation",
+                    "llm_sentence_id": identifier,
+                })
+            # Row snapshots are already presentation units.  This also keeps
+            # their translation attached to the matching source row.
+            tokens.append({"is_separator": True, "is_final": final, "separator_type": "local",
+                           "llm_sentence_id": identifier})
+        return tokens
 
     # --- 构建渲染 token（final + non-final，必要时补 speculative 分隔） ---
     def _build_render_tokens(self):
@@ -954,17 +1105,33 @@ class SubtitleModel:
             for tk in non_final
         )
         if has_nf_translation:
-            return [*self.final_tokens, *non_final]
+            tokens = [*self.final_tokens, *non_final]
+        else:
+            tokens = list(self.final_tokens)
+            n = len(non_final)
+            for i, tk in enumerate(non_final):
+                tokens.append(tk)
+                is_last = i == n - 1
+                text = (tk.get("text") or "").rstrip()
+                if (not is_last and not tk.get("is_separator")
+                        and text and text[-1] in SENTENCE_PUNCT):
+                    tokens.append({"is_separator": True, "is_final": False,
+                                   "_overlay_position": tk.get("_overlay_position", 0)})
 
-        tokens = list(self.final_tokens)
-        n = len(non_final)
-        for i, tk in enumerate(non_final):
-            tokens.append(tk)
-            is_last = i == n - 1
-            text = (tk.get("text") or "").rstrip()
-            if (not is_last and not tk.get("is_separator")
-                    and text and text[-1] in SENTENCE_PUNCT):
-                tokens.append({"is_separator": True, "is_final": False})
+        local = self._local_render_tokens()
+        if local:
+            groups = {}
+            for tk in tokens:
+                groups.setdefault(tk.get("_overlay_position", 0), []).append(tk)
+            for tk in local:
+                position = self.local_segments[tk["llm_sentence_id"]]["_display_position"]
+                groups.setdefault(position, []).append(tk)
+            tokens = []
+            for _, group in sorted(groups.items()):
+                if tokens and not tokens[-1].get("is_separator"):
+                    tokens.append({"is_separator": True, "is_final": bool(tokens[-1].get("is_final")),
+                                   "separator_type": "local-bridge"})
+                tokens.extend(group)
         return tokens
 
     # --- 分句（移植 renderSubtitles 的归组算法，去掉 furigana/LLM 等） ---
@@ -1062,7 +1229,7 @@ class SubtitleModel:
 
     def trim_final_tokens_to_recent_sentences(self, max_sentences: int) -> None:
         """Trim history on the same sentence boundaries used for display."""
-        if max_sentences <= 0 or not self.final_tokens:
+        if max_sentences <= 0 or not (self.final_tokens or self.local_segments):
             return
 
         saved_non_final = self.non_final_tokens
@@ -1082,6 +1249,15 @@ class SubtitleModel:
             return
 
         retained = sentences[-max_sentences:]
+        retained_local_ids = {
+            token.get("llm_sentence_id") for sentence in retained
+            for token in sentence["original"] + sentence["translation"]
+        }
+        for identifier, row in list(self.local_segments.items()):
+            if row["is_final"] and identifier not in retained_local_ids:
+                self.local_segments.pop(identifier)
+                self._local_segment_order.remove(identifier)
+                self._local_tombstones.add(identifier)
         retained_token_ids = {
             id(token)
             for sentence in retained
@@ -1098,7 +1274,9 @@ class SubtitleModel:
             ),
             None,
         )
-        if first_index is not None and first_index > 0:
+        if first_index is None:
+            self.final_tokens = []
+        elif first_index > 0:
             self.final_tokens = self.final_tokens[first_index:]
 
 
@@ -2094,7 +2272,7 @@ class OverlayWindow(QWidget):
         """限制历史句子数量，避免 build_blocks / setHtml 随时间越跑越慢卡 CPU。"""
         cap = max(120, max_lines * 12)
         ft = self.model.final_tokens
-        if len(ft) > cap:
+        if len(ft) + len(self.model.local_segments) > cap:
             self.model.trim_final_tokens_to_recent_sentences(max(20, max_lines * 4))
 
     def _render(self):
