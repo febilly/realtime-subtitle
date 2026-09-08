@@ -21,6 +21,12 @@ import aiohttp
 
 from llm_log import log_event
 
+# Cumulative token counters across all LLM calls in this process.
+# (Declared at the top: chat_completion below mutates them.)
+_llm_total_uncached: int = 0
+_llm_total_cached: int = 0
+_llm_total_completion: int = 0
+
 
 @dataclass(frozen=True)
 class LlmConfig:
@@ -215,11 +221,6 @@ async def chat_completion(
 
 _ANSWER_RE = re.compile(r"<answer>(.*?)</answer>", re.DOTALL | re.IGNORECASE)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-
-# Cumulative token counters across all LLM calls in this process
-_llm_total_uncached: int = 0
-_llm_total_cached: int = 0
-_llm_total_completion: int = 0
 
 
 def extract_answer_tag(text: str) -> str:

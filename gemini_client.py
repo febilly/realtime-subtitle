@@ -64,7 +64,7 @@ def get_api_key() -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
 
     if api_key:
-        print(f"✅ Using API Key from environment variable")
+        print("✅ Using API Key from environment variable")
         return api_key
 
     if not GEMINI_TEMP_KEY_URL:
@@ -83,7 +83,7 @@ def get_api_key() -> str:
         temp_key = response.text.strip()
 
         if temp_key:
-            print(f"✅ Successfully obtained temporary API Key")
+            print("✅ Successfully obtained temporary API Key")
             return temp_key
         else:
             raise RuntimeError("Temporary key response is empty")
