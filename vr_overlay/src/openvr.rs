@@ -1,0 +1,1063 @@
+use std::cell::{Cell, RefCell};
+use std::ffi::c_void;
+#[cfg(any(windows, test))]
+use std::ffi::{CStr, CString};
+
+use thiserror::Error;
+
+use crate::renderer::RenderedFrame;
+use crate::state::OverlayCalibration;
+
+#[cfg(windows)]
+const OVERLAY_KEY_PREFIX: &str = "com.rinbridge.overlay.";
+#[cfg(windows)]
+const OVERLAY_NAME_PREFIX: &str = "RinBridge Overlay ";
+#[cfg(any(windows, test))]
+const FN_TABLE_INTERFACE_PREFIX: &str = "FnTable:";
+const DEFAULT_OVERLAY_WIDTH_METERS: f32 = 1.0667;
+const DEFAULT_OVERLAY_DISTANCE_METERS: f32 = 1.1;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct OverlayPlacementPolicy {
+    anchor: &'static str,
+    width_meters: f32,
+    offset_x_meters: f32,
+    offset_y_meters: f32,
+    distance_meters: f32,
+}
+
+impl Default for OverlayPlacementPolicy {
+    fn default() -> Self {
+        Self {
+            anchor: "head_locked",
+            width_meters: DEFAULT_OVERLAY_WIDTH_METERS,
+            offset_x_meters: 0.0,
+            offset_y_meters: 0.0,
+            distance_meters: DEFAULT_OVERLAY_DISTANCE_METERS,
+        }
+    }
+}
+
+impl OverlayPlacementPolicy {
+    pub fn is_head_locked(&self) -> bool {
+        self.anchor == "head_locked"
+    }
+
+    pub fn from_calibration(calibration: &OverlayCalibration) -> Self {
+        Self {
+            anchor: "head_locked",
+            width_meters: DEFAULT_OVERLAY_WIDTH_METERS * calibration.text_scale.max(0.1),
+            offset_x_meters: calibration.offset_x,
+            offset_y_meters: calibration.offset_y,
+            distance_meters: calibration.distance.max(0.1),
+        }
+    }
+
+    #[cfg(windows)]
+    fn apply(
+        &self,
+        overlay_api: &openvr_sys::VR_IVROverlay_FnTable,
+        overlay_handle: openvr_sys::VROverlayHandle_t,
+    ) -> Result<(), OpenVrError> {
+        let set_overlay_width_in_meters = overlay_api
+            .SetOverlayWidthInMeters
+            .ok_or_else(missing_overlay_method("SetOverlayWidthInMeters"))?;
+        let error = unsafe { set_overlay_width_in_meters(overlay_handle, self.width_meters) };
+        map_overlay_init_error(overlay_api, "SetOverlayWidthInMeters", error)?;
+
+        let set_overlay_transform = overlay_api
+            .SetOverlayTransformTrackedDeviceRelative
+            .ok_or_else(missing_overlay_method(
+                "SetOverlayTransformTrackedDeviceRelative",
+            ))?;
+        let mut transform = self.hmd_relative_transform();
+        let error = unsafe {
+            set_overlay_transform(
+                overlay_handle,
+                openvr_sys::k_unTrackedDeviceIndex_Hmd,
+                &mut transform,
+            )
+        };
+        map_overlay_init_error(
+            overlay_api,
+            "SetOverlayTransformTrackedDeviceRelative",
+            error,
+        )
+    }
+
+    #[cfg(windows)]
+    fn hmd_relative_transform(&self) -> openvr_sys::HmdMatrix34_t {
+        openvr_sys::HmdMatrix34_t {
+            m: [
+                [1.0, 0.0, 0.0, self.offset_x_meters],
+                [0.0, 1.0, 0.0, self.offset_y_meters],
+                [0.0, 0.0, 1.0, -self.distance_meters],
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum OpenVrError {
+    #[error("openvr init failed: {0}")]
+    Init(String),
+    #[error("openvr texture submission failed: {0}")]
+    Submit(String),
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+enum OpenVrBackgroundInitError {
+    #[error("SteamVR runtime is not running")]
+    NoServerForBackgroundApp,
+    #[error("openvr init failed: {0}")]
+    Init(String),
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub(crate) enum OpenVrStartupPreflightError {
+    #[error("SteamVR/OpenVR runtime is not installed")]
+    SteamVrNotInstalled,
+    #[error("SteamVR is not running")]
+    SteamVrNotRunning,
+    #[error("VR headset not found")]
+    HmdNotFound,
+    #[error("openvr init failed: {0}")]
+    Init(String),
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+trait OpenVrPreflightApi {
+    fn is_runtime_installed(&self) -> bool;
+    fn initialize_background_app(&self) -> Result<(), OpenVrBackgroundInitError>;
+    fn shutdown_runtime(&self);
+    fn is_hmd_present(&self) -> bool;
+}
+
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn run_startup_preflight(api: &impl OpenVrPreflightApi) -> Result<(), OpenVrStartupPreflightError> {
+    if !api.is_runtime_installed() {
+        return Err(OpenVrStartupPreflightError::SteamVrNotInstalled);
+    }
+
+    match api.initialize_background_app() {
+        Ok(()) => api.shutdown_runtime(),
+        Err(OpenVrBackgroundInitError::NoServerForBackgroundApp) => {
+            return Err(OpenVrStartupPreflightError::SteamVrNotRunning);
+        }
+        Err(OpenVrBackgroundInitError::Init(message)) => {
+            return Err(OpenVrStartupPreflightError::Init(message));
+        }
+    }
+
+    if !api.is_hmd_present() {
+        return Err(OpenVrStartupPreflightError::HmdNotFound);
+    }
+
+    Ok(())
+}
+
+pub(crate) fn perform_startup_preflight() -> Result<(), OpenVrStartupPreflightError> {
+    if std::env::var("PURIPULY_SKIP_VR_PREFLIGHT").is_ok() {
+        return Ok(());
+    }
+
+    #[cfg(windows)]
+    {
+        let api = WindowsOpenVrPreflightApi;
+        return run_startup_preflight(&api);
+    }
+
+    #[cfg(not(windows))]
+    {
+        Ok(())
+    }
+}
+
+pub trait OverlayTextureSubmitter {
+    fn set_overlay_texture(&self, texture_handle: *mut c_void) -> Result<(), OpenVrError>;
+}
+
+pub trait OverlayFrameSubmitter {
+    fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError>;
+
+    fn display_refresh_rate_hz(&self) -> Option<f32> {
+        None
+    }
+
+    fn apply_calibration(&mut self, _calibration: &OverlayCalibration) -> Result<(), OpenVrError> {
+        Ok(())
+    }
+
+    fn set_overlay_visible(&mut self, _visible: bool) -> Result<(), OpenVrError> {
+        Ok(())
+    }
+
+    fn take_visibility_api_call_log(&mut self) -> Option<String> {
+        None
+    }
+
+    fn sample_frame_timing(&self) -> Option<FrameTimingSample> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameTimingSample {
+    pub frame_index: u32,
+    pub num_frame_presents: u32,
+    pub num_mis_presented: u32,
+    pub num_dropped_frames: u32,
+    pub system_time_seconds: f64,
+    pub client_frame_interval_ms: f32,
+    pub present_call_cpu_ms: f32,
+    pub wait_for_present_cpu_ms: f32,
+    pub compositor_render_cpu_ms: f32,
+    pub total_render_gpu_ms: f32,
+    pub post_submit_gpu_ms: f32,
+}
+
+pub fn submit_texture<T: OverlayTextureSubmitter>(
+    openvr: &T,
+    frame: &RenderedFrame,
+) -> Result<(), OpenVrError> {
+    let texture_handle = frame
+        .texture_ptr()
+        .ok_or_else(|| OpenVrError::Submit("renderer returned no texture".into()))?;
+    openvr.set_overlay_texture(texture_handle)
+}
+
+#[derive(Debug, Default)]
+pub struct FakeOpenVr {
+    last_call: RefCell<Option<String>>,
+    visible: Cell<bool>,
+    last_visibility_api_call_log: RefCell<Option<String>>,
+}
+
+impl FakeOpenVr {
+    pub fn last_call(&self) -> Option<String> {
+        self.last_call.borrow().clone()
+    }
+}
+
+impl OverlayTextureSubmitter for FakeOpenVr {
+    fn set_overlay_texture(&self, _texture_handle: *mut c_void) -> Result<(), OpenVrError> {
+        self.last_call
+            .replace(Some("SetOverlayTexture".to_string()));
+        Ok(())
+    }
+}
+
+pub struct OpenVrOverlay {
+    backend: OpenVrBackend,
+}
+
+impl OpenVrOverlay {
+    pub fn new(overlay_instance_id: &str) -> Result<Self, OpenVrError> {
+        Ok(Self {
+            backend: OpenVrBackend::new(overlay_instance_id)?,
+        })
+    }
+
+    /// Compositor heartbeat — must be called each frame so the overlay texture
+    /// is picked up by the SteamVR compositor.
+    pub fn compositor_heartbeat(&self) {
+        self.backend.compositor_heartbeat();
+    }
+}
+
+impl OverlayFrameSubmitter for OpenVrOverlay {
+    fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError> {
+        self.backend.submit_frame(frame)
+    }
+
+    fn display_refresh_rate_hz(&self) -> Option<f32> {
+        self.backend.display_refresh_rate_hz()
+    }
+
+    fn apply_calibration(&mut self, calibration: &OverlayCalibration) -> Result<(), OpenVrError> {
+        self.backend.apply_calibration(calibration)
+    }
+
+    fn set_overlay_visible(&mut self, visible: bool) -> Result<(), OpenVrError> {
+        self.backend.set_overlay_visible(visible)
+    }
+
+    fn take_visibility_api_call_log(&mut self) -> Option<String> {
+        self.backend.take_visibility_api_call_log()
+    }
+
+    fn sample_frame_timing(&self) -> Option<FrameTimingSample> {
+        self.backend.sample_frame_timing()
+    }
+}
+
+enum OpenVrBackend {
+    #[cfg(windows)]
+    Windows(WindowsOpenVrOverlay),
+    #[cfg(not(windows))]
+    Test(FakeOpenVr),
+}
+
+#[cfg(windows)]
+struct WindowsOpenVrPreflightApi;
+
+#[cfg(windows)]
+impl OpenVrPreflightApi for WindowsOpenVrPreflightApi {
+    fn is_runtime_installed(&self) -> bool {
+        unsafe { openvr_sys::VR_IsRuntimeInstalled() }
+    }
+
+    fn initialize_background_app(&self) -> Result<(), OpenVrBackgroundInitError> {
+        let mut init_error = openvr_sys::EVRInitError_VRInitError_None;
+        unsafe {
+            openvr_sys::VR_InitInternal(
+                &mut init_error,
+                openvr_sys::EVRApplicationType_VRApplication_Background,
+            );
+        }
+        if init_error == openvr_sys::EVRInitError_VRInitError_None {
+            return Ok(());
+        }
+        if init_error == openvr_sys::EVRInitError_VRInitError_Init_NoServerForBackgroundApp {
+            return Err(OpenVrBackgroundInitError::NoServerForBackgroundApp);
+        }
+        Err(OpenVrBackgroundInitError::Init(format!(
+            "VR_InitInternal failed: {}",
+            vr_init_error_name(init_error)
+        )))
+    }
+
+    fn shutdown_runtime(&self) {
+        unsafe {
+            openvr_sys::VR_ShutdownInternal();
+        }
+    }
+
+    fn is_hmd_present(&self) -> bool {
+        unsafe { openvr_sys::VR_IsHmdPresent() }
+    }
+}
+
+impl OpenVrBackend {
+    fn new(overlay_instance_id: &str) -> Result<Self, OpenVrError> {
+        #[cfg(windows)]
+        {
+            return WindowsOpenVrOverlay::new(overlay_instance_id).map(Self::Windows);
+        }
+
+        #[cfg(not(windows))]
+        {
+            let _ = overlay_instance_id;
+            Ok(Self::Test(FakeOpenVr::default()))
+        }
+    }
+
+    fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(openvr) => openvr.submit_frame(frame),
+            #[cfg(not(windows))]
+            Self::Test(openvr) => submit_texture(openvr, frame),
+        }
+    }
+
+    fn apply_calibration(&mut self, calibration: &OverlayCalibration) -> Result<(), OpenVrError> {
+        #[cfg(not(windows))]
+        let _ = calibration;
+
+        match self {
+            #[cfg(windows)]
+            Self::Windows(openvr) => openvr.apply_calibration(calibration),
+            #[cfg(not(windows))]
+            Self::Test(_) => Ok(()),
+        }
+    }
+
+    fn set_overlay_visible(&mut self, visible: bool) -> Result<(), OpenVrError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(openvr) => openvr.set_overlay_visible(visible),
+            #[cfg(not(windows))]
+            Self::Test(openvr) => openvr.set_overlay_visible(visible),
+        }
+    }
+
+    fn take_visibility_api_call_log(&mut self) -> Option<String> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(openvr) => openvr.take_visibility_api_call_log(),
+            #[cfg(not(windows))]
+            Self::Test(openvr) => openvr.take_visibility_api_call_log(),
+        }
+    }
+
+    fn display_refresh_rate_hz(&self) -> Option<f32> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(openvr) => openvr.display_refresh_rate_hz(),
+            #[cfg(not(windows))]
+            Self::Test(_) => None,
+        }
+    }
+
+    fn sample_frame_timing(&self) -> Option<FrameTimingSample> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(openvr) => openvr.sample_frame_timing(),
+            #[cfg(not(windows))]
+            Self::Test(_) => None,
+        }
+    }
+
+    fn compositor_heartbeat(&self) {
+        #[cfg(windows)]
+        if let Self::Windows(openvr) = self {
+            openvr.compositor_heartbeat();
+        }
+    }
+}
+
+#[cfg(windows)]
+struct WindowsOpenVrOverlay {
+    overlay_api: *mut openvr_sys::VR_IVROverlay_FnTable,
+    system_api: *mut openvr_sys::VR_IVRSystem_FnTable,
+    compositor_api: Option<*mut openvr_sys::VR_IVRCompositor_FnTable>,
+    overlay_handle: openvr_sys::VROverlayHandle_t,
+    placement_policy: OverlayPlacementPolicy,
+    visible: bool,
+    last_visibility_api_call_log: Option<String>,
+}
+
+#[cfg(windows)]
+impl WindowsOpenVrOverlay {
+    fn new(overlay_instance_id: &str) -> Result<Self, OpenVrError> {
+        let overlay_api = initialize_overlay_api()?;
+        let system_api = initialize_system_api()?;
+        let compositor_api = initialize_compositor_api().ok();
+        let overlay_handle = create_overlay_handle(overlay_api, overlay_instance_id)?;
+
+        let instance = Self {
+            overlay_api,
+            system_api,
+            compositor_api,
+            overlay_handle,
+            placement_policy: OverlayPlacementPolicy::default(),
+            visible: false,
+            last_visibility_api_call_log: None,
+        };
+        instance.configure_overlay()?;
+        Ok(instance)
+    }
+
+    fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError> {
+        submit_texture(self, frame)
+    }
+
+    fn configure_overlay(&self) -> Result<(), OpenVrError> {
+        let set_overlay_rendering_pid = self
+            .overlay_api()
+            .SetOverlayRenderingPid
+            .ok_or_else(missing_overlay_method("SetOverlayRenderingPid"))?;
+        let error = unsafe { set_overlay_rendering_pid(self.overlay_handle, std::process::id()) };
+        map_overlay_init_error(self.overlay_api(), "SetOverlayRenderingPid", error)?;
+
+        let set_overlay_flag = self
+            .overlay_api()
+            .SetOverlayFlag
+            .ok_or_else(missing_overlay_method("SetOverlayFlag"))?;
+        let error = unsafe {
+            set_overlay_flag(
+                self.overlay_handle,
+                openvr_sys::VROverlayFlags_IsPremultiplied,
+                true,
+            )
+        };
+        map_overlay_init_error(self.overlay_api(), "SetOverlayFlag", error)?;
+        // 默认 overlay 在 SteamVR 首页(dashboard)中不显示, 只跟随场景应用;
+        // 用户常驻 dashboard 观察字幕, 必须显式允许 dashboard 显示。
+        let error = unsafe {
+            set_overlay_flag(
+                self.overlay_handle,
+                openvr_sys::VROverlayFlags_VisibleInDashboard,
+                true,
+            )
+        };
+        map_overlay_init_error(self.overlay_api(), "SetOverlayFlag", error)?;
+        self.placement_policy
+            .apply(self.overlay_api(), self.overlay_handle)?;
+        Ok(())
+    }
+
+    fn show_overlay(&self) -> Result<(), OpenVrError> {
+        let show_overlay = self
+            .overlay_api()
+            .ShowOverlay
+            .ok_or_else(missing_overlay_method("ShowOverlay"))?;
+        let error = unsafe { show_overlay(self.overlay_handle) };
+        map_overlay_init_error(self.overlay_api(), "ShowOverlay", error)
+    }
+
+    fn hide_overlay(&self) -> Result<(), OpenVrError> {
+        let hide_overlay = self
+            .overlay_api()
+            .HideOverlay
+            .ok_or_else(missing_overlay_method("HideOverlay"))?;
+        let error = unsafe { hide_overlay(self.overlay_handle) };
+        map_overlay_init_error(self.overlay_api(), "HideOverlay", error)
+    }
+
+    fn overlay_api(&self) -> &openvr_sys::VR_IVROverlay_FnTable {
+        unsafe { &*self.overlay_api }
+    }
+
+    fn system_api(&self) -> &openvr_sys::VR_IVRSystem_FnTable {
+        unsafe { &*self.system_api }
+    }
+
+    fn apply_calibration(&mut self, calibration: &OverlayCalibration) -> Result<(), OpenVrError> {
+        self.placement_policy = OverlayPlacementPolicy::from_calibration(calibration);
+        self.placement_policy
+            .apply(self.overlay_api(), self.overlay_handle)
+    }
+
+    fn set_overlay_visible(&mut self, visible: bool) -> Result<(), OpenVrError> {
+        let cached_visible_before = self.visible;
+        if self.visible == visible {
+            self.last_visibility_api_call_log = Some(format_openvr_visibility_api_call_log(
+                visible,
+                cached_visible_before,
+                "SkipCachedMatch",
+                self.visible,
+            ));
+            return Ok(());
+        }
+        let api = if visible {
+            "ShowOverlay"
+        } else {
+            "HideOverlay"
+        };
+        if visible {
+            self.show_overlay()?;
+        } else {
+            self.hide_overlay()?;
+        }
+        self.visible = visible;
+        self.last_visibility_api_call_log = Some(format_openvr_visibility_api_call_log(
+            visible,
+            cached_visible_before,
+            api,
+            self.visible,
+        ));
+        Ok(())
+    }
+
+    fn take_visibility_api_call_log(&mut self) -> Option<String> {
+        self.last_visibility_api_call_log.take()
+    }
+
+    fn display_refresh_rate_hz(&self) -> Option<f32> {
+        const PROP_DISPLAY_FREQUENCY_FLOAT: openvr_sys::ETrackedDeviceProperty = 2002;
+
+        let get_float = self.system_api().GetFloatTrackedDeviceProperty?;
+        let mut error = 0;
+        let refresh_rate_hz = unsafe {
+            get_float(
+                openvr_sys::k_unTrackedDeviceIndex_Hmd,
+                PROP_DISPLAY_FREQUENCY_FLOAT,
+                &mut error,
+            )
+        };
+        if error == 0 && refresh_rate_hz.is_finite() && refresh_rate_hz > 0.0 {
+            Some(refresh_rate_hz)
+        } else {
+            None
+        }
+    }
+
+    fn sample_frame_timing(&self) -> Option<FrameTimingSample> {
+        let compositor_api = self.compositor_api?;
+        let get_frame_timing = unsafe { (*compositor_api).GetFrameTiming }?;
+        let mut timing: openvr_sys::Compositor_FrameTiming = unsafe { std::mem::zeroed() };
+        timing.m_nSize = std::mem::size_of::<openvr_sys::Compositor_FrameTiming>() as u32;
+        let ok = unsafe { get_frame_timing(&mut timing, 0) };
+        if !ok {
+            return None;
+        }
+        Some(FrameTimingSample {
+            frame_index: timing.m_nFrameIndex,
+            num_frame_presents: timing.m_nNumFramePresents,
+            num_mis_presented: timing.m_nNumMisPresented,
+            num_dropped_frames: timing.m_nNumDroppedFrames,
+            system_time_seconds: timing.m_flSystemTimeInSeconds,
+            client_frame_interval_ms: timing.m_flClientFrameIntervalMs,
+            present_call_cpu_ms: timing.m_flPresentCallCpuMs,
+            wait_for_present_cpu_ms: timing.m_flWaitForPresentCpuMs,
+            compositor_render_cpu_ms: timing.m_flCompositorRenderCpuMs,
+            total_render_gpu_ms: timing.m_flTotalRenderGpuMs,
+            post_submit_gpu_ms: timing.m_flPostSubmitGpuMs,
+        })
+    }
+
+    fn compositor_heartbeat(&self) {
+        if let Some(api) = self.compositor_api {
+            if let Some(wait_get_poses) = unsafe { (*api).WaitGetPoses } {
+                unsafe {
+                    wait_get_poses(std::ptr::null_mut(), 0, std::ptr::null_mut(), 0);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+impl OverlayTextureSubmitter for WindowsOpenVrOverlay {
+    fn set_overlay_texture(&self, texture_handle: *mut c_void) -> Result<(), OpenVrError> {
+        let method = self
+            .overlay_api()
+            .SetOverlayTexture
+            .ok_or_else(missing_overlay_method("SetOverlayTexture"))?;
+        let mut descriptor = openvr_sys::Texture_t {
+            handle: texture_handle,
+            eType: openvr_sys::ETextureType_TextureType_DirectX,
+            eColorSpace: openvr_sys::EColorSpace_ColorSpace_Auto,
+        };
+        let error = unsafe { method(self.overlay_handle, &mut descriptor) };
+        map_overlay_submit_error(self.overlay_api(), "SetOverlayTexture", error)
+    }
+}
+
+impl OverlayFrameSubmitter for FakeOpenVr {
+    fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError> {
+        submit_texture(self, frame)
+    }
+
+    fn set_overlay_visible(&mut self, visible: bool) -> Result<(), OpenVrError> {
+        let cached_visible_before = self.visible.get();
+        let api = if cached_visible_before == visible {
+            "SkipCachedMatch"
+        } else if visible {
+            "ShowOverlay"
+        } else {
+            "HideOverlay"
+        };
+        if cached_visible_before != visible {
+            self.last_call.replace(Some(api.to_string()));
+            self.visible.set(visible);
+        }
+        self.last_visibility_api_call_log
+            .replace(Some(format_openvr_visibility_api_call_log(
+                visible,
+                cached_visible_before,
+                api,
+                self.visible.get(),
+            )));
+        Ok(())
+    }
+
+    fn take_visibility_api_call_log(&mut self) -> Option<String> {
+        self.last_visibility_api_call_log.borrow_mut().take()
+    }
+}
+
+pub(crate) fn format_openvr_visibility_api_call_log(
+    desired_visible: bool,
+    cached_visible_before: bool,
+    api: &str,
+    cached_visible_after: bool,
+) -> String {
+    format!(
+        "openvr_overlay_visibility_api_call desired_visible={} cached_visible_before={} api={} cached_visible_after={}",
+        desired_visible,
+        cached_visible_before,
+        api,
+        cached_visible_after,
+    )
+}
+
+#[cfg(windows)]
+impl Drop for WindowsOpenVrOverlay {
+    fn drop(&mut self) {
+        if self.overlay_api.is_null() {
+            return;
+        }
+        if let Some(destroy_overlay) = self.overlay_api().DestroyOverlay {
+            unsafe {
+                destroy_overlay(self.overlay_handle);
+            }
+        }
+        unsafe {
+            openvr_sys::VR_ShutdownInternal();
+        }
+    }
+}
+
+#[cfg(windows)]
+fn initialize_overlay_api() -> Result<*mut openvr_sys::VR_IVROverlay_FnTable, OpenVrError> {
+    let mut init_error = openvr_sys::EVRInitError_VRInitError_None;
+    unsafe {
+        openvr_sys::VR_InitInternal(
+            &mut init_error,
+            openvr_sys::EVRApplicationType_VRApplication_Overlay,
+        );
+    }
+    if init_error != openvr_sys::EVRInitError_VRInitError_None {
+        return Err(OpenVrError::Init(format!(
+            "VR_InitInternal failed: {}",
+            vr_init_error_name(init_error)
+        )));
+    }
+
+    let overlay_interface_version = fn_table_interface_version(openvr_sys::IVROverlay_Version)?;
+    let mut interface_error = openvr_sys::EVRInitError_VRInitError_None;
+    let overlay_api = unsafe {
+        openvr_sys::VR_GetGenericInterface(overlay_interface_version.as_ptr(), &mut interface_error)
+    };
+    if interface_error != openvr_sys::EVRInitError_VRInitError_None || overlay_api == 0 {
+        unsafe {
+            openvr_sys::VR_ShutdownInternal();
+        }
+        return Err(OpenVrError::Init(format!(
+            "VR_GetGenericInterface failed: {}",
+            vr_init_error_name(interface_error)
+        )));
+    }
+
+    Ok(overlay_api as *mut openvr_sys::VR_IVROverlay_FnTable)
+}
+
+#[cfg(windows)]
+fn initialize_system_api() -> Result<*mut openvr_sys::VR_IVRSystem_FnTable, OpenVrError> {
+    let system_interface_version = fn_table_interface_version(openvr_sys::IVRSystem_Version)?;
+    let mut interface_error = openvr_sys::EVRInitError_VRInitError_None;
+    let system_api = unsafe {
+        openvr_sys::VR_GetGenericInterface(system_interface_version.as_ptr(), &mut interface_error)
+    };
+    if interface_error != openvr_sys::EVRInitError_VRInitError_None || system_api == 0 {
+        unsafe {
+            openvr_sys::VR_ShutdownInternal();
+        }
+        return Err(OpenVrError::Init(format!(
+            "VR_GetGenericInterface failed: {}",
+            vr_init_error_name(interface_error)
+        )));
+    }
+
+    Ok(system_api as *mut openvr_sys::VR_IVRSystem_FnTable)
+}
+
+#[cfg(windows)]
+fn initialize_compositor_api() -> Result<*mut openvr_sys::VR_IVRCompositor_FnTable, OpenVrError> {
+    let compositor_interface_version =
+        fn_table_interface_version(openvr_sys::IVRCompositor_Version)?;
+    let mut interface_error = openvr_sys::EVRInitError_VRInitError_None;
+    let compositor_api = unsafe {
+        openvr_sys::VR_GetGenericInterface(
+            compositor_interface_version.as_ptr(),
+            &mut interface_error,
+        )
+    };
+    if interface_error != openvr_sys::EVRInitError_VRInitError_None || compositor_api == 0 {
+        return Err(OpenVrError::Init(format!(
+            "VR_GetGenericInterface (compositor) failed: {}",
+            vr_init_error_name(interface_error)
+        )));
+    }
+
+    Ok(compositor_api as *mut openvr_sys::VR_IVRCompositor_FnTable)
+}
+
+#[cfg(any(windows, test))]
+fn fn_table_interface_version(interface_version: &[u8]) -> Result<CString, OpenVrError> {
+    let version = CStr::from_bytes_with_nul(interface_version)
+        .map_err(|error| OpenVrError::Init(format!("invalid OpenVR interface version: {error}")))?;
+    let mut prefixed =
+        Vec::with_capacity(FN_TABLE_INTERFACE_PREFIX.len() + version.to_bytes_with_nul().len());
+    prefixed.extend_from_slice(FN_TABLE_INTERFACE_PREFIX.as_bytes());
+    prefixed.extend_from_slice(version.to_bytes());
+    CString::new(prefixed)
+        .map_err(|error| OpenVrError::Init(format!("invalid OpenVR interface version: {error}")))
+}
+
+#[cfg(windows)]
+fn create_overlay_handle(
+    overlay_api: *mut openvr_sys::VR_IVROverlay_FnTable,
+    overlay_instance_id: &str,
+) -> Result<openvr_sys::VROverlayHandle_t, OpenVrError> {
+    let key = CString::new(format!("{OVERLAY_KEY_PREFIX}{overlay_instance_id}"))
+        .map_err(|error| OpenVrError::Init(error.to_string()))?;
+    let name = CString::new(format!("{OVERLAY_NAME_PREFIX}{overlay_instance_id}"))
+        .map_err(|error| OpenVrError::Init(error.to_string()))?;
+    let create_overlay = unsafe { (*overlay_api).CreateOverlay }
+        .ok_or_else(missing_overlay_method("CreateOverlay"))?;
+    let mut handle = 0;
+    let error = unsafe {
+        create_overlay(
+            key.as_ptr().cast_mut(),
+            name.as_ptr().cast_mut(),
+            &mut handle,
+        )
+    };
+    if error != openvr_sys::EVROverlayError_VROverlayError_None {
+        unsafe {
+            openvr_sys::VR_ShutdownInternal();
+        }
+        return Err(OpenVrError::Init(format!(
+            "CreateOverlay failed: {}",
+            overlay_error_name(unsafe { &*overlay_api }, error)
+        )));
+    }
+    Ok(handle)
+}
+
+#[cfg(windows)]
+fn missing_overlay_method(method_name: &'static str) -> impl FnOnce() -> OpenVrError {
+    move || OpenVrError::Init(format!("missing OpenVR overlay method: {method_name}"))
+}
+
+#[cfg(windows)]
+fn map_overlay_init_error(
+    overlay_api: &openvr_sys::VR_IVROverlay_FnTable,
+    method_name: &str,
+    error: openvr_sys::EVROverlayError,
+) -> Result<(), OpenVrError> {
+    if error == openvr_sys::EVROverlayError_VROverlayError_None {
+        return Ok(());
+    }
+    Err(OpenVrError::Init(format!(
+        "{method_name} failed: {}",
+        overlay_error_name(overlay_api, error)
+    )))
+}
+
+#[cfg(windows)]
+fn map_overlay_submit_error(
+    overlay_api: &openvr_sys::VR_IVROverlay_FnTable,
+    method_name: &str,
+    error: openvr_sys::EVROverlayError,
+) -> Result<(), OpenVrError> {
+    if error == openvr_sys::EVROverlayError_VROverlayError_None {
+        return Ok(());
+    }
+    Err(OpenVrError::Submit(format!(
+        "{method_name} failed: {}",
+        overlay_error_name(overlay_api, error)
+    )))
+}
+
+#[cfg(windows)]
+fn overlay_error_name(
+    overlay_api: &openvr_sys::VR_IVROverlay_FnTable,
+    error: openvr_sys::EVROverlayError,
+) -> String {
+    let Some(get_error_name) = overlay_api.GetOverlayErrorNameFromEnum else {
+        return format!("code {error}");
+    };
+    let name = unsafe { get_error_name(error) };
+    if name.is_null() {
+        return format!("code {error}");
+    }
+    unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(windows)]
+fn vr_init_error_name(error: openvr_sys::EVRInitError) -> String {
+    let name = unsafe { openvr_sys::VR_GetVRInitErrorAsSymbol(error) };
+    if name.is_null() {
+        return format!("code {error}");
+    }
+    unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::{
+        fn_table_interface_version, run_startup_preflight, FakeOpenVr, OpenVrBackgroundInitError,
+        OpenVrPreflightApi, OpenVrStartupPreflightError, OverlayFrameSubmitter,
+        OverlayPlacementPolicy,
+    };
+    use crate::state::OverlayCalibration;
+
+    enum FakeBackgroundInitResult {
+        Ok,
+        NoServer,
+        OtherError(&'static str),
+    }
+
+    struct FakePreflightApi {
+        runtime_installed: bool,
+        background_init: FakeBackgroundInitResult,
+        hmd_present: bool,
+        shutdown_calls: Cell<usize>,
+    }
+
+    impl FakePreflightApi {
+        fn shutdown_calls(&self) -> usize {
+            self.shutdown_calls.get()
+        }
+    }
+
+    impl OpenVrPreflightApi for FakePreflightApi {
+        fn is_runtime_installed(&self) -> bool {
+            self.runtime_installed
+        }
+
+        fn initialize_background_app(&self) -> Result<(), OpenVrBackgroundInitError> {
+            match self.background_init {
+                FakeBackgroundInitResult::Ok => Ok(()),
+                FakeBackgroundInitResult::NoServer => {
+                    Err(OpenVrBackgroundInitError::NoServerForBackgroundApp)
+                }
+                FakeBackgroundInitResult::OtherError(message) => {
+                    Err(OpenVrBackgroundInitError::Init(message.to_string()))
+                }
+            }
+        }
+
+        fn shutdown_runtime(&self) {
+            self.shutdown_calls.set(self.shutdown_calls.get() + 1);
+        }
+
+        fn is_hmd_present(&self) -> bool {
+            self.hmd_present
+        }
+    }
+
+    #[test]
+    fn startup_preflight_maps_missing_runtime_to_specific_failure_reason() {
+        let api = FakePreflightApi {
+            runtime_installed: false,
+            background_init: FakeBackgroundInitResult::Ok,
+            hmd_present: true,
+            shutdown_calls: Cell::new(0),
+        };
+
+        let result = run_startup_preflight(&api);
+
+        assert_eq!(
+            result,
+            Err(OpenVrStartupPreflightError::SteamVrNotInstalled)
+        );
+        assert_eq!(api.shutdown_calls(), 0);
+    }
+
+    #[test]
+    fn placement_policy_defaults_to_wider_readable_overlay_width() {
+        let policy = OverlayPlacementPolicy::default();
+
+        assert!((policy.width_meters - 1.0667).abs() < 0.0001);
+    }
+
+    #[test]
+    fn placement_policy_scales_wider_overlay_width_with_text_calibration() {
+        let policy = OverlayPlacementPolicy::from_calibration(&OverlayCalibration {
+            text_scale: 1.2,
+            ..OverlayCalibration::default()
+        });
+
+        assert!((policy.width_meters - 1.28004).abs() < 0.001);
+    }
+
+    #[test]
+    fn startup_preflight_maps_background_no_server_to_runtime_not_running() {
+        let api = FakePreflightApi {
+            runtime_installed: true,
+            background_init: FakeBackgroundInitResult::NoServer,
+            hmd_present: true,
+            shutdown_calls: Cell::new(0),
+        };
+
+        let result = run_startup_preflight(&api);
+
+        assert_eq!(result, Err(OpenVrStartupPreflightError::SteamVrNotRunning));
+        assert_eq!(api.shutdown_calls(), 0);
+    }
+
+    #[test]
+    fn startup_preflight_maps_missing_hmd_after_successful_background_probe() {
+        let api = FakePreflightApi {
+            runtime_installed: true,
+            background_init: FakeBackgroundInitResult::Ok,
+            hmd_present: false,
+            shutdown_calls: Cell::new(0),
+        };
+
+        let result = run_startup_preflight(&api);
+
+        assert_eq!(result, Err(OpenVrStartupPreflightError::HmdNotFound));
+        assert_eq!(api.shutdown_calls(), 1);
+    }
+
+    #[test]
+    fn startup_preflight_preserves_unexpected_background_init_failures() {
+        let api = FakePreflightApi {
+            runtime_installed: true,
+            background_init: FakeBackgroundInitResult::OtherError("unexpected"),
+            hmd_present: true,
+            shutdown_calls: Cell::new(0),
+        };
+
+        let result = run_startup_preflight(&api);
+
+        assert_eq!(
+            result,
+            Err(OpenVrStartupPreflightError::Init("unexpected".to_string()))
+        );
+        assert_eq!(api.shutdown_calls(), 0);
+    }
+
+    #[test]
+    fn startup_preflight_succeeds_after_all_guards_pass() {
+        let api = FakePreflightApi {
+            runtime_installed: true,
+            background_init: FakeBackgroundInitResult::Ok,
+            hmd_present: true,
+            shutdown_calls: Cell::new(0),
+        };
+
+        let result = run_startup_preflight(&api);
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(api.shutdown_calls(), 1);
+    }
+
+    #[test]
+    fn fn_table_interface_version_prefixes_overlay_version_for_flat_api_requests() {
+        let request = fn_table_interface_version(b"IVROverlay_028\0").expect("request");
+
+        assert_eq!(request.to_bytes_with_nul(), b"FnTable:IVROverlay_028\0");
+    }
+
+    #[test]
+    fn fake_openvr_visibility_diagnostic_reports_show_and_skip_cached_match() {
+        let mut openvr = FakeOpenVr::default();
+
+        openvr.set_overlay_visible(true).expect("show overlay");
+        let show_log = openvr
+            .take_visibility_api_call_log()
+            .expect("show visibility log");
+        assert!(show_log.contains("openvr_overlay_visibility_api_call"));
+        assert!(show_log.contains("desired_visible=true"));
+        assert!(show_log.contains("cached_visible_before=false"));
+        assert!(show_log.contains("api=ShowOverlay"));
+        assert!(show_log.contains("cached_visible_after=true"));
+
+        openvr
+            .set_overlay_visible(true)
+            .expect("skip cached visibility match");
+        let skip_log = openvr
+            .take_visibility_api_call_log()
+            .expect("skip visibility log");
+        assert!(skip_log.contains("desired_visible=true"));
+        assert!(skip_log.contains("cached_visible_before=true"));
+        assert!(skip_log.contains("api=SkipCachedMatch"));
+        assert!(skip_log.contains("cached_visible_after=true"));
+    }
+}
