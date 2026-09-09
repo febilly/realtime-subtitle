@@ -574,7 +574,11 @@ class AudioStreamer:
                     print("⚠️  No default speaker available for system audio capture")
                     return None
 
-                loopback = sc.get_microphone(id=str(speaker.name), include_loopback=True)
+                # WASAPI loopback microphones share the output endpoint's id.
+                # Do not use the display name: soundcard treats it as a fuzzy
+                # match, so overlapping endpoint names can select a silent
+                # loopback from a different output device.
+                loopback = sc.get_microphone(id=str(speaker.id), include_loopback=True)
                 if loopback is None:
                     print("⚠️  Loopback capture is not available on this device")
                     return None
