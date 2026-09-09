@@ -8,7 +8,10 @@
     const QUOTE_PAIRS = new Map([
         ['「', '」'], ['『', '』'], ['“', '”'], ['（', '）'], ['【', '】'], ['《', '》'],
     ]);
-    const SENTENCE_END_ABBREVIATION_EXCEPTIONS = ['a.m.', 'p.m.', 'e.g.', 'i.e.', 'u.s.', 'u.k.'];
+    const SENTENCE_END_ABBREVIATION_EXCEPTIONS = [
+        'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.',
+        'a.m.', 'p.m.', 'e.g.', 'i.e.', 'u.s.', 'u.k.',
+    ];
     const SENTENCE_END_ABBREVIATION_PREFIXES = SENTENCE_END_ABBREVIATION_EXCEPTIONS.flatMap((abbr) => {
         const prefixes = [];
         for (let index = 0; index < abbr.length - 1; index += 1) {

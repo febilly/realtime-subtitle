@@ -4,6 +4,8 @@ import sys
 from types import ModuleType
 from unittest.mock import MagicMock
 
+import pytest
+
 
 def _install_soniox_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "soniox_session", raising=False)
@@ -638,7 +640,15 @@ def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeyp
     assert kinds == ["It's 21.", "SEP", " Next sentence"], kinds
 
 
-def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatch):
+@pytest.mark.parametrize("first, second", [
+    ("Meet at 9 a.", "m."),
+    ("Meet at 9 A.", "M."),
+    ("Meet at 3 P.", "M."),
+    ("Meet Mr", "."),
+    ("Meet M", "r."),
+    ("Meet Mr.", " Smith"),
+])
+def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatch, first, second):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
 
@@ -659,7 +669,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         {
             "tokens": [
                 {
-                    "text": "Meet at 9 a.",
+                    "text": first,
                     "is_final": True,
                     "speaker": "1",
                     "translation_status": "original",
@@ -675,7 +685,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         {
             "tokens": [
                 {
-                    "text": "m.",
+                    "text": second,
                     "is_final": True,
                     "speaker": "1",
                     "translation_status": "original",
@@ -709,7 +719,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         "SEP" if t.get("is_separator") else t.get("text")
         for t in final_tokens
     ]
-    assert kinds == ["Meet at 9 a.", "m.", " tomorrow.", "SEP"], kinds
+    assert kinds == [first, second, " tomorrow.", "SEP"], kinds
 
 
 def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch):

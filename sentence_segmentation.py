@@ -18,6 +18,13 @@ CLOSING_QUOTE_CHARS = "\"'”’»›」』》"
 # distinction) and ASCII parens appear in emoticons; both are excluded.
 QUOTE_PAIRS = {"「": "」", "『": "』", "“": "”", "（": "）", "【": "】", "《": "》"}
 SENTENCE_END_ABBREVIATION_EXCEPTIONS = {
+    "mr.",
+    "mrs.",
+    "ms.",
+    "dr.",
+    "prof.",
+    "sr.",
+    "jr.",
     "a.m.",
     "p.m.",
     "e.g.",

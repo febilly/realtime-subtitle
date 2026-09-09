@@ -1,6 +1,10 @@
 {
   "version": 1,
   "cases": [
+    { "id": "title-mr", "function": "is_sentence_ending_punctuation", "args": ["Hello Mr."], "expected": false },
+    { "id": "title-case", "function": "is_sentence_ending_punctuation", "args": ["Hello MRS."], "expected": false },
+    { "id": "titles-and-times", "function": "split_text_at_sentence_boundaries", "args": ["Mr. Smith met Ms. Jones and Dr. Lee at 9 A.M. today. Prof. Brown met Mrs. Smith at 3 P.M. today."], "expected": ["Mr. Smith met Ms. Jones and Dr. Lee at 9 A.M. today.", " Prof. Brown met Mrs. Smith at 3 P.M. today."] },
+    { "id": "title-word-suffix", "function": "is_sentence_ending_punctuation", "args": ["Enjoy ASMR."], "expected": true },
     { "id": "ender-japanese-period", "function": "is_sentence_ending_punctuation", "args": ["そうだね。"], "expected": true },
     { "id": "ender-ascii-period", "function": "is_sentence_ending_punctuation", "args": ["Done."], "expected": true },
     { "id": "ender-after-earlier-ellipsis", "function": "is_sentence_ending_punctuation", "args": ["ここに...こいつぶち込んで。"], "expected": true },

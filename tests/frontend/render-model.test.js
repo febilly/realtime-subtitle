@@ -188,6 +188,17 @@ describe('RenderModel speculative token stream', () => {
         ]);
     });
 
+    it.each([
+        ['Hello Mr.', ' Smith'],
+        ['Hello Mr', '.', ' Smith'],
+        ['Hello M', 'r.', ' Smith'],
+        ['At 9 A.', 'M.', ' today'],
+        ['At 3 P', '.', 'M', '.', ' today'],
+    ])('keeps streamed titles and times together: %j', (...parts) => {
+        const values = parts.map((text) => original(text, { is_final: false }));
+        expect(RenderModel.buildRenderTokens({ currentNonFinalTokens: values })).toEqual(values);
+    });
+
     it('keeps a streamed e.g. abbreviation together', () => {
         const values = [
             original('For e.', { is_final: false }),
