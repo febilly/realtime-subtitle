@@ -50,6 +50,7 @@ coverage/
 
 # Local scratch directory
 scratch/
+scratch-eval/
 
 *.ttc
 
