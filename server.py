@@ -473,16 +473,18 @@ class ProviderManager:
                 self.target_lang = self.target_lang_1
             downgraded_two_way = True
 
-        # Stop old session.
+        # Stop old session. stop() joins the session/audio threads (up to
+        # ~4.5s); run it in a worker thread so the event loop keeps serving
+        # other requests (same reasoning as the restart/pause handlers).
         old_session = self.web_server.session if self.web_server else None
         self._capture_audio_preferences(old_session)
         if old_session is not None:
             try:
-                old_session.stop()
+                await asyncio.to_thread(old_session.stop)
             except Exception as e:
                 print(f"⚠️  Error stopping previous session: {e}")
         try:
-            self.logger.close_log_file()
+            await asyncio.to_thread(self.logger.close_log_file)
         except Exception:
             pass
 
