@@ -340,7 +340,11 @@ class WebServer:
         """
         if not self._is_loopback_request(request):
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
-        return web.json_response({"store": local_store.load()})
+        try:
+            return web.json_response({"store": local_store.load()})
+        except Exception as e:
+            logger.warning(f"Failed to read local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     async def local_store_post_handler(self, request):
         """写入共享设置：{set:{k:v}, remove:[k], clear:bool}。"""
@@ -353,18 +357,22 @@ class WebServer:
         if not isinstance(payload, dict):
             return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
 
-        if payload.get("clear"):
-            store = local_store.clear()
-            return web.json_response({"status": "ok", "store": store})
+        try:
+            if payload.get("clear"):
+                store = local_store.clear()
+                return web.json_response({"status": "ok", "store": store})
 
-        updates = payload.get("set")
-        removals = payload.get("remove")
-        if updates is not None and not isinstance(updates, dict):
-            return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
-        if removals is not None and not isinstance(removals, list):
-            return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
-        store = local_store.merge(updates=updates, removals=removals)
-        return web.json_response({"status": "ok", "store": store})
+            updates = payload.get("set")
+            removals = payload.get("remove")
+            if updates is not None and not isinstance(updates, dict):
+                return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
+            if removals is not None and not isinstance(removals, list):
+                return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
+            store = local_store.merge(updates=updates, removals=removals)
+            return web.json_response({"status": "ok", "store": store})
+        except Exception as e:
+            logger.warning(f"Failed to update local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     def _supports_segment_mode(self) -> bool:
         return hasattr(self.session, "get_segment_mode")
