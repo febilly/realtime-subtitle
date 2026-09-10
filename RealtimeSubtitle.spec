@@ -105,6 +105,10 @@ _drop_substr = (
     '__pyinstaller/',
 )
 _drop_basename = (
+    # Qt on Windows uses the OS ICU API (unversioned ucnv_* exports).
+    # PATH may contain Poppler/Conda's incompatible ICU with the same filename;
+    # bundling it shadows System32 and makes PySide6.QtCore fail to import.
+    'icuuc.dll',
     'qt6quick.dll', 'qt6qml.dll', 'qt6qmlmodels.dll', 'qt6qmlworkerscript.dll',
     'qt6qmlmeta.dll', 'qt6virtualkeyboard.dll', 'qt6pdf.dll',
     # Qt 的软件 OpenGL 回退渲染器（~20MB）。字幕悬浮窗是纯 QWidget + QPainter
