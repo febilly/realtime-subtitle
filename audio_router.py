@@ -523,8 +523,20 @@ class AudioSendRouter:
                     target.send(payload)
                 except Exception as error:
                     with self._lock:
-                        for remaining in buffered[index:]:
-                            self._buffer_locked(remaining)
+                        # Re-insert unsent chunks back to the head of the deque to maintain
+                        # strict FIFO order (new audio arrived during flush was appended to the tail).
+                        #
+                        # Overflow strategy (保序丢最旧):
+                        # If total buffered chunks exceed _max_buffered_chunks after head re-insertion,
+                        # we discard the oldest chunks from the head (popleft).
+                        # Rationale:
+                        # 1. Consistency: Matches _buffer_locked's drop-oldest policy across the router.
+                        # 2. Real-time priority: Live ASR prioritizes fresh audio over stale audio to avoid latency accumulation.
+                        # 3. Order invariant: Maintains strict chronological sequence among all retained chunks.
+                        if not self._closed:
+                            self._buffered_chunks.extendleft(reversed(buffered[index:]))
+                            while len(self._buffered_chunks) > self._max_buffered_chunks:
+                                self._buffered_chunks.popleft()
                     print(f"⚠️  Failed to flush buffered audio after stream rollover: {error}")
                     return False
 

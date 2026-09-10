@@ -94,6 +94,164 @@ def test_audio_router_does_not_switch_when_expected_current_mismatches():
     assert second.payloads == []
 
 
+def test_audio_router_flush_failure_with_concurrent_audio_preserves_fifo_order():
+    """R-01: When _attach_target flush fails midway, unsent chunks must be prepended
+
+    to the deque so newly arrived realtime audio remains strictly after older chunks.
+    """
+    router = AudioSendRouter(max_buffered_chunks=10)
+    for chunk in [b"chunk0", b"chunk1", b"chunk2", b"chunk3"]:
+        router.send(chunk)
+    assert router.buffered_count() == 4
+
+    class FailingOnChunk2Target:
+        def __init__(self):
+            self.payloads = []
+
+        def send(self, payload: bytes):
+            if payload == b"chunk2":
+                # Concurrent real-time audio arriving during the flush while target detached
+                router.send(b"realtime0")
+                router.send(b"realtime1")
+                raise RuntimeError("simulated network failure during flush")
+            self.payloads.append(payload)
+
+    failing_target = FailingOnChunk2Target()
+    assert router.set_target(failing_target) is False
+    assert failing_target.payloads == [b"chunk0", b"chunk1"]
+
+    # Deque must strictly preserve chronological FIFO order:
+    # [chunk2, chunk3] (older unsent) followed by [realtime0, realtime1] (newer)
+    assert list(router._buffered_chunks) == [
+        b"chunk2",
+        b"chunk3",
+        b"realtime0",
+        b"realtime1",
+    ]
+
+    # Recovery target should receive all remaining chunks in strict FIFO order
+    recovery_target = RecordingTarget()
+    assert router.set_target(recovery_target) is True
+    assert recovery_target.payloads == [
+        b"chunk2",
+        b"chunk3",
+        b"realtime0",
+        b"realtime1",
+    ]
+    assert router.buffered_count() == 0
+
+
+def test_audio_router_flush_failure_overflow_preserves_fifo_and_drops_oldest():
+    """R-01 overflow interaction: When re-inserted unsent chunks + concurrent chunks
+
+    exceed max_buffered_chunks, keep drop-oldest semantic to avoid latency buildup
+    while maintaining strict FIFO order among retained chunks.
+    """
+    router = AudioSendRouter(max_buffered_chunks=4)
+    for chunk in [b"chunk0", b"chunk1", b"chunk2", b"chunk3"]:
+        router.send(chunk)
+    assert router.buffered_count() == 4
+
+    class FailingOnChunk1Target:
+        def __init__(self):
+            self.payloads = []
+
+        def send(self, payload: bytes):
+            if payload == b"chunk1":
+                router.send(b"realtime0")
+                router.send(b"realtime1")
+                raise RuntimeError("simulated network failure")
+            self.payloads.append(payload)
+
+    failing_target = FailingOnChunk1Target()
+    assert router.set_target(failing_target) is False
+    assert failing_target.payloads == [b"chunk0"]
+
+    # Unsent older chunks: chunk1, chunk2, chunk3 (3 chunks)
+    # Concurrent chunks: realtime0, realtime1 (2 chunks)
+    # Total = 5 chunks > max_buffered_chunks (4).
+    # Preserving FIFO and dropping the oldest chunk (chunk1) yields:
+    # [chunk2, chunk3, realtime0, realtime1]
+    assert list(router._buffered_chunks) == [
+        b"chunk2",
+        b"chunk3",
+        b"realtime0",
+        b"realtime1",
+    ]
+
+    recovery_target = RecordingTarget()
+    assert router.set_target(recovery_target) is True
+    assert recovery_target.payloads == [
+        b"chunk2",
+        b"chunk3",
+        b"realtime0",
+        b"realtime1",
+    ]
+
+
+def test_audio_router_switch_target_flush_failure_threaded_concurrent_sends():
+    """Verify thread safety and FIFO order when real-time audio arrives from a separate
+
+    thread during a failed switch_target flush.
+    """
+    import threading
+    import time
+
+    router = AudioSendRouter(max_buffered_chunks=50)
+    initial_target = RecordingTarget()
+    assert router.set_target(initial_target) is True
+
+    # Fill initial buffer by clearing target
+    router.clear_target(initial_target)
+    for i in range(5):
+        router.send(f"init_{i}".encode("ascii"))
+
+    stop_event = threading.Event()
+    produced = []
+
+    def audio_feeder():
+        count = 0
+        while not stop_event.is_set():
+            data = f"stream_{count}".encode("ascii")
+            produced.append(data)
+            router.send(data)
+            count += 1
+            time.sleep(0.001)
+
+    class FailingTarget:
+        def __init__(self):
+            self.calls = 0
+
+        def send(self, payload: bytes):
+            self.calls += 1
+            time.sleep(0.005)
+            if self.calls >= 3:
+                raise ConnectionResetError("Target disconnected during rollover flush")
+
+    feeder_thread = threading.Thread(target=audio_feeder, daemon=True)
+    feeder_thread.start()
+
+    # switch_target will flush init_0..init_4, fail on call 3 (init_2)
+    assert router.switch_target(FailingTarget()) is False
+
+    stop_event.set()
+    feeder_thread.join(timeout=1.0)
+
+    # All remaining init chunks (init_2, init_3, init_4) must precede produced stream chunks
+    buffered_list = list(router._buffered_chunks)
+    init_remaining = [chunk for chunk in buffered_list if chunk.startswith(b"init_")]
+    stream_chunks = [chunk for chunk in buffered_list if chunk.startswith(b"stream_")]
+
+    assert init_remaining == [b"init_2", b"init_3", b"init_4"]
+    # Verify that in buffered_list, all init_remaining appear BEFORE stream_chunks
+    assert buffered_list[:3] == init_remaining
+    assert buffered_list[3:] == stream_chunks
+
+    # Also verify stream_chunks are strictly in increasing order
+    stream_indices = [int(chunk.decode("ascii").split("_")[1]) for chunk in stream_chunks]
+    assert stream_indices == sorted(stream_indices)
+
+
 def test_energy_silence_detector_waits_for_hold_duration():
     detector = EnergySilenceDetector(sample_rate=16000, silence_hold_seconds=0.4)
     silence = b"\0" * 7680  # 3840 int16 samples, roughly 0.24s at 16 kHz
