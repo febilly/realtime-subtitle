@@ -10,6 +10,17 @@ from urllib.parse import urlencode
 import requests
 from dotenv import load_dotenv
 
+# Make console output resilient: on Windows a redirected stdout/stderr uses
+# the ANSI code page (e.g. GBK), where the emoji used throughout the logs
+# raises UnicodeEncodeError and can crash the app during import (seen in a
+# packaged-exe smoke test with output redirected to a file). UTF-8 with
+# errors="replace" keeps every print safe. Runs before any module print.
+for _output_stream in (sys.stdout, sys.stderr):
+    try:
+        _output_stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 # ======================== Supported languages (per provider) ========================
 # Two providers are supported and each accepts a different set of target languages.
@@ -156,15 +167,13 @@ def _system_default_locale() -> str:
     """Best-effort system default locale (e.g. 'zh_CN', 'en_US', 'zh-CN').
 
     Replaces the deprecated ``locale.getdefaultlocale()`` (removal planned for
-    Python 3.15): check the current locale first, then the usual environment
-    variables, then (on Windows) the user default locale via the Win32 API.
+    Python 3.15) with the same resolution order: LC_ALL/LC_CTYPE/LANG/
+    LANGUAGE environment variables, then (on Windows) the user default locale
+    via the Win32 API (which returns a BCP-47 name like 'zh-CN').
+    ``locale.getlocale()`` is only a last-resort fallback: on Windows it
+    returns the native setlocale form (e.g. 'Chinese (Simplified)_China'),
+    which cannot be mapped to an ISO language code.
     """
-    try:
-        value = (locale.getlocale() or (None, None))[0]
-        if value:
-            return str(value)
-    except Exception:
-        pass
     for env_var in ("LC_ALL", "LC_CTYPE", "LANG", "LANGUAGE"):
         value = (os.environ.get(env_var) or "").strip()
         if value:
@@ -179,6 +188,12 @@ def _system_default_locale() -> str:
                 return buffer.value or ""
         except Exception:
             pass
+    try:
+        value = (locale.getlocale() or (None, None))[0]
+        if value:
+            return str(value)
+    except Exception:
+        pass
     return ""
 
 
