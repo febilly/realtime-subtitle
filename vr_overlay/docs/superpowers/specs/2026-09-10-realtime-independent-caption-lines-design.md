@@ -61,17 +61,127 @@ This boundary makes real frame sequences testable without TCP, OpenVR, or font
 rendering. A separate integration test retains those downstream boundaries up
 to a recording frame submitter.
 
+## Reducer Data Model
+
+The pure reducer owns protocol state only. The implementation uses the
+following conceptual structures (Rust names and field types are normative;
+private helper layout may vary without changing behavior):
+
+```rust
+struct DesktopCaptionReducer {
+    source: CaptionLineState,
+    translation: CaptionLineState,
+    source_final: FinalAccumulator,
+    translation_final: FinalAccumulator,
+    sentence_ordinals: HashMap<String, u64>,
+    recent_source_by_sentence: VecDeque<(SentenceRef, String)>,
+    next_sentence_ordinal: u64,
+    previous_update_final_tokens: Option<FinalTokensFingerprint>,
+}
+
+struct CaptionLineState {
+    visible_text: String,
+    owner: Option<SentenceRef>,
+}
+
+struct FinalAccumulator {
+    text: String,
+    owner: Option<SentenceRef>,
+    replace_on_next_token: bool,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct SentenceRef {
+    id: String,
+    ordinal: u64,
+}
+
+struct CaptionChange {
+    source: Option<String>,
+    translation: Option<String>,
+}
+```
+
+`CaptionChange::source` and `CaptionChange::translation` are independent.
+`None` means preserve that row; `Some(text)` means replace it. `clear` remains
+an explicit reducer outcome rather than overloading two empty strings.
+
+`CaptionLineState::owner` identifies the sentence represented by that visible
+row. Most importantly, advancing `source.owner` never mutates
+`translation.owner`. `FinalAccumulator` is separate from visible text because
+a live draft may be visible while final deltas for the same line are still
+being accumulated.
+
+The ordinal registry lasts until `clear`. `recent_source_by_sentence` is capped
+at 256 entries and exists only for source-text correlation fallback. A final
+tokens fingerprint is the canonical ordered tuple of every token's separator,
+line kind, text, sentence ID, and finality fields; it is not a randomized
+process hash.
+
+## State Transition Table
+
+Transitions are applied in message order. Within `update`, final tokens are
+processed in array order before the non-final snapshot; a line changed by final
+tokens in that frame is not overwritten by its draft from the same frame.
+
+| Input | Guard | Source result | Translation result | Other state |
+| --- | --- | --- | --- | --- |
+| source final delta | current/newer owner | replace or append per final accumulation rules | preserve | register owner and source text |
+| translation final delta | current/newer owner | preserve | replace or append per final accumulation rules | set translation owner |
+| separator | always | preserve visible source | preserve visible translation | set both final accumulators to replace on next token |
+| source non-final snapshot | no source final change in same frame; non-empty | replace visible source | preserve | owner is matching ID when present, otherwise unchanged/unknown |
+| translation non-final snapshot | no translation final change in same frame; non-empty | preserve | replace visible translation | set owner when ID is present |
+| `refine_result` | same owner as translation line | preserve | replace with completed translation | preserve both owners |
+| `refine_result` | known newer than translation owner | preserve | replace with completed translation | advance translation owner |
+| `refine_result` | known older than translation owner | preserve | preserve | emit stale no-op reason |
+| `refine_result` | translation owner is A, source owner is B, refine owner is A | preserve source B | replace translation A | source B does not make A stale |
+| duplicate consecutive `final_tokens` array | fingerprint matches previous update | do not re-accumulate finals; still process source draft | do not re-accumulate finals; still process translation draft | retain replay fingerprint |
+| `clear` | always | clear | clear | reset accumulators, owners, ordinals, correlation cache, and fingerprint |
+
+The reducer emits at most one `CaptionChange` per desktop message, containing
+the final values reached after all transitions in that message. It emits a
+no-op when neither visible row changed.
+
 ## Protocol Semantics
 
 ### `update.final_tokens`
 
-`final_tokens` is an incremental list. Non-separator tokens with
-`translation_status == "translation"` append to the finalized translation;
-other non-separator tokens append to the finalized source. Duplicate replay and
-whole-line replay remain tolerated.
+`final_tokens` is an ordered incremental list: each non-separator entry is a
+new token delta unless its text is demonstrably a cumulative whole-line replay
+under the rules below. The reducer processes the array from index zero to the
+end, once per WebSocket frame. A token with
+`translation_status == "translation"` targets the translation accumulator;
+every other non-separator token targets the source accumulator.
 
-A separator closes the current sentence pair. It does not clear either visible
-line. The next incoming content for each line replaces that line independently.
+Each line accumulator stores `text`, optional `sentence_id`, and
+`replace_on_next_token`. The reducer applies each target token as follows:
+
+1. Ignore it when `is_final == false` or `text` is empty.
+2. Read a non-empty `llm_sentence_id` as the token's sentence ID.
+3. If `replace_on_next_token` is set, replace the accumulator with `text`, set
+   its sentence ID to the token ID, and clear the flag.
+4. Otherwise, if both IDs exist and differ, use the sentence-order registry:
+   replace for a newer sentence and reject a token for an older sentence.
+5. Otherwise, if `text` strictly extends `accumulator.text` by starting with it
+   and being longer, replace the accumulator with `text`; this is a longer
+   cumulative replay.
+6. Otherwise, append `text` exactly, even when it equals the accumulator or the
+   preceding token.
+   Repeated words are valid content and must not be deduplicated by suffix.
+
+The reducer additionally remembers the canonical serialized value of the
+`final_tokens` array from the immediately preceding desktop `update`. If the
+next desktop message is another `update` with the same array, final-token
+accumulation is skipped while its `non_final_tokens` snapshot is still
+processed. Any intervening desktop message, including `refine_result` or
+`clear`, breaks this replay window. The memory is one message deep so a later
+legitimate identical utterance is not suppressed. Array identity includes
+token order, line kind, text, sentence ID, finality, and separators.
+
+A separator sets `replace_on_next_token` on both accumulators. It does not clear
+either visible line. Because the two flags are consumed independently, a new
+source can replace the source while the translation row continues to represent
+the previous sentence.
 
 ### `update.non_final_tokens`
 
@@ -99,9 +209,12 @@ value is absent and `no_change` is false, a non-empty `original_translation`
 may supply the completed translation.
 
 Correlation uses `sentence_id` as the primary identity. Source text is a
-compatibility fallback for frames that omit the identifier. A refinement for a
-sentence older than the current source sentence is ignored and records a
-diagnostic reason. Translation acceptance does not wait for another `update`.
+compatibility fallback for frames that omit the identifier. Staleness is
+measured relative to the sentence currently represented by the translation
+line, not the current source sentence. This distinction permits the source line
+to advance while a late refinement still completes the translation line for
+the preceding sentence. Translation acceptance does not wait for another
+`update`.
 
 ### `clear`
 
@@ -128,13 +241,33 @@ turn.
 
 ## Stale and Out-of-order Events
 
-- Duplicate token replay is idempotent.
+- The reducer assigns a monotonically increasing local ordinal when it first
+  observes each non-empty `sentence_id`. IDs remain opaque strings; their text
+  is never parsed to infer order.
+- The translation line stores the sentence ID and ordinal of the sentence it
+  currently represents. A translation token or refinement with the same owner
+  updates that line. A known greater ordinal advances it. A known lower ordinal
+  is stale and is rejected.
+- Advancing the source line alone does not change the translation owner and
+  cannot make a result stale.
+- Source and translation tokens register IDs in first-observed order. A
+  refinement with an unknown ID does not automatically register itself: when a
+  translation owner exists it is rejected as uncorrelated; when no owner exists
+  it may claim the line only if its normalized source uniquely matches the
+  visible source.
+- The reducer retains the ID-to-ordinal registry until `clear`, so an old known
+  ID cannot become apparently new through eviction. It retains normalized
+  source text only for the 256 most recently observed sentences. A legacy
+  refinement without an ID is accepted only when
+  its normalized source uniquely matches the source associated with the
+  translation owner, or, when no translation owner exists, the visible source.
+  Ambiguous legacy results are rejected.
+- Only an immediately repeated identical `final_tokens` array is deduplicated
+  at frame level. Within a non-replayed frame, delta tokens append exactly;
+  equality/prefix checks apply only against the whole accumulated line.
 - Draft snapshots replace drafts and are never appended as deltas.
 - A refinement carrying the current `sentence_id` is accepted regardless of
   harmless source formatting differences.
-- A refinement carrying an older known `sentence_id` is rejected.
-- For legacy refinements without an ID, normalized source comparison is used;
-  ambiguous legacy results are rejected instead of rolling back visible text.
 - A source-only update preserves translation; a translation-only update
   preserves source.
 
@@ -168,12 +301,31 @@ Tests cover:
 - live source revision replaces instead of appends;
 - live translation updates independently;
 - final tokens override drafts for the corresponding line;
+- two identical consecutive final-token frames are idempotent;
+- repeated equal token deltas inside one frame remain repeated text;
+- a longer whole-line replay replaces rather than appends;
 - separator rollover is independent per line;
 - current-ID refinement is accepted immediately;
-- stale-ID refinement is rejected;
+- a refinement for the translation owner's sentence remains accepted after the
+  source line advances;
+- a refinement older than the translation owner is rejected;
 - legacy source fallback remains safe;
 - duplicate frames are no-ops;
 - `clear` resets all protocol state.
+
+The named regression `refine_for_translation_a_is_accepted_after_source_b`
+must execute these states explicitly:
+
+| Step | Event | Visible translation owner/text | Visible source owner/text |
+| --- | --- | --- | --- |
+| 1 | source A arrives | none / empty | A / source A |
+| 2 | translation A arrives | A / draft translation A | A / source A |
+| 3 | source B arrives | A / draft translation A | B / source B |
+| 4 | refined translation A arrives | A / refined translation A | B / source B |
+
+Step 4 must produce `CaptionChange { translation: Some(refined A), source:
+None }`. A test that only inspects bridge parsing, or that introduces
+translation B before step 4, does not cover this regression.
 
 ### End-to-end runtime regression
 
