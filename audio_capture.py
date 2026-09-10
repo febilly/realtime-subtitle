@@ -159,6 +159,7 @@ class AudioStreamer:
         mute_mic_when_vrchat_muted: bool = True,
         microphone_device_id: str = MICROPHONE_DEVICE_ID,
         output_device_id: str = OUTPUT_DEVICE_ID,
+        mix_starvation_threshold: float = 0.08,
     ):
         self.ws = ws
         self.sample_rate = sample_rate
@@ -178,6 +179,7 @@ class AudioStreamer:
         self._mute_state_lock = threading.Lock()
         self._mute_mic_when_vrchat_muted = bool(mute_mic_when_vrchat_muted)
         self._vrchat_mic_muted = False
+        self.mix_starvation_threshold = float(mix_starvation_threshold)
 
     def set_vrchat_mic_muted(self, muted: bool) -> None:
         with self._mute_state_lock:
@@ -407,6 +409,10 @@ class AudioStreamer:
         min_mix_frames = max(1, int(self.chunk_size))
         max_buffer_frames = min_mix_frames * 3
         max_source_skew_frames = min_mix_frames
+        starvation_threshold = max(0.01, float(getattr(self, "mix_starvation_threshold", 0.08)))
+
+        last_system_rx = time.monotonic()
+        last_mic_rx = time.monotonic()
 
         while not self._stop_event.is_set() and not self._source_changed_event.is_set() and not local_stop_event.is_set():
             try:
@@ -415,6 +421,7 @@ class AudioStreamer:
                     normalized = captured_system.astype(np.float32, copy=False)
                     system_segments.append(normalized)
                     system_available += int(normalized.size)
+                    last_system_rx = time.monotonic()
             except queue.Empty:
                 pass
 
@@ -424,8 +431,28 @@ class AudioStreamer:
                     normalized = captured_microphone.astype(np.float32, copy=False)
                     microphone_segments.append(normalized)
                     microphone_available += int(normalized.size)
+                    last_mic_rx = time.monotonic()
             except queue.Empty:
                 pass
+
+            now = time.monotonic()
+            system_starved = (now - last_system_rx) >= starvation_threshold
+            mic_starved = (now - last_mic_rx) >= starvation_threshold
+
+            mic_active = (not mic_starved) or (microphone_available > 0)
+            system_active = (not system_starved) or (system_available > 0)
+
+            if system_available < min_mix_frames and system_starved and mic_active:
+                pad_frames = min_mix_frames - system_available
+                pad = np.zeros(pad_frames, dtype=np.float32)
+                system_segments.append(pad)
+                system_available += pad_frames
+
+            if microphone_available < min_mix_frames and mic_starved and system_active:
+                pad_frames = min_mix_frames - microphone_available
+                pad = np.zeros(pad_frames, dtype=np.float32)
+                microphone_segments.append(pad)
+                microphone_available += pad_frames
 
             if system_available > max_buffer_frames:
                 drop_len = system_available - max_buffer_frames
