@@ -1,4 +1,5 @@
 pub mod bridge;
+mod desktop_caption;
 pub mod logging;
 pub mod manifest;
 pub mod openvr;
