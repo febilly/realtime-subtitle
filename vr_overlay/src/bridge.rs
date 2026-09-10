@@ -6,6 +6,7 @@ use thiserror::Error;
 use tokio::net::TcpStream;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
+use crate::desktop_caption::{DesktopCaptionOutcome, DesktopCaptionReducer};
 use crate::logging::OverlayLoggingMode;
 use crate::manifest::OverlayManifest;
 use crate::state::OverlayPresentationSnapshot;
@@ -67,114 +68,38 @@ pub enum BridgeError {
 pub struct BridgeClient {
     stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
     snapshot_mode: bool,
-    desktop_lines: DesktopCaptionLines,
+    desktop_lines: DesktopCaptionReducer,
 }
 
-#[derive(Debug, Default)]
-struct DesktopCaptionLines {
-    source: String,
-    translation: String,
-    source_needs_replace: bool,
-    translation_needs_replace: bool,
+fn bridge_url_path_range(url: &str) -> Option<(usize, usize)> {
+    let authority_start = url.find("://").map(|index| index + 3).unwrap_or(0);
+    let path_start = authority_start + url.get(authority_start..)?.find('/')?;
+    let path_and_suffix = &url[path_start..];
+    let query = path_and_suffix.find('?');
+    let fragment = path_and_suffix.find('#');
+    let path_end = match (query, fragment) {
+        (Some(query), Some(fragment)) => path_start + query.min(fragment),
+        (Some(query), None) => path_start + query,
+        (None, Some(fragment)) => path_start + fragment,
+        (None, None) => url.len(),
+    };
+    Some((path_start, path_end))
 }
 
-impl DesktopCaptionLines {
-    fn reset(&mut self) {
-        self.source.clear();
-        self.translation.clear();
-        self.source_needs_replace = false;
-        self.translation_needs_replace = false;
-    }
+fn is_desktop_bridge_url(url: &str) -> bool {
+    bridge_url_path_range(url)
+        .map(|(start, end)| matches!(&url[start..end], "/ws" | "/vr_ws"))
+        .unwrap_or(false)
+}
 
-    fn append_line(current: &mut String, needs_replace: &mut bool, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        if *needs_replace || current.is_empty() {
-            current.clear();
-            current.push_str(text);
-            *needs_replace = false;
-            return;
-        }
-        // The desktop endpoint sends incremental tokens. Ignore an exact
-        // replay, which can occur around provider stream rollover, but append
-        // ordinary new token text in arrival order.
-        if current == text || current.ends_with(text) {
-            return;
-        }
-        if text.starts_with(current.as_str()) {
-            // Some providers replay the whole accumulated line after a
-            // rollover rather than sending a token delta.
-            *current = text.to_string();
-            return;
-        }
-        current.push_str(text);
+fn normalize_desktop_bridge_url(url: &str) -> String {
+    let Some((start, end)) = bridge_url_path_range(url) else {
+        return url.to_owned();
+    };
+    if &url[start..end] != "/vr_ws" {
+        return url.to_owned();
     }
-
-    fn belongs_to_line(current: &str, needs_replace: bool, incoming: &str) -> bool {
-        current.is_empty()
-            || needs_replace
-            || current == incoming
-            || current.starts_with(incoming)
-            || incoming.starts_with(current)
-    }
-
-    fn apply_tokens(&mut self, tokens: Option<&Value>) -> (bool, bool) {
-        let Some(Value::Array(tokens)) = tokens else {
-            return (false, false);
-        };
-        let mut source_updated = false;
-        let mut translation_updated = false;
-        for token in tokens {
-            let Some(map) = token.as_object() else {
-                continue;
-            };
-            if map
-                .get("is_separator")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                // A separator closes the current pair. Keep both visible
-                // strings until their own next token arrives, but make the
-                // next source and translation replace their respective rows
-                // independently.
-                self.source_needs_replace = true;
-                self.translation_needs_replace = true;
-                continue;
-            }
-            let Some(text) = map.get("text").and_then(Value::as_str) else {
-                continue;
-            };
-            if text.is_empty() || map.get("is_final").and_then(Value::as_bool) == Some(false) {
-                continue;
-            }
-            match map.get("translation_status").and_then(Value::as_str) {
-                Some("translation") => {
-                    Self::append_line(
-                        &mut self.translation,
-                        &mut self.translation_needs_replace,
-                        text,
-                    );
-                    translation_updated = true;
-                }
-                _ => {
-                    Self::append_line(&mut self.source, &mut self.source_needs_replace, text);
-                    source_updated = true;
-                }
-            }
-        }
-        (source_updated, translation_updated)
-    }
-
-    fn update(&self, source_updated: bool, translation_updated: bool) -> CaptionUpdate {
-        CaptionUpdate {
-            self_text: self.source.clone(),
-            peer: self.translation.clone(),
-            source_updated,
-            translation_updated,
-            clear: false,
-        }
-    }
+    format!("{}{}{}", &url[..start], "/ws", &url[end..])
 }
 
 impl BridgeClient {
@@ -188,11 +113,7 @@ impl BridgeClient {
         // Existing launchers may still write `/vr_ws` into the manifest. Use
         // that value as a compatibility alias for the original desktop `/ws`
         // stream so the Rust layer can be upgraded without touching Python.
-        let connect_url = manifest
-            .bridge_url
-            .strip_suffix("/vr_ws")
-            .map(|base| format!("{base}/ws"))
-            .unwrap_or_else(|| manifest.bridge_url.clone());
+        let connect_url = normalize_desktop_bridge_url(&manifest.bridge_url);
         let (mut stream, _response) = connect_async(&connect_url)
             .await
             .map_err(|error| BridgeError::Connect(error.to_string()))?;
@@ -202,7 +123,7 @@ impl BridgeClient {
         // removes the Python mirror/translation patch. A manifest with no
         // `/ws` path remains supported for the old authenticated snapshot
         // protocol used by the standalone probe tests.
-        let snapshot_mode = !connect_url.contains("/ws");
+        let snapshot_mode = !is_desktop_bridge_url(&connect_url);
 
         if snapshot_mode {
             let auth = serde_json::json!({
@@ -218,7 +139,7 @@ impl BridgeClient {
         let mut client = Self {
             stream,
             snapshot_mode,
-            desktop_lines: DesktopCaptionLines::default(),
+            desktop_lines: DesktopCaptionReducer::default(),
         };
 
         if !snapshot_mode {
@@ -344,100 +265,44 @@ impl BridgeClient {
         &mut self,
         map: &serde_json::Map<String, Value>,
     ) -> OverlayBridgeEvent {
-        match map.get("type").and_then(Value::as_str) {
-            Some("update") => {
-                let (mut source_updated, mut translation_updated) =
-                    self.desktop_lines.apply_tokens(map.get("final_tokens"));
-                // Draft tokens are intentionally not appended: they are
-                // replaced by the provider on the next update.  Final tokens
-                // and refine_result are the authoritative rows we submit to
-                // SteamVR.
-                if !source_updated && !translation_updated {
-                    (source_updated, translation_updated) =
-                        self.desktop_lines.apply_tokens(map.get("tokens"));
-                }
-                if source_updated || translation_updated {
-                    OverlayBridgeEvent::Captions(
-                        self.desktop_lines
-                            .update(source_updated, translation_updated),
-                    )
-                } else {
-                    OverlayBridgeEvent::Noop
-                }
-            }
-            Some("refine_result") => {
-                let source = map
-                    .get("source")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                let original = map
-                    .get("original_translation")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                let refined = map
-                    .get("refined_translation")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                let source_accept = !source.is_empty()
-                    && DesktopCaptionLines::belongs_to_line(
-                        &self.desktop_lines.source,
-                        self.desktop_lines.source_needs_replace,
-                        source,
-                    );
-                if source_accept {
-                    self.desktop_lines.source = source.to_string();
-                    self.desktop_lines.source_needs_replace = false;
-                }
-                let translation = if !refined.is_empty() {
-                    refined
-                } else {
-                    original
-                };
-                // A refine may legitimately change the draft translation
-                // text, so source correlation authorizes that replacement.
-                // If the source is stale, do not let its translation roll the
-                // VR line back to an older sentence.
-                let translation_accept = !translation.is_empty()
-                    && if !source.is_empty() {
-                        // A source-bearing refine is correlated by source. A
-                        // pending translation slot alone is not permission
-                        // for an older result to roll back the newer line.
-                        source_accept
-                    } else {
-                        DesktopCaptionLines::belongs_to_line(
-                            &self.desktop_lines.translation,
-                            self.desktop_lines.translation_needs_replace,
-                            translation,
-                        )
-                    };
-                if translation_accept {
-                    // This assignment is the critical path: submit the
-                    // completed translation now, independent of the next
-                    // source sentence.
-                    self.desktop_lines.translation = translation.to_string();
-                    self.desktop_lines.translation_needs_replace = false;
-                }
-                if !source_accept && !translation_accept {
-                    OverlayBridgeEvent::Noop
-                } else {
-                    OverlayBridgeEvent::Captions(
-                        self.desktop_lines.update(source_accept, translation_accept),
-                    )
-                }
-            }
-            Some("clear") => {
-                self.desktop_lines.reset();
-                OverlayBridgeEvent::Captions(CaptionUpdate {
-                    clear: true,
-                    ..CaptionUpdate::default()
-                })
-            }
-            Some("heartbeat") => OverlayBridgeEvent::Heartbeat,
-            Some("shutdown") => OverlayBridgeEvent::Shutdown,
-            _ => OverlayBridgeEvent::Noop,
+        match self.desktop_lines.apply_message(map) {
+            DesktopCaptionOutcome::Change(change) => OverlayBridgeEvent::Captions(CaptionUpdate {
+                source_updated: change.source.is_some(),
+                translation_updated: change.translation.is_some(),
+                self_text: change.source.unwrap_or_default(),
+                peer: change.translation.unwrap_or_default(),
+                clear: false,
+            }),
+            DesktopCaptionOutcome::Clear => OverlayBridgeEvent::Captions(CaptionUpdate {
+                clear: true,
+                ..CaptionUpdate::default()
+            }),
+            DesktopCaptionOutcome::Noop(_) => match map.get("type").and_then(Value::as_str) {
+                Some("heartbeat") => OverlayBridgeEvent::Heartbeat,
+                Some("shutdown") => OverlayBridgeEvent::Shutdown,
+                _ => OverlayBridgeEvent::Noop,
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_desktop_bridge_url, normalize_desktop_bridge_url};
+
+    #[test]
+    fn desktop_bridge_protocol_matches_only_exact_paths() {
+        assert!(is_desktop_bridge_url("ws://127.0.0.1:1/ws"));
+        assert!(is_desktop_bridge_url("ws://127.0.0.1:1/vr_ws?token=x"));
+        assert!(!is_desktop_bridge_url("ws://127.0.0.1:1/workspace"));
+        assert!(!is_desktop_bridge_url("ws://127.0.0.1:1/snapshot?next=/ws"));
+    }
+
+    #[test]
+    fn legacy_vr_ws_alias_preserves_query_and_fragment() {
+        assert_eq!(
+            normalize_desktop_bridge_url("ws://localhost/vr_ws?mode=live#caption"),
+            "ws://localhost/ws?mode=live#caption"
+        );
     }
 }

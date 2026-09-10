@@ -190,6 +190,7 @@ pub struct OverlayRuntime {
     idle_hide_pending_since: Option<Instant>,
     entry_counter: u64,
     latest_revision: u64,
+    frame_submit_sequence: u64,
 }
 
 impl OverlayRuntime {
@@ -205,6 +206,7 @@ impl OverlayRuntime {
             idle_hide_pending_since: None,
             entry_counter: 0,
             latest_revision: initial.revision,
+            frame_submit_sequence: 0,
         };
         // Seed the scene from the initial snapshot (always a fresh layout).
         let _ = runtime.apply_snapshot(initial);
@@ -403,15 +405,15 @@ impl OverlayRuntime {
                     // erase the source, and a source-only event must not erase
                     // the last translation.
                     let previous = self.state.scene().slots().first().and_then(Option::as_ref);
-                    let primary_text = if update.source_updated {
-                        update.self_text
+                    let primary_text = if update.translation_updated {
+                        update.peer
                     } else {
                         previous
                             .map(|slot| slot.primary_text.clone())
                             .unwrap_or_default()
                     };
-                    let secondary_text = if update.translation_updated {
-                        update.peer
+                    let secondary_text = if update.source_updated {
+                        update.self_text
                     } else {
                         previous
                             .map(|slot| slot.secondary_text.clone())
@@ -466,7 +468,7 @@ impl OverlayRuntime {
         renderer: &CaptionRenderer,
         submitter: &mut impl crate::openvr::OverlayFrameSubmitter,
         bridge: &mut BridgeClient,
-        _logger: &OverlayLogger,
+        logger: &OverlayLogger,
     ) -> Result<(), RuntimeFailure> {
         let blocks = self.caption_blocks();
         let frame = renderer.render_blocks(blocks)?;
@@ -482,6 +484,16 @@ impl OverlayRuntime {
         }
 
         submitter.submit_frame(&frame)?;
+        self.frame_submit_sequence += 1;
+        logger
+            .info(format!(
+                "[overlay][CAPTION] submit sequence={} visible_blocks={} has_text={}",
+                self.frame_submit_sequence,
+                frame.layout().visible_blocks.len(),
+                has_text
+            ))
+            .await
+            .ok();
 
         if first {
             self.ready_sent = true;
@@ -548,7 +560,7 @@ impl OverlayRuntime {
                 let until = deadline.saturating_duration_since(Instant::now());
                 tokio::select! {
                     msg = bridge.next_message() => {
-                        self.consume_bridge_message(msg).await?;
+                        self.consume_bridge_message(msg, logger).await?;
                         self.drain_redraw(renderer, submitter, bridge, logger).await?;
                         continue;
                     }
@@ -557,7 +569,7 @@ impl OverlayRuntime {
             } else {
                 match bridge.next_message().await {
                     Ok(event) => {
-                        self.handle_event(event).await?;
+                        self.consume_bridge_message(Ok(event), logger).await?;
                         self.drain_redraw(renderer, submitter, bridge, logger)
                             .await?;
                     }
@@ -590,9 +602,34 @@ impl OverlayRuntime {
     async fn consume_bridge_message(
         &mut self,
         msg: Result<OverlayBridgeEvent, crate::bridge::BridgeError>,
+        logger: &OverlayLogger,
     ) -> Result<(), RuntimeFailure> {
         match msg {
-            Ok(event) => self.handle_event(event).await,
+            Ok(event) => {
+                let detail = match &event {
+                    OverlayBridgeEvent::Captions(update) => format!(
+                        "captions source_updated={} translation_updated={} clear={}",
+                        update.source_updated, update.translation_updated, update.clear
+                    ),
+                    OverlayBridgeEvent::Snapshot(snapshot) => {
+                        format!(
+                            "snapshot revision={} blocks={}",
+                            snapshot.revision,
+                            snapshot.blocks.len()
+                        )
+                    }
+                    OverlayBridgeEvent::Control(_) => "control".to_string(),
+                    OverlayBridgeEvent::Shutdown => "shutdown".to_string(),
+                    OverlayBridgeEvent::Heartbeat => "heartbeat".to_string(),
+                    OverlayBridgeEvent::Noop => "noop".to_string(),
+                    OverlayBridgeEvent::AuthError(_) => "auth_error".to_string(),
+                };
+                logger
+                    .info(format!("[overlay][CAPTION] receive {detail}"))
+                    .await
+                    .ok();
+                self.handle_event(event).await
+            }
             Err(crate::bridge::BridgeError::Disconnected) => {
                 if self.ready_sent {
                     Err(RuntimeFailure::RuntimeDisconnected)

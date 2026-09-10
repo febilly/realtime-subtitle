@@ -250,6 +250,7 @@ struct RecordingSubmitter {
     calls: usize,
     fail: bool,
     operations: Vec<&'static str>,
+    submitted_caption_lines: Vec<Vec<(Vec<String>, Option<String>)>>,
     visibility_changes: Vec<bool>,
     last_visible: Option<bool>,
     applied_calibrations: Vec<f32>,
@@ -261,6 +262,7 @@ impl RecordingSubmitter {
             calls: 0,
             fail: true,
             operations: Vec::new(),
+            submitted_caption_lines: Vec::new(),
             visibility_changes: Vec::new(),
             last_visible: None,
             applied_calibrations: Vec::new(),
@@ -277,6 +279,23 @@ impl OverlayFrameSubmitter for RecordingSubmitter {
             "submit:text"
         };
         self.operations.push(operation);
+        self.submitted_caption_lines.push(
+            frame
+                .layout()
+                .visible_blocks
+                .iter()
+                .map(|block| {
+                    (
+                        block
+                            .primary_lines
+                            .iter()
+                            .map(|line| line.text.clone())
+                            .collect(),
+                        block.secondary_line.as_ref().map(|line| line.text.clone()),
+                    )
+                })
+                .collect(),
+        );
         if self.fail {
             return Err(OpenVrError::Submit("submit failed".into()));
         }
@@ -438,8 +457,8 @@ async fn runtime_replaces_source_and_translation_lines_independently() {
         .unwrap();
 
     let first = &runtime.caption_blocks()[0];
-    assert_eq!(first.primary_text, "原文一");
-    assert_eq!(first.secondary_text, "译文一");
+    assert_eq!(first.primary_text, "译文一");
+    assert_eq!(first.secondary_text, "原文一");
 
     // A new source only replaces the source row; the last translation remains
     // visible until its own replacement arrives.
@@ -452,8 +471,8 @@ async fn runtime_replaces_source_and_translation_lines_independently() {
         .await
         .unwrap();
     let source_only = &runtime.caption_blocks()[0];
-    assert_eq!(source_only.primary_text, "原文二");
-    assert_eq!(source_only.secondary_text, "译文一");
+    assert_eq!(source_only.primary_text, "译文一");
+    assert_eq!(source_only.secondary_text, "原文二");
 
     runtime
         .handle_event(OverlayBridgeEvent::Captions(CaptionUpdate {
@@ -464,8 +483,62 @@ async fn runtime_replaces_source_and_translation_lines_independently() {
         .await
         .unwrap();
     let translated = &runtime.caption_blocks()[0];
-    assert_eq!(translated.primary_text, "原文二");
-    assert_eq!(translated.secondary_text, "译文二");
+    assert_eq!(translated.primary_text, "译文二");
+    assert_eq!(translated.secondary_text, "原文二");
+}
+
+#[tokio::test]
+async fn desktop_ws_single_sentence_submits_live_source_and_refinement_without_next_sentence() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let frames: Vec<serde_json::Value> = include_str!("fixtures/desktop_ws_single_sentence.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        for frame in frames {
+            ws.send(Message::Text(frame.to_string().into()))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        ws.send(Message::Text(
+            json!({"type": "shutdown"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    });
+
+    let mut manifest = test_manifest();
+    manifest.bridge_url = format!("ws://{address}/ws");
+    let (mut bridge, snapshot) = BridgeClient::connect(&manifest).await.unwrap();
+    let renderer = CaptionRenderer::new_for_test().unwrap();
+    let logger = test_logger("desktop-ws-single-sentence").await;
+    let mut runtime = OverlayRuntime::new(snapshot);
+    let mut submitter = RecordingSubmitter::default();
+
+    runtime
+        .submit_frame_if_needed(&renderer, &mut submitter, &mut bridge, &logger)
+        .await
+        .unwrap();
+    runtime
+        .run_event_loop(&mut bridge, &renderer, &mut submitter, &logger)
+        .await
+        .unwrap();
+    server.await.unwrap();
+
+    let block = &runtime.caption_blocks()[0];
+    assert_eq!(block.primary_text, "refined A");
+    assert_eq!(block.secondary_text, "source A");
+    assert_eq!(submitter.calls, 4, "initial + live source + pair + refine");
+    assert!(submitter.submitted_caption_lines.iter().any(|blocks| {
+        blocks.iter().any(|(primary_lines, secondary_line)| {
+            primary_lines.join("") == "refined A" && secondary_line.as_deref() == Some("source A")
+        })
+    }));
 }
 
 #[tokio::test]
@@ -1591,16 +1664,19 @@ async fn bridge_client_reads_desktop_ws_and_pushes_refinement_immediately() {
     assert!(matches!(
         refinement,
         OverlayBridgeEvent::Captions(update)
-            if update.source_updated
+            if !update.source_updated
                 && update.translation_updated
-                && update.self_text == "hello"
+                && update.self_text.is_empty()
                 && update.peer == "你好"
     ));
     let newer_source = client.next_message().await.unwrap();
     assert!(matches!(
         newer_source,
         OverlayBridgeEvent::Captions(update)
-            if update.source_updated && update.self_text == "next" && update.peer == "你好"
+            if update.source_updated
+                && !update.translation_updated
+                && update.self_text == "next"
+                && update.peer.is_empty()
     ));
     assert!(matches!(
         client.next_message().await.unwrap(),

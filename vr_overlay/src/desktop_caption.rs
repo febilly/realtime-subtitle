@@ -93,11 +93,13 @@ impl DesktopCaptionReducer {
         }
     }
 
-    pub(crate) fn visible_source(&self) -> &str {
+    #[cfg(test)]
+    fn visible_source(&self) -> &str {
         &self.source.visible_text
     }
 
-    pub(crate) fn visible_translation(&self) -> &str {
+    #[cfg(test)]
+    fn visible_translation(&self) -> &str {
         &self.translation.visible_text
     }
 
@@ -119,8 +121,8 @@ impl DesktopCaptionReducer {
         let replayed_finals = self.previous_update_final_tokens.as_ref() == Some(&fingerprint);
         self.previous_update_final_tokens = Some(fingerprint);
 
-        let mut source_touched = false;
-        let mut translation_touched = false;
+        let mut source_final_applied = false;
+        let mut translation_final_applied = false;
         let before_source = self.source.visible_text.clone();
         let before_translation = self.translation.visible_text.clone();
 
@@ -155,21 +157,25 @@ impl DesktopCaptionReducer {
                 if token_map.get("translation_status").and_then(Value::as_str)
                     == Some("translation")
                 {
-                    translation_touched |= Self::apply_final_token(
+                    let accepted = Self::apply_final_token(
                         &mut self.translation_final,
                         &mut self.translation,
                         text,
                         owner,
                     );
+                    translation_final_applied |= accepted;
                 } else {
-                    source_touched |= Self::apply_final_token(
+                    let accepted = Self::apply_final_token(
                         &mut self.source_final,
                         &mut self.source,
                         text,
                         owner.clone(),
                     );
-                    if let Some(owner) = owner {
-                        self.remember_source(owner, self.source_final.text.clone());
+                    source_final_applied |= accepted;
+                    if accepted {
+                        if let Some(owner) = self.source_final.owner.clone() {
+                            self.remember_source(owner, self.source_final.text.clone());
+                        }
                     }
                 }
             }
@@ -184,13 +190,19 @@ impl DesktopCaptionReducer {
         let (translation_draft, translation_owner) =
             self.collect_draft(non_final_tokens, LineKind::Translation);
 
-        if !source_touched && !source_draft.is_empty() {
+        if let Some(owner) = source_owner.clone() {
+            if !source_draft.is_empty() {
+                self.remember_source(owner, source_draft.clone());
+            }
+        }
+
+        if !source_final_applied && !source_draft.is_empty() {
             self.source.visible_text = source_draft;
             if source_owner.is_some() || self.source_final.replace_on_next_token {
                 self.source.owner = source_owner;
             }
         }
-        if !translation_touched && !translation_draft.is_empty() {
+        if !translation_final_applied && !translation_draft.is_empty() {
             self.translation.visible_text = translation_draft;
             if translation_owner.is_some() || self.translation_final.replace_on_next_token {
                 self.translation.owner = translation_owner;
@@ -301,8 +313,11 @@ impl DesktopCaptionReducer {
             _ => false,
         };
 
-        if accumulator.replace_on_next_token || owner_is_newer || accumulator.text.is_empty() {
+        let replaced =
+            accumulator.replace_on_next_token || owner_is_newer || accumulator.text.is_empty();
+        if replaced {
             accumulator.text = text.to_owned();
+            accumulator.owner = owner.clone();
             accumulator.replace_on_next_token = false;
         } else if text.starts_with(&accumulator.text) && text.len() > accumulator.text.len() {
             accumulator.text = text.to_owned();
@@ -313,12 +328,11 @@ impl DesktopCaptionReducer {
             accumulator.owner = owner.clone();
         }
 
-        let changed = visible.visible_text != accumulator.text;
         visible.visible_text.clone_from(&accumulator.text);
-        if owner.is_some() {
+        if replaced || owner.is_some() {
             visible.owner = owner;
         }
-        changed
+        true
     }
 
     fn collect_draft(
@@ -389,7 +403,7 @@ impl DesktopCaptionReducer {
             && Self::normalize_source(source) == Self::normalize_source(&self.source.visible_text)
     }
 
-    fn legacy_refinement_owner(&self, map: &Map<String, Value>) -> Option<SentenceRef> {
+    fn legacy_refinement_owner(&mut self, map: &Map<String, Value>) -> Option<SentenceRef> {
         let source = Self::normalize_source(map.get("source").and_then(Value::as_str)?);
         if source.is_empty() {
             return None;
@@ -401,9 +415,15 @@ impl DesktopCaptionReducer {
                 .find(|(known, known_source)| known == owner && *known_source == source)
                 .map(|(known, _)| known.clone());
         }
-        (source == Self::normalize_source(&self.source.visible_text))
-            .then(|| self.source.owner.clone())
-            .flatten()
+        if source != Self::normalize_source(&self.source.visible_text) {
+            return None;
+        }
+        if let Some(owner) = self.source.owner.clone() {
+            return Some(owner);
+        }
+        let owner = self.sentence_ref(&format!("legacy:{source}"));
+        self.source.owner = Some(owner.clone());
+        Some(owner)
     }
 
     fn normalize_source(source: &str) -> String {
@@ -569,6 +589,67 @@ mod tests {
         );
         assert_eq!(reducer.visible_source(), "source A");
         assert_eq!(reducer.visible_translation(), "translation A");
+    }
+
+    #[test]
+    fn desktop_caption_final_token_wins_over_same_frame_draft() {
+        let mut reducer = DesktopCaptionReducer::default();
+        let _ = apply(&mut reducer, source_draft("A"));
+
+        assert_eq!(
+            apply(
+                &mut reducer,
+                update(
+                    vec![token("A", "A", "original")],
+                    vec![json!({
+                        "text": "A draft",
+                        "translation_status": "original",
+                        "is_final": false,
+                    })],
+                ),
+            ),
+            DesktopCaptionOutcome::Noop(DesktopCaptionNoopReason::Unchanged)
+        );
+        assert_eq!(reducer.visible_source(), "A");
+    }
+
+    #[test]
+    fn desktop_caption_legacy_refine_can_use_non_final_source_owner() {
+        let mut reducer = DesktopCaptionReducer::default();
+        let _ = apply(
+            &mut reducer,
+            update(
+                vec![],
+                vec![
+                    json!({
+                        "text": "source A",
+                        "translation_status": "original",
+                        "llm_sentence_id": "A",
+                        "is_final": false,
+                    }),
+                    json!({
+                        "text": "draft A",
+                        "translation_status": "translation",
+                        "llm_sentence_id": "A",
+                        "is_final": false,
+                    }),
+                ],
+            ),
+        );
+
+        assert_eq!(
+            apply(
+                &mut reducer,
+                json!({
+                    "type": "refine_result",
+                    "source": "source A",
+                    "original_translation": "draft A",
+                    "refined_translation": "refined A",
+                    "no_change": false,
+                }),
+            ),
+            change(None, Some("refined A"))
+        );
     }
 
     #[test]
