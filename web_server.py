@@ -252,10 +252,7 @@ class WebServer:
                     f"Rejected cross-origin WebSocket connection from Origin: {origin!r} "
                     f"(parsed host: {origin_host!r}) from remote: {remote}"
                 )
-                if getattr(self, "logger", None):
-                    self.logger.warning(msg)
-                else:
-                    logger.warning(msg)
+                logger.warning(msg)
                 return web.Response(status=403, text="Forbidden: Cross-origin WebSocket denied")
 
         ws = web.WebSocketResponse()
@@ -758,7 +755,7 @@ class WebServer:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                self.logger.warning(f"Ticket notification WebSocket disconnected: {error}")
+                logger.warning(f"Ticket notification WebSocket disconnected: {error}")
             finally:
                 self._ticket_notifications_connected = False
 
@@ -1461,10 +1458,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         is_auto = False
@@ -1617,10 +1611,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if LOCK_MANUAL_CONTROLS:
@@ -1643,10 +1634,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if LOCK_MANUAL_CONTROLS:
@@ -1678,10 +1666,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if LOCK_MANUAL_CONTROLS:
@@ -1737,10 +1722,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if LOCK_MANUAL_CONTROLS:
@@ -1824,10 +1806,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if LOCK_MANUAL_CONTROLS:
@@ -1866,10 +1845,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if LOCK_MANUAL_CONTROLS:
@@ -2025,10 +2001,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         evaluator = getattr(self, "furigana_evaluator", None)
@@ -2073,10 +2046,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if LOCK_MANUAL_CONTROLS:
@@ -2124,10 +2094,7 @@ class WebServer:
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
-            if getattr(self, "logger", None):
-                self.logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
-            else:
-                logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
         if not callable(self.shutdown_callback):

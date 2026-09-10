@@ -650,6 +650,30 @@ class TestWebServerSecurity:
             await client.close()
 
     @async_test
+    async def test_websocket_origin_rejection_with_real_transcript_logger(self):
+        """Regression: rejection paths must 403 (not crash) when self.logger is a real
+        TranscriptLogger, which has no .warning/.error — the production wiring.
+        MagicMock loggers in other tests masked this (REVIEW follow-up hotfix)."""
+        ensure_real_config()
+        from aiohttp.test_utils import TestClient, TestServer
+        from aiohttp.client_exceptions import WSServerHandshakeError
+        import web_server as ws_module
+        import logger as logger_module
+
+        session = self.mock_session()
+        session.is_paused = False
+        ws = ws_module.WebServer(session, logger_module.TranscriptLogger(enabled=False))
+        app = ws.create_app()
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            with pytest.raises(WSServerHandshakeError) as exc_info:
+                await client.ws_connect("/ws", headers={"Origin": "http://evil.com"})
+            assert exc_info.value.status == 403
+        finally:
+            await client.close()
+
+    @async_test
     async def test_websocket_origin_validation_unit(self):
         """W-01 unit test: websocket_handler Origin check returns 403 web.Response before prepare."""
         ensure_real_config()
