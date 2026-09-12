@@ -25,11 +25,11 @@ pub use protocol::{DesktopProtocol, TrackKind};
 #[cfg(windows)]
 pub use renderer::WindowsBundledFontCollection;
 pub use renderer::{
-    bundled_font_path_from_exe_dir, runtime_bundled_font_path, BlockBounds, BundledFaceId,
-    CaptionBlock, CaptionBlockVariant, CaptionChannel, CaptionDebugOverlay, CaptionLayoutPolicy,
-    CaptionLayoutResult, CaptionPresentation, CaptionRenderError, CaptionRenderer, DamageBand,
-    FontFallbackReason, FontLanguageBucket, FontResolver, FontSource, FontWeight, RenderedFrame,
-    ResolvedFontStyle, TextStyleKey,
+    bundled_font_path_from_exe_dir, fit_row_text, runtime_bundled_font_path, BlockBounds,
+    BundledFaceId, CaptionBlock, CaptionBlockVariant, CaptionChannel, CaptionDebugOverlay,
+    CaptionLayoutPolicy, CaptionLayoutResult, CaptionPresentation, CaptionRenderError,
+    CaptionRenderer, DamageBand, FontFallbackReason, FontLanguageBucket, FontResolver, FontSource,
+    FontWeight, RenderedFrame, ResolvedFontStyle, TextStyleKey, Truncation,
 };
 pub use runtime::{
     run_cli, run_with_manifest, OverlayRuntime, RuntimeFailure, SnapshotApplyOutcome, StartupError,

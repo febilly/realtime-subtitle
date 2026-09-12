@@ -3,6 +3,7 @@ pub(crate) mod cache;
 mod font_resolver;
 mod glyph_run;
 mod layout;
+mod text_fit;
 mod types;
 
 pub use backend::{CaptionRenderer, RenderedFrame};
@@ -14,6 +15,7 @@ pub use font_resolver::{
     TextLocaleKey, TextStyleKey, BUNDLED_NOTO_CJK_FILE_NAME,
 };
 pub use layout::CaptionLayoutPolicy;
+pub use text_fit::{fit_row_text, Truncation};
 pub(crate) use types::{
     effective_background_alpha, fill_color_for_channel, outline_offsets_px, text_script_bucket,
     TextScriptBucket,
