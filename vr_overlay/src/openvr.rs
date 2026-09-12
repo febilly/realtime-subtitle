@@ -956,6 +956,40 @@ mod tests {
     }
 
     #[test]
+    fn placement_policy_from_default_calibration_is_fusable() {
+        let policy = OverlayPlacementPolicy::from_calibration(&OverlayCalibration::default());
+
+        // Regression: a zeroed Default put the overlay 0.1 m in front of the
+        // eyes, which made it impossible to fuse. Defaults must be readable.
+        assert!(
+            (policy.distance_meters - 1.1).abs() < 0.0001,
+            "distance={}",
+            policy.distance_meters
+        );
+        assert!(
+            (policy.offset_y_meters + 0.45).abs() < 0.0001,
+            "offset_y={}",
+            policy.offset_y_meters
+        );
+        assert!(
+            (policy.width_meters - 1.0667).abs() < 0.0001,
+            "width={}",
+            policy.width_meters
+        );
+    }
+
+    #[test]
+    fn default_presentation_calibration_is_not_zeroed() {
+        let cal = crate::state::OverlayPresentationCalibration::default();
+
+        assert!((cal.distance - 1.1).abs() < 0.0001);
+        assert!((cal.offset_y + 0.45).abs() < 0.0001);
+        assert!((cal.text_scale - 1.0).abs() < 0.0001);
+        assert!((cal.background_alpha - 0.24).abs() < 0.0001);
+        assert_eq!(cal.anchor, "head_locked");
+    }
+
+    #[test]
     fn placement_policy_scales_wider_overlay_width_with_text_calibration() {
         let policy = OverlayPlacementPolicy::from_calibration(&OverlayCalibration {
             text_scale: 1.2,

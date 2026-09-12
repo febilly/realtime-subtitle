@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Position/display calibration. Shared between overlay placement and protocol.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayCalibration {
     #[serde(default)]
     pub anchor: String,
@@ -15,6 +15,22 @@ pub struct OverlayCalibration {
     pub text_scale: f32,
     #[serde(default)]
     pub background_alpha: f32,
+}
+
+// NOTE: the derive(Default) that used to be here zeroed every field, which
+// placed the overlay 0.1 m in front of the eyes (max(0.1) clamp) and made it
+// impossible to fuse. Use the same values as the serde defaults.
+impl Default for OverlayCalibration {
+    fn default() -> Self {
+        Self {
+            anchor: default_anchor(),
+            offset_x: 0.0,
+            offset_y: default_offset_y(),
+            distance: default_distance(),
+            text_scale: default_text_scale(),
+            background_alpha: default_background_alpha(),
+        }
+    }
 }
 
 // ── Protocol types ──────────────────────────────────────
@@ -53,7 +69,7 @@ pub struct OverlayPresentationBlock {
     pub session_scope: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OverlayPresentationCalibration {
     #[serde(default = "default_anchor")]
     pub anchor: String,
@@ -67,6 +83,19 @@ pub struct OverlayPresentationCalibration {
     pub text_scale: f32,
     #[serde(default = "default_background_alpha")]
     pub background_alpha: f32,
+}
+
+impl Default for OverlayPresentationCalibration {
+    fn default() -> Self {
+        Self {
+            anchor: default_anchor(),
+            offset_x: 0.0,
+            offset_y: default_offset_y(),
+            distance: default_distance(),
+            text_scale: default_text_scale(),
+            background_alpha: default_background_alpha(),
+        }
+    }
 }
 
 fn default_anchor() -> String {
