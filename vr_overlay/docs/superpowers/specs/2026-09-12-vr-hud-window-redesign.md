@@ -117,10 +117,16 @@ enum CaptionEvent {
     SourceEnd { speaker: SpeakerKey, sentence_id: Option<String> },
     TargetDraft(TargetUpdate),
     TargetCommitted(TargetUpdate),
-    RefinedTarget(TargetUpdate),
+    RefinedTarget(Refinement),
     Clear { preserve_existing: bool },
     ViewSettingsChanged(VrViewSettings),
     Activity,
+}
+
+struct Refinement {
+    sentence_id: String,
+    text: String,
+    language: Option<String>,
 }
 
 async fn next_event(&mut self) -> Result<CaptionEvent, BridgeError>;
@@ -128,7 +134,11 @@ async fn next_event(&mut self) -> Result<CaptionEvent, BridgeError>;
 
 `LiveSourceSnapshot`, `CommittedSource`, and `TargetUpdate` each carry
 `speaker`, `sentence_id: Option<String>`, `text`, and `language: Option<String>`
-so the projection can populate `HudRow.language`.
+so the projection can populate `HudRow.language`. `refine_result` carries no
+speaker, so `Refinement` is keyed by `sentence_id`: the reducer resolves the
+owning record and never fabricates a speaker. The whole-frame replay
+fingerprint includes separator, track, speaker, sentence ID, text, and
+language.
 
 The adapter preserves exact token order. Equal tokens in one frame remain
 equal text; only an immediately repeated identical final-token frame is
@@ -156,7 +166,9 @@ The transcript reducer owns sentence identity, source order, source/target
 correlation, per-speaker recency, and draft-to-final upgrades. It is pure with
 respect to rendering and OpenVR, and it never discards a legal target for an
 older sentence; preventing an older sentence's target from replacing a newer
-visible row is the projection's responsibility.
+visible row is the projection's responsibility. Source live and source commit
+both refresh speaker recency, which the projection reads through a read-only
+accessor rather than the private field.
 
 ```rust
 struct SentenceKey {
@@ -184,6 +196,13 @@ struct TranscriptState {
     sentences: VecDeque<SentenceRecord>,
     live_input: LiveInputRow,
     speaker_recency: Vec<SpeakerKey>,
+}
+
+impl TranscriptState {
+    /// One-shot consumption of a settled live row after a visible handoff.
+    fn dismiss_settled_live(&mut self, speaker: &SpeakerKey, sentence_id: Option<&str>) -> bool;
+    /// Read-only recency order for the projection.
+    fn speaker_recency(&self) -> &VecDeque<SpeakerKey>;
 }
 ```
 
@@ -230,11 +249,22 @@ struct HudFrame {
     slots: [Option<HudRow>; 5],
 }
 
+enum LiveRowDirective {
+    None,
+    Show,
+    Dismiss { speaker: SpeakerKey, sentence_id: Option<String> },
+}
+
+struct Projection {
+    frame: HudFrame,
+    live_row: LiveRowDirective,
+}
+
 fn project(
     state: &TranscriptState,
     settings: &VrViewSettings,
     now: Instant,
-) -> HudFrame;
+) -> Projection;
 ```
 
 There are three explicit projection implementations: original speaker window,
@@ -280,7 +310,10 @@ Rules:
    Only that same sentence's source commit, or an explicit end event for it,
    transitions `Streaming` to `Settled`. The settled snapshot carries the
    committed full source text (or the current draft text for an explicit end),
-   never a partial streaming tail.
+   never a partial streaming tail. An explicit end with no matching record may
+   settle only when the active `Streaming` snapshot belongs to the same speaker
+   and its sentence ID does not conflict with the end's; otherwise the explicit
+   end is a no-op and must not close another speaker's row.
 8. The live-input row is not counted as a speaker result row or a bilingual
    sentence pair.
 
@@ -314,6 +347,14 @@ visible handoff destination:
 If no valid handoff appears, the settled source remains until new input replaces
 it or the global silence controller fades and hides the overlay. This prevents
 both an instantaneous disappearance and an indefinitely duplicated source row.
+
+When the minimum has elapsed and a valid handoff is visible, the coordinator
+must **consume** the settled row: it performs a one-shot transition of
+`live_input` from `Settled` to `Hidden` before submitting the frame. An expired
+hold deadline that has already been consumed must not be re-armed, and a later
+mode switch must not resurrect the dismissed row. The transcript reducer exposes
+this as an explicit dismissal operation keyed by speaker and sentence; the
+projection only reports that a handoff is visible.
 
 ## Display Projections
 
@@ -501,7 +542,10 @@ claim that one focal distance is optimal for every HMD.
 1. Keep the existing D3D11 device, DirectWrite shaping, font fallback, glyph
    caches, and reusable texture.
 2. Replace center-based row layout with fixed left origins for streaming rows.
-3. Cache each upper result row by text, role, language, font, and scale.
+3. Cache each upper result row's geometry by text, role, `speaker_label`,
+   language, font, and scale. `HudRowKind` (draft/settled) changes only the draw
+   color and must not enter the geometry cache key, so a draft-to-settled
+   upgrade with identical text and label reuses the same layout.
 4. Treat `non_final_tokens` as last-value-wins state. If several frames are
    already queued, reduce all of them and draw only the final projection.
 5. Do not create a periodic 60/90 Hz subtitle redraw timer.
@@ -530,7 +574,9 @@ new visible caption event during fade/hidden -> alpha 100%; show overlay
 The fade uses compositor overlay alpha rather than redrawing text opacity into
 the D3D texture. This requires a small extension to the existing OpenVR adapter
 for `SetOverlayAlpha`; it does not replace the OpenVR implementation. Fade
-updates exist only during the 1.2-second transition.
+updates exist only during the 1.2-second transition. A wake while hidden or
+fading must restore `SetOverlayVisible(true)` and alpha 100% within the same
+event turn; alpha alone is insufficient because a hidden overlay ignores it.
 
 The universal live row does not disappear when the raw non-final source snapshot
 first becomes empty. It transitions `Streaming -> Settled` only on the owning
@@ -549,9 +595,13 @@ all settled HUD content after global silence.
 - `clear { preserve_existing: false }` clears sentences, speaker rows, pairs,
   live input, and visibility state.
 - `clear { preserve_existing: true }` preserves settled upper results and the
-  sentence IDs required to apply a late refinement to those visible results.
-  It clears live input, incomplete drafts, accumulators, and correlation records
-  that do not own preserved visible content.
+  sentence IDs required to apply a late refinement to those visible results. It
+  is applied per track: a record whose source is `Committed`/`Refined` but whose
+  target is still a draft keeps the committed source and resets the draft target
+  to `Empty`; a record whose target is `Committed`/`Refined` but whose source is
+  still a draft keeps the target and resets the draft source to `Empty`. Records
+  with neither track settled are dropped. Live input, accumulators, and
+  correlation records that do not own preserved content are cleared.
 - Rin polls parent liveness at a low frequency and exits cleanly when the
   desktop parent is gone.
 - A clean desktop shutdown may also send a shutdown control event; parent death
