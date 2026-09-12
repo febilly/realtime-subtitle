@@ -1968,3 +1968,57 @@ fn cli_emits_startup_failure_event_when_manifest_is_missing() {
         .iter()
         .any(|event| event["type"] == "startup_error"));
 }
+
+#[tokio::test]
+async fn desktop_ws_source_b_does_not_make_refine_a_stale() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let frames: Vec<serde_json::Value> =
+        include_str!("fixtures/desktop_ws_source_b_refine_a.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        for frame in frames {
+            ws.send(Message::Text(frame.to_string().into()))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        ws.send(Message::Text(
+            json!({"type": "shutdown"}).to_string().into(),
+        ))
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    });
+
+    let mut manifest = test_manifest();
+    manifest.bridge_url = format!("ws://{address}/ws");
+    let (mut bridge, snapshot) = BridgeClient::connect(&manifest).await.unwrap();
+    let renderer = CaptionRenderer::new_for_test().unwrap();
+    let logger = test_logger("desktop-ws-source-b-refine-a").await;
+    let mut runtime = OverlayRuntime::new(snapshot);
+    let mut submitter = RecordingSubmitter::default();
+
+    runtime
+        .submit_frame_if_needed(&renderer, &mut submitter, &mut bridge, &logger)
+        .await
+        .unwrap();
+    runtime
+        .run_event_loop(&mut bridge, &renderer, &mut submitter, &logger)
+        .await
+        .unwrap();
+    server.await.unwrap();
+
+    let block = &runtime.caption_blocks()[0];
+    assert_eq!(block.primary_text, "refined A");
+    assert_eq!(block.secondary_text, "source B");
+    assert!(submitter.submitted_caption_lines.iter().any(|blocks| {
+        blocks.iter().any(|(primary_lines, secondary_line)| {
+            primary_lines.join("") == "refined A" && secondary_line.as_deref() == Some("source B")
+        })
+    }));
+}
