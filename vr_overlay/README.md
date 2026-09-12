@@ -14,7 +14,10 @@ cd vr_overlay
 cargo build --release
 ```
 
-Copy `openvr_api.dll` (from your SteamVR install) next to `target\release\RinBridgeOverlay.exe`.
+`openvr_sys` 2.1.3 statically links OpenVR's client binding (`openvr_api64`);
+that static loader reads the registered `openvrpaths.vrpath` and loads the
+installed SteamVR `vrclient_x64.dll`. Do **not** copy `openvr_api.dll` next to
+`RinBridgeOverlay.exe`; no sidecar DLL is needed or supported.
 
 CJK rendering uses system fonts (Microsoft YaHei etc.); the bundled Noto CJK asset lives in the
 upstream RinBridge repo and is not vendored.

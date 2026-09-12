@@ -123,6 +123,18 @@ equal text; only an immediately repeated identical final-token frame is
 deduplicated. A longer cumulative prefix replaces the corresponding
 accumulator, while a true delta appends.
 
+Final tokens are segmented by `(sentence_id, speaker, track)` where `track` is
+source or translation. There is no global source or translation accumulator; a
+frame carrying several speakers' tokens must never concatenate them into one
+line. A translation draft without a `sentence_id` is emitted with a null id;
+the reducer binds it to the same speaker's currently open sentence and discards
+it only when that speaker has no open sentence.
+
+For `non_final_tokens` the adapter emits one `SourceLive` per frame (rule 3
+above) and one `TargetDraft` per translation-speaking speaker. `TextTrack`
+carries its own `phase`, so the phase is part of the track value, not a
+separate record field.
+
 ### Transcript reducer
 
 The transcript reducer owns sentence identity, source order, source/target
@@ -140,13 +152,20 @@ struct SentenceRecord {
     speaker: SpeakerKey,
     source: TextTrack,
     target: TextTrack,
-    source_phase: TrackPhase,
-    target_phase: TrackPhase,
+}
+
+enum LiveInputRow {
+    Hidden,
+    Streaming(LiveSourceSnapshot),
+    Settled {
+        snapshot: LiveSourceSnapshot,
+        closed_at: Instant,
+    },
 }
 
 struct TranscriptState {
     sentences: VecDeque<SentenceRecord>,
-    active_live_source: Option<LiveSourceSnapshot>,
+    live_input: LiveInputRow,
     speaker_recency: Vec<SpeakerKey>,
 }
 ```
@@ -167,14 +186,37 @@ The projection module converts the complete transcript state into a bounded HUD
 content frame. Mode switching does not discard transcript data.
 
 ```rust
+enum HudRowRole {
+    UpperPrimary,
+    UpperSecondary,
+    LiveSource,
+}
+
+enum HudRowState {
+    Draft,
+    Settled,
+}
+
+struct HudRow {
+    role: HudRowRole,
+    /// Body text only. The speaker label is never concatenated here.
+    text: String,
+    speaker_label: Option<String>,
+    language: Option<String>,
+    state: HudRowState,
+    sentence: Option<SentenceKey>,
+}
+
+/// Five fixed physical slots. Slot 4 is always the universal live row; the
+/// projector never emits a dense window that would move it.
 struct HudContentFrame {
-    upper_rows: Vec<HudRow>,
-    live_source_row: Option<HudRow>,
+    slots: [Option<HudRow>; 5],
 }
 
 fn project(
     state: &TranscriptState,
     settings: &VrViewSettings,
+    now: Instant,
 ) -> HudContentFrame;
 ```
 
@@ -204,29 +246,46 @@ Rules:
 1. The row appears on the first non-empty source token with no fade-in.
 2. `update.non_final_tokens` is a replaceable live snapshot, not an append-only
    stream.
-3. If multiple speakers have live tokens in one frame, the row displays the
-   most recently updated speaker. Other live buffers remain in reducer state.
+3. Per frame the protocol adapter selects the contiguous source fragment of the
+   **last** speaker appearing in `non_final_tokens` and emits exactly one
+   `SourceLive` carrying that speaker and fragment. The reducer holds at most
+   one live row; there is no per-speaker live fan-out and no reliance on a
+   later event happening to overwrite an earlier one.
 4. The row shows the newest readable tail when text exceeds its fixed width;
    leading content is replaced by a leading ellipsis.
-5. An optional speaker label follows the desktop speaker-label setting in the
-   `original` and `translation` projections.
+5. The optional speaker label is carried on the row as its own field. The
+   renderer alone composes and measures it; `HudRow.text` is always the body
+   only. There is exactly one source of truth. In `both` the label is always
+   absent (`None`).
 6. The `both` projection ignores speaker identity and speaker labels entirely.
-7. When ASR closes the source, the row freezes the final recognized source and
-   enters `SettledHold`; it does not disappear merely because
-   `non_final_tokens` became empty.
+7. The row never closes because `non_final_tokens` became empty. An empty
+   translation snapshot or any unrelated empty array must not settle the row.
+   Only that same sentence's source commit, or an explicit end event for it,
+   transitions `Streaming` to `Settled`.
 8. The live-input row is not counted as a speaker result row or a bilingual
    sentence pair.
 
-The row has an explicit lifecycle:
+The row has an explicit state, not a boolean:
 
-```text
-Hidden -> Streaming -> SettledHold -> Hidden
-                     \-> Streaming (next input replaces immediately)
+```rust
+enum LiveInputRow {
+    Hidden,
+    Streaming(LiveSourceSnapshot),
+    Settled {
+        snapshot: LiveSourceSnapshot,
+        closed_at: Instant,
+    },
+}
 ```
 
-`SettledHold` lasts at least 1.2 seconds unless a new source token replaces the
-row. After that minimum, the row clears only when its information has a visible
-handoff destination:
+```text
+Hidden -> Streaming -> Settled -> Hidden
+                 \-> Streaming (a newer source sentence replaces immediately)
+```
+
+`Settled` lasts at least 1.2 seconds unless a newer source sentence replaces
+the row. After that minimum, the row clears only when its information has a
+visible handoff destination:
 
 - in `original`, the committed source is visible in its upper speaker row;
 - in `translation`, a target draft or final for the same sentence is visible in
@@ -369,9 +428,28 @@ The HUD keeps the established minimalist subtitle appearance:
 - rows are left-aligned inside a fixed-width text region so streaming growth
   does not move previously drawn glyphs horizontally.
 
-The renderer reserves five fixed row rectangles, enough for two bilingual
-pairs plus the universal live row. Empty rows remain transparent and therefore
-invisible. Fewer visible rows do not resize or reposition the OpenVR overlay.
+The renderer reserves five fixed physical slots, `[Option<HudRow>; 5]`, enough
+for two bilingual pairs plus the universal live row. Empty slots remain
+transparent and therefore invisible. Fewer visible slots do not resize or
+reposition the OpenVR overlay, and the live row never moves:
+
+- the universal live row always occupies slot 4;
+- in `original` and `translation`, 1 to 3 speaker rows occupy slots 1 to 3,
+  bottom-aligned (one speaker uses slot 3, two use slots 2 and 3, three use
+  slots 1, 2, and 3);
+- in `both`, one pair occupies slots 2 (target) and 3 (source); two pairs occupy
+  slots 0/1 (older pair) and 2/3 (newer pair);
+- new content scrolls upward through the fixed slots; the live row itself never
+  moves.
+
+The frame interface is therefore a fixed `[Option<HudRow>; 5]`, not a dense
+`Vec<HudRow>` whose length changes the live row's position.
+
+Each `HudRow` carries its own `HudRowRole`, `HudRowState` (`Draft`/`Settled`,
+for draft dimming and in-place final upgrade), `language: Option<String>` (so
+existing font fallback and cache keys keep working), an optional
+`speaker_label`, and the owning sentence. Slot placement is decided by the slot
+index, never by the row's role.
 
 The existing 4096 by 1056 render target and base text scale remain the starting
 point. Upper single-language results use the current primary scale. Bilingual
@@ -436,9 +514,10 @@ for `SetOverlayAlpha`; it does not replace the OpenVR implementation. Fade
 updates exist only during the 1.2-second transition.
 
 The universal live row does not disappear when the raw non-final source snapshot
-first becomes empty. It freezes in `SettledHold` and follows the mode-specific
-handoff rules above. That row lifecycle is distinct from fading all settled HUD
-content after global silence.
+first becomes empty. It transitions `Streaming -> Settled` only on the owning
+sentence's source commit or an explicit end event, then follows the
+mode-specific handoff rules above. That row lifecycle is distinct from fading
+all settled HUD content after global silence.
 
 ## Reconnect, Clear, and Parent Lifetime
 
@@ -465,15 +544,17 @@ The publishable Rust artifact is `RinBridgeOverlay.exe`. No launcher script,
 manifest template, font bundle, or separately shipped helper executable is
 required beside it.
 
-SteamVR remains an environmental dependency. To avoid requiring a copied
-`openvr_api.dll` beside Rin, the Windows OpenVR bootstrap locates the installed
-SteamVR runtime through the registered OpenVR runtime paths, loads its
-`bin/win64/openvr_api.dll` explicitly, resolves the small exported bootstrap
-surface, and obtains the existing OpenVR function tables. All higher-level
-overlay calls remain behind the current OpenVR adapter.
+SteamVR remains an environmental dependency. The `openvr_sys` 2.1.3 dependency
+statically links OpenVR's client binding (`openvr_api64`); that static loader
+reads the registered `openvrpaths.vrpath` and loads the installed SteamVR
+`vrclient_x64.dll`. Rin therefore requires no `openvr_api.dll` sidecar and must
+not implement a second, manual OpenVR loader. All higher-level overlay calls
+remain behind the current OpenVR adapter.
 
 The release directory may contain compiler intermediates and optional PDBs,
-but packaging selects only `RinBridgeOverlay.exe` as the runtime artifact.
+but packaging selects only `RinBridgeOverlay.exe` as the runtime artifact. A
+copy of the release executable placed in an otherwise empty directory must
+reach `main` and answer `--check-startup-contract` without any sidecar DLL.
 
 ## Error Handling
 
@@ -520,9 +601,14 @@ but packaging selects only `RinBridgeOverlay.exe` as the runtime artifact.
 - Both mode shows a draft pair immediately and upgrades it in place.
 - Pair capacity 1 or 2 evicts only the oldest pair.
 - The live-input row appears in every mode, follows the latest live source, and
-  enters `SettledHold` rather than disappearing on ASR close.
+  enters `Settled` (not `Hidden`) on ASR close.
 - The held source clears only after the 1.2-second minimum and a visible
   mode-specific handoff, while new live input can replace it immediately.
+- An empty translation snapshot or an unrelated empty non-final array does not
+  settle the live row; only the owning sentence's source commit or an explicit
+  end event does.
+- A per-frame multi-speaker source snapshot yields exactly one live row for the
+  last speaker, with no per-speaker fan-out.
 - A missing translation keeps the settled source visible until replacement or
   global silence instead of leaving a blank HUD.
 - Long settled rows use trailing ellipsis; a long live row keeps the newest tail
@@ -539,7 +625,10 @@ but packaging selects only `RinBridgeOverlay.exe` as the runtime artifact.
 - Silence fade and instant wake use compositor alpha without text redraw.
 - Parent death, clean shutdown, reconnect, and startup deadline are covered
   with deterministic clocks and fake adapters.
-- The executable can locate the installed OpenVR runtime without a sidecar DLL.
+- A copy of the release executable in an otherwise empty temporary directory
+  reaches `main` and answers `--check-startup-contract` without an
+  `openvr_api.dll` sidecar.
+- The release artifact selection contains exactly one `RinBridgeOverlay.exe`.
 
 ### Physical HMD acceptance
 
@@ -588,4 +677,15 @@ verification does not replace the physical SteamVR/HMD acceptance test.
   panel.
 - The normal HUD does not infer importance and does not scroll an unbounded
   transcript.
+- The HUD frame is five fixed physical slots and the live row always occupies
+  slot 4; single-language speaker rows are bottom-aligned in slots 1 to 3, and
+  bilingual pairs use slots 2 to 3 (one pair) or 0 to 3 (two pairs).
+- The live row is explicit state (`Hidden` / `Streaming` / `Settled`) and only
+  the owning sentence's source commit or an explicit end settles it.
+- Final tokens accumulate per `(sentence_id, speaker, track)`; there is no
+  global source/translation accumulator.
+- The renderer is the sole composer of the speaker label; `HudRow.text` never
+  contains it.
+- OpenVR is statically linked through `openvr_sys`; no `openvr_api.dll` sidecar
+  is shipped or required.
 - The existing native renderer and current downward placement are retained.
