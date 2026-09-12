@@ -4,6 +4,7 @@ pub mod hud;
 pub mod logging;
 pub mod manifest;
 pub mod openvr;
+pub mod protocol;
 pub mod renderer;
 pub mod runtime;
 pub mod state;
@@ -18,6 +19,7 @@ pub use openvr::{
     submit_texture, FakeOpenVr, OpenVrError, OpenVrOverlay, OverlayFrameSubmitter,
     OverlayPlacementPolicy,
 };
+pub use protocol::{DesktopProtocol, TrackKind};
 #[cfg(windows)]
 pub use renderer::WindowsBundledFontCollection;
 pub use renderer::{
