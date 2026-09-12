@@ -6,6 +6,7 @@ pub mod openvr;
 pub mod renderer;
 pub mod runtime;
 pub mod state;
+pub mod views;
 
 pub use bridge::{BridgeClient, BridgeControl, BridgeError, CaptionUpdate, OverlayBridgeEvent};
 pub use logging::{OverlayLogger, OverlayLoggingMode};
@@ -31,3 +32,4 @@ pub use state::{
     OverlayPresentationCalibration, OverlayPresentationSnapshot, OverlayState, OverlayStateScene,
     OverlayStateSlot, PresentationScene, PresentationSlot, RuntimeState,
 };
+pub use views::{DisplayMode, SettingsError, VrViewSettings};

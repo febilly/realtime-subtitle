@@ -14,7 +14,7 @@ use rinbridge_overlay::{
     OverlayCalibration, OverlayFrameSubmitter, OverlayLoggingMode, OverlayManifest,
     OverlayPresentationBlock, OverlayPresentationBlockVariant, OverlayPresentationCalibration,
     OverlayPresentationSnapshot, OverlayRuntime, RenderedFrame, RuntimeFailure, StartupError,
-    EXPECTED_CONTRACT_VERSION,
+    VrViewSettings, EXPECTED_CONTRACT_VERSION,
 };
 
 fn test_manifest() -> OverlayManifest {
@@ -23,7 +23,6 @@ fn test_manifest() -> OverlayManifest {
         app_version: env!("CARGO_PKG_VERSION").into(),
         overlay_instance_id: "overlay-test".into(),
         bridge_url: "ws://127.0.0.1:1".into(),
-        session_token: "expected-token".into(),
         parent_pid: 1,
         startup_deadline_ms: 3000,
         log_dir: std::env::temp_dir()
@@ -33,6 +32,8 @@ fn test_manifest() -> OverlayManifest {
         log_level: "INFO".into(),
         locale: "en".into(),
         logging_mode: OverlayLoggingMode::Basic,
+        view_settings: VrViewSettings::default(),
+        calibration: OverlayCalibration::default(),
     }
 }
 
@@ -333,7 +334,7 @@ async fn connect_test_bridge() -> (
         };
         let auth_payload: serde_json::Value = serde_json::from_str(&auth_text).unwrap();
         assert_eq!(auth_payload["type"], "auth");
-        assert_eq!(auth_payload["session_token"], "expected-token");
+        assert_eq!(auth_payload["session_token"], "");
 
         ws.send(Message::Text(
             json!({
@@ -390,7 +391,7 @@ fn runtime_accepts_app_version_mismatch_when_contract_version_matches() {
 
 #[test]
 fn runtime_expected_contract_version_includes_language_metadata_boundary() {
-    assert_eq!(EXPECTED_CONTRACT_VERSION, 6);
+    assert_eq!(EXPECTED_CONTRACT_VERSION, 7);
 }
 
 #[test]
@@ -1542,7 +1543,7 @@ async fn bridge_client_authenticates_and_receives_initial_snapshot() {
         };
         let auth_payload: serde_json::Value = serde_json::from_str(&auth_text).unwrap();
         assert_eq!(auth_payload["type"], "auth");
-        assert_eq!(auth_payload["session_token"], "expected-token");
+        assert_eq!(auth_payload["session_token"], "");
 
         ws.send(Message::Text(
             json!({

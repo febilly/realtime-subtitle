@@ -1067,7 +1067,6 @@ fn default_manifest() -> OverlayManifest {
         app_version: env!("CARGO_PKG_VERSION").into(),
         overlay_instance_id: "phase1-default".into(),
         bridge_url: "ws://127.0.0.1:1".into(),
-        session_token: String::new(),
         parent_pid: 0,
         startup_deadline_ms: 3000,
         log_dir: std::env::temp_dir()
@@ -1077,5 +1076,7 @@ fn default_manifest() -> OverlayManifest {
         log_level: "INFO".into(),
         locale: "zh-CN".into(),
         logging_mode: crate::logging::OverlayLoggingMode::Basic,
+        view_settings: crate::views::VrViewSettings::default(),
+        calibration: crate::state::OverlayCalibration::default(),
     }
 }

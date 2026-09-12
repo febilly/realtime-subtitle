@@ -134,7 +134,7 @@ impl BridgeClient {
         if snapshot_mode {
             let auth = serde_json::json!({
                 "type": "auth",
-                "session_token": manifest.session_token
+                "session_token": ""
             });
             stream
                 .send(Message::Text(auth.to_string().into()))
