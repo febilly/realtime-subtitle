@@ -72,7 +72,14 @@ but they must not be present in the final changed-path set.
 Rin continues to accept a single startup configuration envelope. The parent
 may materialize that envelope as an ephemeral manifest; it is not a shipped or
 user-edited artifact. The configuration includes the desktop WebSocket URL,
-parent PID, initial view settings, logging location, and overlay instance ID.
+parent PID, initial view settings, calibration, logging location, and overlay
+instance ID.
+
+The envelope is manifest `contract_version` 7. `session_token` is removed
+because there is no authentication path, and the `BridgeAuth` startup failure
+and its exit code 12 are removed with it; the remaining exit-code table is
+unchanged. No v6 compatibility branch is retained: the desktop must produce a
+v7 envelope before the packaged integration run.
 
 ### Product protocol
 
@@ -107,6 +114,7 @@ Conceptual interface:
 enum CaptionEvent {
     SourceLive(LiveSourceSnapshot),
     SourceCommitted(CommittedSource),
+    SourceEnd { speaker: SpeakerKey, sentence_id: Option<String> },
     TargetDraft(TargetUpdate),
     TargetCommitted(TargetUpdate),
     RefinedTarget(TargetUpdate),
@@ -118,6 +126,10 @@ enum CaptionEvent {
 async fn next_event(&mut self) -> Result<CaptionEvent, BridgeError>;
 ```
 
+`LiveSourceSnapshot`, `CommittedSource`, and `TargetUpdate` each carry
+`speaker`, `sentence_id: Option<String>`, `text`, and `language: Option<String>`
+so the projection can populate `HudRow.language`.
+
 The adapter preserves exact token order. Equal tokens in one frame remain
 equal text; only an immediately repeated identical final-token frame is
 deduplicated. A longer cumulative prefix replaces the corresponding
@@ -128,18 +140,23 @@ source or translation. There is no global source or translation accumulator; a
 frame carrying several speakers' tokens must never concatenate them into one
 line. A translation draft without a `sentence_id` is emitted with a null id;
 the reducer binds it to the same speaker's currently open sentence and discards
-it only when that speaker has no open sentence.
+it only when that speaker has no open sentence. An explicit `<end>` for a
+track is normalized into `SourceEnd`.
 
 For `non_final_tokens` the adapter emits one `SourceLive` per frame (rule 3
 above) and one `TargetDraft` per translation-speaking speaker. `TextTrack`
-carries its own `phase`, so the phase is part of the track value, not a
-separate record field.
+carries `{ text, phase, language }`, where `phase` is
+`Empty | Draft | Committed | Refined`, so the phase is part of the track value,
+not a separate record field. Malformed frames are logged and ignored; they do
+not clear caption state.
 
 ### Transcript reducer
 
 The transcript reducer owns sentence identity, source order, source/target
-correlation, per-speaker recency, draft-to-final upgrades, and stale-result
-filtering. It is pure with respect to rendering and OpenVR.
+correlation, per-speaker recency, and draft-to-final upgrades. It is pure with
+respect to rendering and OpenVR, and it never discards a legal target for an
+older sentence; preventing an older sentence's target from replacing a newer
+visible row is the projection's responsibility.
 
 ```rust
 struct SentenceKey {
@@ -192,7 +209,7 @@ enum HudRowRole {
     LiveSource,
 }
 
-enum HudRowState {
+enum HudRowKind {
     Draft,
     Settled,
 }
@@ -203,13 +220,13 @@ struct HudRow {
     text: String,
     speaker_label: Option<String>,
     language: Option<String>,
-    state: HudRowState,
+    kind: HudRowKind,
     sentence: Option<SentenceKey>,
 }
 
 /// Five fixed physical slots. Slot 4 is always the universal live row; the
 /// projector never emits a dense window that would move it.
-struct HudContentFrame {
+struct HudFrame {
     slots: [Option<HudRow>; 5],
 }
 
@@ -217,7 +234,7 @@ fn project(
     state: &TranscriptState,
     settings: &VrViewSettings,
     now: Instant,
-) -> HudContentFrame;
+) -> HudFrame;
 ```
 
 There are three explicit projection implementations: original speaker window,
@@ -261,7 +278,9 @@ Rules:
 7. The row never closes because `non_final_tokens` became empty. An empty
    translation snapshot or any unrelated empty array must not settle the row.
    Only that same sentence's source commit, or an explicit end event for it,
-   transitions `Streaming` to `Settled`.
+   transitions `Streaming` to `Settled`. The settled snapshot carries the
+   committed full source text (or the current draft text for an explicit end),
+   never a partial streaming tail.
 8. The live-input row is not counted as a speaker result row or a bilingual
    sentence pair.
 
@@ -445,7 +464,7 @@ reposition the OpenVR overlay, and the live row never moves:
 The frame interface is therefore a fixed `[Option<HudRow>; 5]`, not a dense
 `Vec<HudRow>` whose length changes the live row's position.
 
-Each `HudRow` carries its own `HudRowRole`, `HudRowState` (`Draft`/`Settled`,
+Each `HudRow` carries its own `HudRowRole`, `HudRowKind` (`Draft`/`Settled`,
 for draft dimming and in-place final upgrade), `language: Option<String>` (so
 existing font fallback and cache keys keep working), an optional
 `speaker_label`, and the owning sentence. Slot placement is decided by the slot
