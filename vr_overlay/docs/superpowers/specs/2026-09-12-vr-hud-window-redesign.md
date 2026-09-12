@@ -211,10 +211,31 @@ Rules:
 5. An optional speaker label follows the desktop speaker-label setting in the
    `original` and `translation` projections.
 6. The `both` projection ignores speaker identity and speaker labels entirely.
-7. When no live source remains, the row disappears immediately. Upper content
-   remains governed by its projection and the silence controller.
+7. When ASR closes the source, the row freezes the final recognized source and
+   enters `SettledHold`; it does not disappear merely because
+   `non_final_tokens` became empty.
 8. The live-input row is not counted as a speaker result row or a bilingual
    sentence pair.
+
+The row has an explicit lifecycle:
+
+```text
+Hidden -> Streaming -> SettledHold -> Hidden
+                     \-> Streaming (next input replaces immediately)
+```
+
+`SettledHold` lasts at least 1.2 seconds unless a new source token replaces the
+row. After that minimum, the row clears only when its information has a visible
+handoff destination:
+
+- in `original`, the committed source is visible in its upper speaker row;
+- in `translation`, a target draft or final for the same sentence is visible in
+  the owning upper speaker row;
+- in `both`, the strict pair containing the same source is visible above.
+
+If no valid handoff appears, the settled source remains until new input replaces
+it or the global silence controller fades and hides the overlay. This prevents
+both an instantaneous disappearance and an indefinitely duplicated source row.
 
 ## Display Projections
 
@@ -232,8 +253,9 @@ The upper region is an LRU window keyed by `SpeakerKey`.
 - A result occupies exactly one physical line. It never wraps. Overflow keeps
   the beginning and uses a trailing ellipsis.
 - Live source remains in the universal bottom row and may temporarily coexist
-  with that speaker's previous committed upper result. These have different
-  meanings: previous settled speech versus current input.
+  with that speaker's previous committed upper result. On ASR close, the final
+  source is retained through the common handoff lifecycle rather than cleared
+  immediately.
 
 The `max_speakers` setting accepts 1 through 3 and defaults to 3. The default
 maximum visible load is therefore three settled speaker rows plus one live
@@ -265,8 +287,9 @@ speaker row contains that speaker's latest available target text.
   already owned by that speaker's row.
 - Each upper result occupies one physical line with trailing ellipsis on
   overflow.
-- The bottom live source row appears during input and disappears when input is
-  absent, independent of whether the target has completed.
+- The bottom source row appears during input. On ASR close it remains settled
+  until the same sentence has a visible target handoff, the minimum hold has
+  elapsed, and then it clears; if no target appears, global silence handles it.
 
 Translation mode shares the `max_speakers` setting with original mode.
 
@@ -288,8 +311,8 @@ sentence pairs.
 - Pairs are ordered by source ordinal, never target arrival time.
 - When capacity is exceeded, the oldest visible pair is removed.
 - The universal live-input row remains below the pair window. It may duplicate
-  the current pair's source while speech is active; this is intentional because
-  it reports current input independently from settled bilingual history.
+  the current pair's source during the bounded post-close handoff; this is
+  intentional and ends only after the strict pair is visibly established.
 
 `bilingual_pair_count` accepts 1 or 2 and defaults to 1. With the default, the
 maximum visible load is one two-line pair plus the live row. Selecting two
@@ -412,8 +435,9 @@ the D3D texture. This requires a small extension to the existing OpenVR adapter
 for `SetOverlayAlpha`; it does not replace the OpenVR implementation. Fade
 updates exist only during the 1.2-second transition.
 
-The universal live row itself disappears as soon as the raw non-final source
-snapshot is empty. That row lifecycle is distinct from fading the settled upper
+The universal live row does not disappear when the raw non-final source snapshot
+first becomes empty. It freezes in `SettledHold` and follows the mode-specific
+handoff rules above. That row lifecycle is distinct from fading all settled HUD
 content after global silence.
 
 ## Reconnect, Clear, and Parent Lifetime
@@ -496,7 +520,11 @@ but packaging selects only `RinBridgeOverlay.exe` as the runtime artifact.
 - Both mode shows a draft pair immediately and upgrades it in place.
 - Pair capacity 1 or 2 evicts only the oldest pair.
 - The live-input row appears in every mode, follows the latest live source, and
-  disappears when input is absent.
+  enters `SettledHold` rather than disappearing on ASR close.
+- The held source clears only after the 1.2-second minimum and a visible
+  mode-specific handoff, while new live input can replace it immediately.
+- A missing translation keeps the settled source visible until replacement or
+  global silence instead of leaving a blank HUD.
 - Long settled rows use trailing ellipsis; a long live row keeps the newest tail
   with leading ellipsis.
 
@@ -549,6 +577,8 @@ verification does not replace the physical SteamVR/HMD acceptance test.
 - Parent-managed architecture A is the integration model.
 - Raw `/ws` is the sole caption product path.
 - The bottom row is universal live ASR source input in all modes.
+- ASR close freezes the bottom source for a minimum 1.2-second handoff; an empty
+  non-final snapshot never clears it immediately.
 - Original and translation modes allocate one upper row per speaker, not per
   sentence.
 - The upper speaker capacity is configurable from 1 through 3.
