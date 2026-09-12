@@ -53,16 +53,30 @@ never to whichever sentence happens to be newest.
 
 ## Launch
 
-Start the desktop app first (its default `SERVER_PORT` is `8080`), then run:
+One double-click (starts the desktop in its own window, waits for the port,
+then starts the overlay):
 
 ```bat
+vr_overlay\scripts\run-vr-subtitles.cmd
+```
+
+Or start the parts separately — first the desktop, then the overlay:
+
+```bat
+vr_overlay\scripts\start-desktop.cmd
 vr_overlay\scripts\start-vr-overlay.cmd
 ```
 
-The launcher writes a contract-v6 manifest with `bridge_url=ws://127.0.0.1:<port>/ws`
-and starts `RinBridgeOverlay.exe --config <manifest>`. Pass a non-default port as
-the first argument (`start-vr-overlay.cmd 8081`) or use the PowerShell script
-directly (`start-vr-overlay.ps1 -Port 8081 -LogLevel DEBUG`).
+The desktop script forces UTF-8 (`PYTHONIOENCODING=utf-8`) because the desktop
+prints emoji and otherwise aborts on a GBK console. The overlay launcher writes
+a contract-v6 manifest with `bridge_url=ws://127.0.0.1:<port>/ws` and starts
+`RinBridgeOverlay.exe --config <manifest>`. Pass a non-default port as the first
+argument (`run-vr-subtitles.cmd 8081`) or use the PowerShell script directly
+(`start-vr-overlay.ps1 -Port 8081 -LogLevel DEBUG`).
+
+Run the overlay from your normal desktop, not from a sandbox/headless shell:
+starting Rin as a sandbox identity corrupts SteamVR's shared namespace. Start
+SteamVR (and any desktop-streaming client) first.
 
 The executable logs its own identity at startup
 (`[overlay][BUILD] exe=... size=... mtime_unix=... version=...`) so a run can
