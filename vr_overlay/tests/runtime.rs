@@ -2022,3 +2022,57 @@ async fn desktop_ws_source_b_does_not_make_refine_a_stale() {
         })
     }));
 }
+
+#[tokio::test]
+async fn desktop_ws_translation_is_submitted_in_its_own_event() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    // Real /ws shape: source draft, source final (own update),
+    // translation final + separator (own update), then next source draft.
+    let frames: Vec<serde_json::Value> = vec![
+        json!({"type":"update","final_tokens":[],"non_final_tokens":[{"text":"The weather is nice.","speaker":"1","translation_status":"original","is_final":false}]}),
+        json!({"type":"update","final_tokens":[{"text":"The weather is nice.","speaker":"1","translation_status":"original","llm_sentence_id":"1","is_final":true}],"non_final_tokens":[]}),
+        json!({"type":"update","final_tokens":[{"text":"TRANSLATION_ONE","speaker":"1","translation_status":"translation","llm_sentence_id":"1","is_final":true},{"is_separator":true,"is_final":true}],"non_final_tokens":[]}),
+        json!({"type":"update","final_tokens":[],"non_final_tokens":[{"text":"Second sentence draft","speaker":"1","translation_status":"original","is_final":false}]}),
+    ];
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        for frame in frames {
+            ws.send(Message::Text(frame.to_string().into()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        ws.send(Message::Text(json!({"type":"shutdown"}).to_string().into()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    });
+
+    let mut manifest = test_manifest();
+    manifest.bridge_url = format!("ws://{address}/ws");
+    let (mut bridge, snapshot) = BridgeClient::connect(&manifest).await.unwrap();
+    let renderer = CaptionRenderer::new_for_test().unwrap();
+    let logger = test_logger("desktop-ws-translation-own-event").await;
+    let mut runtime = OverlayRuntime::new(snapshot);
+    let mut submitter = RecordingSubmitter::default();
+
+    runtime
+        .submit_frame_if_needed(&renderer, &mut submitter, &mut bridge, &logger)
+        .await
+        .unwrap();
+    runtime
+        .run_event_loop(&mut bridge, &renderer, &mut submitter, &logger)
+        .await
+        .unwrap();
+    server.await.unwrap();
+
+    let saw_translation = submitter.submitted_caption_lines.iter().any(|lines| {
+        lines
+            .iter()
+            .any(|(primary, _)| primary.join("") == "TRANSLATION_ONE")
+    });
+    assert!(saw_translation, "translation was never submitted");
+}

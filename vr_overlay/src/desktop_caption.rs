@@ -625,6 +625,59 @@ mod tests {
     }
 
     #[test]
+    fn desktop_caption_translation_final_in_its_own_update_is_visible_immediately() {
+        let mut reducer = DesktopCaptionReducer::default();
+
+        // Real /ws shape: the source final and the translation final arrive in
+        // SEPARATE update messages, each as its own list of final tokens.
+        let _ = apply(
+            &mut reducer,
+            update(
+                vec![],
+                vec![json!({
+                    "text": "The weather is nice.",
+                    "translation_status": "original",
+                    "is_final": false,
+                })],
+            ),
+        );
+        let _ = apply(
+            &mut reducer,
+            update(
+                vec![json!({
+                    "text": "The weather is nice.",
+                    "translation_status": "original",
+                    "llm_sentence_id": "1",
+                    "is_final": true,
+                })],
+                vec![],
+            ),
+        );
+        let translation_outcome = apply(
+            &mut reducer,
+            update(
+                vec![json!({
+                    "text": "translated-one",
+                    "translation_status": "translation",
+                    "llm_sentence_id": "1",
+                    "is_final": true,
+                })],
+                vec![],
+            ),
+        );
+
+        assert!(matches!(
+            translation_outcome,
+            DesktopCaptionOutcome::Change(DesktopCaptionChange {
+                translation: Some(_),
+                ..
+            })
+        ));
+        assert_eq!(reducer.visible_translation(), "translated-one");
+        assert_eq!(reducer.visible_source(), "The weather is nice.");
+    }
+
+    #[test]
     fn desktop_caption_non_final_source_snapshot_replaces_live_source() {
         let mut reducer = DesktopCaptionReducer::default();
 
