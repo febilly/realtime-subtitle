@@ -88,42 +88,48 @@ fn bridge_url_path_range(url: &str) -> Option<(usize, usize)> {
 
 fn is_desktop_bridge_url(url: &str) -> bool {
     bridge_url_path_range(url)
-        .map(|(start, end)| matches!(&url[start..end], "/ws" | "/vr_ws"))
+        .map(|(start, end)| &url[start..end] == "/ws")
         .unwrap_or(false)
 }
 
 fn normalize_desktop_bridge_url(url: &str) -> String {
-    let Some((start, end)) = bridge_url_path_range(url) else {
-        return url.to_owned();
-    };
-    if &url[start..end] != "/vr_ws" {
-        return url.to_owned();
-    }
-    format!("{}{}{}", &url[..start], "/ws", &url[end..])
+    url.to_owned()
 }
 
 impl BridgeClient {
     /// Connect to the hub bridge, authenticate, and read the initial snapshot.
     ///
-    /// Returns the connected client alongside the initial `OverlayPresentationSnapshot`
-    /// (the first `snapshot` message the hub sends once auth is accepted).
+    /// Returns the connected client alongside the initial
+    /// `OverlayPresentationSnapshot` (the first `snapshot` message the hub
+    /// sends once auth is accepted). The raw `/ws` path remains available as a
+    /// deliberately unauthenticated reducer/test protocol.
     pub async fn connect(
         manifest: &OverlayManifest,
     ) -> Result<(Self, OverlayPresentationSnapshot), BridgeError> {
-        // Existing launchers may still write `/vr_ws` into the manifest. Use
-        // that value as a compatibility alias for the original desktop `/ws`
-        // stream so the Rust layer can be upgraded without touching Python.
+        // `/ws` carries raw desktop events for reducer tests and explicit raw
+        // integrations. `/vr_ws` is the packaged desktop's authenticated
+        // snapshot channel; it supplies initial state/calibration and survives
+        // recognition restarts, so it must remain a distinct protocol.
+        let vr_ws_path = bridge_url_path_range(&manifest.bridge_url)
+            .map(|(start, end)| &manifest.bridge_url[start..end] == "/vr_ws")
+            .unwrap_or(false);
         let connect_url = normalize_desktop_bridge_url(&manifest.bridge_url);
         let (mut stream, _response) = connect_async(&connect_url)
             .await
             .map_err(|error| BridgeError::Connect(error.to_string()))?;
 
-        // The normal desktop server exposes every subtitle event on `/ws`;
-        // using it directly keeps the PR confined to this Rust layer and
-        // removes the Python mirror/translation patch. A manifest with no
-        // `/ws` path remains supported for the old authenticated snapshot
-        // protocol used by the standalone probe tests.
+        // The normal packaged launcher uses `/vr_ws`; only an explicit `/ws`
+        // manifest opts into the raw desktop event reducer. Every other path
+        // uses the authenticated snapshot protocol.
         let snapshot_mode = !is_desktop_bridge_url(&connect_url);
+        eprintln!(
+            "[overlay][BRIDGE] protocol={} vr_ws_path={vr_ws_path}",
+            if snapshot_mode {
+                "snapshot"
+            } else {
+                "desktop_ws"
+            }
+        );
 
         if snapshot_mode {
             let auth = serde_json::json!({
@@ -293,16 +299,16 @@ mod tests {
     #[test]
     fn desktop_bridge_protocol_matches_only_exact_paths() {
         assert!(is_desktop_bridge_url("ws://127.0.0.1:1/ws"));
-        assert!(is_desktop_bridge_url("ws://127.0.0.1:1/vr_ws?token=x"));
+        assert!(!is_desktop_bridge_url("ws://127.0.0.1:1/vr_ws?token=x"));
         assert!(!is_desktop_bridge_url("ws://127.0.0.1:1/workspace"));
         assert!(!is_desktop_bridge_url("ws://127.0.0.1:1/snapshot?next=/ws"));
     }
 
     #[test]
-    fn legacy_vr_ws_alias_preserves_query_and_fragment() {
+    fn vr_ws_keeps_the_authenticated_snapshot_protocol() {
         assert_eq!(
             normalize_desktop_bridge_url("ws://localhost/vr_ws?mode=live#caption"),
-            "ws://localhost/ws?mode=live#caption"
+            "ws://localhost/vr_ws?mode=live#caption"
         );
     }
 }

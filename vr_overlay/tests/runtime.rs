@@ -362,7 +362,7 @@ async fn connect_test_bridge() -> (
     });
 
     let mut manifest = test_manifest();
-    manifest.bridge_url = format!("ws://{}", address);
+    manifest.bridge_url = format!("ws://{address}/vr_ws");
 
     let (client, snapshot) = BridgeClient::connect(&manifest).await.unwrap();
     assert!(snapshot.blocks.is_empty());
@@ -1644,9 +1644,9 @@ async fn bridge_client_reads_desktop_ws_and_pushes_refinement_immediately() {
     });
 
     let mut manifest = test_manifest();
-    // The current launcher still writes `/vr_ws`; Rust treats that value as
-    // the desktop `/ws` compatibility alias without needing Python changes.
-    manifest.bridge_url = format!("ws://{address}/vr_ws");
+    // Raw `/ws` is the explicit desktop event reducer protocol; `/vr_ws` is the
+    // authenticated snapshot channel and is covered by the snapshot tests.
+    manifest.bridge_url = format!("ws://{address}/ws");
     let (mut client, snapshot) = BridgeClient::connect(&manifest).await.unwrap();
     assert!(snapshot.blocks.is_empty());
 

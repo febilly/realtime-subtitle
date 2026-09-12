@@ -811,6 +811,31 @@ pub async fn run_cli(args: &[String]) -> i32 {
         return 0;
     }
 
+    // Build provenance: log the exact executable identity so a real run can
+    // prove which binary is actually executing. This directly addresses the
+    // "packaged an older Rin" failure mode.
+    if let Ok(exe) = std::env::current_exe() {
+        let (size, mtime_unix) = std::fs::metadata(&exe)
+            .map(|meta| {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (meta.len(), mtime)
+            })
+            .unwrap_or((0, 0));
+        eprintln!(
+            "[overlay][BUILD] exe={} size={} mtime_unix={} version={} contract={}",
+            exe.display(),
+            size,
+            mtime_unix,
+            env!("CARGO_PKG_VERSION"),
+            crate::manifest::EXPECTED_CONTRACT_VERSION
+        );
+    }
+
     let config_path = parse_config_arg(args);
     let manifest = match config_path {
         Some(path) => match manifest::load_manifest(path) {

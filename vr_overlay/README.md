@@ -22,9 +22,13 @@ upstream RinBridge repo and is not vendored.
 ## Contract
 
 - Reads `--config <manifest.json>` (see `src/manifest.rs` for the schema; `contract_version` must be 6).
-- For `bridge_url=ws://127.0.0.1:<port>/ws` (or the legacy `/vr_ws` alias), connects as a normal desktop
+- For `bridge_url=ws://127.0.0.1:<port>/ws`, connects as a normal desktop
   WebSocket client and consumes `update`, `refine_result`, and `clear` events;
   no Python-side subtitle mirror is required.
+- For `bridge_url=ws://127.0.0.1:<port>/vr_ws`, uses the packaged desktop's
+  authenticated snapshot channel. This connection survives recognition
+  refreshes and supplies the initial line state and VR calibration. `/vr_ws`
+  is not an alias for `/ws`.
 - The top visible row is translation (`primary_text`); the bottom visible row
   is source/original speech (`secondary_text`). Each row replaces independently.
 - `update.non_final_tokens` is the live snapshot and updates either row
@@ -32,8 +36,10 @@ upstream RinBridge repo and is not vendored.
   explicit separator, replay, and cumulative-prefix rules. A `refine_result`
   updates the translation line immediately and is stale only relative to the
   sentence currently owned by that line.
-- A manifest without a `/ws` path remains supported by the authenticated
-  snapshot protocol used by the standalone probe tests.
+- Any manifest path other than `/ws`, including `/vr_ws`, uses the
+  authenticated snapshot protocol. Startup emits
+  `[overlay][BRIDGE] protocol=<snapshot|desktop_ws> vr_ws_path=<bool>` so a
+  real run can prove which protocol it selected.
 - Emits `EVENT <json>` lines on stderr: `overlay_ready`, `auth_failed`, `connect_failed`, `no_hmd`, `startup_error`.
 
 ## Verification

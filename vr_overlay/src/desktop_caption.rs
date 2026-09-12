@@ -2,6 +2,7 @@ use serde_json::{Map, Value};
 use std::collections::{HashMap, VecDeque};
 
 const SOURCE_CORRELATION_CAP: usize = 256;
+const PENDING_REFINEMENT_CAP: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DesktopCaptionChange {
@@ -28,6 +29,11 @@ pub(crate) enum DesktopCaptionNoopReason {
 struct SentenceRef {
     id: String,
     ordinal: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PendingRefinement {
+    payload: Map<String, Value>,
 }
 
 #[derive(Debug, Default)]
@@ -72,6 +78,7 @@ pub(crate) struct DesktopCaptionReducer {
     recent_source_by_sentence: VecDeque<(SentenceRef, String)>,
     next_sentence_ordinal: u64,
     previous_update_final_tokens: Option<FinalTokensFingerprint>,
+    pending_refinements: VecDeque<PendingRefinement>,
 }
 
 impl DesktopCaptionReducer {
@@ -209,6 +216,11 @@ impl DesktopCaptionReducer {
             }
         }
 
+        // A refinement can race its source update on the legacy /ws stream.
+        // Reconcile it after this frame has registered any sentence owners;
+        // otherwise the one-shot refine event would be lost permanently.
+        self.replay_pending_refinements();
+
         Self::visible_outcome(
             before_source,
             before_translation,
@@ -218,6 +230,17 @@ impl DesktopCaptionReducer {
     }
 
     fn apply_refinement(&mut self, map: &Map<String, Value>) -> DesktopCaptionOutcome {
+        let outcome = self.apply_refinement_now(map);
+        if matches!(
+            outcome,
+            DesktopCaptionOutcome::Noop(DesktopCaptionNoopReason::UncorrelatedRefinement)
+        ) {
+            self.queue_pending_refinement(map);
+        }
+        outcome
+    }
+
+    fn apply_refinement_now(&mut self, map: &Map<String, Value>) -> DesktopCaptionOutcome {
         if map.get("no_change").and_then(Value::as_bool) == Some(true) {
             return DesktopCaptionOutcome::Noop(DesktopCaptionNoopReason::Unchanged);
         }
@@ -292,6 +315,43 @@ impl DesktopCaptionReducer {
             source: None,
             translation: Some(translation.to_owned()),
         })
+    }
+
+    fn queue_pending_refinement(&mut self, map: &Map<String, Value>) {
+        let has_sentence_id = map
+            .get("sentence_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.trim().is_empty());
+        let has_source = map
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(|source| !Self::normalize_source(source).is_empty());
+        if !has_sentence_id && !has_source {
+            return;
+        }
+
+        self.pending_refinements.push_back(PendingRefinement {
+            payload: map.clone(),
+        });
+        while self.pending_refinements.len() > PENDING_REFINEMENT_CAP {
+            self.pending_refinements.pop_front();
+        }
+    }
+
+    fn replay_pending_refinements(&mut self) {
+        if self.pending_refinements.is_empty() {
+            return;
+        }
+
+        let pending = std::mem::take(&mut self.pending_refinements);
+        for refinement in pending {
+            if matches!(
+                self.apply_refinement_now(&refinement.payload),
+                DesktopCaptionOutcome::Noop(DesktopCaptionNoopReason::UncorrelatedRefinement)
+            ) {
+                self.pending_refinements.push_back(refinement);
+            }
+        }
     }
 
     fn apply_final_token(
@@ -408,12 +468,13 @@ impl DesktopCaptionReducer {
         if source.is_empty() {
             return None;
         }
-        if let Some(owner) = &self.translation.owner {
-            return self
-                .recent_source_by_sentence
-                .iter()
-                .find(|(known, known_source)| known == owner && *known_source == source)
-                .map(|(known, _)| known.clone());
+        if let Some((owner, _)) = self
+            .recent_source_by_sentence
+            .iter()
+            .rev()
+            .find(|(_, known_source)| *known_source == source)
+        {
+            return Some(owner.clone());
         }
         if source != Self::normalize_source(&self.source.visible_text) {
             return None;
@@ -752,6 +813,63 @@ mod tests {
         assert_eq!(reducer.visible_source(), "source B");
         assert_eq!(reducer.visible_translation(), "refined A");
         assert_eq!(reducer.translation_owner_id(), Some("A"));
+    }
+
+    #[test]
+    fn desktop_caption_out_of_order_refinement_is_replayed_after_source_arrives() {
+        let mut reducer = DesktopCaptionReducer::default();
+
+        assert_eq!(
+            apply(
+                &mut reducer,
+                json!({
+                    "type": "refine_result",
+                    "sentence_id": "A",
+                    "source": "source A",
+                    "original_translation": "draft A",
+                    "refined_translation": "refined A",
+                    "no_change": false,
+                }),
+            ),
+            DesktopCaptionOutcome::Noop(DesktopCaptionNoopReason::UncorrelatedRefinement)
+        );
+
+        assert_eq!(
+            apply(&mut reducer, final_source("A", "source A")),
+            change(Some("source A"), Some("refined A"))
+        );
+
+        let _ = apply(&mut reducer, separator());
+        assert_eq!(
+            apply(&mut reducer, final_source("B", "source B")),
+            change(Some("source B"), None)
+        );
+        assert_eq!(reducer.visible_translation(), "refined A");
+    }
+
+    #[test]
+    fn desktop_caption_legacy_refine_for_translation_a_survives_source_b() {
+        let mut reducer = DesktopCaptionReducer::default();
+
+        let _ = apply(&mut reducer, final_source("A", "source A"));
+        let _ = apply(&mut reducer, separator());
+        let _ = apply(&mut reducer, final_source("B", "source B"));
+
+        assert_eq!(
+            apply(
+                &mut reducer,
+                json!({
+                    "type": "refine_result",
+                    "source": "source A",
+                    "original_translation": "draft A",
+                    "refined_translation": "refined A",
+                    "no_change": false,
+                }),
+            ),
+            change(None, Some("refined A"))
+        );
+        assert_eq!(reducer.visible_source(), "source B");
+        assert_eq!(reducer.visible_translation(), "refined A");
     }
 
     #[test]
