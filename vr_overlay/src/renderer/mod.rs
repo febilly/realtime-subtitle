@@ -26,8 +26,9 @@ pub(crate) use types::{
     TextScriptBucket,
 };
 pub use types::{
-    BlockBounds, CaptionBlock, CaptionBlockVariant, CaptionChannel, CaptionDebugOverlay,
-    CaptionLayoutResult, CaptionLineLayout, CaptionPresentation, CaptionRenderError, DamageBand,
-    LayoutCacheKey, LineRole, ResolvedBlockLayout, ResolvedFrameLayout, ResolvedLineLayout,
-    TextStyleDescriptor, VisibleCaptionBlock, VisualBounds,
+    hud_fill_color, BlockBounds, CaptionBlock, CaptionBlockVariant, CaptionChannel,
+    CaptionDebugOverlay, CaptionLayoutResult, CaptionLineLayout, CaptionPresentation,
+    CaptionRenderError, DamageBand, LayoutCacheKey, LineRole, ResolvedBlockLayout,
+    ResolvedFrameLayout, ResolvedLineLayout, TextStyleDescriptor, VisibleCaptionBlock,
+    VisualBounds, HUD_DRAFT_FILL_COLOR, HUD_FINAL_FILL_COLOR,
 };

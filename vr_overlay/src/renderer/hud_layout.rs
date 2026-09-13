@@ -38,13 +38,16 @@ pub fn hud_content_width_px(surface_width_px: u32) -> f32 {
     (surface_width_px as f32 - HUD_TEXT_LEFT_PX * 2.0).max(1.0)
 }
 
-/// Geometry identity for one occupied slot. Excludes `HudRowKind`.
+/// Geometry identity for one occupied slot. Excludes `HudRowKind` but includes
+/// the resolved `TextStyleKey`, so a different font/text identity can never
+/// reuse another line's measured geometry.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HudGeometryKey {
     pub slot: usize,
     pub display_text: String,
     pub role: HudRowRole,
     pub language: Option<String>,
+    pub style_key: TextStyleKey,
     pub font_size_key: u32,
     pub content_width_key: u32,
     pub text_scale_key: u32,
@@ -103,11 +106,15 @@ pub(crate) fn build_hud_layout(
             HudRowRole::UpperSecondary | HudRowRole::LiveSource => SECONDARY_FONT_SCALE,
         };
         let font_size_px = DEFAULT_FONT_SIZE_PX * text_scale * role_scale;
+        // Resolve the style before the cache lookup so geometry identity always
+        // carries the actual font identity; a miss never re-resolves later.
+        let style = style_descriptor_for_text(resolver, row.language.as_deref(), &display_text);
         let key = HudGeometryKey {
             slot,
             display_text: display_text.clone(),
             role: row.role,
             language: row.language.clone(),
+            style_key: style.style_key,
             font_size_key: scalar_key(font_size_px),
             content_width_key: content_width_px.round() as u32,
             text_scale_key: scalar_key(text_scale),
@@ -116,7 +123,6 @@ pub(crate) fn build_hud_layout(
             reused += 1;
             cached.clone()
         } else {
-            let style = style_descriptor_for_text(resolver, row.language.as_deref(), &display_text);
             let width_px = measure(&display_text, &style, font_size_px);
             let measured = MeasuredHudLine {
                 style_key: style.style_key,
@@ -128,10 +134,9 @@ pub(crate) fn build_hud_layout(
             measured
         };
 
-        let line_role = match row.kind {
-            HudRowKind::Draft => LineRole::Secondary,
-            HudRowKind::Settled => LineRole::Primary,
-        };
+        // Draw-time color is selected solely by `hud_kind`; the line role stays
+        // Primary and `opacity` stays 1.0 for both draft and settled.
+        let line_role = LineRole::Primary;
         let top_px = hud_slot_top_px(slot);
         let line_visual_bounds = VisualBounds::new(
             HUD_TEXT_LEFT_PX - TEXT_OUTLINE_OVERHANG_PX,
@@ -184,6 +189,7 @@ pub(crate) fn build_hud_layout(
             visual_bounds: line_visual_bounds,
             content_width_px,
             opacity: 1.0,
+            hud_kind: Some(row.kind),
             render_offset_y_px: 0.0,
             render_height_scale: 1.0,
             truncated_primary: false,
@@ -383,11 +389,45 @@ mod tests {
         assert_eq!(settled.layout.visible_blocks[0].opacity, 1.0);
         assert_eq!(
             draft.layout.visible_blocks[0].primary_lines[0].role,
-            LineRole::Secondary
+            LineRole::Primary
         );
         assert_eq!(
             settled.layout.visible_blocks[0].primary_lines[0].role,
             LineRole::Primary
+        );
+        assert_eq!(
+            draft.layout.visible_blocks[0].hud_kind,
+            Some(HudRowKind::Draft)
+        );
+        assert_eq!(
+            settled.layout.visible_blocks[0].hud_kind,
+            Some(HudRowKind::Settled)
+        );
+    }
+
+    #[test]
+    fn geometry_key_carries_the_resolved_style_identity() {
+        let built = build(
+            &frame(&[(
+                3,
+                row(HudRowRole::UpperPrimary, HudRowKind::Settled, "hello"),
+            )]),
+            &mut HudLayoutCache::new(),
+        );
+        let key = built.geometry_keys[3].as_ref().unwrap();
+        let line = &built.layout.visible_blocks[0].primary_lines[0];
+        assert_eq!(key.style_key, line.style_key);
+        assert_eq!(key.display_text, line.text);
+    }
+
+    #[test]
+    fn hud_fill_colors_differ_in_rgb_with_equal_alpha() {
+        let draft = crate::renderer::types::hud_fill_color(HudRowKind::Draft);
+        let settled = crate::renderer::types::hud_fill_color(HudRowKind::Settled);
+        assert_eq!(draft.3, settled.3, "alpha must be equal");
+        assert_ne!(
+            (draft.0, draft.1, draft.2),
+            (settled.0, settled.1, settled.2)
         );
     }
 

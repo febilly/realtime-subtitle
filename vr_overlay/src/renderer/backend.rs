@@ -63,13 +63,13 @@ use super::layout::DirectWriteLayoutEngine;
 use super::layout::{resolved_layout_has_drawable_text, CaptionLayoutPolicy};
 #[cfg(windows)]
 use super::types::{
-    contains_cjk, effective_background_alpha, fill_color_for_channel, outline_offsets_px,
-    secondary_fill_color_for_channel, BlockBounds, BlockCacheKey, CaptionBlockVariant,
-    CaptionChannel, CaptionDebugOverlay, CaptionLayoutResult, CaptionPresentation,
-    CaptionRenderError, DamageBand, LineCacheKey, LineRole, RenderDiagnostics, ResolvedBlockLayout,
-    ResolvedFrameLayout, ResolvedLineLayout, ResolvedTextStyle, StyleBucketSourceCount,
-    TextStyleDescriptor, DEFAULT_FONT_SIZE_PX, DEFAULT_SURFACE_HEIGHT_PX, DEFAULT_SURFACE_WIDTH_PX,
-    SECONDARY_FONT_SCALE, TEXT_OUTLINE_COLOR,
+    contains_cjk, effective_background_alpha, fill_color_for_channel, hud_fill_color,
+    outline_offsets_px, secondary_fill_color_for_channel, BlockBounds, BlockCacheKey,
+    CaptionBlockVariant, CaptionChannel, CaptionDebugOverlay, CaptionLayoutResult,
+    CaptionPresentation, CaptionRenderError, DamageBand, LineCacheKey, LineRole, RenderDiagnostics,
+    ResolvedBlockLayout, ResolvedFrameLayout, ResolvedLineLayout, ResolvedTextStyle,
+    StyleBucketSourceCount, TextStyleDescriptor, DEFAULT_FONT_SIZE_PX, DEFAULT_SURFACE_HEIGHT_PX,
+    DEFAULT_SURFACE_WIDTH_PX, SECONDARY_FONT_SCALE, TEXT_OUTLINE_COLOR,
 };
 
 const TEXT_FORMAT_CACHE_CAP: usize = 64;
@@ -197,15 +197,18 @@ impl CaptionRenderer {
             &|text, style, size| super::hud_layout::heuristic_measure(text, style, size),
         );
         let redrawn = state.last_signature != Some(built.visual_signature);
-        state.last_signature = Some(built.visual_signature);
+        let signature = built.visual_signature;
         let geometry_reused = built.geometry_reused;
-        drop(state);
         let rendered = self.backend.borrow_mut().render_hud_layout(
             &self.policy,
             &presentation,
             built.layout,
             redrawn,
-        )?;
+        );
+        // Only mark the visual frame as drawn after the backend succeeds. A
+        // failed draw keeps the dirty state so the same frame retries redraw
+        // instead of returning the stale texture.
+        let rendered = commit_hud_signature_on_success(&mut state, signature, rendered)?;
         let _ = height;
         Ok(HudRenderOutcome {
             frame: rendered,
@@ -243,6 +246,19 @@ enum BackendMode {
 struct HudRenderState {
     cache: super::hud_layout::HudLayoutCache,
     last_signature: Option<u64>,
+}
+
+/// Commit the drawn signature only when the backend draw succeeded. On failure
+/// the previous signature is preserved so the next identical frame is still
+/// considered dirty and is redrawn instead of reusing a stale texture.
+fn commit_hud_signature_on_success<T>(
+    state: &mut HudRenderState,
+    signature: u64,
+    draw: Result<T, CaptionRenderError>,
+) -> Result<T, CaptionRenderError> {
+    let value = draw?;
+    state.last_signature = Some(signature);
+    Ok(value)
 }
 
 /// Result of `render_hud_frame`.
@@ -724,6 +740,7 @@ impl WindowsCaptionRenderer {
             style_key: line.style_key,
             channel: block.channel,
             block_variant: block.block_variant,
+            hud_kind: block.hud_kind,
             font_size_key: (line.font_size_px * 100.0).round() as u32,
             content_width_key: block.content_width_px.round() as u32,
             text_scale_key: block.layout_cache_key.text_scale_key,
@@ -816,9 +833,17 @@ impl WindowsCaptionRenderer {
         role: LineRole,
     ) -> Result<CachedLineVisual, CaptionRenderError> {
         let channel = block.channel.unwrap_or(CaptionChannel::SelfChannel);
-        let fill_brush = match role {
-            LineRole::Secondary => self.cache_peer_secondary_text_brush.clone(),
-            LineRole::Primary => self.cache_brush_for_channel(channel),
+        let fill_brush = if let Some(kind) = block.hud_kind {
+            unsafe {
+                self.d2d_context
+                    .CreateSolidColorBrush(&d2d_color(hud_fill_color(kind)), None)
+                    .map_err(|error| CaptionRenderError::Draw(error.to_string()))?
+            }
+        } else {
+            match role {
+                LineRole::Secondary => self.cache_peer_secondary_text_brush.clone(),
+                LineRole::Primary => self.cache_brush_for_channel(channel),
+            }
         };
         let outline_brush = self.cache_outline_brush.clone();
         unsafe {
@@ -2389,6 +2414,7 @@ mod tests {
             ),
             content_width_px: 700.0,
             opacity: 1.0,
+            hud_kind: None,
             render_offset_y_px: 0.0,
             render_height_scale: 1.0,
             truncated_primary: false,
@@ -2646,4 +2672,33 @@ fn preferred_weight_chain(policy: &CaptionLayoutPolicy) -> Vec<DWRITE_FONT_WEIGH
 #[cfg(windows)]
 fn utf16_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(test)]
+mod hud_signature_tests {
+    use super::{commit_hud_signature_on_success, CaptionRenderError, HudRenderState};
+
+    #[test]
+    fn failed_draw_keeps_dirty_state_and_retries_redraw() {
+        let mut state = HudRenderState::default();
+        let signature = 7u64;
+
+        let failed: Result<(), CaptionRenderError> =
+            Err(CaptionRenderError::Draw("injected draw failure".into()));
+        assert!(commit_hud_signature_on_success(&mut state, signature, failed).is_err());
+        assert_eq!(state.last_signature, None, "failed draw must stay dirty");
+        assert!(
+            state.last_signature != Some(signature),
+            "same frame must redraw after a failure"
+        );
+
+        let ok: Result<(), CaptionRenderError> = Ok(());
+        assert!(commit_hud_signature_on_success(&mut state, signature, ok).is_ok());
+        assert_eq!(state.last_signature, Some(signature));
+        assert_eq!(
+            state.last_signature,
+            Some(signature),
+            "committed frame no longer redraws"
+        );
+    }
 }

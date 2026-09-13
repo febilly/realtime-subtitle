@@ -1280,6 +1280,7 @@ fn materialize_resolved_block_layout(
         visual_bounds,
         content_width_px: template.content_width_px,
         opacity: block.opacity,
+        hud_kind: None,
         render_offset_y_px: block.offset_y_px,
         render_height_scale: block.height_scale,
         truncated_primary: template.truncated_primary,

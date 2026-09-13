@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::hud::HudRowKind;
+
 #[cfg(windows)]
 use windows::Win32::Graphics::DirectWrite::DWRITE_FONT_WEIGHT;
 
@@ -378,6 +380,9 @@ pub struct ResolvedBlockLayout {
     pub visual_bounds: VisualBounds,
     pub content_width_px: f32,
     pub opacity: f32,
+    /// HUD draw-time color selector. Excluded from every geometry cache key;
+    /// it only selects the fill brush.
+    pub hud_kind: Option<HudRowKind>,
     pub render_offset_y_px: f32,
     pub render_height_scale: f32,
     pub truncated_primary: bool,
@@ -468,6 +473,7 @@ pub struct LineCacheKey {
     pub style_key: TextStyleKey,
     pub channel: Option<CaptionChannel>,
     pub block_variant: CaptionBlockVariant,
+    pub hud_kind: Option<HudRowKind>,
     pub font_size_key: u32,
     pub content_width_key: u32,
     pub text_scale_key: u32,
@@ -562,6 +568,19 @@ pub(crate) fn fill_color_for_channel(channel: CaptionChannel) -> (f32, f32, f32,
     match channel {
         CaptionChannel::SelfChannel => SELF_TEXT_FILL_COLOR,
         CaptionChannel::PeerChannel => PEER_TEXT_FILL_COLOR,
+    }
+}
+
+/// Draft HUD text color. Distinct RGB from the finalized color with the same
+/// alpha, so kind changes color without changing opacity.
+pub const HUD_DRAFT_FILL_COLOR: (f32, f32, f32, f32) = (0.55, 0.75, 1.0, 1.0);
+/// Finalized HUD text color.
+pub const HUD_FINAL_FILL_COLOR: (f32, f32, f32, f32) = (1.0, 1.0, 1.0, 1.0);
+
+pub fn hud_fill_color(kind: HudRowKind) -> (f32, f32, f32, f32) {
+    match kind {
+        HudRowKind::Draft => HUD_DRAFT_FILL_COLOR,
+        HudRowKind::Settled => HUD_FINAL_FILL_COLOR,
     }
 }
 
