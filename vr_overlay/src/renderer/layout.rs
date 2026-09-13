@@ -1218,7 +1218,7 @@ fn layout_cache_key_for_block(
     }
 }
 
-fn style_descriptor_for_text(
+pub(crate) fn style_descriptor_for_text(
     resolver: &FontResolver,
     language: Option<&str>,
     text: &str,
@@ -1478,7 +1478,7 @@ fn push_word_chunks(
     }
 }
 
-fn measure_text_width(text: &str, average_glyph_advance_px: f32) -> f32 {
+pub(crate) fn measure_text_width(text: &str, average_glyph_advance_px: f32) -> f32 {
     text.chars()
         .map(|ch| match ch {
             ' ' => average_glyph_advance_px * 0.45,

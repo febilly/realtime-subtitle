@@ -2,6 +2,7 @@ mod backend;
 pub(crate) mod cache;
 mod font_resolver;
 mod glyph_run;
+mod hud_layout;
 mod layout;
 mod text_fit;
 mod types;
@@ -13,6 +14,10 @@ pub use font_resolver::{
     bundled_font_path_from_exe_dir, runtime_bundled_font_path, BundledFaceId, FontFallbackReason,
     FontLanguageBucket, FontResolver, FontSource, FontWeight, ResolvedFontStyle, TextFamilyKey,
     TextLocaleKey, TextStyleKey, BUNDLED_NOTO_CJK_FILE_NAME,
+};
+pub use hud_layout::{
+    hud_content_width_px, hud_slot_top_px, HudGeometryKey, HudLayoutCache, HUD_FIRST_SLOT_TOP_PX,
+    HUD_SLOT_STRIDE_PX, HUD_TEXT_LEFT_PX,
 };
 pub use layout::CaptionLayoutPolicy;
 pub use text_fit::{fit_row_text, Truncation};
