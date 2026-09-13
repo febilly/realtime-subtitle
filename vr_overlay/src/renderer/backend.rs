@@ -131,6 +131,7 @@ pub struct CaptionRenderer {
     policy: CaptionLayoutPolicy,
     presentation: RefCell<CaptionPresentation>,
     backend: RefCell<RenderBackend>,
+    hud_state: RefCell<HudRenderState>,
 }
 
 impl CaptionRenderer {
@@ -177,6 +178,42 @@ impl CaptionRenderer {
         )
     }
 
+    /// Render the shared `HudFrame` directly. Geometry is cached by displayed
+    /// text (label included) and role; a draft-to-settled change reuses geometry
+    /// but repaints, and a byte-identical visual frame is not redrawn.
+    pub fn render_hud_frame(
+        &self,
+        frame: &crate::hud::HudFrame,
+    ) -> Result<HudRenderOutcome, CaptionRenderError> {
+        let (width, height) = self.policy.default_surface_size();
+        let presentation = self.presentation.borrow().clone();
+        let mut state = self.hud_state.borrow_mut();
+        let built = super::hud_layout::build_hud_layout(
+            frame,
+            presentation.text_scale,
+            width,
+            &super::font_resolver::FontResolver::default(),
+            &mut state.cache,
+            &|text, style, size| super::hud_layout::heuristic_measure(text, style, size),
+        );
+        let redrawn = state.last_signature != Some(built.visual_signature);
+        state.last_signature = Some(built.visual_signature);
+        let geometry_reused = built.geometry_reused;
+        drop(state);
+        let rendered = self.backend.borrow_mut().render_hud_layout(
+            &self.policy,
+            &presentation,
+            built.layout,
+            redrawn,
+        )?;
+        let _ = height;
+        Ok(HudRenderOutcome {
+            frame: rendered,
+            geometry_reused,
+            redrawn,
+        })
+    }
+
     fn with_policy(
         policy: CaptionLayoutPolicy,
         backend_mode: BackendMode,
@@ -188,6 +225,7 @@ impl CaptionRenderer {
                 BackendMode::Runtime => RenderBackend::new_runtime()?,
                 BackendMode::Test => RenderBackend::new_test()?,
             }),
+            hud_state: RefCell::new(HudRenderState::default()),
         })
     }
 
@@ -199,6 +237,22 @@ impl CaptionRenderer {
 enum BackendMode {
     Runtime,
     Test,
+}
+
+#[derive(Default)]
+struct HudRenderState {
+    cache: super::hud_layout::HudLayoutCache,
+    last_signature: Option<u64>,
+}
+
+/// Result of `render_hud_frame`.
+#[derive(Debug)]
+pub struct HudRenderOutcome {
+    pub frame: RenderedFrame,
+    /// True when the per-slot geometry was served from the geometry cache.
+    pub geometry_reused: bool,
+    /// False when the visual frame was byte-identical and nothing was redrawn.
+    pub redrawn: bool,
 }
 
 #[derive(Debug)]
@@ -326,6 +380,23 @@ impl RenderBackend {
         }
     }
 
+    fn render_hud_layout(
+        &mut self,
+        policy: &CaptionLayoutPolicy,
+        presentation: &CaptionPresentation,
+        layout: ResolvedFrameLayout,
+        redraw: bool,
+    ) -> Result<RenderedFrame, CaptionRenderError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(renderer) => {
+                renderer.render_hud_layout(policy, presentation, layout, redraw)
+            }
+            #[cfg(not(windows))]
+            Self::Test(renderer) => renderer.render_hud_layout(layout, redraw),
+        }
+    }
+
     fn render(
         &mut self,
         policy: &CaptionLayoutPolicy,
@@ -359,6 +430,14 @@ struct TestCaptionRenderer {
 
 #[cfg(not(windows))]
 impl TestCaptionRenderer {
+    fn render_hud_layout(
+        &mut self,
+        layout: ResolvedFrameLayout,
+        _redraw: bool,
+    ) -> Result<RenderedFrame, CaptionRenderError> {
+        self.render(layout, None)
+    }
+
     fn render(
         &mut self,
         layout: ResolvedFrameLayout,
@@ -1270,6 +1349,118 @@ impl WindowsCaptionRenderer {
             (Ok(frame), Ok(())) => {
                 self.wait_for_gpu();
                 self.previous_debug_overlay_visible = frame.debug_overlay.is_some();
+                Ok(frame)
+            }
+        }
+    }
+
+    fn render_hud_layout(
+        &mut self,
+        policy: &CaptionLayoutPolicy,
+        presentation: &CaptionPresentation,
+        layout: ResolvedFrameLayout,
+        redraw: bool,
+    ) -> Result<RenderedFrame, CaptionRenderError> {
+        let mut diagnostics = RenderDiagnostics::default();
+        if !redraw {
+            let has_text = resolved_layout_has_drawable_text(&layout);
+            let public_layout: CaptionLayoutResult = layout.into();
+            return Ok(RenderedFrame {
+                width: public_layout.surface_width_px,
+                height: public_layout.surface_height_px,
+                fully_transparent: !has_text,
+                layout: public_layout,
+                diagnostics,
+                texture: TextureHandle::D3D11(self.texture.clone()),
+                debug_overlay: None,
+            });
+        }
+        let layout = prepare_layout_for_render(&mut self.previous_layout, layout);
+        diagnostics.style_bucket_source_counts = style_bucket_source_counts(&layout);
+        let layout_has_drawable_text = resolved_layout_has_drawable_text(&layout);
+        self.prepare_line_visuals(policy, &layout, &mut diagnostics)?;
+        let clear_alpha = effective_background_alpha(layout_has_drawable_text, presentation);
+        let damage_band = layout.damage_band.unwrap_or(DamageBand {
+            top_px: 0.0,
+            bottom_px: layout.surface_height_px as f32,
+        });
+        unsafe {
+            self.d2d_context.SetTarget(&self.target_bitmap);
+            self.d2d_context.BeginDraw();
+            self.d2d_context.PushAxisAlignedClip(
+                &D2D_RECT_F {
+                    left: 0.0,
+                    top: damage_band.top_px,
+                    right: layout.surface_width_px as f32,
+                    bottom: damage_band.bottom_px,
+                },
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+            self.d2d_context.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: clear_alpha,
+            }));
+            self.d2d_context.PopAxisAlignedClip();
+        }
+        unsafe {
+            self.d2d_context.PushAxisAlignedClip(
+                &D2D_RECT_F {
+                    left: 0.0,
+                    top: damage_band.top_px,
+                    right: layout.surface_width_px as f32,
+                    bottom: damage_band.bottom_px,
+                },
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            );
+        }
+        let render_result = (|| {
+            for block in &layout.visible_blocks {
+                if !bounds_intersect_damage_band(block.visual_bounds.as_block_bounds(), damage_band)
+                {
+                    continue;
+                }
+                for (role, line) in block_lines(block) {
+                    if line.text.trim().is_empty() {
+                        continue;
+                    }
+                    let line_visual = self.prepared_line_visual(block, line, role)?;
+                    self.draw_cached_command_list_with_state(
+                        &line_visual.command_list,
+                        line.origin_x,
+                        line.origin_y,
+                        block.opacity,
+                        block.render_height_scale,
+                    )?;
+                }
+            }
+            self.record_cache_sizes(&mut diagnostics);
+            let public_layout: CaptionLayoutResult = layout.clone().into();
+            Ok(RenderedFrame {
+                width: public_layout.surface_width_px,
+                height: public_layout.surface_height_px,
+                fully_transparent: !layout_has_drawable_text,
+                layout: public_layout,
+                diagnostics,
+                texture: TextureHandle::D3D11(self.texture.clone()),
+                debug_overlay: None,
+            })
+        })()
+        .map_err(|error| prefix_render_error("frame_compose", error));
+        unsafe {
+            self.d2d_context.PopAxisAlignedClip();
+        }
+        let end_draw_result = unsafe {
+            self.d2d_context
+                .EndDraw(None, None)
+                .map_err(|error| CaptionRenderError::Draw(format!("frame_compose: {}", error)))
+        };
+        match (render_result, end_draw_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(frame), Ok(())) => {
+                self.wait_for_gpu();
                 Ok(frame)
             }
         }

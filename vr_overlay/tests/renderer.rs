@@ -1847,3 +1847,149 @@ fn renderer_runtime_backend_is_rejected_outside_windows() {
         .to_string()
         .contains("Direct3D11 caption renderer is only available on Windows"));
 }
+
+mod hud_frame_render_tests {
+    use super::assert_close;
+    use rinbridge_overlay::renderer::{hud_slot_top_px, HUD_TEXT_LEFT_PX};
+    use rinbridge_overlay::{CaptionRenderer, HudFrame, HudRow, HudRowKind, HudRowRole};
+
+    fn row(role: HudRowRole, kind: HudRowKind, text: &str) -> HudRow {
+        HudRow {
+            role,
+            kind,
+            text: text.into(),
+            speaker_label: None,
+            language: None,
+            sentence: None,
+        }
+    }
+
+    fn frame(entries: &[(usize, HudRow)]) -> HudFrame {
+        let mut frame = HudFrame::default();
+        for (slot, entry) in entries {
+            frame.slots[*slot] = Some(entry.clone());
+        }
+        frame
+    }
+
+    fn block<'a>(
+        frame: &'a rinbridge_overlay::CaptionLayoutResult,
+        id: &str,
+    ) -> &'a rinbridge_overlay::renderer::VisibleCaptionBlock {
+        frame
+            .visible_blocks
+            .iter()
+            .find(|block| block.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn hud_render_sparse_frame_uses_fixed_slot_origins() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let spaced = frame(&[
+            (0, row(HudRowRole::UpperPrimary, HudRowKind::Settled, "a")),
+            (2, row(HudRowRole::UpperPrimary, HudRowKind::Settled, "b")),
+            (4, row(HudRowRole::LiveSource, HudRowKind::Settled, "live")),
+        ]);
+        let outcome = renderer.render_hud_frame(&spaced).unwrap();
+        let layout = outcome.frame.layout();
+        assert_eq!(layout.visible_blocks.len(), 3);
+        for (slot, id) in [(0usize, "slot-0"), (2, "slot-2"), (4, "slot-4")] {
+            let block = block(layout, id);
+            assert_close(block.primary_lines[0].origin_x, HUD_TEXT_LEFT_PX);
+            assert_close(block.primary_lines[0].origin_y, hud_slot_top_px(slot));
+        }
+    }
+
+    #[test]
+    fn hud_render_empty_slots_do_not_move_slot_four() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let sparse = renderer
+            .render_hud_frame(&frame(&[
+                (0, row(HudRowRole::UpperPrimary, HudRowKind::Settled, "a")),
+                (4, row(HudRowRole::LiveSource, HudRowKind::Settled, "live")),
+            ]))
+            .unwrap();
+        let dense = renderer
+            .render_hud_frame(&frame(&[
+                (0, row(HudRowRole::UpperPrimary, HudRowKind::Settled, "a")),
+                (1, row(HudRowRole::UpperPrimary, HudRowKind::Settled, "b")),
+                (4, row(HudRowRole::LiveSource, HudRowKind::Settled, "live")),
+            ]))
+            .unwrap();
+        let sparse_live = block(sparse.frame.layout(), "slot-4");
+        let dense_live = block(dense.frame.layout(), "slot-4");
+        assert_close(
+            sparse_live.primary_lines[0].origin_y,
+            dense_live.primary_lines[0].origin_y,
+        );
+        assert_close(
+            sparse_live.primary_lines[0].origin_x,
+            dense_live.primary_lines[0].origin_x,
+        );
+    }
+
+    #[test]
+    fn hud_render_composes_speaker_label_once() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let mut labeled = row(HudRowRole::UpperPrimary, HudRowKind::Settled, "hello");
+        labeled.speaker_label = Some("S1".into());
+        let outcome = renderer.render_hud_frame(&frame(&[(3, labeled)])).unwrap();
+        let line = &block(outcome.frame.layout(), "slot-3").primary_lines[0].text;
+        assert_eq!(line, "S1 hello");
+    }
+
+    #[test]
+    fn hud_render_label_change_invalidates_geometry() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let mut first = row(HudRowRole::UpperPrimary, HudRowKind::Settled, "hello");
+        first.speaker_label = Some("S1".into());
+        let mut second = row(HudRowRole::UpperPrimary, HudRowKind::Settled, "hello");
+        second.speaker_label = Some("S2".into());
+        let _ = renderer.render_hud_frame(&frame(&[(3, first)])).unwrap();
+        let changed = renderer.render_hud_frame(&frame(&[(3, second)])).unwrap();
+        assert!(!changed.geometry_reused, "label must invalidate geometry");
+        assert!(changed.redrawn);
+    }
+
+    #[test]
+    fn hud_render_draft_to_final_reuses_geometry_but_repaints() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let draft = renderer
+            .render_hud_frame(&frame(&[(
+                3,
+                row(HudRowRole::UpperPrimary, HudRowKind::Draft, "bon"),
+            )]))
+            .unwrap();
+        let settled = renderer
+            .render_hud_frame(&frame(&[(
+                3,
+                row(HudRowRole::UpperPrimary, HudRowKind::Settled, "bon"),
+            )]))
+            .unwrap();
+        assert!(settled.geometry_reused, "kind change must reuse geometry");
+        assert!(settled.redrawn, "kind change must repaint");
+        assert_close(
+            draft.frame.layout().visible_blocks[0].bounds.left_px,
+            settled.frame.layout().visible_blocks[0].bounds.left_px,
+        );
+        assert_close(
+            draft.frame.layout().visible_blocks[0].bounds.top_px,
+            settled.frame.layout().visible_blocks[0].bounds.top_px,
+        );
+    }
+
+    #[test]
+    fn hud_render_unchanged_frame_does_not_redraw() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let unchanged = frame(&[(
+            3,
+            row(HudRowRole::UpperPrimary, HudRowKind::Settled, "same"),
+        )]);
+        let first = renderer.render_hud_frame(&unchanged).unwrap();
+        let second = renderer.render_hud_frame(&unchanged).unwrap();
+        assert!(first.redrawn);
+        assert!(!second.redrawn, "identical visual frame must not redraw");
+        assert!(second.geometry_reused);
+    }
+}

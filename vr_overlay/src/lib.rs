@@ -29,7 +29,7 @@ pub use renderer::{
     BundledFaceId, CaptionBlock, CaptionBlockVariant, CaptionChannel, CaptionDebugOverlay,
     CaptionLayoutPolicy, CaptionLayoutResult, CaptionPresentation, CaptionRenderError,
     CaptionRenderer, DamageBand, FontFallbackReason, FontLanguageBucket, FontResolver, FontSource,
-    FontWeight, RenderedFrame, ResolvedFontStyle, TextStyleKey, Truncation,
+    FontWeight, HudRenderOutcome, RenderedFrame, ResolvedFontStyle, TextStyleKey, Truncation,
 };
 pub use runtime::{
     run_cli, run_with_manifest, OverlayRuntime, RuntimeFailure, SnapshotApplyOutcome, StartupError,

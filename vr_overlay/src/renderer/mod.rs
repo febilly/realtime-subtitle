@@ -7,7 +7,7 @@ mod layout;
 mod text_fit;
 mod types;
 
-pub use backend::{CaptionRenderer, RenderedFrame};
+pub use backend::{CaptionRenderer, HudRenderOutcome, RenderedFrame};
 #[cfg(windows)]
 pub use font_resolver::WindowsBundledFontCollection;
 pub use font_resolver::{
@@ -29,5 +29,5 @@ pub use types::{
     BlockBounds, CaptionBlock, CaptionBlockVariant, CaptionChannel, CaptionDebugOverlay,
     CaptionLayoutResult, CaptionLineLayout, CaptionPresentation, CaptionRenderError, DamageBand,
     LayoutCacheKey, LineRole, ResolvedBlockLayout, ResolvedFrameLayout, ResolvedLineLayout,
-    TextStyleDescriptor, VisualBounds,
+    TextStyleDescriptor, VisibleCaptionBlock, VisualBounds,
 };
