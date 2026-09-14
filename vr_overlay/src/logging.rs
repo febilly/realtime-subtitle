@@ -50,6 +50,26 @@ impl OverlayLogger {
         self.log_line("ERROR", message.as_ref()).await
     }
 
+    /// Emit structured runtime metadata. Caption text is deliberately allowed
+    /// only in detailed mode and only when the caller explicitly supplies a
+    /// `preview` field; basic logs remain text-free.
+    pub async fn diagnostic(&self, fields: &[(&str, &str)]) -> io::Result<()> {
+        let detailed = self.is_detailed();
+        let fields = fields
+            .iter()
+            .filter(|(key, _)| detailed || !matches!(*key, "text" | "preview"))
+            .map(|(key, value)| {
+                if detailed && *key == "preview" {
+                    format!("{key}={}", value.chars().take(80).collect::<String>())
+                } else {
+                    format!("{key}={value}")
+                }
+            })
+            .collect::<Vec<_>>();
+        self.write_stream_line(false, &format!("[overlay][DIAG] {}", fields.join(" ")))
+            .await
+    }
+
     pub async fn emit_stdout_event(&self, payload: &Value) -> io::Result<()> {
         self.write_stream_line(true, &format!("EVENT {}", payload))
             .await
@@ -236,5 +256,69 @@ mod tests {
             "[overlay][INFO] visible\n"
         );
         assert_eq!(String::from_utf8(stderr.bytes()).unwrap(), "");
+    }
+
+    #[tokio::test]
+    async fn overlay_logger_keeps_caption_text_out_of_basic_diagnostics() {
+        let stdout = RecordingSink::new();
+        let stderr = RecordingSink::new();
+        let logger = OverlayLogger::from_streams(
+            Box::pin(stdout),
+            Box::pin(stderr.clone()),
+            OverlayLoggingMode::Basic,
+        );
+
+        logger
+            .diagnostic(&[
+                ("event_kind", "source_commit"),
+                ("preview", "SECRET"),
+                ("submit_sequence", "1"),
+            ])
+            .await
+            .unwrap();
+
+        let log = String::from_utf8(stderr.bytes()).unwrap();
+        assert!(log.contains("event_kind=source_commit"));
+        assert!(log.contains("submit_sequence=1"));
+        assert!(!log.contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn overlay_logger_keeps_detailed_preview_bounded_by_the_caller() {
+        let stdout = RecordingSink::new();
+        let stderr = RecordingSink::new();
+        let logger = OverlayLogger::from_streams(
+            Box::pin(stdout),
+            Box::pin(stderr.clone()),
+            OverlayLoggingMode::Detailed,
+        );
+        let preview = "x".repeat(80);
+        logger
+            .diagnostic(&[("preview", preview.as_str())])
+            .await
+            .unwrap();
+
+        let log = String::from_utf8(stderr.bytes()).unwrap();
+        assert!(log.contains(&format!("preview={preview}")));
+    }
+
+    #[tokio::test]
+    async fn overlay_logger_caps_detailed_preview_at_80_scalars() {
+        let stdout = RecordingSink::new();
+        let stderr = RecordingSink::new();
+        let logger = OverlayLogger::from_streams(
+            Box::pin(stdout),
+            Box::pin(stderr.clone()),
+            OverlayLoggingMode::Detailed,
+        );
+        let preview = "界".repeat(100);
+        logger
+            .diagnostic(&[("preview", preview.as_str())])
+            .await
+            .unwrap();
+
+        let log = String::from_utf8(stderr.bytes()).unwrap();
+        let preview = log.split("preview=").nth(1).unwrap().trim_end();
+        assert_eq!(preview.chars().count(), 80);
     }
 }

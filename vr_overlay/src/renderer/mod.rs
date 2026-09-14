@@ -21,6 +21,7 @@ pub use hud_layout::{
 };
 pub use layout::CaptionLayoutPolicy;
 pub use text_fit::{fit_row_text, Truncation};
+#[cfg(test)]
 pub(crate) use types::{
     effective_background_alpha, fill_color_for_channel, outline_offsets_px, text_script_bucket,
     TextScriptBucket,

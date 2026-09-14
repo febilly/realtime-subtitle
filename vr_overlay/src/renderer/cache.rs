@@ -102,14 +102,12 @@ use windows::Win32::Graphics::Direct2D::ID2D1CommandList;
 #[derive(Debug, Clone)]
 pub(crate) struct CachedLineVisual {
     pub command_list: ID2D1CommandList,
-    pub visual_bounds: VisualBounds,
 }
 
 #[cfg(windows)]
 #[derive(Debug, Clone)]
 pub(crate) struct CachedBlockVisual {
     pub command_list: ID2D1CommandList,
-    pub visual_bounds: VisualBounds,
 }
 
 // ── Aggregated render caches for WindowsCaptionRenderer ──

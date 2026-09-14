@@ -2,10 +2,9 @@
 
 Vendored from [RinBridge](https://github.com/KKTIME2024/RinBridge) (AGPL-3.0, see
 [ACKNOWLEDGMENTS](../ACKNOWLEDGMENTS.md)). Renders subtitles received from the
-desktop WebSocket over `/ws`. The Rust client keeps exactly two independently
-replaceable lines: the latest source and the latest translation. A completed
-`refine_result` replaces the translation line as soon as it arrives; it does
-not wait for the next source sentence.
+desktop's unauthenticated `/ws` WebSocket into a shared five-slot HUD frame.
+The Rust overlay owns reduction, speaker-aware projection, fixed slot geometry,
+and compositor visibility; there is no Python-side subtitle mirror.
 
 ## Build (Windows)
 
@@ -24,26 +23,21 @@ upstream RinBridge repo and is not vendored.
 
 ## Contract
 
-- Reads `--config <manifest.json>` (see `src/manifest.rs` for the schema; `contract_version` must be 6).
-- For `bridge_url=ws://127.0.0.1:<port>/ws`, connects as a normal desktop
-  WebSocket client and consumes `update`, `refine_result`, and `clear` events;
-  no Python-side subtitle mirror is required.
-- For `bridge_url=ws://127.0.0.1:<port>/vr_ws`, uses the packaged desktop's
-  authenticated snapshot channel. This connection survives recognition
-  refreshes and supplies the initial line state and VR calibration. `/vr_ws`
-  is not an alias for `/ws`.
-- The top visible row is translation (`primary_text`); the bottom visible row
-  is source/original speech (`secondary_text`). Each row replaces independently.
-- `update.non_final_tokens` is the live snapshot and updates either row
-  immediately. `update.final_tokens` is an ordered incremental stream with
-  explicit separator, replay, and cumulative-prefix rules. A `refine_result`
-  updates the translation line immediately and is stale only relative to the
-  sentence currently owned by that line.
-- Any manifest path other than `/ws`, including `/vr_ws`, uses the
-  authenticated snapshot protocol. Startup emits
-  `[overlay][BRIDGE] protocol=<snapshot|desktop_ws> vr_ws_path=<bool>` so a
-  real run can prove which protocol it selected.
-- Emits `EVENT <json>` lines on stderr: `overlay_ready`, `auth_failed`, `connect_failed`, `no_hmd`, `startup_error`.
+- Reads `--config <manifest.json>` (see `src/manifest.rs` for the schema;
+  `contract_version` must be 7). The envelope has no `session_token`.
+- `bridge_url` must be `ws://127.0.0.1:<port>/ws`; `/vr_ws` and every other
+  path are rejected at startup. The adapter consumes `update`,
+  `refine_result`, `clear`, and validated `vr_view_settings` events.
+- The shared HUD has five fixed slots. Upper rows follow the selected
+  `original`, `translation`, or `both` projection; slot 4 is always the live
+  source row. Labels are composed by the renderer and are not part of the
+  protocol body text.
+- Live source fitting uses a leading ellipsis; settled rows use a trailing
+  ellipsis. Geometry reuse is separate from draw-time draft/final color.
+- Silence uses compositor alpha (4 s idle, 1.2 s fade) and does not redraw on
+  a timer. Unchanged projected frames are not submitted again.
+- Emits `EVENT <json>` lines on stderr: `overlay_ready`, `connect_failed`,
+  `no_hmd`, and `startup_error`.
 
 ## Verification
 
@@ -52,5 +46,9 @@ powershell -ExecutionPolicy Bypass -File .\vr_overlay\scripts\verify.ps1
 ```
 
 The script distinguishes missing Windows build prerequisites from Rust test or
-compilation failures. Automated tests stop at the frame submission interface;
-one physical HMD smoke test is still required.
+compilation failures. Automated tests stop at the frame submission interface.
+The `both` projection completed an initial physical HMD smoke test on
+2026-09-13 with no observed severe correctness issue. Physical acceptance is
+still pending for `original`, `translation`, runtime mode switching, and the
+remaining lifecycle/performance checklist. See the implementation plan's
+2026-09-14 status update for the field-test details and provenance caveats.

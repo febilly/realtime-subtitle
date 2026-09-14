@@ -32,15 +32,6 @@ pub enum TrackKind {
     Translation,
 }
 
-impl TrackKind {
-    fn index(self) -> usize {
-        match self {
-            TrackKind::Source => 0,
-            TrackKind::Translation => 1,
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct AccumKey {
     sentence_id: Option<String>,
@@ -62,7 +53,7 @@ pub struct DesktopProtocol {
     stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
     pending: VecDeque<CaptionEvent>,
     accumulators: BTreeMap<AccumKey, String>,
-    replace_on_next: [bool; 2],
+    replace_on_next: BTreeMap<AccumKey, bool>,
     previous_final_fingerprint: Option<Vec<FinalTokenFingerprint>>,
 }
 
@@ -78,7 +69,7 @@ impl DesktopProtocol {
             stream,
             pending: VecDeque::new(),
             accumulators: BTreeMap::new(),
-            replace_on_next: [false, false],
+            replace_on_next: BTreeMap::new(),
             previous_final_fingerprint: None,
         })
     }
@@ -141,10 +132,12 @@ impl DesktopProtocol {
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 self.accumulators.clear();
+                self.replace_on_next.clear();
                 self.previous_final_fingerprint = None;
                 self.pending
                     .push_back(CaptionEvent::Clear { preserve_existing });
             }
+            Some("shutdown") => self.pending.push_back(CaptionEvent::Shutdown),
             Some("vr_view_settings") => {
                 let mut settings_map = map.clone();
                 settings_map.remove("type");
@@ -193,7 +186,10 @@ impl DesktopProtocol {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                self.replace_on_next = [true, true];
+                let keys = self.accumulators.keys().cloned().collect::<Vec<_>>();
+                for key in keys {
+                    self.replace_on_next.insert(key, true);
+                }
                 continue;
             }
             if token.get("is_final").and_then(Value::as_bool) == Some(false) {
@@ -237,7 +233,7 @@ impl DesktopProtocol {
         }
 
         for (key, text, language) in groups {
-            let replace = self.replace_on_next[key.track.index()];
+            let replace = self.replace_on_next.remove(&key).unwrap_or(false);
             let accumulator = self.accumulators.entry(key.clone()).or_default();
             if replace
                 || accumulator.is_empty()
@@ -248,7 +244,6 @@ impl DesktopProtocol {
                 accumulator.push_str(&text);
             }
             let full_text = accumulator.clone();
-            self.replace_on_next[key.track.index()] = false;
             let event = match key.track {
                 TrackKind::Source => CaptionEvent::SourceCommitted(CommittedSource {
                     speaker: key.speaker,
@@ -455,15 +450,19 @@ fn map_ws_error(error: tokio_tungstenite::tungstenite::Error) -> BridgeError {
     }
 }
 
-fn is_desktop_ws_url(url: &str) -> bool {
-    let authority_start = url.find("://").map(|index| index + 3).unwrap_or(0);
-    let Some(path_offset) = url.get(authority_start..).and_then(|rest| rest.find('/')) else {
+pub(crate) fn is_desktop_ws_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("ws://") else {
         return false;
     };
-    let path_start = authority_start + path_offset;
-    let rest = &url[path_start..];
-    let end = rest.find(|c| c == '?' || c == '#').unwrap_or(rest.len());
-    &rest[..end] == "/ws"
+    let Some(path_offset) = rest.find('/') else {
+        return false;
+    };
+    let authority = &rest[..path_offset];
+    let path = &rest[path_offset..];
+    let Some((host, port)) = authority.rsplit_once(':') else {
+        return false;
+    };
+    host == "127.0.0.1" && port.parse::<u16>().is_ok_and(|port| port != 0) && path == "/ws"
 }
 
 #[cfg(test)]
@@ -471,11 +470,16 @@ mod tests {
     use super::is_desktop_ws_url;
 
     #[test]
-    fn desktop_ws_path_matches_only_exact_paths() {
+    fn desktop_ws_url_matches_only_the_local_unauthenticated_endpoint() {
         assert!(is_desktop_ws_url("ws://127.0.0.1:1/ws"));
-        assert!(is_desktop_ws_url("ws://127.0.0.1:1/ws?token=x"));
+        assert!(is_desktop_ws_url("ws://127.0.0.1:65535/ws"));
         assert!(!is_desktop_ws_url("ws://127.0.0.1:1/vr_ws"));
         assert!(!is_desktop_ws_url("ws://127.0.0.1:1/workspace"));
         assert!(!is_desktop_ws_url("ws://127.0.0.1:1"));
+        assert!(!is_desktop_ws_url("ws://127.0.0.1:0/ws"));
+        assert!(!is_desktop_ws_url("ws://127.0.0.1:1/ws?token=x"));
+        assert!(!is_desktop_ws_url("wss://127.0.0.1:1/ws"));
+        assert!(!is_desktop_ws_url("ws://192.168.0.2:1/ws"));
+        assert!(!is_desktop_ws_url("ws://example.test:1/ws"));
     }
 }

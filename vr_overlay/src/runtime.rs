@@ -1,25 +1,24 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
 
-use crate::bridge::{BridgeClient, BridgeError, OverlayBridgeEvent};
+use crate::hud::HudFrame;
 use crate::logging::OverlayLogger;
 use crate::manifest::{self, OverlayManifest};
 use crate::openvr::{self, OpenVrOverlay, OverlayFrameSubmitter};
-use crate::renderer::{
-    CaptionBlock, CaptionBlockVariant, CaptionChannel, CaptionRenderError, CaptionRenderer,
-};
-use crate::state::{
-    OverlayPresentationBlockVariant, OverlayPresentationSnapshot, PresentationScene,
-    PresentationSlot, RuntimeState, FIRST_SLOT_TOP_PX, SLOT_ROW_STRIDE_PX,
-};
+use crate::projection::{self, LiveRowDirective, Projection};
+use crate::protocol::{is_desktop_ws_url, DesktopProtocol};
+use crate::renderer::{CaptionRenderError, CaptionRenderer};
+use crate::state::OverlayCalibration;
+use crate::transcript::{CaptionEvent, LiveInputRow, SpeakerKey, TranscriptState};
+use crate::views::VrViewSettings;
 
 #[derive(Debug, Error)]
 pub enum StartupError {
     #[error("manifest contract mismatch: {0}")]
     ContractMismatch(String),
-    #[error("bridge auth failed: {0}")]
-    BridgeAuth(String),
     #[error("SteamVR not installed")]
     SteamVrNotInstalled,
     #[error("SteamVR not running")]
@@ -41,74 +40,57 @@ pub enum StartupError {
 }
 
 impl StartupError {
-    /// 标准化退出码 (测试 tests/runtime.rs:370-384 钉死)。
     pub fn exit_code(&self) -> i32 {
         match self {
-            StartupError::ContractMismatch(_) => 10,
-            StartupError::BridgeAuth(_) => 12,
-            StartupError::SteamVrNotInstalled
-            | StartupError::SteamVrNotRunning
-            | StartupError::HmdNotFound
-            | StartupError::OpenVrInit(_) => 20,
-            StartupError::RendererInit(_) => 21,
-            StartupError::Bridge(_)
-            | StartupError::RuntimeDisconnected
-            | StartupError::OpenVr(_)
-            | StartupError::Manifest(_) => 1,
+            Self::ContractMismatch(_) => 10,
+            Self::SteamVrNotInstalled
+            | Self::SteamVrNotRunning
+            | Self::HmdNotFound
+            | Self::OpenVrInit(_) => 20,
+            Self::RendererInit(_) => 21,
+            Self::Bridge(_) | Self::RuntimeDisconnected | Self::OpenVr(_) | Self::Manifest(_) => 1,
         }
     }
 
-    /// 机器可读失败原因 (测试 tests/runtime.rs:386-397 钉死; 用于 EVENT 行)。
     pub fn failure_reason(&self) -> &'static str {
         match self {
-            StartupError::ContractMismatch(_) => "contract_mismatch",
-            StartupError::BridgeAuth(_) => "auth_failed",
-            StartupError::SteamVrNotInstalled => "steamvr_not_installed",
-            StartupError::SteamVrNotRunning => "steamvr_not_running",
-            StartupError::HmdNotFound => "hmd_not_found",
-            StartupError::OpenVrInit(_) => "openvr_init_failed",
-            StartupError::RendererInit(_) => "renderer_init_failed",
-            StartupError::Bridge(_) => "bridge_error",
-            StartupError::RuntimeDisconnected => "runtime_disconnected",
-            StartupError::OpenVr(_) => "openvr_error",
-            StartupError::Manifest(_) => "manifest_error",
+            Self::ContractMismatch(_) => "contract_mismatch",
+            Self::SteamVrNotInstalled => "steamvr_not_installed",
+            Self::SteamVrNotRunning => "steamvr_not_running",
+            Self::HmdNotFound => "hmd_not_found",
+            Self::OpenVrInit(_) => "openvr_init_failed",
+            Self::RendererInit(_) => "renderer_init_failed",
+            Self::Bridge(_) => "bridge_error",
+            Self::RuntimeDisconnected => "runtime_disconnected",
+            Self::OpenVr(_) => "openvr_error",
+            Self::Manifest(_) => "manifest_error",
         }
     }
 }
 
 impl From<openvr::OpenVrError> for StartupError {
-    fn from(e: openvr::OpenVrError) -> Self {
-        Self::OpenVr(e.to_string())
+    fn from(error: openvr::OpenVrError) -> Self {
+        Self::OpenVr(error.to_string())
     }
 }
 
-impl From<crate::renderer::CaptionRenderError> for StartupError {
-    fn from(e: crate::renderer::CaptionRenderError) -> Self {
-        Self::RendererInit(e.to_string())
+impl From<CaptionRenderError> for StartupError {
+    fn from(error: CaptionRenderError) -> Self {
+        Self::RendererInit(error.to_string())
     }
 }
 
-/// 将 OpenVR 启动预检错误 1:1 映射到 `StartupError`(exit 20 系列)。
 impl From<openvr::OpenVrStartupPreflightError> for StartupError {
-    fn from(e: openvr::OpenVrStartupPreflightError) -> Self {
-        match e {
-            openvr::OpenVrStartupPreflightError::SteamVrNotInstalled => {
-                StartupError::SteamVrNotInstalled
-            }
-            openvr::OpenVrStartupPreflightError::SteamVrNotRunning => {
-                StartupError::SteamVrNotRunning
-            }
-            openvr::OpenVrStartupPreflightError::HmdNotFound => StartupError::HmdNotFound,
-            openvr::OpenVrStartupPreflightError::Init(message) => StartupError::OpenVrInit(message),
+    fn from(error: openvr::OpenVrStartupPreflightError) -> Self {
+        match error {
+            openvr::OpenVrStartupPreflightError::SteamVrNotInstalled => Self::SteamVrNotInstalled,
+            openvr::OpenVrStartupPreflightError::SteamVrNotRunning => Self::SteamVrNotRunning,
+            openvr::OpenVrStartupPreflightError::HmdNotFound => Self::HmdNotFound,
+            openvr::OpenVrStartupPreflightError::Init(message) => Self::OpenVrInit(message),
         }
     }
 }
 
-/// A failure produced by the event-driven runtime core (decoupled from OpenVR).
-///
-/// Unlike `StartupError` (startup-phase fatal conditions), `RuntimeFailure`
-/// represents the recovery-able / per-event failures surfaced by the core while
-/// it is running (driving the bridge + applying snapshots).
 #[derive(Debug, Error)]
 pub enum RuntimeFailure {
     #[error("overlay OpenVR error: {0}")]
@@ -120,709 +102,564 @@ pub enum RuntimeFailure {
 }
 
 impl RuntimeFailure {
-    /// 机器可读失败原因 (测试 tests/runtime.rs:1562 钉死)。
     pub fn failure_reason(&self) -> &'static str {
         match self {
-            RuntimeFailure::OpenVr(_) => "openvr_error",
-            RuntimeFailure::Renderer(_) => "renderer_error",
-            RuntimeFailure::RuntimeDisconnected => "runtime_disconnected",
+            Self::OpenVr(_) => "openvr_error",
+            Self::Renderer(_) => "renderer_error",
+            Self::RuntimeDisconnected => "runtime_disconnected",
         }
     }
 }
 
 impl From<openvr::OpenVrError> for RuntimeFailure {
-    fn from(e: openvr::OpenVrError) -> Self {
-        Self::OpenVr(e.to_string())
+    fn from(error: openvr::OpenVrError) -> Self {
+        Self::OpenVr(error.to_string())
     }
 }
 
 impl From<CaptionRenderError> for RuntimeFailure {
-    fn from(e: CaptionRenderError) -> Self {
-        Self::Renderer(e.to_string())
+    fn from(error: CaptionRenderError) -> Self {
+        Self::Renderer(error.to_string())
     }
 }
 
-/// Result of applying a presentation snapshot to the runtime state.
-///
-/// Tests match `Applied { visual_changed, redraw_requested, .. }` (see
-/// tests/runtime.rs:604-611, 938-943, 956-961). `visual_changed` indicates the
-/// rendered picture differed from the previous one; `redraw_requested` indicates
-/// the compositor should submit a fresh texture (e.g. a font change).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotApplyOutcome {
-    Applied {
-        visual_changed: bool,
-        redraw_requested: bool,
-        /// True when a previously-present slot was dropped by this snapshot.
-        slot_removed: bool,
-    },
-    /// Snapshot carried no change worth re-rendering.
-    Noop,
+pub trait Clock {
+    fn now(&self) -> Instant;
 }
 
-/// Delay after the overlay content becomes empty before the overlay is hidden.
-const IDLE_HIDE_DELAY: Duration = Duration::from_millis(500);
+pub struct SystemClock;
 
-/// Maximum number of simultaneously-visible presentation rows.
-const VISIBLE_SLOT_CAP: usize = 2;
-
-/// HMD 预检失败后的重试窗口 (`可调`)。SteamVR 可能在 overlay 启动后才把
-/// 头显加载完成, 因此在放弃前给一段重试时间, 每 `HMD_RETRY_INTERVAL_MS`
-/// 重试一次; 超时后才报 `no_hmd`(exit 20)。
-const HMD_RETRY_DEADLINE_MS: u64 = 10_000;
-const HMD_RETRY_INTERVAL_MS: u64 = 1_000;
-
-/// Event-driven version of `OverlayRuntime` — a pure state core holding no
-/// OpenVR / renderer references. The shell (OpenVR overlay, renderer, logger,
-/// render loop) lives in `run_with_manifest` and drives this core through
-/// `handle_event` / `apply_snapshot` / `submit_frame_if_needed`.
-pub struct OverlayRuntime {
-    state: RuntimeState,
-    /// Real overlay instance id used in `overlay_ready` EVENT payloads.
-    /// Defaults to `"overlay"` for in-process tests; the production shell sets
-    /// the real id via `set_instance_id` before driving the event loop.
-    overlay_instance_id: String,
-    ready_sent: bool,
-    stopped: bool,
-    redraw_requested: bool,
-    calibration_pending: bool,
-    overlay_visible: bool,
-    idle_hide_pending_since: Option<Instant>,
-    entry_counter: u64,
-    latest_revision: u64,
-    frame_submit_sequence: u64,
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
-impl OverlayRuntime {
-    pub fn new(initial: OverlayPresentationSnapshot) -> Self {
-        let mut runtime = Self {
-            state: RuntimeState::default(),
-            overlay_instance_id: "overlay".into(),
-            ready_sent: false,
-            stopped: false,
-            redraw_requested: true,
-            calibration_pending: false,
-            overlay_visible: false,
-            idle_hide_pending_since: None,
-            entry_counter: 0,
-            latest_revision: initial.revision,
-            frame_submit_sequence: 0,
+pub trait ParentLiveness {
+    fn alive(&self) -> bool;
+}
+
+pub struct ProcessLiveness {
+    pub parent_pid: u32,
+}
+
+impl ParentLiveness for ProcessLiveness {
+    fn alive(&self) -> bool {
+        if self.parent_pid == 0 {
+            return false;
+        }
+
+        #[cfg(windows)]
+        {
+            use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::System::Threading::{
+                GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            };
+
+            let Ok(handle) =
+                (unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, self.parent_pid) })
+            else {
+                return false;
+            };
+            let mut exit_code = 0;
+            const STILL_ACTIVE: u32 = 259;
+            let alive = unsafe { GetExitCodeProcess(handle, &mut exit_code).is_ok() }
+                && exit_code == STILL_ACTIVE;
+            let _ = unsafe { CloseHandle(handle) };
+            alive
+        }
+
+        #[cfg(not(windows))]
+        {
+            true
+        }
+    }
+}
+
+pub const SILENCE_BEFORE_FADE: Duration = Duration::from_millis(4000);
+pub const FADE_DURATION: Duration = Duration::from_millis(1200);
+pub const FADE_STEP: Duration = Duration::from_millis(50);
+pub const PARENT_POLL_INTERVAL: Duration = Duration::from_millis(2000);
+
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct VisibilityTick {
+    pub set_visible: Option<bool>,
+    pub alpha: Option<f32>,
+}
+
+pub struct VisibilityController {
+    visible: bool,
+    last_activity: Instant,
+    fade_started: Option<Instant>,
+    last_alpha: f32,
+    pending_show: bool,
+    pending_hide: bool,
+    pending_alpha: bool,
+}
+
+impl VisibilityController {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            visible: false,
+            last_activity: now,
+            fade_started: None,
+            last_alpha: 0.0,
+            pending_show: false,
+            pending_hide: false,
+            pending_alpha: false,
+        }
+    }
+
+    pub fn on_activity(&mut self, now: Instant) {
+        self.last_activity = now;
+        self.fade_started = None;
+        if !self.visible {
+            self.visible = true;
+            self.pending_hide = false;
+            self.pending_show = true;
+        }
+        if self.last_alpha != 1.0 {
+            self.last_alpha = 1.0;
+            self.pending_alpha = true;
+        }
+    }
+
+    pub fn tick(&mut self, now: Instant) -> VisibilityTick {
+        let mut tick = VisibilityTick::default();
+        if self.pending_hide {
+            self.pending_hide = false;
+            tick.set_visible = Some(false);
+        }
+        if self.pending_show {
+            self.pending_show = false;
+            tick.set_visible = Some(true);
+        }
+        if !self.visible {
+            if self.pending_alpha {
+                self.pending_alpha = false;
+                tick.alpha = Some(self.last_alpha);
+            }
+            return tick;
+        }
+
+        if self.fade_started.is_none()
+            && now.saturating_duration_since(self.last_activity) >= SILENCE_BEFORE_FADE
+        {
+            self.fade_started = Some(self.last_activity + SILENCE_BEFORE_FADE);
+        }
+        let Some(fade_started) = self.fade_started else {
+            if self.pending_alpha {
+                self.pending_alpha = false;
+                tick.alpha = Some(self.last_alpha);
+            }
+            return tick;
         };
-        // Seed the scene from the initial snapshot (always a fresh layout).
-        let _ = runtime.apply_snapshot(initial);
-        runtime
-    }
 
-    /// Read-only view of the pure presentation state.
-    pub fn state(&self) -> &RuntimeState {
-        &self.state
-    }
-
-    /// Current caption blocks in slot order (the thing rendered to a texture).
-    pub fn caption_blocks(&self) -> Vec<CaptionBlock> {
-        // 两槽位设计不变: 一块一槽。但槽号是分配序(滑窗淘汰后新句可能拿到
-        // slot 0), 视觉行序必须按句子时间序: 旧句在上、新句在下(同桌面)。
-        // 锦点 = 行位固定: 行0 = 40px, 行1 = 40 + 504px (已译块实测高≤498,
-        // 不会重叠)。
-        let mut slots: Vec<_> = self.state.scene().occupied().collect();
-        slots.sort_by_key(|slot| slot.slot_entry_order);
-        slots
-            .into_iter()
-            .enumerate()
-            .map(|(row, slot)| slot.to_caption_block_at_row(row))
-            .collect()
-    }
-
-    pub fn is_stopped(&self) -> bool {
-        self.stopped
-    }
-
-    pub fn ready_sent(&self) -> bool {
-        self.ready_sent
-    }
-
-    /// Set the real overlay instance id used in the `overlay_ready` EVENT.
-    /// The production shell calls this before the event loop; tests keep the
-    /// default `"overlay"` id.
-    pub fn set_instance_id(&mut self, overlay_instance_id: &str) {
-        self.overlay_instance_id = overlay_instance_id.to_string();
-    }
-
-    /// Reset the redraw latch (used after draining/handling a snapshot).
-    pub fn clear_redraw_flag(&mut self) {
-        self.redraw_requested = false;
-    }
-
-    /// Apply a presentation snapshot to the pure state, returning whether the
-    /// picture changed. Slot identity is preserved across updates so a given
-    /// occupant keeps its fixed vertical position while its text changes.
-    pub fn apply_snapshot(
-        &mut self,
-        snapshot: OverlayPresentationSnapshot,
-    ) -> SnapshotApplyOutcome {
-        let mut visual_changed = false;
-        let mut redraw_requested = false;
-        let mut slot_removed = false;
-
-        // 1) Calibration.
-        let new_cal = snapshot.calibration.to_overlay_calibration();
-        if self.state.calibration() != &new_cal {
-            self.state.set_calibration(new_cal);
-            self.calibration_pending = true;
-            visual_changed = true;
-            redraw_requested = true;
+        let elapsed = now.saturating_duration_since(fade_started);
+        if elapsed >= FADE_DURATION {
+            self.last_alpha = 0.0;
+            self.pending_alpha = false;
+            self.fade_started = None;
+            self.visible = false;
+            tick.alpha = Some(0.0);
+            tick.set_visible = Some(false);
+            return tick;
         }
 
-        // 2) Scene / slot assignment.
-        let incoming: Vec<_> = snapshot.blocks.into_iter().take(VISIBLE_SLOT_CAP).collect();
+        let progress = elapsed.as_secs_f32() / FADE_DURATION.as_secs_f32();
+        let alpha = (1.0 - progress).clamp(0.0, 1.0);
+        if (alpha - self.last_alpha).abs() > f32::EPSILON {
+            self.last_alpha = alpha;
+            self.pending_alpha = false;
+            tick.alpha = Some(alpha);
+        }
+        tick
+    }
 
-        let mut scene = PresentationScene::default();
-        let mut used_incoming = vec![false; incoming.len()];
+    /// Clear the visibility state while preserving the compositor operations
+    /// needed to make an already-visible overlay disappear on the next tick.
+    pub fn reset(&mut self, now: Instant) {
+        let was_visible = self.visible;
+        let had_alpha = self.last_alpha > 0.0;
+        self.visible = false;
+        self.last_activity = now;
+        self.fade_started = None;
+        self.pending_show = false;
+        self.pending_hide = was_visible;
+        self.last_alpha = 0.0;
+        self.pending_alpha = had_alpha;
+    }
 
-        // 2a) Write-through updates for occupants that keep a matched slot.
-        for slot_index in 0..self.state.scene().slots().len() {
-            let previous = match self
-                .state
-                .scene()
-                .slots()
-                .get(slot_index)
-                .and_then(Option::as_ref)
-            {
-                Some(previous) => previous,
-                None => continue,
-            };
-            if let Some(found) = incoming.iter().position(|b| {
-                b.occupant_key == previous.occupant_key
-                    && b.appearance_seq == previous.appearance_seq
-            }) {
-                let block = incoming[found].clone();
-                let mut updated = previous.clone();
-                let changed = update_slot_content(&mut updated, &block);
-                scene.set_slot(slot_index, Some(updated));
-                used_incoming[found] = true;
-                if changed.0 {
-                    visual_changed = true;
-                }
-                if changed.1 {
-                    redraw_requested = true;
-                }
-            } else {
-                // Occupant no longer present — mark for removal.
-                slot_removed = true;
-                scene.set_slot(slot_index, None);
+    pub fn next_deadline(&self) -> Option<Instant> {
+        self.next_deadline_at(Instant::now())
+    }
+
+    pub fn next_deadline_at(&self, now: Instant) -> Option<Instant> {
+        if !self.visible {
+            return None;
+        }
+        if let Some(fade_started) = self.fade_started {
+            let elapsed = now.saturating_duration_since(fade_started);
+            if elapsed >= FADE_DURATION {
+                return Some(now);
             }
+            let completed_steps = elapsed.as_nanos() / FADE_STEP.as_nanos();
+            return Some(fade_started + FADE_STEP * (completed_steps as u32 + 1));
         }
-
-        // 2b) Assign any new occupants to the first free slot.
-        for (i, block) in incoming.iter().enumerate() {
-            if used_incoming[i] {
-                continue;
-            }
-            let free_index = (0..VISIBLE_SLOT_CAP)
-                .find(|idx| scene.slots().get(*idx).and_then(Option::as_ref).is_none());
-            let slot_index = match free_index {
-                Some(idx) => idx,
-                None => {
-                    // All slots full: replace the oldest entry (lowest entry order)
-                    // to keep the window bounded.
-                    let mut oldest: Option<(usize, u64)> = None;
-                    for (idx, slot) in scene.slots().iter().enumerate() {
-                        if let Some(slot) = slot {
-                            let key = (idx, slot.slot_entry_order);
-                            if oldest.map_or(true, |(_, order)| key.1 < order) {
-                                oldest = Some(key);
-                            }
-                        }
-                    }
-                    match oldest {
-                        Some((idx, _)) => idx,
-                        None => scene.slots().len().min(VISIBLE_SLOT_CAP),
-                    }
-                }
-            };
-            let slot = PresentationSlot::from_block(block, slot_index, self.entry_counter);
-            self.entry_counter += 1;
-            scene.set_slot(slot_index, Some(slot));
-            visual_changed = true;
-            redraw_requested = true;
-        }
-
-        // 3) Commit scene if it changed.
-        if self.state.maybe_replace_scene(scene) {
-            visual_changed = true;
-        }
-
-        // Clear any pending idle-hide when fresh content (or an explicit empty
-        // expectation) resets the window — non-empty content cancels a pending hide.
-        if !self.caption_blocks().is_empty() {
-            self.idle_hide_pending_since = None;
-        }
-
-        if self.latest_revision != snapshot.revision {
-            self.latest_revision = snapshot.revision;
-        }
-
-        if visual_changed || redraw_requested {
-            self.redraw_requested = true;
-            self.idle_hide_pending_since = if self.caption_blocks().is_empty() {
-                Some(self.idle_hide_pending_since.unwrap_or_else(Instant::now))
-            } else {
-                None
-            };
-            SnapshotApplyOutcome::Applied {
-                visual_changed,
-                redraw_requested,
-                slot_removed,
-            }
+        let silence_deadline = self.last_activity + SILENCE_BEFORE_FADE;
+        Some(if silence_deadline <= now {
+            now
         } else {
-            SnapshotApplyOutcome::Noop
+            silence_deadline
+        })
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+}
+
+/// The sole runtime state machine for the v7 desktop websocket path.
+pub struct RuntimeCoordinator {
+    transcript: TranscriptState,
+    settings: VrViewSettings,
+    visibility: VisibilityController,
+    now: Instant,
+    last_frame: HudFrame,
+    submitted_frame: bool,
+    submit_count: usize,
+    pending_live_dismiss: Option<(SpeakerKey, Option<String>)>,
+    ready: bool,
+    should_exit: bool,
+    test_parent_alive: bool,
+    next_parent_poll: Instant,
+    startup_deadline: Option<Instant>,
+}
+
+impl RuntimeCoordinator {
+    pub fn new(now: Instant, settings: VrViewSettings) -> Self {
+        let settings = if settings.validate().is_ok() {
+            settings
+        } else {
+            VrViewSettings::default()
+        };
+        Self {
+            transcript: TranscriptState::default(),
+            settings,
+            visibility: VisibilityController::new(now),
+            now,
+            last_frame: HudFrame::default(),
+            submitted_frame: false,
+            submit_count: 0,
+            pending_live_dismiss: None,
+            ready: false,
+            should_exit: false,
+            test_parent_alive: true,
+            next_parent_poll: now + PARENT_POLL_INTERVAL,
+            startup_deadline: None,
         }
     }
 
-    /// Handle one bridge event, mutating state (render loop is driven
-    /// separately via `submit_frame_if_needed` / `run_event_loop`).
-    pub async fn handle_event(&mut self, event: OverlayBridgeEvent) -> Result<(), RuntimeFailure> {
-        match event {
-            OverlayBridgeEvent::Shutdown => {
-                self.stopped = true;
+    pub fn apply_event(&mut self, event: CaptionEvent, now: Instant) {
+        self.now = now;
+        let source_activity =
+            matches!(&event, CaptionEvent::SourceLive(value) if !value.text.is_empty());
+        let visible_update = matches!(&event, CaptionEvent::SourceCommitted(value) if !value.text.is_empty())
+            || matches!(&event, CaptionEvent::TargetDraft(value) if !value.text.is_empty())
+            || matches!(&event, CaptionEvent::TargetCommitted(value) if !value.text.is_empty())
+            || matches!(&event, CaptionEvent::RefinedTarget(value) if !value.text.is_empty());
+        let clears_visibility = matches!(
+            &event,
+            CaptionEvent::Clear {
+                preserve_existing: false
             }
-            OverlayBridgeEvent::Snapshot(snapshot) => {
-                self.apply_snapshot(snapshot);
-            }
-            OverlayBridgeEvent::Captions(update) => {
-                if update.clear {
-                    self.apply_snapshot(OverlayPresentationSnapshot {
-                        revision: self.latest_revision + 1,
-                        calibration: Default::default(),
-                        blocks: vec![],
-                    });
-                    return Ok(());
-                }
+        );
 
-                if update.source_updated || update.translation_updated {
-                    // Keep a single two-line caption block, but update each
-                    // line independently.  A translation-only event must not
-                    // erase the source, and a source-only event must not erase
-                    // the last translation.
-                    let previous = self.state.scene().slots().first().and_then(Option::as_ref);
-                    let primary_text = if update.translation_updated {
-                        update.peer
-                    } else {
-                        previous
-                            .map(|slot| slot.primary_text.clone())
-                            .unwrap_or_default()
-                    };
-                    let secondary_text = if update.source_updated {
-                        update.self_text
-                    } else {
-                        previous
-                            .map(|slot| slot.secondary_text.clone())
-                            .unwrap_or_default()
-                    };
-                    let block = crate::state::OverlayPresentationBlock {
-                        id: "caption:1".into(),
-                        occupant_key: "caption:1".into(),
-                        appearance_seq: self.latest_revision,
-                        channel: "self".into(),
-                        block_variant: OverlayPresentationBlockVariant::Finalized,
-                        primary_text,
-                        secondary_text,
-                        secondary_enabled: true,
-                        primary_language: None,
-                        secondary_language: None,
-                        update_id: None,
-                        origin_wall_clock_ms: None,
-                        session_scope: None,
-                    };
-                    self.apply_snapshot(OverlayPresentationSnapshot {
-                        revision: self.latest_revision + 1,
-                        calibration: Default::default(),
-                        blocks: vec![block],
-                    });
-                }
+        if let CaptionEvent::ViewSettingsChanged(settings) = &event {
+            if settings.validate().is_ok() {
+                self.settings = *settings;
             }
-            OverlayBridgeEvent::Control(_)
-            | OverlayBridgeEvent::Heartbeat
-            | OverlayBridgeEvent::Noop
-            | OverlayBridgeEvent::AuthError(_) => {
-                // Control/logging mode and heartbeat are handled by the shell;
-                // auth errors are escalated at startup (Task 4).
+            return;
+        }
+        if matches!(event, CaptionEvent::Shutdown) {
+            self.should_exit = true;
+            return;
+        }
+
+        self.transcript.apply(&event, now);
+        if clears_visibility {
+            self.visibility.reset(now);
+            return;
+        }
+        if source_activity || visible_update {
+            let projection = self.project_readonly(now);
+            if frame_has_text(&projection.frame) {
+                self.visibility.on_activity(now);
             }
         }
-        Ok(())
     }
 
-    fn handle_bridge_loss(&mut self) -> Result<(), RuntimeFailure> {
-        if self.ready_sent {
-            Err(RuntimeFailure::RuntimeDisconnected)
+    pub fn project(&self, now: Instant) -> HudFrame {
+        self.project_readonly(now).frame
+    }
+
+    fn project_readonly(&self, now: Instant) -> Projection {
+        projection::project(&self.transcript, &self.settings, now)
+    }
+
+    pub fn render(&mut self, now: Instant) -> bool {
+        self.now = now;
+        let Some(frame) = self.pending_frame(now) else {
+            return false;
+        };
+        self.commit_frame(frame);
+        true
+    }
+
+    /// Get a frame that needs a successful render+submit. This method does not
+    /// mutate transcript state, so a failed renderer or submit can retry it.
+    pub fn pending_frame(&mut self, now: Instant) -> Option<HudFrame> {
+        self.now = now;
+        let projection = self.project_readonly(now);
+        let frame = projection.frame;
+        if !self.submitted_frame || !frame.visually_equal(&self.last_frame) {
+            self.pending_live_dismiss = match projection.live_row {
+                LiveRowDirective::Dismiss {
+                    speaker,
+                    sentence_id,
+                } => Some((speaker, sentence_id)),
+                LiveRowDirective::None | LiveRowDirective::Show => None,
+            };
+            Some(frame)
+        } else {
+            None
+        }
+    }
+
+    /// Commit only after both renderer and OpenVR submission have succeeded.
+    pub fn commit_frame(&mut self, frame: HudFrame) {
+        if let Some((speaker, sentence_id)) = self.pending_live_dismiss.take() {
+            self.transcript
+                .dismiss_settled_live(&speaker, sentence_id.as_deref());
+        }
+        self.last_frame = frame;
+        self.submitted_frame = true;
+        self.submit_count += 1;
+    }
+
+    pub fn tick(&mut self, now: Instant) -> VisibilityTick {
+        self.now = now;
+        self.visibility.tick(now)
+    }
+
+    pub fn next_deadline(&self, now: Instant) -> Option<Instant> {
+        let live_deadline = match &self.transcript.live_input {
+            LiveInputRow::Settled { closed_at, .. } => {
+                let deadline = *closed_at + projection::LIVE_SOURCE_HOLD;
+                (now < deadline).then_some(deadline)
+            }
+            _ => None,
+        };
+        [
+            live_deadline,
+            self.visibility.next_deadline_at(now),
+            Some(self.next_parent_poll),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    pub fn on_parent_poll(&mut self, now: Instant, parent: &impl ParentLiveness) -> bool {
+        self.now = now;
+        self.next_parent_poll = now + PARENT_POLL_INTERVAL;
+        if !parent.alive() {
+            self.should_exit = true;
+        }
+        self.should_exit
+    }
+
+    pub fn parent_poll_due(&self, now: Instant) -> bool {
+        now >= self.next_parent_poll
+    }
+
+    pub fn on_disconnect(&mut self) {
+        self.transcript.clear(false);
+        self.last_frame = HudFrame::default();
+        self.submitted_frame = false;
+        self.pending_live_dismiss = None;
+        self.ready = false;
+        self.visibility = VisibilityController::new(self.now);
+    }
+
+    pub fn start(&mut self, now: Instant) -> bool {
+        self.now = now;
+        self.render(now);
+        self.ready = true;
+        true
+    }
+
+    pub fn set_startup_deadline(&mut self, now: Instant, timeout: Duration) {
+        self.startup_deadline = Some(now + timeout);
+    }
+
+    pub fn startup_deadline_expired(&self, now: Instant) -> bool {
+        self.startup_deadline
+            .is_some_and(|deadline| now >= deadline)
+    }
+
+    pub fn transcript(&self) -> &TranscriptState {
+        &self.transcript
+    }
+
+    pub fn settings(&self) -> VrViewSettings {
+        self.settings
+    }
+
+    pub fn last_frame(&self) -> &HudFrame {
+        &self.last_frame
+    }
+
+    pub fn submit_count(&self) -> usize {
+        self.submit_count
+    }
+
+    pub fn ready(&self) -> bool {
+        self.ready
+    }
+
+    pub fn should_exit(&self) -> bool {
+        self.should_exit
+    }
+
+    pub fn for_test() -> Self {
+        Self::new(Instant::now(), VrViewSettings::default())
+    }
+
+    pub fn for_test_with_parent(alive: bool) -> Self {
+        let mut coordinator = Self::for_test();
+        coordinator.test_parent_alive = alive;
+        coordinator
+    }
+
+    pub fn now_for_test(&self) -> Instant {
+        self.now
+    }
+
+    pub fn push_for_test(&mut self, event: CaptionEvent, now: Instant) {
+        self.apply_event(event, now);
+    }
+
+    pub fn render_for_test(&mut self, now: Instant) {
+        self.render(now);
+    }
+
+    pub fn drain_and_render_for_test(&mut self, now: Instant) {
+        self.render(now);
+    }
+
+    pub fn tick_for_test(&mut self, now: Instant) {
+        self.tick(now);
+    }
+
+    pub fn next_wake_for_test(&self, now: Instant) -> Option<Instant> {
+        match &self.transcript.live_input {
+            LiveInputRow::Settled { closed_at, .. } => {
+                let deadline = *closed_at + projection::LIVE_SOURCE_HOLD;
+                (now < deadline).then_some(deadline)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn transcript_for_test(&self) -> &TranscriptState {
+        &self.transcript
+    }
+
+    pub fn last_frame_for_test(&self) -> &HudFrame {
+        &self.last_frame
+    }
+
+    pub fn submit_count_for_test(&self) -> usize {
+        self.submit_count
+    }
+
+    pub fn apply_settings_for_test(&mut self, settings: VrViewSettings) {
+        self.apply_event(CaptionEvent::ViewSettingsChanged(settings), self.now);
+    }
+
+    pub fn settings_for_test(&self) -> VrViewSettings {
+        self.settings
+    }
+
+    pub fn poll_parent_for_test(&mut self, now: Instant) {
+        self.next_parent_poll = now + PARENT_POLL_INTERVAL;
+        if !self.test_parent_alive {
+            self.should_exit = true;
+        }
+    }
+
+    pub fn should_exit_for_test(&self) -> bool {
+        self.should_exit
+    }
+
+    pub fn start_for_test(&mut self, now: Instant) {
+        self.start(now);
+    }
+
+    pub fn ready_for_test(&self) -> bool {
+        self.ready
+    }
+
+    pub fn set_deadline_for_test(&mut self, timeout: Duration) {
+        self.set_startup_deadline(self.now, timeout);
+    }
+
+    pub fn startup_tick_for_test(&self, elapsed: Duration) -> Result<(), ()> {
+        if self.startup_deadline_expired(self.now + elapsed) {
+            Err(())
         } else {
             Ok(())
         }
     }
 
-    /// Render the current caption blocks and submit a texture if needed, then
-    /// reveal the overlay once (gating the `overlay_ready` EVENT on the first
-    /// successful texture submit).
-    pub async fn submit_frame_if_needed(
-        &mut self,
-        renderer: &CaptionRenderer,
-        submitter: &mut impl crate::openvr::OverlayFrameSubmitter,
-        bridge: &mut BridgeClient,
-        logger: &OverlayLogger,
-    ) -> Result<(), RuntimeFailure> {
-        let blocks = self.caption_blocks();
-        let frame = renderer.render_blocks(blocks)?;
-        let has_text = !frame.layout().visible_blocks.is_empty();
-
-        let first = !self.ready_sent;
-        let need_show = has_text && !self.overlay_visible && (first || self.redraw_requested);
-
-        // Early-out if nothing needs to be drawn (no ready gate, no redraw,
-        // no visibility transition) and the picture is unchanged.
-        if !first && !self.redraw_requested && !need_show {
-            return Ok(());
-        }
-
-        submitter.submit_frame(&frame)?;
-        self.frame_submit_sequence += 1;
-        logger
-            .info(format!(
-                "[overlay][CAPTION] submit sequence={} visible_blocks={} has_text={}",
-                self.frame_submit_sequence,
-                frame.layout().visible_blocks.len(),
-                has_text
-            ))
-            .await
-            .ok();
-
-        if first {
-            self.ready_sent = true;
-            self.emit_overlay_ready(bridge).await;
-        }
-
-        if need_show {
-            submitter.set_overlay_visible(true)?;
-            self.overlay_visible = true;
-        }
-
-        // Hide-when-idle: once empty, arm the idle-hide timer if not armed.
-        if has_text {
-            self.idle_hide_pending_since = None;
-        } else if self.idle_hide_pending_since.is_none() {
-            self.idle_hide_pending_since = Some(Instant::now());
-        }
-
-        self.redraw_requested = false;
-        Ok(())
-    }
-
-    /// 发出 `overlay_ready` EVENT, 使用 runtime 的真实 `overlay_instance_id`
-    /// (生产 shell 通过 `set_instance_id` 注入; 单测默认 `"overlay"`)。
-    async fn emit_overlay_ready(&mut self, bridge: &mut BridgeClient) {
-        let payload = serde_json::json!({
-            "type": "overlay_ready",
-            "overlay_instance_id": self.overlay_instance_id,
-        });
-        let _ = bridge.send_json(payload.clone()).await;
-        eprintln!("EVENT {}", payload);
-    }
-
-    /// Drive the bridge event loop until shutdown, applying snapshots and
-    /// maintaining overlay visibility (idle-hide / re-show).
-    pub async fn run_event_loop(
-        &mut self,
-        bridge: &mut BridgeClient,
-        renderer: &CaptionRenderer,
-        submitter: &mut impl crate::openvr::OverlayFrameSubmitter,
-        logger: &OverlayLogger,
-    ) -> Result<(), RuntimeFailure> {
-        loop {
-            if self.stopped {
-                return Ok(());
-            }
-
-            let idle_deadline = self
-                .idle_hide_pending_since
-                .map(|start| start + IDLE_HIDE_DELAY);
-
-            // Check whether the idle deadline has already elapsed without a
-            // fresh event — used to decide whether to await the bridge or sleep
-            // to the hide deadline.
-            let idle_elapsed = idle_deadline
-                .map(|deadline| Instant::now() >= deadline)
-                .unwrap_or(false);
-
-            let outcome: Result<(), RuntimeFailure> = if idle_elapsed {
-                // Idle window expired: hide the (empty, stable) overlay.
-                self.perform_idle_hide(submitter)?;
-                Ok(())
-            } else if let Some(deadline) = idle_deadline {
-                let until = deadline.saturating_duration_since(Instant::now());
-                tokio::select! {
-                    msg = bridge.next_message() => {
-                        self.consume_bridge_message(msg, logger).await?;
-                        self.drain_redraw(renderer, submitter, bridge, logger).await?;
-                        continue;
-                    }
-                    _ = tokio::time::sleep(until) => continue,
-                }
-            } else {
-                match bridge.next_message().await {
-                    Ok(event) => {
-                        self.consume_bridge_message(Ok(event), logger).await?;
-                        self.drain_redraw(renderer, submitter, bridge, logger)
-                            .await?;
-                    }
-                    Err(crate::bridge::BridgeError::Disconnected) => {
-                        // Treat mid-run disconnect after ready as runtime loss.
-                        if self.ready_sent {
-                            return Err(RuntimeFailure::RuntimeDisconnected);
-                        }
-                    }
-                    Err(_) => {}
-                }
-                continue;
-            };
-            outcome?;
-        }
-    }
-
-    fn perform_idle_hide(
-        &mut self,
-        submitter: &mut impl crate::openvr::OverlayFrameSubmitter,
-    ) -> Result<(), RuntimeFailure> {
-        if self.caption_blocks().is_empty() && self.overlay_visible {
-            submitter.set_overlay_visible(false)?;
-            self.overlay_visible = false;
-        }
-        self.idle_hide_pending_since = None;
-        Ok(())
-    }
-
-    async fn consume_bridge_message(
-        &mut self,
-        msg: Result<OverlayBridgeEvent, crate::bridge::BridgeError>,
-        logger: &OverlayLogger,
-    ) -> Result<(), RuntimeFailure> {
-        match msg {
-            Ok(event) => {
-                let detail = match &event {
-                    OverlayBridgeEvent::Captions(update) => format!(
-                        "captions source_updated={} translation_updated={} clear={}",
-                        update.source_updated, update.translation_updated, update.clear
-                    ),
-                    OverlayBridgeEvent::Snapshot(snapshot) => {
-                        format!(
-                            "snapshot revision={} blocks={}",
-                            snapshot.revision,
-                            snapshot.blocks.len()
-                        )
-                    }
-                    OverlayBridgeEvent::Control(_) => "control".to_string(),
-                    OverlayBridgeEvent::Shutdown => "shutdown".to_string(),
-                    OverlayBridgeEvent::Heartbeat => "heartbeat".to_string(),
-                    OverlayBridgeEvent::Noop => "noop".to_string(),
-                    OverlayBridgeEvent::AuthError(_) => "auth_error".to_string(),
-                };
-                logger
-                    .info(format!("[overlay][CAPTION] receive {detail}"))
-                    .await
-                    .ok();
-                self.handle_event(event).await
-            }
-            Err(crate::bridge::BridgeError::Disconnected) => {
-                if self.ready_sent {
-                    Err(RuntimeFailure::RuntimeDisconnected)
-                } else {
-                    Ok(())
-                }
-            }
-            Err(_) => Ok(()),
-        }
-    }
-
-    async fn drain_redraw(
-        &mut self,
-        renderer: &CaptionRenderer,
-        submitter: &mut impl crate::openvr::OverlayFrameSubmitter,
-        bridge: &mut BridgeClient,
-        logger: &OverlayLogger,
-    ) -> Result<(), RuntimeFailure> {
-        // 校准变更要落到 OpenVR 变换 (否则浮层停在视野正中)。
-        if self.calibration_pending {
-            submitter.apply_calibration(self.state.calibration())?;
-            self.calibration_pending = false;
-        }
-        if self.redraw_requested {
-            self.submit_frame_if_needed(renderer, submitter, bridge, logger)
-                .await?;
-        }
-        Ok(())
-    }
-
-    /// Test helper: mark the runtime as "ready" so bridge-loss is considered a
-    /// runtime disconnect (matches startup ordering semantics).
-    pub fn mark_ready_for_test(&mut self) {
-        self.ready_sent = true;
-    }
-
-    /// Test helper: simulate a bridge loss after readiness. Returns
-    /// `RuntimeFailure::RuntimeDisconnected` (tests/runtime.rs:413-419).
-    pub async fn handle_bridge_loss_for_test(&mut self) -> Result<(), RuntimeFailure> {
-        self.handle_bridge_loss()
+    pub fn on_disconnect_for_test(&mut self) {
+        self.on_disconnect();
     }
 }
 
-impl PresentationSlot {
-    fn from_block(
-        block: &crate::state::OverlayPresentationBlock,
-        slot_index: usize,
-        entry_order: u64,
-    ) -> Self {
-        Self {
-            slot_index,
-            slot_entry_order: entry_order,
-            occupant_key: block.occupant_key.clone(),
-            appearance_seq: block.appearance_seq,
-            update_id: block.update_id.clone(),
-            session_scope: block.session_scope.clone(),
-            id: block.id.clone(),
-            primary_text: block.primary_text.clone(),
-            secondary_text: block.secondary_text.clone(),
-            secondary_enabled: block.secondary_enabled,
-            primary_language: block.primary_language.clone(),
-            secondary_language: block.secondary_language.clone(),
-            channel: channel_from_str(&block.channel),
-            block_variant: variant_from_protocol(block.block_variant),
-        }
-    }
-
-    fn to_caption_block(&self) -> CaptionBlock {
-        self.to_caption_block_at_row(self.slot_index)
-    }
-
-    /// 视觉行 `row` 的固定锦点 (两槽位行式布局: 行距容得下已译块最大高)。
-    fn to_caption_block_at_row(&self, row: usize) -> CaptionBlock {
-        let anchor_top_px = FIRST_SLOT_TOP_PX + row as f32 * SLOT_ROW_STRIDE_PX;
-        let mut block = CaptionBlock::new(&self.id, &self.primary_text)
-            .with_secondary_text(&self.secondary_text, self.secondary_enabled)
-            .with_slot(row, anchor_top_px);
-        block.block_variant = self.block_variant;
-        block.channel = self.channel;
-        block.primary_language = self.primary_language.clone();
-        block.secondary_language = self.secondary_language.clone();
-        block
-    }
+fn frame_has_text(frame: &HudFrame) -> bool {
+    frame.slots.iter().flatten().any(|row| !row.text.is_empty())
 }
 
-fn channel_from_str(channel: &str) -> Option<CaptionChannel> {
-    match channel {
-        "self" => Some(CaptionChannel::SelfChannel),
-        "peer" => Some(CaptionChannel::PeerChannel),
-        _ => None,
-    }
-}
+const HMD_RETRY_DEADLINE: Duration = Duration::from_secs(10);
+const HMD_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const CONNECT_RETRY_INITIAL: Duration = Duration::from_millis(100);
+const CONNECT_RETRY_MAX: Duration = Duration::from_secs(1);
+const RECONNECT_RETRY_MAX: Duration = Duration::from_secs(5);
 
-fn variant_from_protocol(variant: OverlayPresentationBlockVariant) -> CaptionBlockVariant {
-    match variant {
-        OverlayPresentationBlockVariant::ActiveSelf => CaptionBlockVariant::ActiveSelf,
-        OverlayPresentationBlockVariant::ActivePeer => CaptionBlockVariant::ActivePeer,
-        OverlayPresentationBlockVariant::Finalized => CaptionBlockVariant::Finalized,
-    }
-}
-
-/// Return `(visual_changed, redraw_requested)` for updating an existing slot.
-/// Slot identity (index, entry order, occupant, update id) is never touched.
-fn update_slot_content(
-    slot: &mut PresentationSlot,
-    block: &crate::state::OverlayPresentationBlock,
-) -> (bool, bool) {
-    let mut visual = false;
-    let mut redraw = false;
-
-    if slot.id != block.id {
-        slot.id = block.id.clone();
-        visual = true;
-    }
-    if slot.primary_text != block.primary_text {
-        slot.primary_text = block.primary_text.clone();
-        visual = true;
-    }
-    if slot.secondary_text != block.secondary_text {
-        slot.secondary_text = block.secondary_text.clone();
-        visual = true;
-    }
-    if slot.secondary_enabled != block.secondary_enabled {
-        slot.secondary_enabled = block.secondary_enabled;
-        visual = true;
-    }
-    if slot.primary_language != block.primary_language {
-        slot.primary_language = block.primary_language.clone();
-        visual = true;
-        redraw = true;
-    }
-    if slot.secondary_language != block.secondary_language {
-        slot.secondary_language = block.secondary_language.clone();
-        visual = true;
-        redraw = true;
-    }
-    let channel = channel_from_str(&block.channel);
-    if slot.channel != channel {
-        slot.channel = channel;
-        visual = true;
-    }
-    let variant = variant_from_protocol(block.block_variant);
-    if slot.block_variant != variant {
-        slot.block_variant = variant;
-        visual = true;
-    }
-    if slot.update_id != block.update_id {
-        slot.update_id = block.update_id.clone();
-    }
-    if slot.session_scope != block.session_scope {
-        slot.session_scope = block.session_scope.clone();
-        visual = true;
-        redraw = true;
-    }
-
-    (visual, redraw)
-}
-
-// ── Startup / CLI wiring (shell) ─────────────────────────────────────────
-//
-// These keep the existing startup path compiling. Task 4 wires the new core
-// into `run_with_manifest` with the EVENT protocol + HMD retry.
-
-/// Parse CLI args, load manifest, run the main loop. Returns the process exit code.
 pub async fn run_cli(args: &[String]) -> i32 {
-    // No arguments: show usage and exit 2.
     if args.len() <= 1 {
         eprintln!("usage: RinBridgeOverlay --config <path> [--check-startup-contract]");
         return 2;
     }
-
-    // `--check-startup-contract`: 打印当前 contracts 版本并成功退出(独立于
-    // manifest 加载)。stdout 上输出 `{"contract_version": N}`。
-    if args.iter().any(|a| a == "--check-startup-contract") {
+    if args.iter().any(|arg| arg == "--check-startup-contract") {
         println!(
             "{}",
-            serde_json::json!({ "contract_version": crate::manifest::EXPECTED_CONTRACT_VERSION })
+            serde_json::json!({ "contract_version": manifest::EXPECTED_CONTRACT_VERSION })
         );
         return 0;
     }
 
-    // Build provenance: log the exact executable identity so a real run can
-    // prove which binary is actually executing. This directly addresses the
-    // "packaged an older Rin" failure mode.
     if let Ok(exe) = std::env::current_exe() {
-        let (size, mtime_unix) = std::fs::metadata(&exe)
+        let (size, mtime) = std::fs::metadata(&exe)
+            .ok()
             .map(|meta| {
                 let mtime = meta
                     .modified()
                     .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |duration| duration.as_secs());
                 (meta.len(), mtime)
             })
             .unwrap_or((0, 0));
@@ -830,87 +667,70 @@ pub async fn run_cli(args: &[String]) -> i32 {
             "[overlay][BUILD] exe={} size={} mtime_unix={} version={} contract={}",
             exe.display(),
             size,
-            mtime_unix,
+            mtime,
             env!("CARGO_PKG_VERSION"),
-            crate::manifest::EXPECTED_CONTRACT_VERSION
+            manifest::EXPECTED_CONTRACT_VERSION
         );
     }
 
-    let config_path = parse_config_arg(args);
-    let manifest = match config_path {
+    let manifest = match parse_config_arg(args) {
         Some(path) => match manifest::load_manifest(path) {
-            Ok(m) => m,
-            Err(e) => {
-                // 启动失败(manifest 缺失/损坏): 发 EVENT 启动失败行 + exit 1。
-                // 无 manifest 可读取实例 id, 统一发 `overlay_instance_id: null`。
-                emit_startup_error(None, e.failure_reason(), &e.to_string());
-                eprintln!("[overlay][ERROR] manifest load failed: {e}");
-                return e.exit_code();
+            Ok(manifest) => manifest,
+            Err(error) => {
+                emit_startup_error(None, error.failure_reason(), &error.to_string());
+                eprintln!("[overlay][ERROR] manifest load failed: {error}");
+                return error.exit_code();
             }
         },
         None => {
-            // Phase 1: no --config, run with defaults for smoke test
-            default_manifest()
+            let error = StartupError::Manifest("missing --config path".into());
+            emit_startup_error(None, error.failure_reason(), &error.to_string());
+            return error.exit_code();
         }
     };
 
-    if let Err(e) = manifest::validate_manifest(&manifest) {
+    if let Err(error) = manifest::validate_manifest(&manifest) {
         emit_startup_error(
             Some(&manifest.overlay_instance_id),
-            e.failure_reason(),
-            &e.to_string(),
+            error.failure_reason(),
+            &error.to_string(),
         );
-        eprintln!("[overlay][ERROR] manifest validation failed: {e}");
-        return e.exit_code();
+        eprintln!("[overlay][ERROR] manifest validation failed: {error}");
+        return error.exit_code();
     }
-
     run_with_manifest(manifest).await
 }
 
-/// Main overlay runtime shell entrance — init subsystems, then drive the
-/// event-driven core. Returns the process exit code (0 on clean success).
-///
-/// 顺序: 1) connect+auth 2) OpenVR HMD 预检(带重试) 3) OpenVR overlay +
-/// renderer 4) 事件循环。auth 失败/连接失败/HMD 缺失在 connect 之后即可
-/// 判出, 避免在无 VR 环境下 preflight 先阻塞而永远到不了 auth 检测。
 pub async fn run_with_manifest(manifest: OverlayManifest) -> i32 {
     match run_overlay_inner(&manifest).await {
         Ok(()) => 0,
-        Err(e) => {
-            emit_runtime_startup_event(&manifest, &e);
-            eprintln!("[overlay][ERROR] runtime fatal: {e}");
-            e.exit_code()
+        Err(error) => {
+            emit_runtime_startup_event(&manifest, &error);
+            eprintln!("[overlay][ERROR] runtime fatal: {error}");
+            error.exit_code()
         }
     }
 }
 
 async fn run_overlay_inner(manifest: &OverlayManifest) -> Result<(), StartupError> {
-    // 1) Bridge 连接 + auth(放在 HMD 预检之前, 见 test
-    //    `run_with_manifest_reports_bridge_auth_failures_as_startup_errors`)。
-    //    auth 失败 → `BridgeError::Auth` → `StartupError::BridgeAuth`(exit 12);
-    //    其他连接失败 → `BridgeError::Connect` → `StartupError::Bridge`(exit 1)。
-    let (mut bridge, initial_snapshot) = match BridgeClient::connect(manifest).await {
-        Ok(pair) => pair,
-        Err(BridgeError::Auth(reason)) => {
-            return Err(StartupError::BridgeAuth(reason));
-        }
-        Err(e) => {
-            return Err(StartupError::Bridge(e.to_string()));
-        }
-    };
-
-    // 2) OpenVR HMD 预检(带重试)。SteamVR 启动后头显可能才加载完成,
-    //    因此在 HMD_RETRY_DEADLINE_MS 内每间隔重试, 超时报 no_hmd。
-    match wait_for_hmd_preflight().await {
-        Ok(()) => {}
-        Err(e) => return Err(e),
+    if !is_desktop_ws_url(&manifest.bridge_url) {
+        return Err(StartupError::Bridge(format!(
+            "bridge url path must be /ws: {}",
+            manifest.bridge_url
+        )));
     }
 
-    // 3) Init logger
+    let parent = ProcessLiveness {
+        parent_pid: manifest.parent_pid,
+    };
+    let startup_deadline =
+        Instant::now() + Duration::from_millis(u64::from(manifest.startup_deadline_ms));
+    let mut protocol = connect_desktop_until(&parent, manifest, startup_deadline).await?;
+    wait_for_hmd_preflight_with_parent(&parent).await?;
+
     let logger = OverlayLogger::open(&manifest.log_dir, manifest.logging_mode)
         .await
-        .map_err(|e| StartupError::Bridge(e.to_string()))?;
-
+        .map_err(|error| StartupError::Manifest(error.to_string()))?;
     logger
         .info(format!(
             "[overlay] starting instance={} bridge={}",
@@ -919,47 +739,346 @@ async fn run_overlay_inner(manifest: &OverlayManifest) -> Result<(), StartupErro
         .await
         .ok();
 
-    // 4) Init OpenVR overlay + renderer
-    let overlay = OpenVrOverlay::new(&manifest.overlay_instance_id)?;
+    let mut overlay = OpenVrOverlay::new(&manifest.overlay_instance_id)?;
+    overlay.apply_calibration(&manifest.calibration)?;
     let renderer = CaptionRenderer::new()?;
+    renderer.set_presentation(crate::renderer::CaptionPresentation {
+        text_scale: manifest.calibration.text_scale,
+        background_alpha: manifest.calibration.background_alpha,
+    });
 
-    let mut runtime = OverlayRuntime::new(initial_snapshot);
-    runtime
-        .run_with_shell(
-            overlay,
-            &renderer,
-            &mut bridge,
-            &logger,
-            &manifest.overlay_instance_id,
-        )
+    let now = Instant::now();
+    let mut coordinator = RuntimeCoordinator::new(now, manifest.view_settings);
+    let initial = renderer.render_hud_frame(&HudFrame::default())?;
+    let mut submitter = ShellSubmitter(&mut overlay);
+    submitter.submit_frame(&initial.frame)?;
+    submitter.set_overlay_alpha(0.0)?;
+    submitter.set_overlay_visible(false)?;
+    coordinator.start(now);
+    let mut submit_sequence = 1u64;
+    logger
+        .diagnostic(&[
+            ("event_kind", "startup_empty_frame"),
+            ("dirty_slots", "0"),
+            ("render_ms", "0"),
+            ("submit_sequence", "1"),
+        ])
         .await
+        .ok();
+    emit_event_json(&serde_json::json!({
+        "type": "overlay_ready",
+        "overlay_instance_id": manifest.overlay_instance_id,
+    }));
+
+    let mut reconnect_delay = Duration::from_millis(250);
+    loop {
+        if coordinator.should_exit() {
+            break;
+        }
+        let current = Instant::now();
+        if coordinator.parent_poll_due(current) && coordinator.on_parent_poll(current, &parent) {
+            break;
+        }
+
+        let wake = coordinator
+            .next_deadline(current)
+            .unwrap_or(current + PARENT_POLL_INTERVAL);
+        let message = tokio::select! {
+            message = protocol.next_event() => Some(message),
+            _ = tokio::time::sleep_until(tokio::time::Instant::from_std(wake)) => None,
+        };
+
+        let mut disconnected = false;
+        match message {
+            Some(Ok(event)) => {
+                log_caption_event(&logger, &event).await;
+                coordinator.apply_event(event, Instant::now());
+                while let Some(next) = protocol.try_next_event().await {
+                    match next {
+                        Ok(event) => {
+                            log_caption_event(&logger, &event).await;
+                            coordinator.apply_event(event, Instant::now());
+                        }
+                        Err(_) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                    if coordinator.should_exit() {
+                        break;
+                    }
+                }
+            }
+            Some(Err(_)) => disconnected = true,
+            None => {
+                let now = Instant::now();
+                if coordinator.parent_poll_due(now) && coordinator.on_parent_poll(now, &parent) {
+                    break;
+                }
+            }
+        }
+
+        if coordinator.should_exit() {
+            break;
+        }
+        if disconnected {
+            coordinator.on_disconnect();
+            submitter.set_overlay_alpha(0.0)?;
+            submitter.set_overlay_visible(false)?;
+            protocol =
+                reconnect_desktop_after_disconnect(&parent, manifest, &logger, reconnect_delay)
+                    .await?;
+            reconnect_delay = Duration::from_millis(250);
+        } else {
+            flush_desktop_state(
+                &mut coordinator,
+                &renderer,
+                &mut submitter,
+                &logger,
+                &mut submit_sequence,
+            )
+            .await?;
+        }
+    }
+
+    submitter.set_overlay_alpha(0.0)?;
+    submitter.set_overlay_visible(false)?;
+    overlay.compositor_heartbeat();
+    Ok(())
 }
 
-/// 运行 HMD 预检并在超时前重试。返回 `Ok(())` 表示预检通过;
-/// 返回 `StartupError`(exit 20 系列)表示超时仍无 HMD/SteamVR 不可用。
-async fn wait_for_hmd_preflight() -> Result<(), StartupError> {
-    let deadline = Instant::now() + Duration::from_millis(HMD_RETRY_DEADLINE_MS);
+async fn connect_desktop_until(
+    parent: &impl ParentLiveness,
+    manifest: &OverlayManifest,
+    deadline: Instant,
+) -> Result<DesktopProtocol, StartupError> {
+    let mut delay = CONNECT_RETRY_INITIAL;
     loop {
-        match openvr::perform_startup_preflight() {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                if Instant::now() >= deadline {
-                    return Err(e.into());
+        if !parent.alive() {
+            return Err(StartupError::RuntimeDisconnected);
+        }
+        match DesktopProtocol::connect(manifest).await {
+            Ok(protocol) => return Ok(protocol),
+            Err(crate::protocol::BridgeError::UnsupportedPath(path)) => {
+                return Err(StartupError::Bridge(format!(
+                    "bridge url path must be /ws: {path}"
+                )))
+            }
+            Err(error) if Instant::now() >= deadline => {
+                return Err(StartupError::Bridge(error.to_string()))
+            }
+            Err(_) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(StartupError::Bridge("startup deadline expired".into()));
                 }
-                tokio::time::sleep(Duration::from_millis(HMD_RETRY_INTERVAL_MS)).await;
+                tokio::time::sleep(delay.min(remaining)).await;
+                delay = (delay * 2).min(CONNECT_RETRY_MAX);
             }
         }
     }
 }
 
-/// stderr 上输出一条 `EVENT {json}` 协议行。
-fn emit_event_json(payload: &serde_json::Value) {
-    eprintln!("EVENT {}", payload);
+async fn reconnect_desktop_after_disconnect(
+    parent: &impl ParentLiveness,
+    manifest: &OverlayManifest,
+    logger: &OverlayLogger,
+    initial_delay: Duration,
+) -> Result<DesktopProtocol, StartupError> {
+    let mut delay = initial_delay;
+    loop {
+        if !parent.alive() {
+            return Err(StartupError::RuntimeDisconnected);
+        }
+        tokio::time::sleep(delay).await;
+        match DesktopProtocol::connect(manifest).await {
+            Ok(protocol) => return Ok(protocol),
+            Err(crate::protocol::BridgeError::UnsupportedPath(path)) => {
+                return Err(StartupError::Bridge(format!(
+                    "bridge url path must be /ws: {path}"
+                )))
+            }
+            Err(error) => {
+                let next_delay = (delay * 2).min(RECONNECT_RETRY_MAX);
+                logger
+                    .info(format!(
+                        "[overlay] reconnect failed: {error}; retrying in {}ms",
+                        next_delay.as_millis()
+                    ))
+                    .await
+                    .ok();
+                delay = next_delay;
+            }
+        }
+    }
 }
 
-/// 统一输出一条 `startup_error` EVENT 行。`overlay_instance_id` 必填:
-/// 有 manifest 时传 `Some(id)`; manifest 加载失败时传 `None`(序列化为 `null`),
-/// 保证所有调用点 schema 一致。
+async fn flush_desktop_state(
+    coordinator: &mut RuntimeCoordinator,
+    renderer: &CaptionRenderer,
+    submitter: &mut impl OverlayFrameSubmitter,
+    logger: &OverlayLogger,
+    submit_sequence: &mut u64,
+) -> Result<(), StartupError> {
+    let now = Instant::now();
+    let visibility = coordinator.tick(now);
+    if let Some(frame) = coordinator.pending_frame(now) {
+        let dirty_slots = coordinator
+            .last_frame()
+            .slots
+            .iter()
+            .zip(frame.slots.iter())
+            .filter(|(old, new)| match (old, new) {
+                (Some(old), Some(new)) => !old.visually_equal(new),
+                (None, None) => false,
+                _ => true,
+            })
+            .count();
+        let render_started = Instant::now();
+        let rendered = renderer.render_hud_frame(&frame)?;
+        let dirty_slots = dirty_slots.to_string();
+        let render_ms = render_started.elapsed().as_millis().to_string();
+        let next_sequence = (*submit_sequence + 1).to_string();
+        logger
+            .diagnostic(&[
+                ("event_kind", "render"),
+                ("dirty_slots", dirty_slots.as_str()),
+                ("render_ms", render_ms.as_str()),
+            ])
+            .await
+            .ok();
+        submitter.submit_frame(&rendered.frame)?;
+        coordinator.commit_frame(frame);
+        *submit_sequence += 1;
+        logger
+            .diagnostic(&[
+                ("event_kind", "submit"),
+                ("submit_sequence", &next_sequence),
+            ])
+            .await
+            .ok();
+    }
+    if let Some(visible) = visibility.set_visible {
+        submitter.set_overlay_visible(visible)?;
+    }
+    if let Some(alpha) = visibility.alpha {
+        submitter.set_overlay_alpha(alpha)?;
+    }
+    Ok(())
+}
+
+async fn log_caption_event(logger: &OverlayLogger, event: &CaptionEvent) {
+    let kind = match event {
+        CaptionEvent::SourceLive(_) => "source_live",
+        CaptionEvent::SourceCommitted(_) => "source_committed",
+        CaptionEvent::SourceEnd { .. } => "source_end",
+        CaptionEvent::TargetDraft(_) => "target_draft",
+        CaptionEvent::TargetCommitted(_) => "target_committed",
+        CaptionEvent::RefinedTarget(_) => "refined_target",
+        CaptionEvent::Clear { .. } => "clear",
+        CaptionEvent::ViewSettingsChanged(_) => "view_settings",
+        CaptionEvent::Shutdown => "shutdown",
+        CaptionEvent::Activity => "activity",
+    };
+    let speaker_hash = event_speaker(event)
+        .map(stable_hash)
+        .unwrap_or_else(|| "-".to_string());
+    let sentence_ordinal = event_sentence_id(event)
+        .map(stable_hash)
+        .unwrap_or_else(|| "-".to_string());
+    let preview = event_text(event)
+        .map(|text| {
+            text.chars()
+                .take(80)
+                .map(|ch| if ch.is_control() { ' ' } else { ch })
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    logger
+        .diagnostic(&[
+            ("event_kind", kind),
+            ("speaker_hash", speaker_hash.as_str()),
+            ("sentence_ordinal", sentence_ordinal.as_str()),
+            ("preview", preview.as_str()),
+        ])
+        .await
+        .ok();
+}
+
+fn stable_hash<T: Hash>(value: T) -> String {
+    let mut hasher = DefaultHasher::new();
+    value.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn event_speaker(event: &CaptionEvent) -> Option<&SpeakerKey> {
+    match event {
+        CaptionEvent::SourceLive(value) => Some(&value.speaker),
+        CaptionEvent::SourceCommitted(value) => Some(&value.speaker),
+        CaptionEvent::SourceEnd { speaker, .. } => Some(speaker),
+        CaptionEvent::TargetDraft(value) | CaptionEvent::TargetCommitted(value) => {
+            Some(&value.speaker)
+        }
+        CaptionEvent::RefinedTarget(_)
+        | CaptionEvent::Clear { .. }
+        | CaptionEvent::ViewSettingsChanged(_)
+        | CaptionEvent::Shutdown
+        | CaptionEvent::Activity => None,
+    }
+}
+
+fn event_sentence_id(event: &CaptionEvent) -> Option<&str> {
+    match event {
+        CaptionEvent::SourceLive(value) => value.sentence_id.as_deref(),
+        CaptionEvent::SourceCommitted(value) => value.sentence_id.as_deref(),
+        CaptionEvent::SourceEnd { sentence_id, .. } => sentence_id.as_deref(),
+        CaptionEvent::TargetDraft(value) | CaptionEvent::TargetCommitted(value) => {
+            value.sentence_id.as_deref()
+        }
+        CaptionEvent::RefinedTarget(value) => Some(value.sentence_id.as_str()),
+        CaptionEvent::Clear { .. }
+        | CaptionEvent::ViewSettingsChanged(_)
+        | CaptionEvent::Shutdown
+        | CaptionEvent::Activity => None,
+    }
+}
+
+fn event_text(event: &CaptionEvent) -> Option<&str> {
+    match event {
+        CaptionEvent::SourceLive(value) => Some(value.text.as_str()),
+        CaptionEvent::SourceCommitted(value) => Some(value.text.as_str()),
+        CaptionEvent::TargetDraft(value) | CaptionEvent::TargetCommitted(value) => {
+            Some(value.text.as_str())
+        }
+        CaptionEvent::RefinedTarget(value) => Some(value.text.as_str()),
+        CaptionEvent::SourceEnd { .. }
+        | CaptionEvent::Clear { .. }
+        | CaptionEvent::ViewSettingsChanged(_)
+        | CaptionEvent::Shutdown
+        | CaptionEvent::Activity => None,
+    }
+}
+
+async fn wait_for_hmd_preflight_with_parent(
+    parent: &impl ParentLiveness,
+) -> Result<(), StartupError> {
+    let deadline = Instant::now() + HMD_RETRY_DEADLINE;
+    loop {
+        if !parent.alive() {
+            return Err(StartupError::RuntimeDisconnected);
+        }
+        match openvr::perform_startup_preflight() {
+            Ok(()) => return Ok(()),
+            Err(error) if Instant::now() >= deadline => return Err(error.into()),
+            Err(_) => tokio::time::sleep(HMD_RETRY_INTERVAL).await,
+        }
+    }
+}
+
+fn emit_event_json(payload: &serde_json::Value) {
+    eprintln!("EVENT {payload}");
+}
+
 fn emit_startup_error(instance_id: Option<&str>, reason: &str, detail: &str) {
     emit_event_json(&serde_json::json!({
         "type": "startup_error",
@@ -969,14 +1088,8 @@ fn emit_startup_error(instance_id: Option<&str>, reason: &str, detail: &str) {
     }));
 }
 
-/// 将运行期启动失败映射为对应的 EVENT 协议行：
-/// - BridgeAuth   → `auth_failed`
-/// - Bridge       → `connect_failed`(连接而非认证失败)
-/// - HMD/SteamVR  → `no_hmd`
-/// - 其余         → `startup_error`
 fn emit_runtime_startup_event(manifest: &OverlayManifest, error: &StartupError) {
     let event_type = match error {
-        StartupError::BridgeAuth(_) => "auth_failed",
         StartupError::Bridge(_) => "connect_failed",
         StartupError::SteamVrNotInstalled
         | StartupError::SteamVrNotRunning
@@ -992,51 +1105,18 @@ fn emit_runtime_startup_event(manifest: &OverlayManifest, error: &StartupError) 
     }));
 }
 
-impl OverlayRuntime {
-    /// Shell loop: drive OpenVR submit + compositor heartbeat through the core.
-    async fn run_with_shell(
-        &mut self,
-        mut overlay: OpenVrOverlay,
-        renderer: &CaptionRenderer,
-        bridge: &mut BridgeClient,
-        logger: &OverlayLogger,
-        overlay_instance_id: &str,
-    ) -> Result<(), StartupError> {
-        // Initial render + ready once with the real instance id. The single
-        // ready-emission path lives in `submit_frame_if_needed`, which reads
-        // the id from runtime state (set below) — no hardcoded-id trap.
-        self.set_instance_id(overlay_instance_id);
-        // 启动即应用初始校准 (首个快照到达前位置就正确)。
-        overlay
-            .apply_calibration(&self.state.calibration())
-            .map_err(|e| StartupError::OpenVr(e.to_string()))?;
-        let mut submitter = ShellSubmitter(&mut overlay);
-        self.submit_frame_if_needed(renderer, &mut submitter, bridge, logger)
-            .await
-            .map_err(|e| StartupError::OpenVr(e.to_string()))?;
-
-        self.run_event_loop(bridge, renderer, &mut submitter, logger)
-            .await
-            .map_err(|e| match e {
-                RuntimeFailure::OpenVr(_) | RuntimeFailure::Renderer(_) => {
-                    StartupError::OpenVr(e.to_string())
-                }
-                RuntimeFailure::RuntimeDisconnected => StartupError::RuntimeDisconnected,
-            })?;
-
-        overlay.compositor_heartbeat();
-        Ok(())
-    }
-}
-
 struct ShellSubmitter<'a>(&'a mut OpenVrOverlay);
 
-impl crate::openvr::OverlayFrameSubmitter for ShellSubmitter<'_> {
+impl OverlayFrameSubmitter for ShellSubmitter<'_> {
     fn submit_frame(
         &mut self,
         frame: &crate::renderer::RenderedFrame,
     ) -> Result<(), crate::openvr::OpenVrError> {
         self.0.submit_frame(frame)
+    }
+
+    fn set_overlay_alpha(&mut self, alpha: f32) -> Result<(), crate::openvr::OpenVrError> {
+        self.0.set_overlay_alpha(alpha)
     }
 
     fn set_overlay_visible(&mut self, visible: bool) -> Result<(), crate::openvr::OpenVrError> {
@@ -1045,7 +1125,7 @@ impl crate::openvr::OverlayFrameSubmitter for ShellSubmitter<'_> {
 
     fn apply_calibration(
         &mut self,
-        calibration: &crate::state::OverlayCalibration,
+        calibration: &OverlayCalibration,
     ) -> Result<(), crate::openvr::OpenVrError> {
         self.0.apply_calibration(calibration)
     }
@@ -1055,28 +1135,8 @@ fn parse_config_arg(args: &[String]) -> Option<&str> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--config" {
-            return iter.next().map(|s| s.as_str());
+            return iter.next().map(String::as_str);
         }
     }
     None
-}
-
-fn default_manifest() -> OverlayManifest {
-    OverlayManifest {
-        contract_version: crate::manifest::EXPECTED_CONTRACT_VERSION,
-        app_version: env!("CARGO_PKG_VERSION").into(),
-        overlay_instance_id: "phase1-default".into(),
-        bridge_url: "ws://127.0.0.1:1".into(),
-        parent_pid: 0,
-        startup_deadline_ms: 3000,
-        log_dir: std::env::temp_dir()
-            .join("rinbridge-overlay-phase1")
-            .display()
-            .to_string(),
-        log_level: "INFO".into(),
-        locale: "zh-CN".into(),
-        logging_mode: crate::logging::OverlayLoggingMode::Basic,
-        view_settings: crate::views::VrViewSettings::default(),
-        calibration: crate::state::OverlayCalibration::default(),
-    }
 }

@@ -7,8 +7,7 @@ use rinbridge_overlay::{
     bundled_font_path_from_exe_dir, BlockBounds, BundledFaceId, CaptionBlock, CaptionBlockVariant,
     CaptionChannel, CaptionDebugOverlay, CaptionLayoutPolicy, CaptionPresentation, CaptionRenderer,
     DamageBand, FontFallbackReason, FontLanguageBucket, FontResolver, FontSource, FontWeight,
-    OverlayPlacementPolicy, OverlayPresentationBlock, OverlayPresentationBlockVariant,
-    OverlayPresentationCalibration, OverlayPresentationSnapshot, OverlayState,
+    OverlayPlacementPolicy,
 };
 fn assert_close(actual: f32, expected: f32) {
     assert!(
@@ -722,192 +721,6 @@ fn renderer_uses_slot_top_px_instead_of_stacking_input_order() {
 
     assert_eq!(layout.visible_blocks[0].bounds.top_px, 420.0);
     assert_eq!(layout.visible_blocks[1].bounds.top_px, 40.0);
-}
-
-#[test]
-fn renderer_active_peer_with_state_generated_slots_does_not_overlap_next_row() {
-    let mut state = OverlayState::default();
-    assert!(state.apply_snapshot(&OverlayPresentationSnapshot {
-        revision: 1,
-        calibration: OverlayPresentationCalibration::default(),
-        blocks: vec![
-            OverlayPresentationBlock {
-                id: "peer:active".into(),
-                occupant_key: "peer:turn-1".into(),
-                appearance_seq: 1,
-                channel: "peer".into(),
-                block_variant: OverlayPresentationBlockVariant::ActivePeer,
-                primary_text: String::new(),
-                secondary_text: "Can you hear me?".into(),
-                secondary_enabled: true,
-                primary_language: None,
-                secondary_language: None,
-                update_id: None,
-                origin_wall_clock_ms: None,
-                session_scope: None,
-            },
-            OverlayPresentationBlock {
-                id: "self:final".into(),
-                occupant_key: "self:final".into(),
-                appearance_seq: 2,
-                channel: "self".into(),
-                block_variant: OverlayPresentationBlockVariant::Finalized,
-                primary_text: "hello".into(),
-                secondary_text: "안녕".into(),
-                secondary_enabled: true,
-                primary_language: None,
-                secondary_language: None,
-                update_id: None,
-                origin_wall_clock_ms: None,
-                session_scope: None,
-            },
-        ],
-    }));
-
-    let caption_blocks = state
-        .scene()
-        .slots()
-        .iter()
-        .flatten()
-        .map(|slot| {
-            let channel = if slot.channel == "peer" {
-                CaptionChannel::PeerChannel
-            } else {
-                CaptionChannel::SelfChannel
-            };
-            let variant = match slot.block_variant {
-                OverlayPresentationBlockVariant::ActiveSelf => CaptionBlockVariant::ActiveSelf,
-                OverlayPresentationBlockVariant::ActivePeer => CaptionBlockVariant::ActivePeer,
-                OverlayPresentationBlockVariant::Finalized => CaptionBlockVariant::Finalized,
-            };
-            CaptionBlock::new(slot.id.clone(), slot.primary_text.clone())
-                .with_variant(variant)
-                .with_channel(channel)
-                .with_secondary_text(slot.secondary_text.clone(), slot.secondary_enabled)
-                .with_slot(slot.slot_index, slot.anchor_top_px)
-        })
-        .collect::<Vec<_>>();
-
-    let result = CaptionLayoutPolicy::default().layout_blocks(caption_blocks, 3840, 1024);
-
-    let peer = result
-        .visible_blocks
-        .iter()
-        .find(|block| block.id == "peer:active")
-        .unwrap();
-    let self_block = result
-        .visible_blocks
-        .iter()
-        .find(|block| block.id == "self:final")
-        .unwrap();
-
-    assert_eq!(peer.block_variant, CaptionBlockVariant::ActivePeer);
-    assert_eq!(peer.channel, Some(CaptionChannel::PeerChannel));
-    assert!(peer.primary_lines.iter().all(|line| line.text.is_empty()));
-    assert_eq!(
-        peer.secondary_line.as_ref().map(|line| line.text.as_str()),
-        Some("Can you hear me?")
-    );
-    assert!(peer.secondary_reserved);
-    assert!(
-        peer.bounds.bottom_px <= self_block.bounds.top_px,
-        "peer bounds {:?} should not overlap next row {:?}",
-        peer.bounds,
-        self_block.bounds
-    );
-}
-
-#[test]
-fn renderer_source_only_peer_finalized_with_state_generated_slots_does_not_overlap_next_row() {
-    let mut state = OverlayState::default();
-    assert!(state.apply_snapshot(&OverlayPresentationSnapshot {
-        revision: 1,
-        calibration: OverlayPresentationCalibration::default(),
-        blocks: vec![
-            OverlayPresentationBlock {
-                id: "peer:source-only".into(),
-                occupant_key: "peer:turn-2".into(),
-                appearance_seq: 1,
-                channel: "peer".into(),
-                block_variant: OverlayPresentationBlockVariant::Finalized,
-                primary_text: String::new(),
-                secondary_text: "translation unavailable, showing original source text".into(),
-                secondary_enabled: true,
-                primary_language: None,
-                secondary_language: None,
-                update_id: None,
-                origin_wall_clock_ms: None,
-                session_scope: None,
-            },
-            OverlayPresentationBlock {
-                id: "self:final".into(),
-                occupant_key: "self:final".into(),
-                appearance_seq: 2,
-                channel: "self".into(),
-                block_variant: OverlayPresentationBlockVariant::Finalized,
-                primary_text: "hello".into(),
-                secondary_text: "안녕".into(),
-                secondary_enabled: true,
-                primary_language: None,
-                secondary_language: None,
-                update_id: None,
-                origin_wall_clock_ms: None,
-                session_scope: None,
-            },
-        ],
-    }));
-
-    let caption_blocks = state
-        .scene()
-        .slots()
-        .iter()
-        .flatten()
-        .map(|slot| {
-            let channel = if slot.channel == "peer" {
-                CaptionChannel::PeerChannel
-            } else {
-                CaptionChannel::SelfChannel
-            };
-            let variant = match slot.block_variant {
-                OverlayPresentationBlockVariant::ActiveSelf => CaptionBlockVariant::ActiveSelf,
-                OverlayPresentationBlockVariant::ActivePeer => CaptionBlockVariant::ActivePeer,
-                OverlayPresentationBlockVariant::Finalized => CaptionBlockVariant::Finalized,
-            };
-            CaptionBlock::new(slot.id.clone(), slot.primary_text.clone())
-                .with_variant(variant)
-                .with_channel(channel)
-                .with_secondary_text(slot.secondary_text.clone(), slot.secondary_enabled)
-                .with_slot(slot.slot_index, slot.anchor_top_px)
-        })
-        .collect::<Vec<_>>();
-
-    let result = CaptionLayoutPolicy::default().layout_blocks(caption_blocks, 3840, 1024);
-
-    let peer = result
-        .visible_blocks
-        .iter()
-        .find(|block| block.id == "peer:source-only")
-        .unwrap();
-    let self_block = result
-        .visible_blocks
-        .iter()
-        .find(|block| block.id == "self:final")
-        .unwrap();
-
-    assert_eq!(peer.block_variant, CaptionBlockVariant::Finalized);
-    assert_eq!(peer.channel, Some(CaptionChannel::PeerChannel));
-    assert!(peer.primary_lines.iter().all(|line| line.text.is_empty()));
-    assert_eq!(
-        peer.secondary_line.as_ref().map(|line| line.text.as_str()),
-        Some("translation unavailable, showing original source text")
-    );
-    assert!(peer.secondary_reserved);
-    assert!(
-        peer.bounds.bottom_px <= self_block.bounds.top_px,
-        "peer source-only bounds {:?} should not overlap next row {:?}",
-        peer.bounds,
-        self_block.bounds
-    );
 }
 
 #[test]
@@ -1850,7 +1663,7 @@ fn renderer_runtime_backend_is_rejected_outside_windows() {
 
 mod hud_frame_render_tests {
     use super::assert_close;
-    use rinbridge_overlay::renderer::{hud_slot_top_px, HUD_TEXT_LEFT_PX};
+    use rinbridge_overlay::renderer::{hud_content_width_px, hud_slot_top_px, HUD_TEXT_LEFT_PX};
     use rinbridge_overlay::{CaptionRenderer, HudFrame, HudRow, HudRowKind, HudRowRole};
 
     fn row(role: HudRowRole, kind: HudRowKind, text: &str) -> HudRow {
@@ -1991,5 +1804,45 @@ mod hud_frame_render_tests {
         assert!(first.redrawn);
         assert!(!second.redrawn, "identical visual frame must not redraw");
         assert!(second.geometry_reused);
+    }
+
+    #[test]
+    fn hud_render_settled_row_uses_trailing_ellipsis_when_over_budget() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let text = format!("BEGINNING{}", "x".repeat(400));
+        let outcome = renderer
+            .render_hud_frame(&frame(&[(
+                3,
+                row(HudRowRole::UpperPrimary, HudRowKind::Settled, &text),
+            )]))
+            .unwrap();
+        let line = &block(outcome.frame.layout(), "slot-3").primary_lines[0].text;
+        assert!(line.starts_with("BEGINNING"));
+        assert!(line.ends_with('…'));
+        let layout_line = &block(outcome.frame.layout(), "slot-3").primary_lines[0];
+        assert!(
+            layout_line.width_px <= hud_content_width_px(outcome.frame.width()),
+            "DirectWrite-measured fitted line must stay within the HUD budget"
+        );
+    }
+
+    #[test]
+    fn hud_render_live_row_uses_leading_ellipsis_when_over_budget() {
+        let renderer = CaptionRenderer::new_for_test().unwrap();
+        let text = format!("{}NEWESTTAIL", "α".repeat(400));
+        let outcome = renderer
+            .render_hud_frame(&frame(&[(
+                4,
+                row(HudRowRole::LiveSource, HudRowKind::Settled, &text),
+            )]))
+            .unwrap();
+        let line = &block(outcome.frame.layout(), "slot-4").primary_lines[0].text;
+        assert!(line.starts_with('…'));
+        assert!(line.ends_with("NEWESTTAIL"));
+        let layout_line = &block(outcome.frame.layout(), "slot-4").primary_lines[0];
+        assert!(
+            layout_line.width_px <= hud_content_width_px(outcome.frame.width()),
+            "DirectWrite-measured fitted live line must stay within the HUD budget"
+        );
     }
 }

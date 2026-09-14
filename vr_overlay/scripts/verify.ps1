@@ -31,9 +31,6 @@ $sdkIncludeRoot = $sdkIncludeCandidates | Where-Object { Test-Path -LiteralPath 
 if (-not $sdkIncludeRoot) {
     Fail-Environment "Windows SDK include root is unavailable: $($sdkIncludeCandidates -join ', ')"
 }
-if (-not (Test-Path -LiteralPath (Join-Path $repoRoot 'vr_overlay\vendor\openvr_api.dll'))) {
-    Fail-Environment 'vr_overlay/vendor/openvr_api.dll is missing'
-}
 
 $changed = @(
     (git diff --name-only origin/main...HEAD)
@@ -59,4 +56,68 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo test --manifest-path vr_overlay/Cargo.toml
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 cargo build --manifest-path vr_overlay/Cargo.toml --release
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+function Assert-NoStrayDlls([string]$releaseDir) {
+    $stray = @(Get-ChildItem -LiteralPath $releaseDir -Filter '*.dll' -File)
+    if ($stray.Count -ne 0) {
+        throw "release dir contains DLLs: $($stray.Name -join ', ')"
+    }
+}
+
+function Assert-SingleFilePackage([string]$exe) {
+    $stage = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ("rin-package-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stage | Out-Null
+    Copy-Item -LiteralPath $exe -Destination (Join-Path $stage 'RinBridgeOverlay.exe')
+    $files = @(Get-ChildItem -LiteralPath $stage -File -Recurse)
+    if ($files.Count -ne 1 -or $files[0].Name -ne 'RinBridgeOverlay.exe') {
+        throw "runtime package must contain exactly RinBridgeOverlay.exe; found: $($files.Name -join ', ')"
+    }
+    return $stage
+}
+
+function Assert-ContractProbe([string]$exe) {
+    $outputPath = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ("rin-contract-" + [guid]::NewGuid().ToString('N') + '.txt')
+    $process = $null
+    try {
+        $process = Start-Process -FilePath $exe `
+            -ArgumentList '--check-startup-contract' `
+            -Wait -PassThru -NoNewWindow -RedirectStandardOutput $outputPath
+        $out = (Get-Content -LiteralPath $outputPath -Raw).Trim()
+        if ($process.ExitCode -ne 0 -or $out -ne '{"contract_version":7}') {
+            throw "no-sidecar contract probe failed: exit=$($process.ExitCode) output=$out"
+        }
+    }
+    finally {
+        if ($process) {
+            $process.Dispose()
+        }
+        if (Test-Path -LiteralPath $outputPath) {
+            Remove-Item -LiteralPath $outputPath -Force
+        }
+    }
+}
+
+$releaseDir = Join-Path $repoRoot 'vr_overlay\target\release'
+Assert-NoStrayDlls $releaseDir
+$stage = Assert-SingleFilePackage (Join-Path $releaseDir 'RinBridgeOverlay.exe')
+try {
+    Assert-ContractProbe (Join-Path $stage 'RinBridgeOverlay.exe')
+}
+finally {
+    $removed = $false
+    for ($attempt = 1; $attempt -le 5 -and -not $removed; $attempt++) {
+        try {
+            Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop
+            $removed = $true
+        }
+        catch {
+            if ($attempt -eq 5) {
+                throw
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}

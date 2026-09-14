@@ -182,6 +182,8 @@ pub trait OverlayTextureSubmitter {
 pub trait OverlayFrameSubmitter {
     fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError>;
 
+    fn set_overlay_alpha(&mut self, alpha: f32) -> Result<(), OpenVrError>;
+
     fn display_refresh_rate_hz(&self) -> Option<f32> {
         None
     }
@@ -232,12 +234,25 @@ pub fn submit_texture<T: OverlayTextureSubmitter>(
 pub struct FakeOpenVr {
     last_call: RefCell<Option<String>>,
     visible: Cell<bool>,
+    last_alpha: Cell<Option<f32>>,
     last_visibility_api_call_log: RefCell<Option<String>>,
 }
 
 impl FakeOpenVr {
     pub fn last_call(&self) -> Option<String> {
         self.last_call.borrow().clone()
+    }
+
+    pub fn last_alpha(&self) -> Option<f32> {
+        self.last_alpha.get()
+    }
+}
+
+fn clamp_overlay_alpha(alpha: f32) -> f32 {
+    if alpha.is_nan() {
+        0.0
+    } else {
+        alpha.clamp(0.0, 1.0)
     }
 }
 
@@ -270,6 +285,10 @@ impl OpenVrOverlay {
 impl OverlayFrameSubmitter for OpenVrOverlay {
     fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError> {
         self.backend.submit_frame(frame)
+    }
+
+    fn set_overlay_alpha(&mut self, alpha: f32) -> Result<(), OpenVrError> {
+        self.backend.set_overlay_alpha(alpha)
     }
 
     fn display_refresh_rate_hz(&self) -> Option<f32> {
@@ -384,6 +403,16 @@ impl OpenVrBackend {
         }
     }
 
+    fn set_overlay_alpha(&mut self, alpha: f32) -> Result<(), OpenVrError> {
+        let alpha = clamp_overlay_alpha(alpha);
+        match self {
+            #[cfg(windows)]
+            Self::Windows(openvr) => openvr.set_overlay_alpha(alpha),
+            #[cfg(not(windows))]
+            Self::Test(openvr) => openvr.set_overlay_alpha(alpha),
+        }
+    }
+
     fn take_visibility_api_call_log(&mut self) -> Option<String> {
         match self {
             #[cfg(windows)]
@@ -413,9 +442,9 @@ impl OpenVrBackend {
 
     fn compositor_heartbeat(&self) {
         #[cfg(windows)]
-        if let Self::Windows(openvr) = self {
-            openvr.compositor_heartbeat();
-        }
+        let Self::Windows(openvr) = self;
+        #[cfg(windows)]
+        openvr.compositor_heartbeat();
     }
 }
 
@@ -553,6 +582,16 @@ impl WindowsOpenVrOverlay {
         Ok(())
     }
 
+    fn set_overlay_alpha(&mut self, alpha: f32) -> Result<(), OpenVrError> {
+        let alpha = clamp_overlay_alpha(alpha);
+        let method = self
+            .overlay_api()
+            .SetOverlayAlpha
+            .ok_or_else(missing_overlay_method("SetOverlayAlpha"))?;
+        let error = unsafe { method(self.overlay_handle, alpha) };
+        map_overlay_init_error(self.overlay_api(), "SetOverlayAlpha", error)
+    }
+
     fn take_visibility_api_call_log(&mut self) -> Option<String> {
         self.last_visibility_api_call_log.take()
     }
@@ -631,6 +670,11 @@ impl OverlayTextureSubmitter for WindowsOpenVrOverlay {
 impl OverlayFrameSubmitter for FakeOpenVr {
     fn submit_frame(&mut self, frame: &RenderedFrame) -> Result<(), OpenVrError> {
         submit_texture(self, frame)
+    }
+
+    fn set_overlay_alpha(&mut self, alpha: f32) -> Result<(), OpenVrError> {
+        self.last_alpha.set(Some(clamp_overlay_alpha(alpha)));
+        Ok(())
     }
 
     fn set_overlay_visible(&mut self, visible: bool) -> Result<(), OpenVrError> {
@@ -980,7 +1024,7 @@ mod tests {
 
     #[test]
     fn default_presentation_calibration_is_not_zeroed() {
-        let cal = crate::state::OverlayPresentationCalibration::default();
+        let cal = crate::state::OverlayCalibration::default();
 
         assert!((cal.distance - 1.1).abs() < 0.0001);
         assert!((cal.offset_y + 0.45).abs() < 0.0001);

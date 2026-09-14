@@ -4,25 +4,25 @@
 //! Geometry is keyed by displayed text (renderer-composed speaker label
 //! included), role, language, font size, content width and text scale. The
 //! `HudRowKind` (draft/settled) is deliberately excluded from the geometry key:
-//! it only selects the draw-time line role (fill brush), so a draft-to-settled
-//! upgrade reuses geometry but changes the rendered color.
+//! it only selects the draw-time fill color, so a draft-to-settled upgrade
+//! reuses geometry but changes the rendered color.
 //!
-//! The `render_hud_frame` draw wiring lands in T5b-2; until then this module is
-//! exercised by its pure unit tests.
 #![allow(dead_code)]
 
+use std::cell::RefCell;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use crate::hud::{HudFrame, HudRowKind, HudRowRole, HUD_SLOT_COUNT};
+use crate::hud::{HudFrame, HudRowRole, HUD_SLOT_COUNT};
 
 use super::font_resolver::{FontResolver, TextStyleKey};
 use super::layout::{measure_text_width, style_descriptor_for_text};
+use super::text_fit::{fit_row_text_with_measure, Truncation};
 use super::types::{
-    BlockBounds, CaptionBlockVariant, LayoutCacheKey, LineRole, ResolvedBlockLayout,
-    ResolvedFrameLayout, ResolvedLineLayout, TextStyleDescriptor, VisualBounds,
-    DEFAULT_FONT_SIZE_PX, DEFAULT_SURFACE_HEIGHT_PX, SECONDARY_FONT_SCALE,
+    BlockBounds, CaptionBlockVariant, CaptionRenderError, LayoutCacheKey, LineRole,
+    ResolvedBlockLayout, ResolvedFrameLayout, ResolvedLineLayout, TextStyleDescriptor,
+    VisualBounds, DEFAULT_FONT_SIZE_PX, DEFAULT_SURFACE_HEIGHT_PX, SECONDARY_FONT_SCALE,
     TEXT_OUTLINE_OVERHANG_PX,
 };
 
@@ -79,6 +79,43 @@ pub struct BuiltHudLayout {
     pub geometry_reused: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct HudTextMeasurement {
+    pub style: TextStyleDescriptor,
+    pub width_px: f32,
+}
+
+pub(crate) trait HudTextMeasurer {
+    fn measure(
+        &self,
+        language: Option<&str>,
+        text: &str,
+        font_size_px: f32,
+        max_width_px: f32,
+    ) -> Result<HudTextMeasurement, CaptionRenderError>;
+}
+
+struct HeuristicHudTextMeasurer<'a> {
+    resolver: &'a FontResolver,
+    measure: &'a dyn Fn(&str, &TextStyleDescriptor, f32) -> f32,
+}
+
+impl HudTextMeasurer for HeuristicHudTextMeasurer<'_> {
+    fn measure(
+        &self,
+        language: Option<&str>,
+        text: &str,
+        font_size_px: f32,
+        _max_width_px: f32,
+    ) -> Result<HudTextMeasurement, CaptionRenderError> {
+        let style = style_descriptor_for_text(self.resolver, language, text);
+        Ok(HudTextMeasurement {
+            width_px: (self.measure)(text, &style, font_size_px),
+            style,
+        })
+    }
+}
+
 pub(crate) fn build_hud_layout(
     frame: &HudFrame,
     text_scale: f32,
@@ -87,6 +124,18 @@ pub(crate) fn build_hud_layout(
     cache: &mut HudLayoutCache,
     measure: &dyn Fn(&str, &TextStyleDescriptor, f32) -> f32,
 ) -> BuiltHudLayout {
+    let measurer = HeuristicHudTextMeasurer { resolver, measure };
+    build_hud_layout_with_measurer(frame, text_scale, surface_width_px, cache, &measurer)
+        .expect("heuristic HUD measurement cannot fail")
+}
+
+pub(crate) fn build_hud_layout_with_measurer(
+    frame: &HudFrame,
+    text_scale: f32,
+    surface_width_px: u32,
+    cache: &mut HudLayoutCache,
+    measurer: &dyn HudTextMeasurer,
+) -> Result<BuiltHudLayout, CaptionRenderError> {
     let text_scale = text_scale.max(0.1);
     let content_width_px = hud_content_width_px(surface_width_px);
     let mut blocks = Vec::new();
@@ -100,21 +149,66 @@ pub(crate) fn build_hud_layout(
             continue;
         };
         occupied += 1;
-        let display_text = compose_display_text(row);
+        let raw_display_text = compose_display_text(row);
         let role_scale = match row.role {
             HudRowRole::UpperPrimary => 1.0,
             HudRowRole::UpperSecondary | HudRowRole::LiveSource => SECONDARY_FONT_SCALE,
         };
         let font_size_px = DEFAULT_FONT_SIZE_PX * text_scale * role_scale;
-        // Resolve the style before the cache lookup so geometry identity always
-        // carries the actual font identity; a miss never re-resolves later.
-        let style = style_descriptor_for_text(resolver, row.language.as_deref(), &display_text);
+        let raw_measurement = measurer.measure(
+            row.language.as_deref(),
+            &raw_display_text,
+            font_size_px,
+            content_width_px,
+        )?;
+        let truncation = if row.role == HudRowRole::LiveSource {
+            Truncation::Leading
+        } else {
+            Truncation::Trailing
+        };
+        let needs_truncation = raw_measurement.width_px > content_width_px;
+        let display_text = if !needs_truncation {
+            raw_display_text.clone()
+        } else {
+            let measurement_error = RefCell::new(None);
+            let fitted = fit_row_text_with_measure(
+                &raw_display_text,
+                content_width_px,
+                truncation,
+                &|candidate| match measurer.measure(
+                    row.language.as_deref(),
+                    candidate,
+                    font_size_px,
+                    content_width_px,
+                ) {
+                    Ok(measurement) => measurement.width_px,
+                    Err(error) => {
+                        measurement_error.replace(Some(error));
+                        f32::INFINITY
+                    }
+                },
+            );
+            if let Some(error) = measurement_error.into_inner() {
+                return Err(error);
+            }
+            fitted
+        };
+        let measured = if !needs_truncation {
+            raw_measurement
+        } else {
+            measurer.measure(
+                row.language.as_deref(),
+                &display_text,
+                font_size_px,
+                content_width_px,
+            )?
+        };
         let key = HudGeometryKey {
             slot,
             display_text: display_text.clone(),
             role: row.role,
             language: row.language.clone(),
-            style_key: style.style_key,
+            style_key: measured.style.style_key,
             font_size_key: scalar_key(font_size_px),
             content_width_key: content_width_px.round() as u32,
             text_scale_key: scalar_key(text_scale),
@@ -123,11 +217,10 @@ pub(crate) fn build_hud_layout(
             reused += 1;
             cached.clone()
         } else {
-            let width_px = measure(&display_text, &style, font_size_px);
             let measured = MeasuredHudLine {
-                style_key: style.style_key,
-                style,
-                width_px,
+                style_key: measured.style.style_key,
+                style: measured.style,
+                width_px: measured.width_px,
                 font_size_px,
             };
             cache.entries.insert(key.clone(), measured.clone());
@@ -202,7 +295,7 @@ pub(crate) fn build_hud_layout(
         blocks.push(block);
     }
 
-    BuiltHudLayout {
+    Ok(BuiltHudLayout {
         layout: ResolvedFrameLayout {
             visible_blocks: blocks,
             dropped_block_ids: Vec::new(),
@@ -213,7 +306,7 @@ pub(crate) fn build_hud_layout(
         geometry_keys,
         visual_signature: hasher.finish(),
         geometry_reused: occupied == reused,
-    }
+    })
 }
 
 /// The renderer is the only composer of the speaker label.
@@ -241,7 +334,7 @@ pub(crate) fn heuristic_measure(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hud::{HudFrame, HudRow};
+    use crate::hud::{HudFrame, HudRow, HudRowKind};
 
     fn row(role: HudRowRole, kind: HudRowKind, text: &str) -> HudRow {
         HudRow {

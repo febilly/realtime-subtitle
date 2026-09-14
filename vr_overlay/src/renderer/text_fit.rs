@@ -1,7 +1,7 @@
 //! Pure, width-agnostic single-line fitting used by the fixed-slot HUD rows.
 //!
-//! The real renderer passes a DirectWrite-derived advance function; tests pass a
-//! deterministic advance so truncation edges are exact.
+//! The real renderer passes a DirectWrite-derived whole-string measurement;
+//! tests can pass a deterministic scalar advance so truncation edges are exact.
 //!
 //! Budget rule: the ellipsis is part of the line, so its own advance is reserved
 //! from `max_advance` before any body text is kept. The fitted result is never
@@ -29,6 +29,21 @@ pub fn fit_row_text(
     direction: Truncation,
     advance: &dyn Fn(char) -> f32,
 ) -> String {
+    fit_row_text_with_measure(text, max_advance, direction, &|candidate| {
+        measure_width(candidate, advance)
+    })
+}
+
+/// Fit a row using a measurement function for the complete candidate string.
+/// This is used by the platform renderer so shaping, kerning and fallback are
+/// included in every budget decision. The public scalar-advance helper above
+/// remains available for deterministic callers and tests.
+pub(crate) fn fit_row_text_with_measure(
+    text: &str,
+    max_advance: f32,
+    direction: Truncation,
+    measure: &dyn Fn(&str) -> f32,
+) -> String {
     if text.is_empty() {
         return String::new();
     }
@@ -39,26 +54,25 @@ pub fn fit_row_text(
         return String::new();
     }
     let max = max_advance.max(0.0);
-    if measure_width(text, advance) <= max {
+    if measure(text) <= max {
         return text.to_owned();
     }
-    let ellipsis_width = advance('…').max(0.0);
+    let ellipsis_width = measure("…").max(0.0);
     if max < ellipsis_width {
         return String::new();
     }
-    let body_budget = max - ellipsis_width;
     let clusters = clusters(text);
 
     match direction {
         Truncation::Trailing => {
             let mut kept: Vec<String> = Vec::new();
-            let mut width = 0.0f32;
             for cluster in &clusters {
-                let cluster_width = measure_width(cluster, advance);
-                if width + cluster_width > body_budget {
+                let mut candidate = kept.concat();
+                candidate.push_str(cluster);
+                candidate.push('…');
+                if measure(&candidate) > max {
                     break;
                 }
-                width += cluster_width;
                 kept.push(cluster.clone());
             }
             // Opening punctuation must not end a truncated line.
@@ -70,17 +84,19 @@ pub fn fit_row_text(
             }
             let mut out = kept.concat();
             out.push('…');
-            fit_strictly(out, kept, ellipsis_width, max, direction, advance)
+            fit_strictly_with_measure(out, kept, ellipsis_width, max, direction, measure)
         }
         Truncation::Leading => {
             let mut kept: Vec<String> = Vec::new();
-            let mut width = 0.0f32;
             for cluster in clusters.iter().rev() {
-                let cluster_width = measure_width(cluster, advance);
-                if width + cluster_width > body_budget {
+                let mut candidate = String::from('…');
+                candidate.push_str(cluster);
+                for existing in kept.iter().rev() {
+                    candidate.push_str(existing);
+                }
+                if measure(&candidate) > max {
                     break;
                 }
-                width += cluster_width;
                 kept.push(cluster.clone());
             }
             kept.reverse();
@@ -93,7 +109,7 @@ pub fn fit_row_text(
             }
             let mut out = String::from('…');
             out.push_str(&kept.concat());
-            fit_strictly(out, kept, ellipsis_width, max, direction, advance)
+            fit_strictly_with_measure(out, kept, ellipsis_width, max, direction, measure)
         }
     }
 }
@@ -101,15 +117,15 @@ pub fn fit_row_text(
 /// Final guard: guarantee the returned string's measured width never exceeds
 /// `max`, independent of floating-point summation order. Trims whole clusters
 /// from the appropriate end until the guard holds.
-fn fit_strictly(
+fn fit_strictly_with_measure(
     mut candidate: String,
     mut kept: Vec<String>,
     ellipsis_width: f32,
     max: f32,
     direction: Truncation,
-    advance: &dyn Fn(char) -> f32,
+    measure: &dyn Fn(&str) -> f32,
 ) -> String {
-    while measure_width(&candidate, advance) > max && !kept.is_empty() {
+    while measure(&candidate) > max && !kept.is_empty() {
         match direction {
             Truncation::Trailing => {
                 kept.pop();
@@ -123,7 +139,7 @@ fn fit_strictly(
             }
         }
     }
-    if measure_width(&candidate, advance) > max {
+    if measure(&candidate) > max {
         // Only the ellipsis can remain, and `max >= ellipsis_width` was checked.
         return if ellipsis_width <= max {
             String::from('…')

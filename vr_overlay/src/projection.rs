@@ -161,7 +161,7 @@ fn settled_record<'a>(
 ) -> Option<&'a SentenceRecord> {
     if let Some(id) = snapshot.sentence_id.as_deref() {
         if let Some(record) = state.sentence_by_upstream_id(id) {
-            return Some(record);
+            return (record.speaker == snapshot.speaker).then_some(record);
         }
     }
     state

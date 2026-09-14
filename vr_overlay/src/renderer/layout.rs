@@ -707,6 +707,25 @@ impl DirectWriteLayoutEngine {
         self.resolve_text_style(policy, language, text).style_key
     }
 
+    pub(crate) fn measure_hud_text(
+        &self,
+        policy: &CaptionLayoutPolicy,
+        language: Option<&str>,
+        text: &str,
+        font_size_px: f32,
+        max_width_px: f32,
+    ) -> Result<(TextStyleDescriptor, f32), windows::core::Error> {
+        let resolved_style = self.resolve_text_style(policy, language, text);
+        let measured = self.measure_centered_line_for_resolved_style(
+            policy,
+            &resolved_style,
+            text,
+            max_width_px,
+            font_size_px,
+        )?;
+        Ok((measured.style, measured.width_px))
+    }
+
     #[cfg(test)]
     fn resolved_text_style_key_for_test(
         &self,

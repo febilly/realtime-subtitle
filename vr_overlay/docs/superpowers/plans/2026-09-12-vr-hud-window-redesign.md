@@ -23,6 +23,75 @@ binding), PowerShell verification.
 
 **Spec:** `vr_overlay/docs/superpowers/specs/2026-09-12-vr-hud-window-redesign.md`
 
+## Status Update (2026-09-14)
+
+### Repository state
+
+- Last committed checkpoint: `3ebf1ba` (`fix(vr): harden HUD T5b cache and visual
+  invalidation`).
+- The field-tested executable was built from the current uncommitted Rust-only working tree,
+  not solely from `3ebf1ba`. Do not use the commit hash alone as binary provenance.
+- The working-tree boundary remains under `vr_overlay/`. The legacy bridge/state files and
+  vendored `openvr_api.dll` are deleted in the working tree but are not yet committed.
+
+### Implemented in the current working tree
+
+- Contract v7 and the unauthenticated raw `/ws` adapter, with no `session_token` path.
+- Sentence-keyed source/target reduction, pending event queue, shared five-slot `HudFrame`, and
+  the `original`, `translation`, and `both` projections.
+- Direct fixed-slot HUD rendering, renderer-owned speaker-label composition, deterministic
+  one-line fitting, leading/trailing ellipsis policy, and CJK truncation guards.
+- Geometry/visual invalidation separation: labels participate in geometry identity;
+  `HudRowKind` selects draw color without entering the geometry key; unchanged visual frames
+  are not redrawn or resubmitted.
+- Compositor-alpha visibility control, explicit coordinator deadlines, reconnect handling,
+  parent-lifetime checks, and single-executable packaging without a DLL sidecar.
+
+### Automated verification observed
+
+- The focused protocol, projection, and coordinator run passed on 2026-09-13: 11 protocol,
+  13 projection, and 18 coordinator tests, with zero failures.
+- Earlier full-suite and release-build runs were green during implementation. Because the
+  current tree remains uncommitted and the field-test process was running afterward, the full
+  completion gate must be rerun on the final committed tree before review.
+
+### Physical HMD result
+
+- `both`: **initial smoke-test pass**. The user confirmed the current Rust overlay was usable
+  and had no observed severe correctness issue during the final run.
+- `original`: projection and coordinator coverage exists, but physical HMD acceptance is still
+  pending.
+- `translation`: projection and coordinator coverage exists, but physical HMD acceptance is
+  still pending.
+- Runtime mode switching was not physically tested. The temporary v7 manifest omitted
+  `view_settings`, so the overlay used the default `both` mode. The current desktop server did
+  not broadcast `vr_view_settings` during the run.
+
+### Translation-delay incident
+
+- The initial symptom was that a translation sometimes appeared only after the next source
+  sentence.
+- A read-only `/ws` capture showed one representative source final at `16.856 s` and its target
+  final at `16.907 s` (about 51 ms later). The current Rust runtime then logged
+  `target_committed -> render -> submit` without waiting for another sentence.
+- Two `RinBridgeOverlay.exe` processes had been present: an older overlay (PID 4628 in that
+  session) and the current v7 overlay (PID 12328). Stopping the older process left only the v7
+  path, after which the user reported normal translation behavior.
+- No source change occurred between the failing observation and the successful observation.
+  The best-supported cause is therefore duplicate/legacy runtime selection or overlapping
+  overlay presentation, not a confirmed reducer delay. This remains an operational finding,
+  not a proven code defect.
+
+### Remaining acceptance work
+
+1. Rerun the complete repository gate on the final committed tree.
+2. Physically test `original`, `translation`, and runtime switching from the desktop-owned
+   setting.
+3. Verify that the production launcher creates exactly one v7 overlay connected to `/ws` and
+   cannot leave a legacy overlay running concurrently.
+4. Complete the remaining HMD checklist: fixed-slot stability, long CJK/Latin fitting, fade and
+   wake, reconnect, and desktop exit.
+
 ## Baseline (verified before planning)
 
 - `cargo 1.97.1`, `rustc 1.97.1`; `cargo fmt --manifest-path vr_overlay/Cargo.toml -- --check`

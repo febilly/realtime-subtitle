@@ -115,6 +115,25 @@ async fn final_tokens_segment_by_sentence_speaker_and_language() {
 }
 
 #[tokio::test]
+async fn separator_replaces_each_same_track_accumulator_independently() {
+    let frames = vec![
+        r#"{"type":"update","final_tokens":[
+            {"text":"old-a","speaker":"1","translation_status":"original","llm_sentence_id":"A","is_final":true}],"non_final_tokens":[]}"#.to_string(),
+        r#"{"type":"update","final_tokens":[
+            {"text":"old-b","speaker":"2","translation_status":"original","llm_sentence_id":"B","is_final":true}],"non_final_tokens":[]}"#.to_string(),
+        r#"{"type":"update","final_tokens":[
+            {"is_separator":true,"is_final":true},
+            {"text":"new-a","speaker":"1","translation_status":"original","llm_sentence_id":"A","is_final":true},
+            {"text":"new-b","speaker":"2","translation_status":"original","llm_sentence_id":"B","is_final":true}],"non_final_tokens":[]}"#.to_string(),
+    ];
+    let events = adapter_events(frames).await.unwrap();
+    let committed = committed_texts(&events);
+    assert!(committed.contains(&"new-a".to_string()));
+    assert!(committed.contains(&"new-b".to_string()));
+    assert!(!committed.contains(&"old-bnew-b".to_string()));
+}
+
+#[tokio::test]
 async fn multi_speaker_non_final_emits_one_live_event_for_the_last_speaker() {
     let frames = vec![r#"{"type":"update","final_tokens":[],"non_final_tokens":[
         {"text":"from one","speaker":"1","translation_status":"original","is_final":false},
@@ -191,6 +210,16 @@ async fn view_settings_and_clear_map_to_events() {
         CaptionEvent::ViewSettingsChanged(settings)
             if settings.display_mode == DisplayMode::Original && settings.max_speakers == 2
     )));
+}
+
+#[tokio::test]
+async fn shutdown_maps_to_a_control_event_without_touching_transcript_state() {
+    let events = adapter_events(vec![r#"{"type":"shutdown"}"#.to_string()])
+        .await
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, CaptionEvent::Shutdown)));
 }
 
 #[tokio::test]

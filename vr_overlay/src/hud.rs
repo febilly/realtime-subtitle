@@ -29,11 +29,38 @@ pub struct HudRow {
     pub sentence: Option<SentenceKey>,
 }
 
+impl HudRow {
+    /// Compare only fields that affect the rendered row. `sentence` is
+    /// correlation metadata for projection and is intentionally not visual.
+    pub fn visually_equal(&self, other: &Self) -> bool {
+        self.role == other.role
+            && self.kind == other.kind
+            && self.text == other.text
+            && self.speaker_label == other.speaker_label
+            && self.language == other.language
+    }
+}
+
 /// Five fixed physical slots. The projector never emits a dense window that
 /// would move the live row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HudFrame {
     pub slots: [Option<HudRow>; HUD_SLOT_COUNT],
+}
+
+impl HudFrame {
+    /// Compare the complete rendered HUD while ignoring per-row correlation
+    /// metadata that is not consumed by the renderer.
+    pub fn visually_equal(&self, other: &Self) -> bool {
+        self.slots
+            .iter()
+            .zip(other.slots.iter())
+            .all(|(left, right)| match (left, right) {
+                (Some(left), Some(right)) => left.visually_equal(right),
+                (None, None) => true,
+                _ => false,
+            })
+    }
 }
 
 impl Default for HudFrame {

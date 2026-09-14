@@ -102,6 +102,7 @@ pub enum CaptionEvent {
         preserve_existing: bool,
     },
     ViewSettingsChanged(VrViewSettings),
+    Shutdown,
     Activity,
 }
 
@@ -132,7 +133,9 @@ impl TranscriptState {
                 self.clear(*preserve_existing);
                 return;
             }
-            CaptionEvent::ViewSettingsChanged(_) | CaptionEvent::Activity => return,
+            CaptionEvent::ViewSettingsChanged(_)
+            | CaptionEvent::Activity
+            | CaptionEvent::Shutdown => return,
         }
         self.replay_pending_refinements();
     }
@@ -165,7 +168,17 @@ impl TranscriptState {
             self.next_local_ordinal = 0;
         }
         self.live_input = LiveInputRow::Hidden;
-        self.speaker_recency.clear();
+        if preserve_existing {
+            let kept_speakers: Vec<_> = self
+                .sentences
+                .iter()
+                .map(|record| record.speaker.clone())
+                .collect();
+            self.speaker_recency
+                .retain(|speaker| kept_speakers.iter().any(|kept| kept == speaker));
+        } else {
+            self.speaker_recency.clear();
+        }
         self.pending_refinements.clear();
     }
 
@@ -300,6 +313,17 @@ impl TranscriptState {
             None => self.open_record_index(&update.speaker),
         };
         if let Some(index) = index {
+            let current_phase = self.sentences[index].target.phase;
+            let is_downgrade = matches!(
+                (current_phase, phase),
+                (
+                    TrackPhase::Committed | TrackPhase::Refined,
+                    TrackPhase::Draft
+                ) | (TrackPhase::Refined, TrackPhase::Committed)
+            );
+            if is_downgrade {
+                return;
+            }
             self.sentences[index].target = TextTrack {
                 text: update.text.clone(),
                 phase,
@@ -343,7 +367,7 @@ impl TranscriptState {
 
     fn resolve_or_create(&mut self, speaker: &SpeakerKey, sentence_id: Option<&str>) -> usize {
         if let Some(id) = sentence_id {
-            if let Some(index) = self.find_by_upstream(id) {
+            if let Some(index) = self.find_by_upstream_for_speaker(id, speaker) {
                 return index;
             }
             if let Some(index) = self.unbound_open_index(speaker) {
@@ -379,6 +403,12 @@ impl TranscriptState {
         self.sentences
             .iter()
             .position(|record| record.key.upstream_id.as_deref() == Some(id))
+    }
+
+    fn find_by_upstream_for_speaker(&self, id: &str, speaker: &SpeakerKey) -> Option<usize> {
+        self.sentences.iter().position(|record| {
+            record.key.upstream_id.as_deref() == Some(id) && &record.speaker == speaker
+        })
     }
 
     fn unbound_open_index(&self, speaker: &SpeakerKey) -> Option<usize> {
@@ -570,6 +600,44 @@ mod tests {
         s.apply(&t_commit("1", "A", "bonjour"), Instant::now());
         assert_eq!(s.sentences[0].source.language.as_deref(), Some("en"));
         assert_eq!(s.sentences[0].target.language.as_deref(), Some("fr"));
+    }
+
+    #[test]
+    fn final_target_wins_over_a_later_same_frame_draft() {
+        let mut s = TranscriptState::default();
+        let now = Instant::now();
+        s.apply(&s_commit("1", "A", "source"), now);
+        s.apply(&t_commit("1", "A", "final"), now);
+        s.apply(&t_draft("1", Some("A"), "stale draft"), now);
+        assert_eq!(s.sentence_by_upstream_id("A").unwrap().target.text, "final");
+        assert_eq!(
+            s.sentence_by_upstream_id("A").unwrap().target.phase,
+            TrackPhase::Committed
+        );
+    }
+
+    #[test]
+    fn preserve_clear_keeps_recency_for_retained_tracks() {
+        let mut s = TranscriptState::default();
+        let now = Instant::now();
+        s.apply(&s_commit("1", "A", "source"), now);
+        s.apply(&t_draft("1", Some("A"), "draft"), now);
+        s.clear(true);
+        assert_eq!(
+            s.speaker_recency().back(),
+            Some(&SpeakerKey::Diarized("1".into()))
+        );
+    }
+
+    #[test]
+    fn same_sentence_id_does_not_cross_speaker_records() {
+        let mut s = TranscriptState::default();
+        let now = Instant::now();
+        s.apply(&s_commit("1", "same", "speaker one"), now);
+        s.apply(&s_commit("2", "same", "speaker two"), now);
+        assert_eq!(s.sentences.len(), 2);
+        assert_eq!(s.sentences[0].speaker, SpeakerKey::Diarized("1".into()));
+        assert_eq!(s.sentences[1].speaker, SpeakerKey::Diarized("2".into()));
     }
 
     #[test]

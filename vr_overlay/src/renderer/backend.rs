@@ -1,5 +1,7 @@
 use std::cell::RefCell;
 use std::ffi::c_void;
+
+use crate::hud::HudFrame;
 #[cfg(windows)]
 use std::mem::ManuallyDrop;
 #[cfg(windows)]
@@ -58,6 +60,12 @@ use super::font_resolver::{
 };
 use super::font_resolver::{FontLanguageBucket, FontSource};
 use super::glyph_run::render_text_layout_to_command_list;
+#[cfg(not(windows))]
+use super::hud_layout::build_hud_layout;
+use super::hud_layout::{
+    build_hud_layout_with_measurer, BuiltHudLayout, HudLayoutCache, HudTextMeasurement,
+    HudTextMeasurer,
+};
 #[cfg(windows)]
 use super::layout::DirectWriteLayoutEngine;
 use super::layout::{resolved_layout_has_drawable_text, CaptionLayoutPolicy};
@@ -66,11 +74,12 @@ use super::types::{
     contains_cjk, effective_background_alpha, fill_color_for_channel, hud_fill_color,
     outline_offsets_px, secondary_fill_color_for_channel, BlockBounds, BlockCacheKey,
     CaptionBlockVariant, CaptionChannel, CaptionDebugOverlay, CaptionLayoutResult,
-    CaptionPresentation, CaptionRenderError, DamageBand, LineCacheKey, LineRole, RenderDiagnostics,
-    ResolvedBlockLayout, ResolvedFrameLayout, ResolvedLineLayout, ResolvedTextStyle,
-    StyleBucketSourceCount, TextStyleDescriptor, DEFAULT_FONT_SIZE_PX, DEFAULT_SURFACE_HEIGHT_PX,
-    DEFAULT_SURFACE_WIDTH_PX, SECONDARY_FONT_SCALE, TEXT_OUTLINE_COLOR,
+    CaptionPresentation, DamageBand, LineCacheKey, LineRole, RenderDiagnostics,
+    ResolvedBlockLayout, ResolvedLineLayout, ResolvedTextStyle, StyleBucketSourceCount,
+    TextStyleDescriptor, DEFAULT_FONT_SIZE_PX, DEFAULT_SURFACE_HEIGHT_PX, DEFAULT_SURFACE_WIDTH_PX,
+    SECONDARY_FONT_SCALE, TEXT_OUTLINE_COLOR,
 };
+use super::types::{CaptionRenderError, ResolvedFrameLayout};
 
 const TEXT_FORMAT_CACHE_CAP: usize = 64;
 const DAMAGE_BAND_SAFETY_MARGIN_PX: f32 = 32.0;
@@ -115,8 +124,6 @@ fn first_cjk_layout_diagnostic_outcome<T>(
 #[derive(Debug, Clone, Copy, Default)]
 struct FontWarmupStats {
     elapsed_ms: u128,
-    attempts: u32,
-    failures: u32,
 }
 
 #[cfg(windows)]
@@ -183,19 +190,18 @@ impl CaptionRenderer {
     /// but repaints, and a byte-identical visual frame is not redrawn.
     pub fn render_hud_frame(
         &self,
-        frame: &crate::hud::HudFrame,
+        frame: &HudFrame,
     ) -> Result<HudRenderOutcome, CaptionRenderError> {
         let (width, height) = self.policy.default_surface_size();
         let presentation = self.presentation.borrow().clone();
         let mut state = self.hud_state.borrow_mut();
-        let built = super::hud_layout::build_hud_layout(
+        let built = self.backend.borrow_mut().build_hud_layout(
+            &self.policy,
             frame,
             presentation.text_scale,
             width,
-            &super::font_resolver::FontResolver::default(),
             &mut state.cache,
-            &|text, style, size| super::hud_layout::heuristic_measure(text, style, size),
-        );
+        )?;
         let redrawn = state.last_signature != Some(built.visual_signature);
         let signature = built.visual_signature;
         let geometry_reused = built.geometry_reused;
@@ -396,6 +402,34 @@ impl RenderBackend {
         }
     }
 
+    fn build_hud_layout(
+        &mut self,
+        policy: &CaptionLayoutPolicy,
+        frame: &HudFrame,
+        text_scale: f32,
+        surface_width_px: u32,
+        cache: &mut HudLayoutCache,
+    ) -> Result<BuiltHudLayout, CaptionRenderError> {
+        match self {
+            #[cfg(windows)]
+            Self::Windows(renderer) => {
+                renderer.build_hud_layout(policy, frame, text_scale, surface_width_px, cache)
+            }
+            #[cfg(not(windows))]
+            Self::Test(renderer) => {
+                let _ = renderer;
+                Ok(build_hud_layout(
+                    frame,
+                    text_scale,
+                    surface_width_px,
+                    &super::font_resolver::FontResolver::default(),
+                    cache,
+                    &|text, style, size| super::hud_layout::heuristic_measure(text, style, size),
+                ))
+            }
+        }
+    }
+
     fn render_hud_layout(
         &mut self,
         policy: &CaptionLayoutPolicy,
@@ -511,6 +545,29 @@ struct WindowsCaptionRenderer {
     font_warmup_attempts: u32,
     font_warmup_failures: u32,
     previous_debug_overlay_visible: bool,
+}
+
+#[cfg(windows)]
+struct DirectWriteHudTextMeasurer<'a> {
+    engine: &'a DirectWriteLayoutEngine,
+    policy: &'a CaptionLayoutPolicy,
+}
+
+#[cfg(windows)]
+impl HudTextMeasurer for DirectWriteHudTextMeasurer<'_> {
+    fn measure(
+        &self,
+        language: Option<&str>,
+        text: &str,
+        font_size_px: f32,
+        max_width_px: f32,
+    ) -> Result<HudTextMeasurement, CaptionRenderError> {
+        let (style, width_px) = self
+            .engine
+            .measure_hud_text(self.policy, language, text, font_size_px, max_width_px)
+            .map_err(|error| CaptionRenderError::Draw(error.to_string()))?;
+        Ok(HudTextMeasurement { style, width_px })
+    }
 }
 
 #[cfg(windows)]
@@ -646,6 +703,21 @@ impl WindowsCaptionRenderer {
         Ok(renderer)
     }
 
+    fn build_hud_layout(
+        &self,
+        policy: &CaptionLayoutPolicy,
+        frame: &HudFrame,
+        text_scale: f32,
+        surface_width_px: u32,
+        cache: &mut HudLayoutCache,
+    ) -> Result<BuiltHudLayout, CaptionRenderError> {
+        let measurer = DirectWriteHudTextMeasurer {
+            engine: &self.layout_engine,
+            policy,
+        };
+        build_hud_layout_with_measurer(frame, text_scale, surface_width_px, cache, &measurer)
+    }
+
     fn warm_up_cjk_fonts(&mut self) -> FontWarmupStats {
         let started = Instant::now();
         let sizes = [
@@ -677,11 +749,7 @@ impl WindowsCaptionRenderer {
         );
         self.font_warmup_attempts = attempts;
         self.font_warmup_failures = failures;
-        FontWarmupStats {
-            elapsed_ms,
-            attempts,
-            failures,
-        }
+        FontWarmupStats { elapsed_ms }
     }
 
     fn warm_up_cjk_text_format_layout(
@@ -914,7 +982,6 @@ impl WindowsCaptionRenderer {
         }
         Ok(CachedLineVisual {
             command_list: glyph_visual.command_list,
-            visual_bounds: glyph_visual.visual_bounds,
         })
     }
 
@@ -969,7 +1036,6 @@ impl WindowsCaptionRenderer {
             self.d2d_context.BeginDraw();
         }
 
-        let mut visual_bounds: Option<super::types::VisualBounds> = None;
         let build_result = (|| {
             for (role, line) in block_lines(block) {
                 if line.text.trim().is_empty() {
@@ -989,21 +1055,6 @@ impl WindowsCaptionRenderer {
                         D2D1_COMPOSITE_MODE_SOURCE_OVER,
                     );
                 }
-                let translated = super::types::VisualBounds::new(
-                    cached.visual_bounds.left_px + offset.X,
-                    cached.visual_bounds.top_px + offset.Y,
-                    cached.visual_bounds.right_px + offset.X,
-                    cached.visual_bounds.bottom_px + offset.Y,
-                );
-                visual_bounds = Some(match visual_bounds {
-                    Some(current) => super::types::VisualBounds::new(
-                        current.left_px.min(translated.left_px),
-                        current.top_px.min(translated.top_px),
-                        current.right_px.max(translated.right_px),
-                        current.bottom_px.max(translated.bottom_px),
-                    ),
-                    None => translated,
-                });
             }
             Ok(())
         })();
@@ -1025,11 +1076,7 @@ impl WindowsCaptionRenderer {
                         .Close()
                         .map_err(|error| CaptionRenderError::Draw(error.to_string()))?;
                 }
-                Ok(CachedBlockVisual {
-                    command_list,
-                    visual_bounds: visual_bounds
-                        .unwrap_or_else(|| super::types::VisualBounds::new(0.0, 0.0, 0.0, 0.0)),
-                })
+                Ok(CachedBlockVisual { command_list })
             }
         }
     }
@@ -1094,7 +1141,6 @@ impl WindowsCaptionRenderer {
 
         Ok(CachedLineVisual {
             command_list: visual.command_list,
-            visual_bounds: visual.visual_bounds,
         })
     }
 

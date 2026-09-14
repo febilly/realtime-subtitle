@@ -34,6 +34,7 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
