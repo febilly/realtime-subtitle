@@ -47,7 +47,7 @@ fn project_original(state: &TranscriptState, settings: &VrViewSettings, frame: &
             role: HudRowRole::UpperPrimary,
             kind: HudRowKind::Settled,
             text: record.source.text.clone(),
-            speaker_label: speaker_label(state, settings, DisplayMode::Original, speaker),
+            speaker_label: None,
             language: record.source.language.clone(),
             sentence: Some(record.key.clone()),
         });
@@ -66,7 +66,7 @@ fn project_translation(state: &TranscriptState, settings: &VrViewSettings, frame
             role: HudRowRole::UpperPrimary,
             kind: target_kind(record),
             text: record.target.text.clone(),
-            speaker_label: speaker_label(state, settings, DisplayMode::Translation, speaker),
+            speaker_label: None,
             language: record.target.language.clone(),
             sentence: Some(record.key.clone()),
         });
@@ -109,7 +109,7 @@ fn place_live_row(
     match &state.live_input {
         LiveInputRow::Hidden => LiveRowDirective::None,
         LiveInputRow::Streaming(snapshot) => {
-            frame.slots[4] = Some(live_source_row(state, settings, snapshot));
+            frame.slots[4] = Some(live_source_row(snapshot));
             LiveRowDirective::Show
         }
         LiveInputRow::Settled {
@@ -123,7 +123,7 @@ fn place_live_row(
                     sentence_id: snapshot.sentence_id.clone(),
                 }
             } else {
-                frame.slots[4] = Some(live_source_row(state, settings, snapshot));
+                frame.slots[4] = Some(live_source_row(snapshot));
                 LiveRowDirective::Show
             }
         }
@@ -250,35 +250,16 @@ fn pair_source_row(record: &SentenceRecord) -> HudRow {
     }
 }
 
-fn live_source_row(
-    state: &TranscriptState,
-    settings: &VrViewSettings,
-    snapshot: &LiveSourceSnapshot,
-) -> HudRow {
+fn live_source_row(snapshot: &LiveSourceSnapshot) -> HudRow {
     HudRow {
         role: HudRowRole::LiveSource,
         kind: HudRowKind::Settled,
         text: snapshot.text.clone(),
-        speaker_label: speaker_label(state, settings, settings.display_mode, &snapshot.speaker),
+        speaker_label: None,
         language: snapshot.language.clone(),
         sentence: snapshot.sentence_id.as_ref().map(|id| SentenceKey {
             local_ordinal: 0,
             upstream_id: Some(id.clone()),
         }),
-    }
-}
-
-fn speaker_label(
-    _state: &TranscriptState,
-    settings: &VrViewSettings,
-    mode: DisplayMode,
-    speaker: &SpeakerKey,
-) -> Option<String> {
-    if !settings.show_speaker_labels || mode == DisplayMode::Both {
-        return None;
-    }
-    match speaker {
-        SpeakerKey::Diarized(id) => Some(id.clone()),
-        SpeakerKey::Anonymous => None,
     }
 }

@@ -109,6 +109,24 @@ fn translation_capacity_evicts_least_recent_speaker() {
 }
 
 #[test]
+fn live_input_never_renders_a_speaker_number() {
+    let mut state = TranscriptState::default();
+    let now = Instant::now();
+    state.apply(&live("2", "speaking now"), now);
+
+    for mode in [
+        DisplayMode::Original,
+        DisplayMode::Translation,
+        DisplayMode::Both,
+    ] {
+        let projection = project(&state, &settings(mode, 3, 1), now);
+        let row = projection.frame.slots[4].as_ref().unwrap();
+        assert_eq!(row.text, "speaking now");
+        assert_eq!(row.speaker_label, None);
+    }
+}
+
+#[test]
 fn translation_shows_only_the_newest_target_per_speaker() {
     let mut state = TranscriptState::default();
     let now = Instant::now();
@@ -285,7 +303,7 @@ fn no_handoff_keeps_settled_row_visible() {
 }
 
 #[test]
-fn language_propagates_and_labels_stay_separate() {
+fn language_propagates_without_rendering_speaker_numbers() {
     let mut state = TranscriptState::default();
     let now = Instant::now();
     state.apply(&commit("1", "A", "hello"), now);
@@ -302,5 +320,11 @@ fn language_propagates_and_labels_stay_separate() {
     let original = project(&state, &settings(DisplayMode::Original, 3, 1), now);
     let row = original.frame.slots[3].as_ref().unwrap();
     assert_eq!(row.text, "hello");
-    assert_eq!(row.speaker_label.as_deref(), Some("1"));
+    assert_eq!(row.speaker_label, None);
+
+    let translation = project(&state, &settings(DisplayMode::Translation, 3, 1), now);
+    assert_eq!(
+        translation.frame.slots[3].as_ref().unwrap().speaker_label,
+        None
+    );
 }
