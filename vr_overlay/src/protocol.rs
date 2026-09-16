@@ -127,10 +127,16 @@ impl DesktopProtocol {
             Some("update") => self.process_update(&map),
             Some("refine_result") => self.process_refine(&map),
             Some("clear") => {
-                let preserve_existing = map
-                    .get("preserve_existing")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                let preserve_existing = match map.get("preserve_existing") {
+                    None => false,
+                    Some(value) => match value.as_bool() {
+                        Some(value) => value,
+                        None => {
+                            self.pending.push_back(CaptionEvent::Activity);
+                            return;
+                        }
+                    },
+                };
                 self.accumulators.clear();
                 self.replace_on_next.clear();
                 self.previous_final_fingerprint = None;
@@ -186,6 +192,7 @@ impl DesktopProtocol {
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
+                self.flush_final_groups(&mut groups);
                 let keys = self.accumulators.keys().cloned().collect::<Vec<_>>();
                 for key in keys {
                     self.replace_on_next.insert(key, true);
@@ -207,6 +214,7 @@ impl DesktopProtocol {
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             if text == "<end>" {
+                self.flush_final_groups(&mut groups);
                 self.pending.push_back(CaptionEvent::SourceEnd {
                     speaker,
                     sentence_id,
@@ -232,7 +240,11 @@ impl DesktopProtocol {
             }
         }
 
-        for (key, text, language) in groups {
+        self.flush_final_groups(&mut groups);
+    }
+
+    fn flush_final_groups(&mut self, groups: &mut Vec<(AccumKey, String, Option<String>)>) {
+        for (key, text, language) in groups.drain(..) {
             let replace = self.replace_on_next.remove(&key).unwrap_or(false);
             let accumulator = self.accumulators.entry(key.clone()).or_default();
             if replace

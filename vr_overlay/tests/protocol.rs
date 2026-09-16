@@ -134,6 +134,27 @@ async fn separator_replaces_each_same_track_accumulator_independently() {
 }
 
 #[tokio::test]
+async fn trailing_separator_applies_after_the_preceding_delta() {
+    let frames = vec![
+        ts_delta("hello ", "A"),
+        r#"{"type":"update","final_tokens":[
+            {"text":"world","speaker":"1","translation_status":"original","llm_sentence_id":"A","is_final":true},
+            {"is_separator":true,"is_final":true}],"non_final_tokens":[]}"#
+            .to_string(),
+        ts_delta("next", "A"),
+    ];
+    let events = adapter_events(frames).await.unwrap();
+    assert_eq!(
+        committed_texts(&events),
+        vec![
+            "hello ".to_string(),
+            "hello world".to_string(),
+            "next".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn multi_speaker_non_final_emits_one_live_event_for_the_last_speaker() {
     let frames = vec![r#"{"type":"update","final_tokens":[],"non_final_tokens":[
         {"text":"from one","speaker":"1","translation_status":"original","is_final":false},
@@ -209,6 +230,26 @@ async fn view_settings_and_clear_map_to_events() {
         event,
         CaptionEvent::ViewSettingsChanged(settings)
             if settings.display_mode == DisplayMode::Original && settings.max_speakers == 2
+    )));
+}
+
+#[tokio::test]
+async fn wrong_typed_clear_is_ignored_without_erasing_accumulators() {
+    let frames = vec![
+        ts_delta("hello", "A"),
+        r#"{"type":"clear","preserve_existing":"false"}"#.to_string(),
+        ts_delta(" world", "A"),
+    ];
+    let events = adapter_events(frames).await.unwrap();
+    assert_eq!(
+        committed_texts(&events),
+        vec!["hello".to_string(), "hello world".to_string()]
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        CaptionEvent::Clear {
+            preserve_existing: false
+        }
     )));
 }
 

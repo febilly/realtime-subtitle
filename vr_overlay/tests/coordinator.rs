@@ -278,6 +278,26 @@ fn committed_visible_source_wakes_a_hidden_overlay() {
 }
 
 #[test]
+fn target_hidden_by_original_mode_does_not_rearm_silence() {
+    let mut coordinator = RuntimeCoordinator::for_test();
+    coordinator.apply_settings_for_test(VrViewSettings {
+        display_mode: DisplayMode::Original,
+        ..Default::default()
+    });
+    let t = coordinator.now_for_test();
+    coordinator.push_for_test(source_commit("1", "A", "source"), t);
+    coordinator.tick(t);
+
+    coordinator.push_for_test(
+        target_draft("1", "A", "invisible target"),
+        t + SILENCE_BEFORE_FADE - Duration::from_millis(100),
+    );
+    let fading = coordinator.tick(t + SILENCE_BEFORE_FADE + Duration::from_millis(100));
+
+    assert!(matches!(fading.alpha, Some(alpha) if alpha < 1.0));
+}
+
+#[test]
 fn invalid_settings_leave_last_valid_settings_active() {
     let mut coordinator = RuntimeCoordinator::for_test();
     coordinator.apply_settings_for_test(VrViewSettings {

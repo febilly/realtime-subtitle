@@ -364,10 +364,11 @@ impl RuntimeCoordinator {
         self.now = now;
         let source_activity =
             matches!(&event, CaptionEvent::SourceLive(value) if !value.text.is_empty());
-        let visible_update = matches!(&event, CaptionEvent::SourceCommitted(value) if !value.text.is_empty())
+        let potentially_visible_update = matches!(&event, CaptionEvent::SourceCommitted(value) if !value.text.is_empty())
             || matches!(&event, CaptionEvent::TargetDraft(value) if !value.text.is_empty())
             || matches!(&event, CaptionEvent::TargetCommitted(value) if !value.text.is_empty())
             || matches!(&event, CaptionEvent::RefinedTarget(value) if !value.text.is_empty());
+        let frame_before = potentially_visible_update.then(|| self.project_readonly(now).frame);
         let clears_visibility = matches!(
             &event,
             CaptionEvent::Clear {
@@ -391,11 +392,12 @@ impl RuntimeCoordinator {
             self.visibility.reset(now);
             return;
         }
-        if source_activity || visible_update {
-            let projection = self.project_readonly(now);
-            if frame_has_text(&projection.frame) {
-                self.visibility.on_activity(now);
-            }
+        let projection = self.project_readonly(now);
+        let visible_frame_changed = frame_before
+            .as_ref()
+            .is_some_and(|before| before != &projection.frame && frame_has_text(&projection.frame));
+        if source_activity || visible_frame_changed {
+            self.visibility.on_activity(now);
         }
     }
 

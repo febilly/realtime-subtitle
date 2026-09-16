@@ -268,7 +268,7 @@ impl TranscriptState {
     fn apply_source_end(&mut self, speaker: &SpeakerKey, sentence_id: Option<&str>, now: Instant) {
         let index = match sentence_id {
             Some(id) => self
-                .find_by_upstream(id)
+                .find_by_upstream_for_speaker(id, speaker)
                 .or_else(|| self.unbound_open_index(speaker)),
             None => self.open_record_index(speaker),
         };
@@ -278,21 +278,29 @@ impl TranscriptState {
                 return;
             }
             if let Some(id) = sentence_id {
-                if record.key.upstream_id.as_deref() != Some(id) {
-                    return;
+                match record.key.upstream_id.as_deref() {
+                    Some(current) if current != id => return,
+                    None => record.key.upstream_id = Some(id.to_owned()),
+                    Some(_) => {}
                 }
             }
             record.source.phase = TrackPhase::Committed;
-            let snapshot = LiveSourceSnapshot {
-                speaker: speaker.clone(),
-                sentence_id: record.key.upstream_id.clone(),
-                text: record.source.text.clone(),
-                language: record.source.language.clone(),
-            };
-            self.live_input = LiveInputRow::Settled {
-                snapshot,
-                closed_at: now,
-            };
+            if let LiveInputRow::Streaming(live) = &self.live_input {
+                if &live.speaker == speaker
+                    && !sentence_id_conflicts(live.sentence_id.as_deref(), sentence_id)
+                {
+                    let snapshot = LiveSourceSnapshot {
+                        speaker: speaker.clone(),
+                        sentence_id: record.key.upstream_id.clone(),
+                        text: record.source.text.clone(),
+                        language: record.source.language.clone(),
+                    };
+                    self.live_input = LiveInputRow::Settled {
+                        snapshot,
+                        closed_at: now,
+                    };
+                }
+            }
             return;
         }
         if let LiveInputRow::Streaming(snapshot) = &self.live_input {
@@ -552,6 +560,55 @@ mod tests {
         s.apply(&s_commit("1", "A", "a"), Instant::now());
         s.apply(&s_end("1", Some("B")), Instant::now());
         assert!(matches!(&s.live_input, LiveInputRow::Hidden));
+    }
+
+    #[test]
+    fn source_end_binds_an_unbound_open_sentence_id() {
+        let mut s = TranscriptState::default();
+        let now = Instant::now();
+        s.apply(&s_live("1", "hello"), now);
+        s.apply(&s_end("1", Some("A")), now);
+
+        let record = s.sentence_by_upstream_id("A").expect("bound sentence");
+        assert_eq!(record.source.phase, TrackPhase::Committed);
+        assert!(matches!(
+            &s.live_input,
+            LiveInputRow::Settled { snapshot, .. }
+                if snapshot.speaker == SpeakerKey::Diarized("1".into())
+                    && snapshot.sentence_id.as_deref() == Some("A")
+                    && snapshot.text == "hello"
+        ));
+    }
+
+    #[test]
+    fn source_end_does_not_replace_another_speakers_active_live_row() {
+        let mut s = TranscriptState::default();
+        let now = Instant::now();
+        s.apply(&s_live("1", "from one"), now);
+        s.apply(&s_live("2", "from two"), now);
+        s.apply(&s_end("1", Some("A")), now);
+
+        assert!(matches!(
+            &s.live_input,
+            LiveInputRow::Streaming(snapshot)
+                if snapshot.speaker == SpeakerKey::Diarized("2".into())
+                    && snapshot.text == "from two"
+        ));
+    }
+
+    #[test]
+    fn source_end_id_is_resolved_within_the_owning_speaker() {
+        let mut s = TranscriptState::default();
+        let now = Instant::now();
+        s.apply(&s_commit("1", "A", "first"), now);
+        s.apply(&s_live("2", "second"), now);
+        s.apply(&s_end("2", Some("A")), now);
+
+        assert!(s.sentences.iter().any(|record| {
+            record.speaker == SpeakerKey::Diarized("2".into())
+                && record.key.upstream_id.as_deref() == Some("A")
+                && record.source.phase == TrackPhase::Committed
+        }));
     }
 
     #[test]
