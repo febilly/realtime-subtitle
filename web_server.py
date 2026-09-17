@@ -5,10 +5,8 @@ import json
 import asyncio
 import os
 import secrets
-import socket
 import logging
 import time
-from urllib.parse import urlsplit
 import aiohttp
 from aiohttp import web
 from aiohttp import WSMsgType
@@ -38,77 +36,6 @@ import local_store
 import desktop_shortcut
 
 logger = logging.getLogger("web_server")
-
-_local_machine_ips: set[str] | None = None
-
-def get_local_machine_ips() -> set[str]:
-    """Return the set of IP addresses and hostname associated with local interfaces."""
-    global _local_machine_ips
-    if _local_machine_ips is None:
-        ips: set[str] = set()
-        try:
-            hostname = socket.gethostname()
-            if hostname:
-                ips.add(hostname.lower())
-            for info in socket.getaddrinfo(hostname, None):
-                ip = info[4][0]
-                if ip:
-                    clean_ip = ip.split("%")[0].lower()
-                    ips.add(clean_ip)
-        except Exception:
-            pass
-        _local_machine_ips = ips
-    return _local_machine_ips
-
-def reset_local_machine_ips():
-    """Reset cached local machine IPs (primarily for testing)."""
-    global _local_machine_ips
-    _local_machine_ips = None
-
-def extract_host_from_header(host_header: str) -> str:
-    """Extract and normalize host portion from Host/Origin header, stripping port and IPv6 brackets."""
-    if not host_header:
-        return ""
-    host_str = str(host_header).strip()
-    if host_str in ("::1", "::ffff:127.0.0.1"):
-        return host_str.lower()
-    try:
-        parsed = urlsplit("//" + host_str)
-        if parsed.hostname:
-            return parsed.hostname.lower()
-    except Exception:
-        pass
-    if host_str.startswith("[") and "]" in host_str:
-        return host_str[1:host_str.index("]")].lower()
-    return host_str.split(":")[0].strip().lower()
-
-def get_allowed_hosts() -> set[str]:
-    """Return the set of hostnames/IPs allowed by Host and Origin validation."""
-    hosts = {"localhost", "127.0.0.1", "::1", "::ffff:127.0.0.1"}
-    server_host = str(getattr(config, "SERVER_HOST", "") or "").strip().lower()
-    if server_host and server_host not in ("0.0.0.0", "::", ""):
-        hosts.add(server_host)
-    else:
-        hosts.update(get_local_machine_ips())
-    return hosts
-
-@web.middleware
-async def host_validation_middleware(request, handler):
-    """Validate that the Host header matches allowed local/bound hosts to prevent DNS rebinding."""
-    host_header = request.headers.get("Host", "").strip()
-    host = extract_host_from_header(host_header)
-    allowed = get_allowed_hosts()
-    if not host or host not in allowed:
-        remote = getattr(request, "remote", None)
-        logger.warning(
-            f"Rejected request with invalid Host header: {host_header!r} (parsed: {host!r}) "
-            f"from remote: {remote} for path: {getattr(request, 'path', '<unknown>')}"
-        )
-        return web.json_response(
-            {"status": "error", "message": "Invalid Host header (DNS rebinding protection)"},
-            status=403,
-        )
-    return await handler(request)
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -241,20 +168,6 @@ class WebServer:
     
     async def websocket_handler(self, request):
         """WebSocket处理函数"""
-        origin = request.headers.get("Origin")
-        if origin:
-            parsed = urlsplit(origin)
-            origin_host = (parsed.hostname or "").lower()
-            allowed_hosts = get_allowed_hosts()
-            if not origin_host or origin_host not in allowed_hosts:
-                remote = getattr(request, "remote", None)
-                msg = (
-                    f"Rejected cross-origin WebSocket connection from Origin: {origin!r} "
-                    f"(parsed host: {origin_host!r}) from remote: {remote}"
-                )
-                logger.warning(msg)
-                return web.Response(status=403, text="Forbidden: Cross-origin WebSocket denied")
-
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         
@@ -2133,7 +2046,7 @@ class WebServer:
     
     def create_app(self):
         """创建aiohttp应用"""
-        app = web.Application(middlewares=[host_validation_middleware, cache_bypass_middleware])
+        app = web.Application(middlewares=[cache_bypass_middleware])
 
         app.on_startup.append(self._start_ipc_status_polling)
         app.on_cleanup.append(self._stop_ipc_status_polling)

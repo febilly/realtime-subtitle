@@ -607,129 +607,6 @@ class TestWebServerSecurity:
             assert ws.provider_manager.microphone_device_id == "mic-1"
             session.set_microphone_device_id.assert_called_once_with("mic-1")
 
-    @async_test
-    async def test_websocket_origin_validation_with_test_client(self):
-        """W-01: CSWSH protection - malicious Origin rejected, localhost/missing Origin allowed."""
-        ensure_real_config()
-        from aiohttp.test_utils import TestClient, TestServer
-        from aiohttp.client_exceptions import WSServerHandshakeError
-        import web_server as ws_module
-
-        session = self.mock_session()
-        session.is_paused = False
-        ws = ws_module.WebServer(session, self.mock_logger())
-        app = ws.create_app()
-        client = TestClient(TestServer(app))
-        await client.start_server()
-        try:
-            # 1. Malicious Origin rejected with 403 WSServerHandshakeError
-            with pytest.raises(WSServerHandshakeError) as exc_info:
-                await client.ws_connect("/ws", headers={"Origin": "http://evil.com"})
-            assert exc_info.value.status == 403
-
-            # 2. Another malicious Origin (https and subdomain) rejected with 403
-            with pytest.raises(WSServerHandshakeError) as exc_info:
-                await client.ws_connect("/ws", headers={"Origin": "https://attacker.site.org:8080"})
-            assert exc_info.value.status == 403
-
-            # 3. Legitimate localhost Origin allowed
-            ws_conn = await client.ws_connect("/ws", headers={"Origin": "http://localhost:8080"})
-            assert not ws_conn.closed
-            await ws_conn.close()
-
-            # 4. Legitimate 127.0.0.1 Origin allowed
-            ws_conn_ip = await client.ws_connect("/ws", headers={"Origin": "http://127.0.0.1:8080"})
-            assert not ws_conn_ip.closed
-            await ws_conn_ip.close()
-
-            # 5. Missing Origin allowed (non-browser client like desktop overlay)
-            ws_conn_none = await client.ws_connect("/ws")
-            assert not ws_conn_none.closed
-            await ws_conn_none.close()
-        finally:
-            await client.close()
-
-    @async_test
-    async def test_websocket_origin_rejection_with_real_transcript_logger(self):
-        """Regression: rejection paths must 403 (not crash) when self.logger is a real
-        TranscriptLogger, which has no .warning/.error — the production wiring.
-        MagicMock loggers in other tests masked this (REVIEW follow-up hotfix)."""
-        ensure_real_config()
-        from aiohttp.test_utils import TestClient, TestServer
-        from aiohttp.client_exceptions import WSServerHandshakeError
-        import web_server as ws_module
-        import logger as logger_module
-
-        session = self.mock_session()
-        session.is_paused = False
-        ws = ws_module.WebServer(session, logger_module.TranscriptLogger(enabled=False))
-        app = ws.create_app()
-        client = TestClient(TestServer(app))
-        await client.start_server()
-        try:
-            with pytest.raises(WSServerHandshakeError) as exc_info:
-                await client.ws_connect("/ws", headers={"Origin": "http://evil.com"})
-            assert exc_info.value.status == 403
-        finally:
-            await client.close()
-
-    @async_test
-    async def test_websocket_origin_validation_unit(self):
-        """W-01 unit test: websocket_handler Origin check returns 403 web.Response before prepare."""
-        ensure_real_config()
-        import web_server as ws_module
-
-        ws = ws_module.WebServer(self.mock_session(), self.mock_logger())
-
-        # Malicious Origin
-        bad_request = AsyncMock()
-        bad_request.headers = {"Origin": "http://evil.com"}
-        bad_request.remote = "127.0.0.1"
-        resp = await ws.websocket_handler(bad_request)
-        assert resp.status == 403
-        assert "Forbidden" in resp.text
-
-    @async_test
-    async def test_host_header_rebinding_protection(self):
-        """W-02: DNS Rebinding protection - spoofed Host header rejected with 403 JSON."""
-        ensure_real_config()
-        from aiohttp.test_utils import TestClient, TestServer
-        import web_server as ws_module
-
-        ws = ws_module.WebServer(self.mock_session(), self.mock_logger())
-        app = ws.create_app()
-        client = TestClient(TestServer(app))
-        await client.start_server()
-        try:
-            # 1. Spoofed Host without port rejected
-            r1 = await client.get("/health", headers={"Host": "evil.com"})
-            assert r1.status == 403
-            data1 = await r1.json()
-            assert data1["status"] == "error"
-            assert "DNS rebinding" in data1["message"]
-
-            # 2. Spoofed Host with port rejected
-            r2 = await client.get("/health", headers={"Host": "attacker.com:8080"})
-            assert r2.status == 403
-            data2 = await r2.json()
-            assert data2["status"] == "error"
-
-            # 3. Legitimate localhost:port allowed
-            r3 = await client.get("/health", headers={"Host": "localhost:8080"})
-            assert r3.status == 200
-            assert (await r3.json())["status"] == "ok"
-
-            # 4. Legitimate 127.0.0.1:port allowed
-            r4 = await client.get("/health", headers={"Host": "127.0.0.1:8080"})
-            assert r4.status == 200
-            assert (await r4.json())["status"] == "ok"
-
-            # 5. Legitimate [::1]:port allowed
-            r5 = await client.get("/health", headers={"Host": "[::1]:8080"})
-            assert r5.status == 200
-            assert (await r5.json())["status"] == "ok"
-        finally:
-            await client.close()
 
     @async_test
     async def test_shutdown_rejected_from_non_loopback(self):
@@ -758,7 +635,6 @@ class TestWebServerSecurity:
 
         app = web.Application(middlewares=[
             simulate_remote_mw,
-            ws_module.host_validation_middleware,
             ws_module.cache_bypass_middleware,
         ])
         app.router.add_post("/shutdown", ws.shutdown_handler)
