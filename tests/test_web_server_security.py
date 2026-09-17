@@ -660,17 +660,25 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_all_control_endpoints_rejected_from_non_loopback(self):
-        """W-03: All 10 management endpoints must reject non-loopback requests with 403."""
+        """W-03: every control endpoint and every account/credential read endpoint must
+        reject non-loopback requests with 403.
+
+        Built with a real TranscriptLogger instead of a mock: the rejection path logs
+        through self.logger, and TranscriptLogger has neither .warning nor .error, so a
+        mock would mask a crash on that path.
+        """
         ensure_real_config()
         import web_server as ws_module
+        import logger as logger_module
 
         session = self.mock_session()
-        ws = ws_module.WebServer(session, self.mock_logger())
+        ws = ws_module.WebServer(session, logger_module.TranscriptLogger(enabled=False))
         ws.set_shutdown_callback(MagicMock())
 
         non_loopback_remote = "192.168.1.100"
 
         endpoints = [
+            # session / audio control
             ("/shutdown", ws.shutdown_handler),
             ("/restart", ws.restart_handler),
             ("/pause", ws.pause_handler),
@@ -681,6 +689,21 @@ class TestWebServerSecurity:
             ("/osc-translation", ws.osc_translation_set_handler),
             ("/furigana", ws.furigana_handler),
             ("/overlay", ws.overlay_post_handler),
+            # recognition / display preferences
+            ("/segment-mode", ws.segment_mode_set_handler),
+            ("/speaker-labels", ws.speaker_labels_set_handler),
+            ("/llm-refine", ws.llm_refine_set_handler),
+            ("/subtitle-font", ws.subtitle_font_post_handler),
+            ("/window-on-top", ws.window_on_top_handler),
+            # account / credential status
+            ("/api-key-status", ws.api_key_status_handler),
+            ("/api/ipc_status", ws.ipc_status_handler),
+            ("/account/registration-info", ws.account_registration_info_handler),
+            ("/account/status", ws.account_status_handler),
+            ("/account/balance", ws.account_balance_handler),
+            ("/account/pricing", ws.account_pricing_handler),
+            ("/account/usage", ws.account_usage_handler),
+            ("/account/invite", ws.account_invite_handler),
         ]
 
         for path, handler in endpoints:
