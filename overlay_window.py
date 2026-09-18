@@ -553,6 +553,24 @@ def is_parent_alive():
         return True
 
 
+# 悬浮窗所有网络交互均指向本机 127.0.0.1 服务，必须显式绕过 Windows 系统代理（IE / WinINet 注册表代理），
+# 避免被各类本地代理软件（如 Clash、v2rayN）劫持导致连不上回环端口。
+_local_http_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _ws_connect_kwargs() -> dict:
+    """本机 WebSocket 连接参数。显式指定 proxy=None，避免被系统代理劫持。"""
+    kwargs = {"max_size": None, "ping_interval": 20}
+    if websockets is not None:
+        try:
+            import inspect
+            if "proxy" in inspect.signature(websockets.connect).parameters:
+                kwargs["proxy"] = None
+        except Exception:
+            pass
+    return kwargs
+
+
 class WsClient(threading.Thread):
     def __init__(self, ws_url: str, bridge: WsBridge):
         super().__init__(daemon=True)
@@ -572,10 +590,10 @@ class WsClient(threading.Thread):
             pass
 
     async def _main(self):
+        connect_kwargs = _ws_connect_kwargs()
         while not self._stop:
             try:
-                async with websockets.connect(self.ws_url, max_size=None,
-                                              ping_interval=20) as ws:
+                async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
                     self.bridge.status.emit(True)
                     async for msg in ws:
                         if self._stop:
@@ -1848,7 +1866,7 @@ class OverlayWindow(QWidget):
             req = urllib.request.Request(
                 self.server_url + path, data=data, headers=headers, method="POST"
             )
-            urllib.request.urlopen(req, timeout=8).read()
+            _local_http_opener.open(req, timeout=8).read()
             return True
         except Exception:
             return False
@@ -1864,7 +1882,7 @@ class OverlayWindow(QWidget):
             req = urllib.request.Request(
                 self.server_url + path, data=data, headers=headers, method="POST"
             )
-            body = urllib.request.urlopen(req, timeout=8).read()
+            body = _local_http_opener.open(req, timeout=8).read()
             return json.loads(body.decode("utf-8"))
         except Exception:
             return None
