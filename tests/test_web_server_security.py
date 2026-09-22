@@ -5,6 +5,21 @@ import asyncio
 from unittest.mock import MagicMock, AsyncMock, call, patch
 import pytest
 
+try:
+    import numpy
+except ImportError:
+    pass
+
+def ensure_real_config():
+    if "config" not in sys.modules or not hasattr(sys.modules["config"], "get_resource_path"):
+        import importlib.util
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.py")
+        spec = importlib.util.spec_from_file_location("config", config_path)
+        real_config = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real_config)
+        sys.modules["config"] = real_config
+    return sys.modules["config"]
+
 # Add root to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -19,6 +34,15 @@ def async_test(coro):
     return wrapper
 
 class TestWebServerSecurity:
+    @pytest.fixture(autouse=True)
+    def restore_sys_modules(self):
+        orig_config = sys.modules.get("config")
+        yield
+        if orig_config is not None:
+            sys.modules["config"] = orig_config
+        else:
+            sys.modules.pop("config", None)
+
     def mock_session(self):
         session = MagicMock()
         session.get_audio_source.return_value = "system"
@@ -45,6 +69,7 @@ class TestWebServerSecurity:
             ws = WebServer(session, self.mock_logger())
             ws.provider_manager = MagicMock()
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = {"id": "out-1"}
             with patch.object(ws_module, "list_output_devices", return_value={
                 "available": True, "default": {"id": "out-0", "name": "Default"},
@@ -81,6 +106,7 @@ class TestWebServerSecurity:
             # Prepare request
             payload = {"source": "microphone"}
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = payload
 
             # Mock web.json_response
@@ -114,6 +140,7 @@ class TestWebServerSecurity:
             ws.provider_manager.audio_source = "system"
 
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = {"source": "microphone"}
             web.json_response.side_effect = lambda data, status=200: (data, status)
 
@@ -272,6 +299,7 @@ class TestWebServerSecurity:
             ws.broadcast_to_clients = AsyncMock()
 
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = {"auto": True}
             web.json_response.side_effect = lambda data, status=200: (data, status)
 
@@ -466,6 +494,7 @@ class TestWebServerSecurity:
             # Prepare request with invalid source
             payload = {"source": "invalid_source"}
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = payload
 
             # Mock web.json_response
@@ -502,6 +531,7 @@ class TestWebServerSecurity:
             ws.overlay_manager = manager
 
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = {"action": "toggle"}
             web.json_response.side_effect = lambda data, status=200: (data, status)
 
@@ -529,6 +559,7 @@ class TestWebServerSecurity:
             ws = WebServer(session, self.mock_logger())
 
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = {"id": "mic-1"}
             web.json_response.side_effect = lambda data, status=200: (data, status)
 
@@ -565,6 +596,7 @@ class TestWebServerSecurity:
             }
 
             request = AsyncMock()
+            request.remote = "127.0.0.1"
             request.json.return_value = {"id": "mic-1"}
             web.json_response.side_effect = lambda data, status=200: (data, status)
 
@@ -574,3 +606,110 @@ class TestWebServerSecurity:
             assert response_data["id"] == "mic-1"
             assert ws.provider_manager.microphone_device_id == "mic-1"
             session.set_microphone_device_id.assert_called_once_with("mic-1")
+
+
+    @async_test
+    async def test_shutdown_rejected_from_non_loopback(self):
+        """W-03: /shutdown rejected from non-loopback remote via test client."""
+        ensure_real_config()
+        from aiohttp.test_utils import TestClient, TestServer
+        from aiohttp import web
+        import web_server as ws_module
+
+        session = self.mock_session()
+        logger = self.mock_logger()
+        shutdown_cb = MagicMock()
+        ws = ws_module.WebServer(session, logger)
+        ws.set_shutdown_callback(shutdown_cb)
+
+        # Middleware to simulate remote IP on the aiohttp request
+        @web.middleware
+        async def simulate_remote_mw(request, handler):
+            simulated = request.headers.get("X-Simulate-Remote")
+            if simulated:
+                try:
+                    request._cache["remote"] = simulated
+                except Exception:
+                    pass
+            return await handler(request)
+
+        app = web.Application(middlewares=[
+            simulate_remote_mw,
+            ws_module.cache_bypass_middleware,
+        ])
+        app.router.add_post("/shutdown", ws.shutdown_handler)
+
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            # 1. Non-loopback request is rejected with 403
+            resp = await client.post("/shutdown", headers={"X-Simulate-Remote": "10.0.0.5"})
+            assert resp.status == 403
+            data = await resp.json()
+            assert data["status"] == "error"
+            assert data["message"] == "localhost only"
+            shutdown_cb.assert_not_called()
+
+            # 2. Loopback request is accepted with 200
+            resp2 = await client.post("/shutdown")
+            assert resp2.status == 200
+            data2 = await resp2.json()
+            assert data2["status"] == "ok"
+        finally:
+            await client.close()
+
+    @async_test
+    async def test_all_control_endpoints_rejected_from_non_loopback(self):
+        """W-03: every control endpoint and every account/credential read endpoint must
+        reject non-loopback requests with 403.
+
+        Built with a real TranscriptLogger instead of a mock: the rejection path logs
+        through self.logger, and TranscriptLogger has neither .warning nor .error, so a
+        mock would mask a crash on that path.
+        """
+        ensure_real_config()
+        import web_server as ws_module
+        import logger as logger_module
+
+        session = self.mock_session()
+        ws = ws_module.WebServer(session, logger_module.TranscriptLogger(enabled=False))
+        ws.set_shutdown_callback(MagicMock())
+
+        non_loopback_remote = "192.168.1.100"
+
+        endpoints = [
+            # session / audio control
+            ("/shutdown", ws.shutdown_handler),
+            ("/restart", ws.restart_handler),
+            ("/pause", ws.pause_handler),
+            ("/resume", ws.resume_handler),
+            ("/audio-source", ws.set_audio_source_handler),
+            ("/microphone-device", ws.microphone_device_set_handler),
+            ("/output-device", ws.output_device_set_handler),
+            ("/osc-translation", ws.osc_translation_set_handler),
+            ("/furigana", ws.furigana_handler),
+            ("/overlay", ws.overlay_post_handler),
+            # recognition / display preferences
+            ("/segment-mode", ws.segment_mode_set_handler),
+            ("/speaker-labels", ws.speaker_labels_set_handler),
+            ("/llm-refine", ws.llm_refine_set_handler),
+            ("/subtitle-font", ws.subtitle_font_post_handler),
+            ("/window-on-top", ws.window_on_top_handler),
+            # account / credential status
+            ("/api-key-status", ws.api_key_status_handler),
+            ("/api/ipc_status", ws.ipc_status_handler),
+            ("/account/registration-info", ws.account_registration_info_handler),
+            ("/account/status", ws.account_status_handler),
+            ("/account/balance", ws.account_balance_handler),
+            ("/account/pricing", ws.account_pricing_handler),
+            ("/account/usage", ws.account_usage_handler),
+            ("/account/invite", ws.account_invite_handler),
+        ]
+
+        for path, handler in endpoints:
+            req = AsyncMock(remote=non_loopback_remote, path=path)
+            resp = await handler(req)
+            assert resp.status == 403, f"{path} did not return 403"
+            data = json.loads(resp.body.decode("utf-8")) if hasattr(resp, "body") else {}
+            assert data.get("status") == "error", f"{path} did not return error status"
+            assert data.get("message") == "localhost only", f"{path} did not return 'localhost only'"

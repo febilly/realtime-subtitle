@@ -64,8 +64,12 @@ def test_frontend_frame_log_open_failure_does_not_break_server(monkeypatch, tmp_
     monkeypatch.setenv("FRONTEND_FRAME_LOG", "1")
     logger = MagicMock()
 
+    real_open = open
+
     def fail_open(*args, **kwargs):
-        raise OSError("read-only filesystem")
+        if "frontend-frames" in str(args[0]):
+            raise OSError("read-only filesystem")
+        return real_open(*args, **kwargs)
 
     monkeypatch.setattr("builtins.open", fail_open)
     server = web_server_class(None, logger)

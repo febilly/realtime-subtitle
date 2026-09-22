@@ -20,6 +20,10 @@ mock_config.OSC_SEND_TARGET_PORT = 9000
 mock_config.OSC_CLIENT_IP = "127.0.0.1"
 mock_config.OSC_SERVER_IP = "127.0.0.1"
 mock_config.OSC_COMPAT_LISTEN_PORT = 9001
+mock_config.LOCAL_SETTINGS_FILE = os.environ.get(
+    "LOCAL_SETTINGS_FILE",
+    os.path.join(os.path.dirname(__file__), "..", "build", "test-local-settings.json"),
+)
 sys.modules["config"] = mock_config
 
 # Mock vrchat_oscquery before importing osc_manager

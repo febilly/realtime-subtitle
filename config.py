@@ -5,11 +5,21 @@ import json
 import os
 import sys
 import locale
-import time
 import threading
 from urllib.parse import urlencode
 import requests
 from dotenv import load_dotenv
+
+# Make console output resilient: on Windows a redirected stdout/stderr uses
+# the ANSI code page (e.g. GBK), where the emoji used throughout the logs
+# raises UnicodeEncodeError and can crash the app during import (seen in a
+# packaged-exe smoke test with output redirected to a file). UTF-8 with
+# errors="replace" keeps every print safe. Runs before any module print.
+for _output_stream in (sys.stdout, sys.stderr):
+    try:
+        _output_stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 # ======================== Supported languages (per provider) ========================
@@ -153,6 +163,40 @@ def canonicalize_target_lang(lang: str, provider: str | None = None) -> str:
     return canonicalize_language_code(lang) if p == "gemini" else normalize_language_code(lang)
 
 
+def _system_default_locale() -> str:
+    """Best-effort system default locale (e.g. 'zh_CN', 'en_US', 'zh-CN').
+
+    Replaces the deprecated ``locale.getdefaultlocale()`` (removal planned for
+    Python 3.15) with the same resolution order: LC_ALL/LC_CTYPE/LANG/
+    LANGUAGE environment variables, then (on Windows) the user default locale
+    via the Win32 API (which returns a BCP-47 name like 'zh-CN').
+    ``locale.getlocale()`` is only a last-resort fallback: on Windows it
+    returns the native setlocale form (e.g. 'Chinese (Simplified)_China'),
+    which cannot be mapped to an ISO language code.
+    """
+    for env_var in ("LC_ALL", "LC_CTYPE", "LANG", "LANGUAGE"):
+        value = (os.environ.get(env_var) or "").strip()
+        if value:
+            # Strip encoding ('zh_CN.UTF-8') and modifier ('zh_CN@pinyin').
+            return value.split(".", 1)[0].split("@", 1)[0] or value
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            buffer = ctypes.create_unicode_buffer(85)
+            if ctypes.windll.kernel32.GetUserDefaultLocaleName(buffer, len(buffer)):
+                return buffer.value or ""
+        except Exception:
+            pass
+    try:
+        value = (locale.getlocale() or (None, None))[0]
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return ""
+
+
 def is_system_traditional_chinese() -> bool:
     """Return True if the host system locale is set to Traditional Chinese."""
     try:
@@ -165,10 +209,7 @@ def is_system_traditional_chinese() -> bool:
         except Exception:
             loc = ""
         if not loc:
-            try:
-                loc = str(locale.getdefaultlocale()[0] or "").lower()
-            except Exception:
-                loc = ""
+            loc = _system_default_locale().lower()
         if any(loc.startswith(t) or loc == t for t in _TRADITIONAL_CHINESE_LOCALES) or "traditional" in loc or "tw" in loc or "hk" in loc or "mo" in loc or "hant" in loc:
             return True
     except Exception:
@@ -925,8 +966,8 @@ def get_system_language(provider: str | None = None) -> str:
     """
     p = provider or TRANSLATION_PROVIDER
     try:
-        # Get system locale
-        system_locale = locale.getdefaultlocale()[0]  # e.g. 'zh_CN', 'en_US', 'ja_JP'
+        # Get system locale (getdefaultlocale replacement; see helper).
+        system_locale = _system_default_locale()  # e.g. 'zh_CN', 'en_US', 'zh-CN'
 
         if system_locale:
             if p == "gemini":
@@ -1200,7 +1241,6 @@ IPC_HOST = _env_str("IPC_HOST", "127.0.0.1")
 IPC_PORT_RANGE = range(17353, 17364)
 
 # IPC discovery file path
-import tempfile
 from shared.vrchat_bridge import get_discovery_path
 IPC_DISCOVERY_FILE = _env_str(
     "IPC_DISCOVERY_FILE",

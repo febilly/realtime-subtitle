@@ -536,7 +536,6 @@ class SonioxSession:
 
     def _handle_vrchat_mute_self(self, mute_value) -> None:
         muted = bool(mute_value)
-        previous = self._vrchat_self_muted
         self._vrchat_self_muted = muted
 
         with self.audio_lock:
@@ -547,10 +546,6 @@ class SonioxSession:
                 streamer.set_vrchat_mic_muted(muted)
             except Exception as error:
                 print(f"⚠️  Failed to update microphone mute state from OSC: {error}")
-
-        if previous != muted:
-            state_text = "muted" if muted else "unmuted"
-            # print(f"🔇 VRChat MuteSelf changed: microphone is now {state_text} in capture pipeline")
 
     def _stop_audio_streamer(self) -> None:
         with self.audio_lock:

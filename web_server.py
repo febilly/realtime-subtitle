@@ -5,6 +5,7 @@ import json
 import asyncio
 import os
 import secrets
+import logging
 import time
 import aiohttp
 from aiohttp import web
@@ -22,8 +23,6 @@ from config import (
 )
 from config import (
     is_llm_refine_available,
-    LLM_REFINE_CONTEXT_MIN_COUNT,
-    LLM_REFINE_CONTEXT_MAX_COUNT,
 )
 
 from audio_capture import (
@@ -36,6 +35,8 @@ from llm_client import close_llm_http_session
 import local_store
 import desktop_shortcut
 from osc_manager import osc_manager
+
+logger = logging.getLogger("web_server")
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -196,6 +197,12 @@ class WebServer:
             await asyncio.sleep(2)
 
     async def ipc_status_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         connected = False
         if self.ipc_server is not None:
             connected = len(self.ipc_server._clients) > 0
@@ -203,6 +210,12 @@ class WebServer:
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         status = "ok" if self.api_key_error_message is None else "error"
         return web.json_response({"status": status, "message": self.api_key_error_message})
     
@@ -314,7 +327,11 @@ class WebServer:
         """
         if not self._is_loopback_request(request):
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
-        return web.json_response({"store": local_store.load()})
+        try:
+            return web.json_response({"store": local_store.load()})
+        except Exception as e:
+            logger.warning(f"Failed to read local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     async def local_store_post_handler(self, request):
         """写入共享设置：{set:{k:v}, remove:[k], clear:bool}。"""
@@ -327,18 +344,22 @@ class WebServer:
         if not isinstance(payload, dict):
             return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
 
-        if payload.get("clear"):
-            store = local_store.clear()
-            return web.json_response({"status": "ok", "store": store})
+        try:
+            if payload.get("clear"):
+                store = local_store.clear()
+                return web.json_response({"status": "ok", "store": store})
 
-        updates = payload.get("set")
-        removals = payload.get("remove")
-        if updates is not None and not isinstance(updates, dict):
-            return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
-        if removals is not None and not isinstance(removals, list):
-            return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
-        store = local_store.merge(updates=updates, removals=removals)
-        return web.json_response({"status": "ok", "store": store})
+            updates = payload.get("set")
+            removals = payload.get("remove")
+            if updates is not None and not isinstance(updates, dict):
+                return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
+            if removals is not None and not isinstance(removals, list):
+                return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
+            store = local_store.merge(updates=updates, removals=removals)
+            return web.json_response({"status": "ok", "store": store})
+        except Exception as e:
+            logger.warning(f"Failed to update local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     def _supports_segment_mode(self) -> bool:
         return hasattr(self.session, "get_segment_mode")
@@ -462,6 +483,9 @@ class WebServer:
             payload["segment_mode"] = self.session.get_segment_mode()
         return web.json_response(payload)
 
+    # 未知来源值只告警一次，避免每次请求刷屏。
+    _warned_unknown_remotes: set = set()
+
     @staticmethod
     def _is_loopback_request(request) -> bool:
         """Whether the request originates from localhost (loopback)."""
@@ -469,7 +493,13 @@ class WebServer:
         if remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
             return True
         # aiohttp may report None for in-process/test transports.
-        return remote == "" or remote == "None"
+        if remote in ("", "None"):
+            cls = WebServer
+            if remote not in cls._warned_unknown_remotes:
+                cls._warned_unknown_remotes.add(remote)
+                print(f"⚠️  Request with unknown remote address treated as loopback ({remote!r})")
+            return True
+        return False
 
     async def setup_handler(self, request):
         """配置/切换 provider + API key（前端设置面板），在进程内热切换。"""
@@ -719,7 +749,7 @@ class WebServer:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                self.logger.warning(f"Ticket notification WebSocket disconnected: {error}")
+                logger.warning(f"Ticket notification WebSocket disconnected: {error}")
             finally:
                 self._ticket_notifications_connected = False
 
@@ -931,12 +961,24 @@ class WebServer:
         )
 
     async def account_registration_info_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         status, data = await self._server_request("GET", "/auth/registration-info")
         return web.json_response(data, status=status)
 
     async def account_status_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         manager = self.provider_manager
         token = self._relay_token()
         payload = {
@@ -976,6 +1018,12 @@ class WebServer:
         )
 
     async def account_balance_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         token = self._relay_token()
@@ -1032,6 +1080,12 @@ class WebServer:
         Uses the public /billing/policies endpoint (no token needed) so the
         Settings panel can show each provider's price before a session starts.
         """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         status, pol = await self._server_request("GET", "/billing/policies")
@@ -1055,6 +1109,12 @@ class WebServer:
         return web.json_response({"pricing": pricing})
 
     async def account_usage_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         token = self._relay_token()
@@ -1065,6 +1125,12 @@ class WebServer:
         return web.json_response(data, status=status)
 
     async def account_invite_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         token = self._relay_token()
@@ -1169,6 +1235,12 @@ class WebServer:
 
     async def segment_mode_set_handler(self, request):
         """设置断句模式（会广播给所有前端）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not self._supports_segment_mode():
             return web.json_response({"status": "error", "message": "Segment mode not supported"}, status=404)
         if LOCK_MANUAL_CONTROLS:
@@ -1204,6 +1276,12 @@ class WebServer:
 
     async def speaker_labels_set_handler(self, request):
         """设置字幕说话人标签显示状态（会广播给所有前端）。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not self._supports_speaker_labels():
             return web.json_response({"status": "error", "message": "Speaker labels not supported"}, status=404)
         if LOCK_MANUAL_CONTROLS:
@@ -1339,6 +1417,12 @@ class WebServer:
 
     async def llm_refine_set_handler(self, request):
         """设置 LLM 改进开关"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "LLM refine toggle is disabled by server config"},
@@ -1419,6 +1503,12 @@ class WebServer:
 
     async def restart_handler(self, request):
         """重启识别端点（也用于运行时切换翻译模式 / 双向语言对）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         is_auto = False
         requested_target_lang = None
         requested_mode = None
@@ -1493,11 +1583,13 @@ class WebServer:
                 self.provider_manager.target_lang_1 = l1
                 self.provider_manager.target_lang_2 = l2
 
-        # 先停止当前的Soniox会话
-        self.session.stop()
-        
-        # 关闭当前日志文件
-        self.logger.close_log_file()
+        # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
+        # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求
+        # 停滞），因此放到线程池里等待。
+        await asyncio.to_thread(self.session.stop)
+
+        # 关闭当前日志文件（同步文件 IO，同样移出事件循环）
+        await asyncio.to_thread(self.logger.close_log_file)
         
         if is_auto:
             await self.broadcast_to_clients({
@@ -1564,6 +1656,12 @@ class WebServer:
 
     async def osc_translation_set_handler(self, request):
         """设置翻译结果 OSC 发送开关"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "OSC translation toggle is disabled by server config"},
@@ -1635,6 +1733,12 @@ class WebServer:
 
     async def pause_handler(self, request):
         """暂停识别端点"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Pause is disabled by server config"},
@@ -1642,7 +1746,9 @@ class WebServer:
             )
 
         print("\n[Server] Received pause request...")
-        paused = self.session.pause()
+        # pause() -> stop() 会同步 join 会话/音频线程（最长约 4.5s），
+        # 移出事件循环避免阻塞其他请求。
+        paused = await asyncio.to_thread(self.session.pause)
 
         # 广播暂停状态给所有 WebSocket 客户端
         await self.broadcast_to_clients({
@@ -1659,6 +1765,12 @@ class WebServer:
     
     async def resume_handler(self, request):
         """恢复识别端点"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Resume is disabled by server config"},
@@ -1709,6 +1821,12 @@ class WebServer:
 
     async def set_audio_source_handler(self, request):
         """切换音频源"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Audio source switching is disabled by server config"},
@@ -1787,6 +1905,12 @@ class WebServer:
         return web.json_response(payload)
 
     async def output_device_set_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Output device switching is disabled by server config"}, status=403
@@ -1820,6 +1944,12 @@ class WebServer:
 
     async def microphone_device_set_handler(self, request):
         """Set the selected microphone device."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Microphone device switching is disabled by server config"},
@@ -1864,6 +1994,12 @@ class WebServer:
 
     async def window_on_top_handler(self, request):
         """切换窗口始终置顶状态（仅 WebView 模式有效）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         try:
             payload = await request.json()
         except Exception:
@@ -1940,6 +2076,12 @@ class WebServer:
 
     async def subtitle_font_post_handler(self, request):
         """Update subtitle font preference and broadcast it to connected windows."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         try:
             payload = await request.json()
         except Exception:
@@ -1970,6 +2112,12 @@ class WebServer:
 
     async def furigana_handler(self, request):
         """原生悬浮窗的假名分词代理：转交主窗口 kuromoji，返回 [[surface, reading|null], ...]。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         evaluator = getattr(self, "furigana_evaluator", None)
         if evaluator is None:
             return web.json_response({"ready": False, "pairs": []})
@@ -2009,6 +2157,12 @@ class WebServer:
 
         请求体：{"action": "toggle" | "open" | "close"}（缺省为 toggle）。
         """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Overlay control is disabled by server config"},
@@ -2051,6 +2205,12 @@ class WebServer:
 
     async def shutdown_handler(self, request):
         """请求退出应用（前端“重置所有设置并退出”调用）。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not callable(self.shutdown_callback):
             return web.json_response({"status": "ignored", "message": "Shutdown unavailable"})
         # 先返回响应，再延迟退出，避免连接被强制中断导致前端报错。

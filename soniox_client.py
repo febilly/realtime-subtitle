@@ -46,7 +46,7 @@ def get_api_key() -> str:
     api_key = os.environ.get("SONIOX_API_KEY")
     
     if api_key:
-        print(f"✅ Using API Key from environment variable")
+        print("✅ Using API Key from environment variable")
         return api_key
     
     # 如果没有，获取临时key
@@ -63,7 +63,7 @@ def get_api_key() -> str:
         temp_key = response.text.strip()
         
         if temp_key:
-            print(f"✅ Successfully obtained temporary API Key")
+            print("✅ Successfully obtained temporary API Key")
             print(f"   Key: {temp_key}")
             return temp_key
         else:
