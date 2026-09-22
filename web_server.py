@@ -35,6 +35,7 @@ from audio_capture import (
 from llm_client import close_llm_http_session
 import local_store
 import desktop_shortcut
+from osc_manager import osc_manager
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -78,6 +79,19 @@ class WebServer:
         self._http = None
         self._ticket_notifications_task = None
         self._ticket_notifications_connected = False
+        self._event_loop = None
+        self._osc_sensitive_filter_notice_triggered = False
+        self._osc_sensitive_filter_notice_delivered = False
+        self._osc_sensitive_filter_notice_callback = self._on_osc_sensitive_filter_triggered
+        stored_settings = local_store.load()
+        osc_manager.set_sensitive_filter_enabled(
+            str(stored_settings.get("oscSensitiveFilterEnabled", "true")).lower() == "true"
+        )
+        notice_disabled = (
+            str(stored_settings.get("oscSensitiveFilterNoticeDisabled", "false")).lower()
+            == "true"
+        )
+        osc_manager.set_sensitive_filter_notice_enabled(not notice_disabled)
         # A client process reports its version only on its first successful
         # startup account-validation GET /me request.
         self._client_version_reported = False
@@ -114,6 +128,54 @@ class WebServer:
                 await self._ipc_polling_task
             except asyncio.CancelledError:
                 pass
+
+    async def _start_osc_sensitive_filter_notifications(self, app):
+        self._event_loop = asyncio.get_running_loop()
+        osc_manager.set_sensitive_filter_notice_callback(
+            self._osc_sensitive_filter_notice_callback
+        )
+
+    async def _stop_osc_sensitive_filter_notifications(self, app):
+        osc_manager.clear_sensitive_filter_notice_callback(
+            self._osc_sensitive_filter_notice_callback
+        )
+        self._event_loop = None
+
+    def _on_osc_sensitive_filter_triggered(self):
+        """Thread-safe bridge from the synchronous OSC sender to aiohttp."""
+        self._osc_sensitive_filter_notice_triggered = True
+        loop = self._event_loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(self._deliver_osc_sensitive_filter_notice())
+        )
+
+    async def _deliver_osc_sensitive_filter_notice(self):
+        if (
+            not self._osc_sensitive_filter_notice_triggered
+            or self._osc_sensitive_filter_notice_delivered
+        ):
+            return False
+        regular_clients = [
+            client for client in self.websocket_clients
+            if client is not self.overlay_ws
+        ]
+        if not regular_clients:
+            return False
+
+        # Reserve delivery before awaiting so a simultaneous connection/trigger
+        # cannot enqueue the startup-only notice twice.
+        self._osc_sensitive_filter_notice_delivered = True
+        message = json.dumps({"type": "osc_sensitive_filter_triggered"})
+        results = await asyncio.gather(
+            *[client.send_str(message) for client in regular_clients],
+            return_exceptions=True,
+        )
+        delivered = any(not isinstance(result, BaseException) for result in results)
+        if not delivered:
+            self._osc_sensitive_filter_notice_delivered = False
+        return delivered
                 
     async def _poll_ipc_status(self):
         last_status = None
@@ -179,6 +241,9 @@ class WebServer:
         # 添加到客户端列表
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
+
+        if client_type != "overlay":
+            await self._deliver_osc_sensitive_filter_notice()
         
         try:
             connected = False
@@ -315,6 +380,10 @@ class WebServer:
             ),
             "interrupt_repair_enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
             "sleep_on_silence_enabled": config.get_sleep_on_silence_enabled(provider),
+            "osc_sensitive_filter_enabled": osc_manager.get_sensitive_filter_enabled(),
+            "osc_sensitive_filter_notice_disabled": (
+                not osc_manager.get_sensitive_filter_notice_enabled()
+            ),
             "soniox_region": config.SONIOX_REGION,
             "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
             # Subtitle-server relay (hosted mode) availability. The server URL is
@@ -1510,6 +1579,60 @@ class WebServer:
         self.session.set_osc_translation_enabled(enabled)
         return web.json_response({"enabled": self.session.get_osc_translation_enabled()})
 
+    async def osc_sensitive_filter_get_handler(self, request):
+        """Return whether outbound OSC sensitive-phrase filtering is enabled."""
+        return web.json_response({"enabled": osc_manager.get_sensitive_filter_enabled()})
+
+    async def osc_sensitive_filter_set_handler(self, request):
+        """Toggle filtering at the OSC-only output boundary."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC sensitive word filter is locked by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or "enabled" not in payload:
+            return web.json_response({"status": "error", "message": "Missing enabled field"}, status=400)
+        if not isinstance(payload["enabled"], bool):
+            return web.json_response({"status": "error", "message": "enabled must be a boolean"}, status=400)
+
+        osc_manager.set_sensitive_filter_enabled(payload["enabled"])
+        return web.json_response({
+            "status": "ok",
+            "enabled": osc_manager.get_sensitive_filter_enabled(),
+        })
+
+    async def osc_sensitive_filter_notice_get_handler(self, request):
+        """Return whether the first-match OSC filter notice is suppressed."""
+        return web.json_response({
+            "disabled": not osc_manager.get_sensitive_filter_notice_enabled(),
+        })
+
+    async def osc_sensitive_filter_notice_set_handler(self, request):
+        """Enable or suppress the startup-only OSC filter notice."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC sensitive word filter notice is locked by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or "disabled" not in payload:
+            return web.json_response({"status": "error", "message": "Missing disabled field"}, status=400)
+        if not isinstance(payload["disabled"], bool):
+            return web.json_response({"status": "error", "message": "disabled must be a boolean"}, status=400)
+
+        disabled = payload["disabled"]
+        osc_manager.set_sensitive_filter_notice_enabled(not disabled)
+        if disabled and not self._osc_sensitive_filter_notice_delivered:
+            self._osc_sensitive_filter_notice_triggered = False
+        return web.json_response({"status": "ok", "disabled": disabled})
+
     async def pause_handler(self, request):
         """暂停识别端点"""
         if LOCK_MANUAL_CONTROLS:
@@ -1968,6 +2091,8 @@ class WebServer:
 
         app.on_startup.append(self._start_ipc_status_polling)
         app.on_cleanup.append(self._stop_ipc_status_polling)
+        app.on_startup.append(self._start_osc_sensitive_filter_notifications)
+        app.on_cleanup.append(self._stop_osc_sensitive_filter_notifications)
         app.on_startup.append(self._start_ticket_notifications)
         app.on_cleanup.append(self._stop_ticket_notifications)
 
@@ -2033,6 +2158,10 @@ class WebServer:
         app.router.add_post('/resume', self.resume_handler)
         app.router.add_get('/osc-translation', self.osc_translation_get_handler)
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
+        app.router.add_get('/osc-sensitive-filter', self.osc_sensitive_filter_get_handler)
+        app.router.add_post('/osc-sensitive-filter', self.osc_sensitive_filter_set_handler)
+        app.router.add_get('/osc-sensitive-filter-notice', self.osc_sensitive_filter_notice_get_handler)
+        app.router.add_post('/osc-sensitive-filter-notice', self.osc_sensitive_filter_notice_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_get('/microphones', self.microphones_handler)

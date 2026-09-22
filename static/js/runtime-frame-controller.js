@@ -8,6 +8,7 @@
         'error',
         'llm_cost',
         'translation_mode_fallback',
+        'osc_sensitive_filter_triggered',
         'segment_mode_changed',
         'speaker_labels_changed',
     ]);
@@ -59,6 +60,16 @@
                 if (frame.needs_restart) call('restartRecognition', { auto: true });
                 return true;
             }
+            if (frame.type === 'osc_sensitive_filter_triggered') {
+                if ((getState() || {}).oscSensitiveFilterNoticeDisabled === true) {
+                    return true;
+                }
+                call('showToast', t('osc_sensitive_filter_triggered'), false, {
+                    actionLabel: t('settings'),
+                    onAction: () => call('openSettings'),
+                });
+                return true;
+            }
             if (frame.type === 'segment_mode_changed') {
                 call('handleSegmentModeChanged', frame);
                 return true;
@@ -71,7 +82,7 @@
         return { handle };
     }
 
-    const api = { FRAME_TYPES, create };
+const api = { FRAME_TYPES, create };
     root.RuntimeFrameController = api;
     if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

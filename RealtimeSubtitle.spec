@@ -13,7 +13,7 @@ from PyInstaller.utils.win32.versioninfo import (
     VSVersionInfo,
 )
 
-datas = [('static', 'static'), ('ACKNOWLEDGMENTS.md', '.')]
+datas = [('static', 'static'), ('resources', 'resources'), ('ACKNOWLEDGMENTS.md', '.')]
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',

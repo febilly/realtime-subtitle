@@ -18,6 +18,7 @@ from text_processor import (
     apply_arabic_reshaper_if_needed,
     is_rtl_isolate_wrapped,
 )
+from osc_sensitive_filter import OscSensitiveWordFilter
 
 __all__ = ["OSCManager", "osc_manager"]
 
@@ -98,6 +99,12 @@ class OSCManager:
             # Whether to render per-speaker labels (S0/S1) in OSC output.
             # Enabled for diarizing providers (Soniox), disabled for Gemini.
             self._show_speaker_labels = True
+            self._sensitive_filter_enabled = True
+            self._sensitive_word_filter = OscSensitiveWordFilter()
+            self._sensitive_filter_notice_callback = None
+            self._sensitive_filter_notice_emitted = False
+            self._sensitive_filter_notice_enabled = True
+            self._sensitive_filter_notice_lock = threading.Lock()
             
             self._emit("[OSC] OSC manager initialized")
         if truncate_messages is not None:
@@ -318,6 +325,11 @@ class OSCManager:
 
     def _prepare_outgoing_text_for_osc(self, text: str) -> str:
         max_length = MAX_LENGTH if getattr(self, "_truncate_enabled", True) else None
+        if getattr(self, "_sensitive_filter_enabled", True):
+            filtered_text = self._sensitive_word_filter.filter_text(text)
+            if filtered_text != text:
+                self._notify_sensitive_filter_triggered_once()
+            text = filtered_text
         text = self._prepare_text_for_osc(text, max_length=max_length)
         if max_length is None:
             return text
@@ -331,6 +343,48 @@ class OSCManager:
     def set_speaker_labels_enabled(self, enabled: bool) -> None:
         """启用/禁用 OSC 输出中的说话人标签（Soniox 启用，Gemini 禁用）。"""
         self._show_speaker_labels = bool(enabled)
+
+    def set_sensitive_filter_enabled(self, enabled: bool) -> None:
+        """Enable or disable filtering at the final OSC-only output boundary."""
+        self._sensitive_filter_enabled = bool(enabled)
+
+    def get_sensitive_filter_enabled(self) -> bool:
+        return bool(getattr(self, "_sensitive_filter_enabled", True))
+
+    def set_sensitive_filter_notice_enabled(self, enabled: bool) -> None:
+        with self._sensitive_filter_notice_lock:
+            self._sensitive_filter_notice_enabled = bool(enabled)
+
+    def get_sensitive_filter_notice_enabled(self) -> bool:
+        with self._sensitive_filter_notice_lock:
+            return bool(getattr(self, "_sensitive_filter_notice_enabled", True))
+
+    def set_sensitive_filter_notice_callback(self, callback) -> None:
+        """Register a no-argument callback for the first filtered OSC message."""
+        with self._sensitive_filter_notice_lock:
+            self._sensitive_filter_notice_callback = callback
+
+    def clear_sensitive_filter_notice_callback(self, callback=None) -> None:
+        with self._sensitive_filter_notice_lock:
+            if callback is None or self._sensitive_filter_notice_callback is callback:
+                self._sensitive_filter_notice_callback = None
+
+    def _notify_sensitive_filter_triggered_once(self) -> None:
+        callback = None
+        with self._sensitive_filter_notice_lock:
+            if (
+                not self._sensitive_filter_notice_enabled
+                or self._sensitive_filter_notice_emitted
+            ):
+                return
+            callback = self._sensitive_filter_notice_callback
+            if callback is None:
+                return
+            self._sensitive_filter_notice_emitted = True
+        try:
+            callback()
+        except Exception as error:
+            logger.warning("[OSC Filter] Failed to notify the frontend: %s", error)
 
     def _format_line(self, msg: HistoryMessage) -> str:
         """根据消息来源格式化单行文本。

@@ -176,6 +176,8 @@
 
             speakerLabels.applyBackendConfig(data);
             call('applySleepOnSilenceConfig', data);
+            call('applyOscSensitiveFilterConfig', data);
+            call('applyOscSensitiveFilterNoticeConfig', data);
             call('applyInterruptRepairConfig', data);
             call('renderRuntimeSettingsPickers');
             if (typeof data.enable_chroma_theme === 'boolean') {

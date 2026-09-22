@@ -41,6 +41,7 @@ describe('RuntimeFrameController frame boundary', () => {
             'error',
             'llm_cost',
             'translation_mode_fallback',
+            'osc_sensitive_filter_triggered',
             'segment_mode_changed',
             'speaker_labels_changed',
         ]);
@@ -115,6 +116,28 @@ describe('RuntimeFrameController direct runtime delegation', () => {
 
         expect(page.controller.handle({ type: 'llm_cost', credits: 1.25 })).toBe(true);
         expect(page.actions.addLlmCost).toHaveBeenCalledWith(1.25);
+    });
+
+    it('shows the OSC filter notice with a Settings action unless suppressed', () => {
+        const page = createHarness();
+
+        expect(page.controller.handle({ type: 'osc_sensitive_filter_triggered' })).toBe(true);
+        expect(page.actions.showToast).toHaveBeenCalledOnce();
+        const [message, isError, options] = page.actions.showToast.mock.calls[0];
+        expect(message).toBe('label:osc_sensitive_filter_triggered');
+        expect(isError).toBe(false);
+        expect(options.actionLabel).toBe('label:settings');
+        expect(options.onAction).toEqual(expect.any(Function));
+        options.onAction();
+        expect(page.actions.openSettings).toHaveBeenCalledWith();
+
+        const suppressed = createHarness({
+            state: { oscSensitiveFilterNoticeDisabled: true },
+        });
+        expect(suppressed.controller.handle({
+            type: 'osc_sensitive_filter_triggered',
+        })).toBe(true);
+        expect(suppressed.actions.showToast).not.toHaveBeenCalled();
     });
 
     it('applies translation fallback in persistence, UI, toast, then optional restart order', () => {

@@ -173,6 +173,10 @@ const controlPorts = {
     setTranslationUiMode: (mode, options = {}) => translationModeController.setTranslationUiMode(mode, options),
     setSleepOnSilenceEnabled: (enabled) => setSleepOnSilenceEnabled(enabled),
     setInterruptRepairEnabled: (enabled) => setInterruptRepairEnabled(enabled),
+    setOscSensitiveFilterEnabled: (enabled) => setOscSensitiveFilterEnabled(enabled),
+    setOscSensitiveFilterNoticeDisabled: (disabled) => (
+        setOscSensitiveFilterNoticeDisabled(disabled)
+    ),
     setSpeakerLabelsHidden: (hidden) => speakerLabelController.setHidden(hidden),
     setSegmentMode: (mode) => segmentModeController.setMode(mode),
     updateFuriganaButton: () => furiganaToggleController.updateButton(),
@@ -234,6 +238,8 @@ const settingsRuntime = SettingsRuntime.create({
         sleepOnSilencePickerHost,
         speakerLabelsSettingField,
         speakerLabelsPickerHost,
+        oscSensitiveFilterPickerHost: document.getElementById('oscSensitiveFilterPicker'),
+        oscSensitiveFilterNoticePickerHost: document.getElementById('oscSensitiveFilterNoticePicker'),
         interruptRepairSettingField: document.getElementById('interruptRepairSettingField'),
         interruptRepairPickerHost: document.getElementById('interruptRepairPicker'),
         bundledCjkFontPickerHost,
@@ -251,6 +257,8 @@ const settingsRuntime = SettingsRuntime.create({
         get autoRestartEnabled() { return autoRestartEnabled; },
         get sleepOnSilenceEnabled() { return sleepOnSilenceEnabled; },
         get interruptRepairEnabled() { return interruptRepairEnabled; },
+        get oscSensitiveFilterEnabled() { return oscSensitiveFilterEnabled; },
+        get oscSensitiveFilterNoticeDisabled() { return oscSensitiveFilterNoticeDisabled; },
         get interruptRepairSupported() { return interruptRepairSupported; },
         get hideSpeakerLabels() { return speakerLabelController.isHidden(); },
         get customFontAvailable() { return customFontAvailable; },
@@ -274,6 +282,12 @@ const settingsRuntime = SettingsRuntime.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'interruptRepairEnabled')) {
             interruptRepairEnabled = patch.interruptRepairEnabled;
         }
+        if (Object.prototype.hasOwnProperty.call(patch, 'oscSensitiveFilterEnabled')) {
+            oscSensitiveFilterEnabled = patch.oscSensitiveFilterEnabled;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'oscSensitiveFilterNoticeDisabled')) {
+            oscSensitiveFilterNoticeDisabled = patch.oscSensitiveFilterNoticeDisabled;
+        }
         if (Object.prototype.hasOwnProperty.call(patch, 'useBundledCjkFont')) {
             useBundledCjkFont = patch.useBundledCjkFont;
         }
@@ -282,6 +296,8 @@ const settingsRuntime = SettingsRuntime.create({
         updateAutoRestartButton: controlPorts.updateAutoRestartButton,
         setSleepOnSilenceEnabled: controlPorts.setSleepOnSilenceEnabled,
         setInterruptRepairEnabled: controlPorts.setInterruptRepairEnabled,
+        setOscSensitiveFilterEnabled: controlPorts.setOscSensitiveFilterEnabled,
+        setOscSensitiveFilterNoticeDisabled: controlPorts.setOscSensitiveFilterNoticeDisabled,
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
         setTranslationUiMode: controlPorts.setTranslationUiMode,
@@ -467,7 +483,77 @@ let displayMode = settingsStore.loadDisplayMode();
 let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
 let sleepOnSilenceEnabled = settingsStore.loadSleepOnSilenceEnabled();
 let interruptRepairEnabled = settingsStore.loadInterruptRepairEnabled();
+let oscSensitiveFilterEnabled = settingsStore.loadOscSensitiveFilterEnabled();
+let oscSensitiveFilterNoticeDisabled = settingsStore.loadOscSensitiveFilterNoticeDisabled();
 let interruptRepairSupported = translationProvider === 'soniox';
+
+async function setOscSensitiveFilterEnabled(enabled) {
+    try {
+        const response = await fetch('/osc-sensitive-filter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!enabled }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        oscSensitiveFilterEnabled = typeof data.enabled === 'boolean' ? data.enabled : !!enabled;
+        settingsStore.saveOscSensitiveFilterEnabled(oscSensitiveFilterEnabled);
+        settingsRuntime.renderOscSensitiveFilterPicker();
+        return true;
+    } catch (error) {
+        console.error('Error setting OSC sensitive word filter:', error);
+        return false;
+    }
+}
+
+function applyOscSensitiveFilterConfig(data = {}) {
+    if (typeof data.osc_sensitive_filter_enabled !== 'boolean') return;
+    const stored = settingsStore.readOscSensitiveFilterEnabled();
+    oscSensitiveFilterEnabled = stored === null ? data.osc_sensitive_filter_enabled : stored;
+    if (
+        stored !== null
+        && !lockManualControls
+        && stored !== data.osc_sensitive_filter_enabled
+    ) {
+        void setOscSensitiveFilterEnabled(stored);
+    }
+}
+
+async function setOscSensitiveFilterNoticeDisabled(disabled) {
+    try {
+        const response = await fetch('/osc-sensitive-filter-notice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disabled: !!disabled }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        oscSensitiveFilterNoticeDisabled = typeof data.disabled === 'boolean'
+            ? data.disabled
+            : !!disabled;
+        settingsStore.saveOscSensitiveFilterNoticeDisabled(oscSensitiveFilterNoticeDisabled);
+        settingsRuntime.renderOscSensitiveFilterNoticePicker();
+        return true;
+    } catch (error) {
+        console.error('Error setting OSC sensitive word filter notice:', error);
+        return false;
+    }
+}
+
+function applyOscSensitiveFilterNoticeConfig(data = {}) {
+    if (typeof data.osc_sensitive_filter_notice_disabled !== 'boolean') return;
+    const stored = settingsStore.readOscSensitiveFilterNoticeDisabled();
+    oscSensitiveFilterNoticeDisabled = stored === null
+        ? data.osc_sensitive_filter_notice_disabled
+        : stored;
+    if (
+        stored !== null
+        && !lockManualControls
+        && stored !== data.osc_sensitive_filter_notice_disabled
+    ) {
+        void setOscSensitiveFilterNoticeDisabled(stored);
+    }
+}
 
 async function setSleepOnSilenceEnabled(enabled) {
     try {
@@ -931,7 +1017,7 @@ const sessionFrameController = SessionFrameController.create({
 });
 const runtimeFrameController = RuntimeFrameController.create({
     t,
-    getState: () => ({ lockManualControls }),
+    getState: () => ({ lockManualControls, oscSensitiveFilterNoticeDisabled }),
     actions: {
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
         syncOverlayState: runtimeControls.syncOverlayState,
@@ -1038,6 +1124,8 @@ function updateUiConfigState(patch) {
             case 'segmentModeSupported': segmentModeSupported = value; break;
             case 'interruptRepairSupported': interruptRepairSupported = value; break;
             case 'interruptRepairEnabled': interruptRepairEnabled = value; break;
+            case 'oscSensitiveFilterEnabled': oscSensitiveFilterEnabled = value; break;
+            case 'oscSensitiveFilterNoticeDisabled': oscSensitiveFilterNoticeDisabled = value; break;
             case 'twoWaySupported': twoWaySupported = value; break;
             case 'backendBootId': backendBootId = value; break;
             case 'setupRequired': setupRequired = value; break;
@@ -1092,6 +1180,8 @@ const uiConfigController = UiConfigController.create({
         updateSettingsButtonVisibility: settingsPorts.updateSettingsButtonVisibility,
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
         applySleepOnSilenceConfig,
+        applyOscSensitiveFilterConfig,
+        applyOscSensitiveFilterNoticeConfig,
         applyInterruptRepairConfig,
         renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,

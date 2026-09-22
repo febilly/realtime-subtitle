@@ -47,6 +47,8 @@
             autoRestart: null,
             sleepOnSilence: null,
             speakerLabels: null,
+            oscSensitiveFilter: null,
+            oscSensitiveFilterNotice: null,
             interruptRepair: null,
             bundledCjkFont: null,
             translationMode: null,
@@ -88,6 +90,14 @@
                     'speakerLabels',
                     draft.hideSpeakerLabels ? 'hide' : 'show',
                 ) === 'hide',
+                oscSensitiveFilterEnabled: pickerValue(
+                    'oscSensitiveFilter',
+                    draft.oscSensitiveFilterEnabled === false ? 'false' : 'true',
+                ) !== 'false',
+                oscSensitiveFilterNoticeDisabled: pickerValue(
+                    'oscSensitiveFilterNotice',
+                    draft.oscSensitiveFilterNoticeDisabled ? 'true' : 'false',
+                ) === 'true',
                 interruptRepairEnabled: pickerValue(
                     'interruptRepair',
                     draft.interruptRepairEnabled === false ? 'false' : 'true',
@@ -380,6 +390,37 @@
             });
         }
 
+        function renderOscSensitiveFilterPicker() {
+            const enabled = state().oscSensitiveFilterEnabled !== false;
+            setDraft({ oscSensitiveFilterEnabled: enabled });
+            return replaceHost(elements.oscSensitiveFilterPickerHost, 'oscSensitiveFilter', [
+                { value: 'true', label: t('osc_sensitive_filter_enabled') },
+                { value: 'false', label: t('osc_sensitive_filter_disabled') },
+            ], {
+                value: enabled ? 'true' : 'false',
+                onChange: (value) => setDraft({ oscSensitiveFilterEnabled: value !== 'false' }),
+            });
+        }
+
+        function renderOscSensitiveFilterNoticePicker() {
+            const disabled = state().oscSensitiveFilterNoticeDisabled === true;
+            setDraft({ oscSensitiveFilterNoticeDisabled: disabled });
+            return replaceHost(
+                elements.oscSensitiveFilterNoticePickerHost,
+                'oscSensitiveFilterNotice',
+                [
+                    { value: 'false', label: t('osc_sensitive_filter_notice_allowed') },
+                    { value: 'true', label: t('osc_sensitive_filter_notice_suppressed') },
+                ],
+                {
+                    value: disabled ? 'true' : 'false',
+                    onChange: (value) => setDraft({
+                        oscSensitiveFilterNoticeDisabled: value === 'true',
+                    }),
+                },
+            );
+        }
+
         function renderInterruptRepairPicker() {
             const current = state();
             const supported = current.interruptRepairSupported !== false
@@ -573,6 +614,8 @@
             renderAutoRestartPicker();
             renderSleepOnSilencePicker();
             renderSpeakerLabelsPicker();
+            renderOscSensitiveFilterPicker();
+            renderOscSensitiveFilterNoticePicker();
             renderInterruptRepairPicker();
             renderSegmentModePicker();
         }
@@ -630,6 +673,37 @@
                 }
             }
 
+            if (pickers.oscSensitiveFilter) {
+                const enabled = getDraft().oscSensitiveFilterEnabled;
+                if (enabled !== (state().oscSensitiveFilterEnabled !== false)) {
+                    const ok = await actionSucceeded('setOscSensitiveFilterEnabled', enabled);
+                    if (!ok) return { ok: false, message: t('backend_osc_sensitive_filter_disabled') };
+                    updateState({ oscSensitiveFilterEnabled: enabled });
+                }
+                storage.setItem('oscSensitiveFilterEnabled', enabled ? 'true' : 'false');
+            }
+
+            if (pickers.oscSensitiveFilterNotice) {
+                const disabled = getDraft().oscSensitiveFilterNoticeDisabled;
+                if (disabled !== (state().oscSensitiveFilterNoticeDisabled === true)) {
+                    const ok = await actionSucceeded(
+                        'setOscSensitiveFilterNoticeDisabled',
+                        disabled,
+                    );
+                    if (!ok) {
+                        return {
+                            ok: false,
+                            message: t('backend_osc_sensitive_filter_notice_disabled'),
+                        };
+                    }
+                    updateState({ oscSensitiveFilterNoticeDisabled: disabled });
+                }
+                storage.setItem(
+                    'oscSensitiveFilterNoticeDisabled',
+                    disabled ? 'true' : 'false',
+                );
+            }
+
             if (pickers.interruptRepair && currentProvider === 'soniox') {
                 const enabled = getDraft().interruptRepairEnabled;
                 if (enabled !== (state().interruptRepairEnabled !== false)) {
@@ -683,6 +757,8 @@
             renderSleepOnSilencePicker,
             getStoredHideSpeakerLabelsSetting,
             renderSpeakerLabelsPicker,
+            renderOscSensitiveFilterPicker,
+            renderOscSensitiveFilterNoticePicker,
             renderInterruptRepairPicker,
             renderBundledCjkFontPicker,
             syncBundledCjkFontPreference,

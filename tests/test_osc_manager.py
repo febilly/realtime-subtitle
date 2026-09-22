@@ -38,6 +38,7 @@ sys.modules["vrchat_oscquery.threaded"] = mock_vrchat_threaded
 sys.modules["vrchat_oscquery"] = type(sys)("vrchat_oscquery")
 
 from osc_manager import OSCManager, QueuedMessage
+from osc_sensitive_filter import OscSensitiveWordFilter, phrase_digest
 import text_processor
 
 
@@ -255,6 +256,68 @@ def test_own_message_wrapped_in_brackets():
     assert len(input_calls) == 1
     text = input_calls[0][0][1][0]
     assert text == ">My speech<"
+
+
+def test_sensitive_filter_changes_only_osc_output_and_keeps_raw_history():
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._sensitive_word_filter = OscSensitiveWordFilter({
+        2: {phrase_digest(["blue", "moon"])},
+    })
+
+    osc.add_message_and_send("A Blue moon rises", ongoing=False)
+
+    assert _last_chatbox_input_text(mock_client) == "A **** **** rises"
+    assert osc._message_history[0].text == "A Blue moon rises"
+
+
+def test_sensitive_filter_is_enabled_by_default_and_can_be_disabled():
+    osc = _fresh_osc_manager()
+    mock_client = MagicMock()
+    osc._client = mock_client
+    osc._sensitive_word_filter = OscSensitiveWordFilter({
+        1: {phrase_digest(["red"])},
+    })
+
+    assert osc.get_sensitive_filter_enabled() is True
+    osc.set_sensitive_filter_enabled(False)
+    osc.add_message_and_send("red alert", ongoing=False)
+
+    assert _last_chatbox_input_text(mock_client) == "red alert"
+
+
+def test_sensitive_filter_notice_fires_once_only_after_an_actual_replacement():
+    osc = _fresh_osc_manager()
+    notices = MagicMock()
+    osc._sensitive_word_filter = OscSensitiveWordFilter({
+        1: {phrase_digest(["red"])},
+    })
+    osc.set_sensitive_filter_notice_callback(notices)
+
+    assert osc._prepare_outgoing_text_for_osc("green alert") == "green alert"
+    notices.assert_not_called()
+
+    assert osc._prepare_outgoing_text_for_osc("red alert") == "*** alert"
+    assert osc._prepare_outgoing_text_for_osc("red again") == "*** again"
+    notices.assert_called_once_with()
+
+
+def test_sensitive_filter_notice_is_suppressed_by_default_off_setting():
+    osc = _fresh_osc_manager()
+    notices = MagicMock()
+    osc._sensitive_word_filter = OscSensitiveWordFilter({
+        1: {phrase_digest(["red"])},
+    })
+    osc.set_sensitive_filter_notice_callback(notices)
+    osc.set_sensitive_filter_notice_enabled(False)
+
+    assert osc._prepare_outgoing_text_for_osc("red alert") == "*** alert"
+    notices.assert_not_called()
+
+    osc.set_sensitive_filter_notice_enabled(True)
+    assert osc._prepare_outgoing_text_for_osc("red again") == "*** again"
+    notices.assert_called_once_with()
 
 
 def test_rtl_text_is_processed_before_osc_send(monkeypatch):

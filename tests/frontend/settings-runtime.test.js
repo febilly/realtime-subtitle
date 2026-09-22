@@ -17,6 +17,8 @@ function setup(overrides = {}) {
         <div id="autoRestart"></div>
         <div id="sleepOnSilence"></div>
         <label id="speakerField"><div id="speakerPicker"></div></label>
+        <label id="oscSensitiveFilterField"><div id="oscSensitiveFilterPicker"></div></label>
+        <label id="oscSensitiveFilterNoticeField"><div id="oscSensitiveFilterNoticePicker"></div></label>
         <label id="interruptField"><div id="interruptPicker"></div></label>
         <div id="fontPicker"></div><p id="fontHint"></p>
         <section id="translationSection"><label id="translationField"><div id="translationPicker"></div></label><p id="translationHint"></p></section>
@@ -28,6 +30,8 @@ function setup(overrides = {}) {
         providerSettings: {},
         autoRestartEnabled: true,
         sleepOnSilenceEnabled: true,
+        oscSensitiveFilterEnabled: true,
+        oscSensitiveFilterNoticeDisabled: false,
         interruptRepairEnabled: true,
         interruptRepairSupported: true,
         hideSpeakerLabels: false,
@@ -64,6 +68,8 @@ function setup(overrides = {}) {
         setSleepOnSilenceEnabled: vi.fn(async () => { calls.push('sleep'); return true; }),
         setInterruptRepairEnabled: vi.fn(async () => { calls.push('interrupt'); return true; }),
         setSpeakerLabelsHidden: vi.fn(async () => { calls.push('speaker'); return true; }),
+        setOscSensitiveFilterEnabled: vi.fn(async () => { calls.push('oscFilter'); return true; }),
+        setOscSensitiveFilterNoticeDisabled: vi.fn(async () => { calls.push('oscNotice'); return true; }),
         setSegmentMode: vi.fn(async () => { calls.push('segment'); return true; }),
         setTranslationUiMode: vi.fn(async () => { calls.push('translation'); return true; }),
         ...overrides.actions,
@@ -92,6 +98,8 @@ function setup(overrides = {}) {
             sleepOnSilencePickerHost: document.getElementById('sleepOnSilence'),
             speakerLabelsSettingField: document.getElementById('speakerField'),
             speakerLabelsPickerHost: document.getElementById('speakerPicker'),
+            oscSensitiveFilterPickerHost: document.getElementById('oscSensitiveFilterPicker'),
+            oscSensitiveFilterNoticePickerHost: document.getElementById('oscSensitiveFilterNoticePicker'),
             interruptRepairSettingField: document.getElementById('interruptField'),
             interruptRepairPickerHost: document.getElementById('interruptPicker'),
             bundledCjkFontPickerHost: document.getElementById('fontPicker'),
@@ -144,6 +152,8 @@ describe('SettingsRuntime picker state', () => {
         expect(pickers.autoRestart.value).toBe('true');
         expect(pickers.sleepOnSilence.value).toBe('true');
         expect(pickers.speakerLabels.value).toBe('hide');
+        expect(pickers.oscSensitiveFilter.value).toBe('true');
+        expect(pickers.oscSensitiveFilterNotice.value).toBe('false');
         expect(pickers.interruptRepair.value).toBe('true');
         expect(pickers.bundledCjkFont.value).toBe('false');
         expect(pickers.translationMode.value).toBe('hybrid');
@@ -279,13 +289,15 @@ describe('SettingsRuntime microphone and font effects', () => {
 });
 
 describe('SettingsRuntime save orchestration', () => {
-    it('applies auto restart, auto sleep, speaker, interrupt repair, segment, and translation in order', async () => {
+    it('applies auto restart, auto sleep, speaker, OSC settings, interrupt repair, segment, and translation in order', async () => {
         const page = setup();
         page.controller.renderSettingsPickers();
         const pickers = page.controller.getPickers();
         pickers.autoRestart.choose('false');
         pickers.sleepOnSilence.choose('false');
         pickers.speakerLabels.choose('hide');
+        pickers.oscSensitiveFilter.choose('false');
+        pickers.oscSensitiveFilterNotice.choose('true');
         pickers.interruptRepair.choose('false');
         pickers.segmentMode.choose('endpoint');
         pickers.translationMode.choose('accurate');
@@ -294,10 +306,16 @@ describe('SettingsRuntime save orchestration', () => {
         expect(page.state.autoRestartEnabled).toBe(false);
         expect(page.state.sleepOnSilenceEnabled).toBe(false);
         expect(page.state.interruptRepairEnabled).toBe(false);
+        expect(page.state.oscSensitiveFilterEnabled).toBe(false);
+        expect(page.state.oscSensitiveFilterNoticeDisabled).toBe(true);
         expect(page.dom.window.localStorage.getItem('autoRestartEnabled')).toBe('false');
         expect(page.dom.window.localStorage.getItem('sleepOnSilenceEnabled')).toBe('false');
         expect(page.dom.window.localStorage.getItem('interruptRepairEnabled')).toBe('false');
-        expect(page.calls).toEqual(['auto', 'sleep', 'speaker', 'interrupt', 'segment', 'translation']);
+        expect(page.dom.window.localStorage.getItem('oscSensitiveFilterEnabled')).toBe('false');
+        expect(page.dom.window.localStorage.getItem('oscSensitiveFilterNoticeDisabled')).toBe('true');
+        expect(page.calls).toEqual([
+            'auto', 'sleep', 'speaker', 'oscFilter', 'oscNotice', 'interrupt', 'segment', 'translation',
+        ]);
         expect(page.actions.setTranslationUiMode).toHaveBeenCalledWith('accurate', {
             restartIfNeeded: true,
         });

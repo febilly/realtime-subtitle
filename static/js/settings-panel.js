@@ -302,9 +302,12 @@
             setText('microphoneDeviceLabel', 'microphone_device');
             setText('outputDeviceLabel', 'output_device');
             setText('runtimeControlsLabel', 'recognition_controls');
+            setText('oscSettingsLabel', 'osc_settings');
             setText('autoRestartSettingLabel', 'auto_restart_setting');
             setText('sleepOnSilenceSettingLabel', 'auto_sleep_setting');
             setText('speakerLabelsSettingLabel', 'speaker_labels_setting');
+            setText('oscSensitiveFilterSettingLabel', 'osc_sensitive_filter_setting');
+            setText('oscSensitiveFilterNoticeSettingLabel', 'osc_sensitive_filter_notice_setting');
             setText('interruptRepairSettingLabel', 'interrupt_repair_setting');
             setText('segmentModeSettingLabel', 'segment_mode_setting');
             setText('translationModeSettingLabel', 'translation_mode_setting');

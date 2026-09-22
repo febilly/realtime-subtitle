@@ -25,6 +25,8 @@ describe('full-page runtime settings wiring', () => {
 
             chooseOption(page, '#autoRestartPicker', 1);
             chooseOption(page, '#speakerLabelsPicker', 1);
+            chooseOption(page, '#oscSensitiveFilterPicker', 1);
+            chooseOption(page, '#oscSensitiveFilterNoticePicker', 1);
             chooseOption(page, '#interruptRepairPicker', 1);
             chooseOption(page, '#segmentModePicker', 1);
             chooseOption(page, '#translationModePicker', 0);
@@ -40,11 +42,15 @@ describe('full-page runtime settings wiring', () => {
             expect(savePosts).toEqual([
                 '/subtitle-font',
                 '/speaker-labels',
+                '/osc-sensitive-filter',
+                '/osc-sensitive-filter-notice',
                 '/interrupt-repair',
                 '/segment-mode',
                 '/translation-mode',
             ]);
             expect(page.window.localStorage.getItem('autoRestartEnabled')).toBe('false');
+            expect(page.window.localStorage.getItem('oscSensitiveFilterEnabled')).toBe('false');
+            expect(page.window.localStorage.getItem('oscSensitiveFilterNoticeDisabled')).toBe('true');
             expect(page.window.localStorage.getItem('interruptRepairEnabled')).toBe('false');
             expect(page.window.localStorage.getItem('segmentMode')).toBe('endpoint');
             expect(page.window.localStorage.getItem('translationUiMode')).toBe('fast');

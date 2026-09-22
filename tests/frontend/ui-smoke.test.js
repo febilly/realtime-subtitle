@@ -9,6 +9,17 @@ describe('full-page settings and controls smoke', () => {
             await page.flush(2);
             expect(settingsPanel.hidden).toBe(false);
             expect(page.document.getElementById('settingsOverlay').hidden).toBe(false);
+            const oscSection = page.document.getElementById('oscSettingsSection');
+            expect(oscSection).not.toBeNull();
+            expect(oscSection.contains(
+                page.document.getElementById('oscSensitiveFilterSettingField'),
+            )).toBe(true);
+            expect(oscSection.contains(
+                page.document.getElementById('oscSensitiveFilterNoticeSettingField'),
+            )).toBe(true);
+            expect(page.document.getElementById('runtimeControlsSection').contains(
+                page.document.getElementById('oscSensitiveFilterSettingField'),
+            )).toBe(false);
 
             const autoRestartTrigger = page.document.querySelector('#autoRestartPicker .lang-picker-button');
             expect(autoRestartTrigger).not.toBeNull();
