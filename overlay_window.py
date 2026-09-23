@@ -448,7 +448,7 @@ _RENDERER_CACHE = {}
 
 def _load_svg_symbols():
     try:
-        import xml.etree.ElementTree as ET
+        import defusedxml.ElementTree as ET
         # Resolve path to static/icons/lucide-sprite.svg
         base_dir = os.path.dirname(os.path.abspath(__file__))
         svg_path = os.path.join(base_dir, "static", "icons", "lucide-sprite.svg")
