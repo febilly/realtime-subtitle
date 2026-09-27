@@ -8,6 +8,7 @@ import time
 import re
 import logging
 import uuid
+import inspect
 from typing import Optional, Tuple
 
 from websockets import ConnectionClosed, ConnectionClosedOK
@@ -648,51 +649,38 @@ class GeminiSession:
         if mode != "two_way":
             return t_sess
 
-        source_lang = self._infer_source_language(source_tokens)
         l1 = normalize_language_code(TARGET_LANG_1)
         l2 = normalize_language_code(TARGET_LANG_2)
+        fallback = t_sess if t_sess in (l1, l2) else (l2 or l1 or t_sess)
+
+        source_lang = self._infer_source_language(source_tokens)
         if not (l1 and l2) or not source_lang:
-            return t_sess
-        if source_lang not in (l1, l2):
-            return t_sess
-        return self._two_way_partner_lang(source_lang)
+            return fallback
+        partner = self._two_way_partner_lang(source_lang)
+        return partner or fallback
 
     def _can_use_source_as_translation(self, source_tokens: list[dict]) -> bool:
+        mode = (self.translation or "").strip().lower()
+        # In two-way translation mode, speech is translated bidirectionally between the two languages.
+        # Source text must never be treated as translation output.
+        if mode == "two_way":
+            return False
+
         source_lang = self._infer_source_language(source_tokens)
         if not source_lang:
             return False
 
-        mode = (self.translation or "").strip().lower()
         t_sess = normalize_language_code(self.get_translation_target_lang())
-        if mode != "two_way":
-            return bool(t_sess and source_lang == t_sess)
-
-        l1 = normalize_language_code(TARGET_LANG_1)
-        l2 = normalize_language_code(TARGET_LANG_2)
-        if not (l1 and l2):
-            return bool(t_sess and source_lang == t_sess)
-
-        cmp_lang = self._osc_translation_language_for_comparison(source_tokens)
-        if cmp_lang and source_lang == cmp_lang:
-            return True
-
-        # Recognizer + session both say we are in the UI language, but translation tokens are
-        # empty: treat like one-way "already target language". For two-way, suppress this when
-        # TARGET_LANG_1 matches both speech and session — that is the "speaking L1 while waiting
-        # for partner(L1)" case (e.g. en + T=en + pair en/zh) which must not pass English through.
-        # Default TARGET_LANG_1=en / TARGET_LANG_2=zh keeps zh + T=zh passing here; if you swap
-        # TARGET_LANG_1/2, put the code you mostly wait for translation *from* in TARGET_LANG_1.
-        if t_sess and source_lang == t_sess:
-            if l1 and source_lang == l1 and t_sess == l1:
-                return False
-            return True
-
-        return False
+        return bool(t_sess and source_lang == t_sess)
 
     def _select_osc_text(self, translation_text: str, source_text: str, source_tokens: list[dict]) -> str:
         mode = str(self._osc_send_text_mode or "smart").strip().lower()
         translation_value = normalize_east_asian_translation_spacing((translation_text or "").strip())
         source_value = (source_text or "").strip()
+
+        if (self.translation or "").strip().lower() == "two_way":
+            # In two-way translation mode, OSC must always send the translated text.
+            return translation_value
 
         if mode == "translation_only":
             return translation_value
@@ -888,6 +876,11 @@ class GeminiSession:
 
         context_items = self._get_dynamic_context_items()
 
+        utterance_target_lang = (
+            self._osc_translation_language_for_comparison(original_tokens)
+            or normalize_language_code(self.get_translation_target_lang())
+        )
+
         mode = self.get_llm_refine_mode()
 
         # 混合: push the fast built-in draft to the chatbox immediately (before the
@@ -906,12 +899,36 @@ class GeminiSession:
         if is_llm_refine_available() and mode != "off" and translation:
             try:
                 if mode == "refine":
-                    result = await self._perform_refine(source, translation, context_items)
+                    refine_kwargs = {}
+                    try:
+                        sig = inspect.signature(self._perform_refine)
+                        if "target_lang" in sig.parameters or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                        ):
+                            refine_kwargs["target_lang"] = utterance_target_lang
+                    except Exception:
+                        refine_kwargs["target_lang"] = utterance_target_lang
+
+                    result = await self._perform_refine(
+                        source, translation, context_items, **refine_kwargs
+                    )
                     if result.get("status") == "ok" and not result.get("no_change"):
                         refined_translation = result.get("refined_translation") or translation
                         no_change = False
                 elif mode == "translate":
-                    result = await self._perform_translate(source, context_items)
+                    translate_kwargs = {}
+                    try:
+                        sig = inspect.signature(self._perform_translate)
+                        if "target_lang" in sig.parameters or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                        ):
+                            translate_kwargs["target_lang"] = utterance_target_lang
+                    except Exception:
+                        translate_kwargs["target_lang"] = utterance_target_lang
+
+                    result = await self._perform_translate(
+                        source, context_items, **translate_kwargs
+                    )
                     if result.get("status") == "ok":
                         translated = (result.get("translation") or "").strip()
                         if translated:
@@ -1059,23 +1076,25 @@ class GeminiSession:
             return "accurate"
         return "fast"
 
-    async def _perform_refine(self, source: str, translation: str, context_items: list) -> dict:
+    async def _perform_refine(self, source: str, translation: str, context_items: list, target_lang: str | None = None) -> dict:
         """执行 LLM 翻译改进（共享逻辑见 llm_refine.perform_refine）。"""
         return await llm_refine.perform_refine(
             self._llm_chat,
             source,
             translation,
             context_items,
-            target_lang=self.get_translation_target_lang(),
+            target_lang=target_lang if (isinstance(target_lang, str) and target_lang.strip())
+            else self.get_translation_target_lang(),
         )
 
-    async def _perform_translate(self, source: str, context_items: list) -> dict:
+    async def _perform_translate(self, source: str, context_items: list, target_lang: str | None = None) -> dict:
         """执行 LLM 直接翻译（共享逻辑见 llm_refine.perform_translate）。"""
         return await llm_refine.perform_translate(
             self._llm_chat,
             source,
             context_items,
-            target_lang=self.get_translation_target_lang(),
+            target_lang=target_lang if (isinstance(target_lang, str) and target_lang.strip())
+            else self.get_translation_target_lang(),
         )
 
     def set_llm_refine_mode(self, mode: str) -> tuple[bool, str]:

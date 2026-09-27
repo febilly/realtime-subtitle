@@ -2,7 +2,7 @@ import asyncio
 import concurrent.futures
 import sys
 from types import ModuleType
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -2670,3 +2670,224 @@ def test_short_interrupt_resume_gap_too_long_does_not_merge(monkeypatch):
     _feed_timed_tokens(session, all_final_tokens, sent_count, [_timed_token("A two.", "1", 3200, 4000)])
 
     assert not [u for u in updates if u.get("type") == "subtitle_retract"]
+
+
+def test_two_way_translation_can_use_source_as_translation_is_always_false(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+
+    # In two-way mode, neither English nor Chinese nor any other language should ever
+    # be treated as "source can be used as translation"
+    en_tokens = [{"text": "Hello.", "language": "en"}]
+    zh_tokens = [{"text": "你好。", "language": "zh"}]
+    ja_tokens = [{"text": "こんにちは。", "language": "ja"}]
+
+    assert session._can_use_source_as_translation(en_tokens) is False
+    assert session._can_use_source_as_translation(zh_tokens) is False
+    assert session._can_use_source_as_translation(ja_tokens) is False
+
+    # Even if translation_target_lang is swapped to "en"
+    session.translation_target_lang = "en"
+    assert session._can_use_source_as_translation(en_tokens) is False
+    assert session._can_use_source_as_translation(zh_tokens) is False
+
+
+def test_two_way_translation_select_osc_text_always_returns_translation(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+
+    en_tokens = [{"text": "Hello.", "language": "en"}]
+    zh_tokens = [{"text": "你好。", "language": "zh"}]
+
+    # When translation text is available, OSC selects the translation
+    assert session._select_osc_text("你好。", "Hello.", en_tokens) == "你好。"
+    assert session._select_osc_text("Hello.", "你好。", zh_tokens) == "Hello."
+
+    # When translation text is empty, OSC does NOT fall back to source in two-way mode
+    assert session._select_osc_text("", "Hello.", en_tokens) == ""
+    assert session._select_osc_text("", "你好。", zh_tokens) == ""
+
+
+def test_two_way_translation_fast_mode_sends_partner_translations_to_osc(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    osc_messages = []
+    module.osc_manager.add_message_and_send = MagicMock(
+        side_effect=lambda text, **kw: osc_messages.append(text)
+    )
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("fast")
+    session.set_osc_translation_enabled(True)
+
+    # 1. User speaks English -> translation is Chinese -> OSC sends Chinese
+    en_tokens = [{"text": "Good morning.", "language": "en", "is_final": True, "speaker": "1"}]
+    zh_trans_tokens = [{"text": "早上好。", "translation_status": "translation", "language": "zh", "is_final": True, "speaker": "1"}]
+
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, zh_trans_tokens, "s-1"))
+    assert osc_messages[-1] == "早上好。"
+
+    # 2. User speaks Chinese -> translation is English -> OSC sends English (NOT Chinese!)
+    zh_tokens = [{"text": "晚安。", "language": "zh", "is_final": True, "speaker": "1"}]
+    en_trans_tokens = [{"text": "Good night.", "translation_status": "translation", "language": "en", "is_final": True, "speaker": "1"}]
+
+    asyncio.run(session._finalize_sentence_async("1", zh_tokens, en_trans_tokens, "s-2"))
+    assert osc_messages[-1] == "Good night."
+
+
+def test_two_way_translation_hybrid_mode_refines_with_partner_target_lang(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    osc_messages = []
+    module.osc_manager.add_message_and_send = MagicMock(
+        side_effect=lambda text, **kw: (osc_messages.append(("draft", text)), 1)[1]
+    )
+    module.osc_manager.update_message_and_send = MagicMock(
+        side_effect=lambda handle, text, **kw: osc_messages.append(("final", text))
+    )
+
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("hybrid")
+    session.set_osc_translation_enabled(True)
+
+    refine_calls = []
+
+    async def fake_refine(source, translation, context_items, target_lang=None):
+        refine_calls.append((source, translation, target_lang))
+        return {"status": "ok", "no_change": False, "refined_translation": f"Refined({target_lang}): {translation}"}
+
+    session._perform_refine = fake_refine
+
+    # English speech: target should be 'zh'
+    en_tokens = [{"text": "Hello.", "language": "en", "is_final": True, "speaker": "1"}]
+    zh_trans_tokens = [{"text": "你好。", "translation_status": "translation", "language": "zh", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, zh_trans_tokens, "s-1"))
+
+    assert refine_calls[-1] == ("Hello.", "你好。", "zh")
+    assert osc_messages[-1] == ("final", "Refined(zh): 你好。")
+
+    # Chinese speech: target should be 'en' (NOT 'zh'!)
+    zh_tokens = [{"text": "再见。", "language": "zh", "is_final": True, "speaker": "1"}]
+    en_trans_tokens = [{"text": "Bye.", "translation_status": "translation", "language": "en", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", zh_tokens, en_trans_tokens, "s-2"))
+
+    assert refine_calls[-1] == ("再见。", "Bye.", "en")
+    assert osc_messages[-1] == ("final", "Refined(en): Bye.")
+
+
+def test_two_way_translation_accurate_mode_translates_with_partner_target_lang(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    osc_messages = []
+    module.osc_manager.add_message_and_send = MagicMock(
+        side_effect=lambda text, **kw: osc_messages.append(text)
+    )
+
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("accurate")
+    session.set_osc_translation_enabled(True)
+
+    translate_calls = []
+
+    async def fake_translate(source, context_items, target_lang=None):
+        translate_calls.append((source, target_lang))
+        if target_lang == "zh":
+            return {"status": "ok", "translation": "这是中文译文。"}
+        else:
+            return {"status": "ok", "translation": "This is English translation."}
+
+    session._perform_translate = fake_translate
+
+    # 1. English speech -> LLM translates to zh -> OSC sends Chinese
+    en_tokens = [{"text": "This is an English sentence.", "language": "en", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, [], "s-1"))
+
+    assert translate_calls[-1] == ("This is an English sentence.", "zh")
+    assert osc_messages[-1] == "这是中文译文。"
+
+    # 2. Chinese speech -> LLM translates to en -> OSC sends English
+    zh_tokens = [{"text": "这是一个中文句子。", "language": "zh", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", zh_tokens, [], "s-2"))
+
+    assert translate_calls[-1] == ("这是一个中文句子。", "en")
+    assert osc_messages[-1] == "This is English translation."
+
+
+def test_two_way_translation_live_preview_sends_partner_translation_and_not_source(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    preview_messages = []
+    module.osc_manager.send_preview_messages_with_history = MagicMock(
+        side_effect=lambda lines, ongoing=True, speaker=None: preview_messages.append((lines, speaker))
+    )
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_osc_translation_enabled(True)
+
+    # 1. Non-final tokens with only source text (Chinese): should NOT send Chinese source to OSC
+    zh_only_source = [
+        {"text": "你好", "translation_status": "original", "language": "zh", "speaker": "1", "is_final": False}
+    ]
+    session._maybe_send_live_osc_translation(zh_only_source)
+    assert len(preview_messages) == 0
+
+    # 2. Non-final tokens with English translation stream arriving: sends English translation
+    zh_with_trans = [
+        {"text": "你好", "translation_status": "original", "language": "zh", "speaker": "1", "is_final": False},
+        {"text": "Hello", "translation_status": "translation", "language": "en", "speaker": "1", "is_final": False}
+    ]
+    session._maybe_send_live_osc_translation(zh_with_trans)
+    assert len(preview_messages) == 1
+    assert preview_messages[-1][0] == ["Hello"]
+
+    # 3. English speech with Chinese translation stream arriving: sends Chinese translation
+    preview_messages.clear()
+    session._reset_osc_live_state()
+
+    en_with_trans = [
+        {"text": "Good morning", "translation_status": "original", "language": "en", "speaker": "1", "is_final": False},
+        {"text": "早上好", "translation_status": "translation", "language": "zh", "speaker": "1", "is_final": False}
+    ]
+    session._maybe_send_live_osc_translation(en_with_trans)
+    assert len(preview_messages) == 1
+    assert preview_messages[-1][0] == ["早上好"]
+
