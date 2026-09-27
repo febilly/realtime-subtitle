@@ -14,8 +14,16 @@
         let originalTitleDescriptor = null;
         let tooltipElement = null;
         let activeTarget = null;
+        let hideTimer = null;
         const clickTimers = new Set();
         let initialized = false;
+
+        function clearHideTimer() {
+            if (hideTimer !== null) {
+                clearTimeoutRef(hideTimer);
+                hideTimer = null;
+            }
+        }
 
         function createTooltip() {
             tooltipElement = documentRef.createElement('div');
@@ -64,6 +72,7 @@
         }
 
         function hideTooltip() {
+            clearHideTimer();
             if (tooltipElement) tooltipElement.classList.remove('visible');
             activeTarget = null;
         }
@@ -81,10 +90,15 @@
         function showTooltip(target) {
             const text = target.getAttribute('data-custom-title');
             if (!text) return;
+            clearHideTimer();
             if (!tooltipElement) createTooltip();
             tooltipElement.textContent = text;
             tooltipElement.classList.add('visible');
             positionTooltip(target);
+            hideTimer = setTimeoutRef(() => {
+                hideTimer = null;
+                tooltipElement.classList.remove('visible');
+            }, 5000);
         }
 
         function handleMouseOver(event) {
@@ -196,6 +210,7 @@
 
         function destroy() {
             if (!initialized) return false;
+            clearHideTimer();
             documentRef.removeEventListener('mouseover', handleMouseOver);
             documentRef.removeEventListener('mouseout', handleMouseOut);
             documentRef.removeEventListener('click', handleClick);

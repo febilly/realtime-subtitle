@@ -72,6 +72,35 @@ describe('CustomTooltip title hooks', () => {
 });
 
 describe('CustomTooltip interactions', () => {
+    it('hides after five seconds without reopening until the pointer leaves and returns', () => {
+        vi.useFakeTimers();
+        const page = setup({ setTimeout, clearTimeout });
+        try {
+            page.controller.init();
+            const child = page.document.getElementById('child');
+            const tooltip = () => page.document.querySelector('.custom-tooltip');
+            child.dispatchEvent(new page.dom.window.MouseEvent('mouseover', { bubbles: true }));
+
+            vi.advanceTimersByTime(4999);
+            expect(tooltip().classList.contains('visible')).toBe(true);
+            vi.advanceTimersByTime(1);
+            expect(tooltip().classList.contains('visible')).toBe(false);
+
+            child.dispatchEvent(new page.dom.window.MouseEvent('mouseover', { bubbles: true }));
+            expect(tooltip().classList.contains('visible')).toBe(false);
+            child.dispatchEvent(new page.dom.window.MouseEvent('mouseout', {
+                bubbles: true,
+                relatedTarget: page.document.getElementById('plain'),
+            }));
+            child.dispatchEvent(new page.dom.window.MouseEvent('mouseover', { bubbles: true }));
+            expect(tooltip().classList.contains('visible')).toBe(true);
+        } finally {
+            page.controller.destroy();
+            page.dom.window.close();
+            vi.useRealTimers();
+        }
+    });
+
     it('shows the closest titled ancestor on hover and hides after leaving it', () => {
         const page = setup();
         page.controller.init();
@@ -116,9 +145,9 @@ describe('CustomTooltip interactions', () => {
         let scheduled = null;
         const clearTimeout = vi.fn();
         const page = setup({
-            setTimeout(callback) {
-                scheduled = callback;
-                return 7;
+            setTimeout(callback, delay) {
+                if (delay === 0) scheduled = callback;
+                return delay === 0 ? 7 : 8;
             },
             clearTimeout,
         });
@@ -132,18 +161,19 @@ describe('CustomTooltip interactions', () => {
         expect(page.document.querySelector('.custom-tooltip').classList.contains('visible')).toBe(false);
         expect(page.controller.getDebugState().activeTarget).toBeNull();
         page.controller.destroy();
-        expect(clearTimeout).not.toHaveBeenCalled();
+        expect(clearTimeout).toHaveBeenCalledWith(8);
         page.dom.window.close();
     });
 
     it('clears pending click checks during destroy', () => {
         const clearTimeout = vi.fn();
-        const page = setup({ setTimeout: vi.fn(() => 11), clearTimeout });
+        const page = setup({ setTimeout: vi.fn((_, delay) => delay === 0 ? 11 : 12), clearTimeout });
         page.controller.init();
         page.target.dispatchEvent(new page.dom.window.MouseEvent('mouseover', { bubbles: true }));
         page.target.dispatchEvent(new page.dom.window.MouseEvent('click', { bubbles: true }));
         page.controller.destroy();
         expect(clearTimeout).toHaveBeenCalledWith(11);
+        expect(clearTimeout).toHaveBeenCalledWith(12);
         page.dom.window.close();
     });
 });
