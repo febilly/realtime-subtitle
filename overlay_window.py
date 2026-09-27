@@ -26,6 +26,8 @@ import threading
 import urllib.request
 from html import escape as _html_escape
 
+import sentence_segmentation
+
 # Win32 窗口样式相关调用集中在这个模块里，不要挪回本文件——火绒会对
 # overlay_window 的字节码误报 Trojan/Python.ShellLoader.am。详见该模块的注释。
 import win_overlay_native
@@ -1335,10 +1337,11 @@ class OverlayWindow(QWidget):
         super().__init__()
         self.server_url = server_url.rstrip("/")
         self.model = SubtitleModel()
-        # LLM 译文更新（改进 / 混合 / 准确）：按 sentence_id 覆盖 STT 译文。
-        # 悬浮窗只展示最终译文，不做网页版的绿色（已改进）/灰色（临时译文）标注。
+        # 最终译文按 sentence_id 覆盖；ASR 未 finalize 前的推测译文按原文匹配。
         self._refined_by_sid: dict[str, str] = {}
         self._refined_lang_by_sid: dict[str, str] = {}
+        self._spec_by_source: dict[str, tuple[str, str]] = {}
+        self._spec_pending_by_source: dict[str, str] = {}
         self.settings = QSettings("RealtimeSubtitle", "Overlay")
 
         self.font_size = int(self.settings.value("font_size", 20))
@@ -1906,6 +1909,22 @@ class OverlayWindow(QWidget):
         if mtype == "update":
             self.model.apply_update(data)
             self._render()
+        elif mtype == "spec_translation_pending":
+            source = (data.get("source") or "").strip()
+            if source:
+                self._spec_pending_by_source[source] = (data.get("target_lang") or "").strip()
+                self._trim_refine_maps()
+                self._render()
+        elif mtype == "spec_translation":
+            source = (data.get("source") or "").strip()
+            translation = (data.get("translation") or "").strip()
+            if source:
+                self._spec_pending_by_source.pop(source, None)
+                if translation:
+                    self._spec_by_source[source] = (
+                        translation, (data.get("target_lang") or "").strip())
+                self._trim_refine_maps()
+                self._render()
         elif mtype == "refine_result":
             self._apply_refine_result(data)
         elif mtype == "clear":
@@ -1916,6 +1935,8 @@ class OverlayWindow(QWidget):
             if not preserve:
                 self._refined_by_sid.clear()
                 self._refined_lang_by_sid.clear()
+                self._spec_by_source.clear()
+                self._spec_pending_by_source.clear()
             self._last_html = None
             self._render()
         elif mtype == "overlay_visibility":
@@ -1941,14 +1962,22 @@ class OverlayWindow(QWidget):
         no_change=True 表示 LLM 认为原译文已够好，保持不变；否则用 refined_translation
         覆盖。准确模式下 STT 无内置译文，这里的覆盖即该句唯一的译文来源。
         """
+        source = (data.get("source") or "").strip()
+        pending_removed = bool(source and self._spec_pending_by_source.pop(source, None) is not None)
         sid = data.get("sentence_id")
         if not sid:
+            if pending_removed:
+                self._render()
             return
         sid = str(sid)
         if data.get("no_change"):
+            if pending_removed:
+                self._render()
             return
         refined = (data.get("refined_translation") or "").strip()
         if not refined:
+            if pending_removed:
+                self._render()
             return
         self._refined_by_sid[sid] = refined
         target_lang = (data.get("target_lang") or "").strip()
@@ -1960,7 +1989,8 @@ class OverlayWindow(QWidget):
         self._render()
 
     def _trim_refine_maps(self, cap: int = 200):
-        for m in (self._refined_by_sid, self._refined_lang_by_sid):
+        for m in (self._refined_by_sid, self._refined_lang_by_sid,
+                  self._spec_by_source, self._spec_pending_by_source):
             while len(m) > cap:
                 m.pop(next(iter(m)))  # dict 保序：淘汰最旧的一条
 
@@ -1984,6 +2014,34 @@ class OverlayWindow(QWidget):
         # 改进 / 混合：沿用 STT 译文行的语言标签；准确模式无 STT 译文，退回 LLM 目标语言。
         lang = sentence.get("translation_lang") or self._refined_lang_by_sid.get(sid)
         return text, lang
+
+    def _speculative_translation(self, sentence: dict):
+        """Match the same non-final source text and sentence segments as the web UI."""
+        source = "".join(tk.get("text") or "" for tk in sentence["original"]).strip()
+        if not source:
+            return None
+        whole = self._spec_by_source.get(source)
+        if whole:
+            text, lang = whole
+            return [{"text": text, "is_final": False}], lang
+
+        pending_lang = self._spec_pending_by_source.get(source)
+        lang = pending_lang or ""
+        tokens = []
+        for segment in sentence_segmentation.split_into_sentence_lines(source):
+            if not sentence_segmentation.is_sentence_ending_punctuation(segment):
+                continue
+            hit = self._spec_by_source.get(segment)
+            if hit:
+                text, hit_lang = hit
+                tokens.append({"text": text, "is_final": False})
+                lang = lang or hit_lang
+            elif pending_lang is not None or segment in self._spec_pending_by_source:
+                tokens.append({"text": "\u00a0", "is_final": False})
+                lang = lang or self._spec_pending_by_source.get(segment, "")
+        if not tokens and pending_lang is not None:
+            tokens.append({"text": "\u00a0", "is_final": False})
+        return (tokens, lang) if tokens else None
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
@@ -2098,7 +2156,9 @@ class OverlayWindow(QWidget):
                 trans = sentence["translation"] if show_trans else []
                 # LLM 译文更新优先于 STT 内置译文；准确模式下 trans 为空，靠它补出译文行。
                 override = self._sentence_translation_override(sentence) if show_trans else None
-                has_trans = bool(trans) or override is not None
+                speculative = (self._speculative_translation(sentence)
+                               if show_trans and not trans and override is None else None)
+                has_trans = bool(trans) or override is not None or speculative is not None
                 if orig:
                     base_mb = pair_mb if has_trans else sent_mb
                     lang = sentence["original_lang"]
@@ -2120,6 +2180,10 @@ class OverlayWindow(QWidget):
                 elif trans:
                     recs.append({"kind": "plain", "tokens": trans,
                                  "lang": sentence["translation_lang"], "base_mb": sent_mb})
+                elif speculative is not None:
+                    tokens, lang = speculative
+                    recs.append({"kind": "plain", "tokens": tokens,
+                                 "lang": lang, "base_mb": sent_mb})
                 if recs:
                     groups.append(recs)
         return groups, blocked
