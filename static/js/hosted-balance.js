@@ -192,7 +192,7 @@
          * subscription: a missing free allowance is worth telling the user
          * about, not having bought a plan is not.
          */
-        function renderSubscriptionPools(container, pools, { detailed = false } = {}) {
+        function renderSubscriptionPools(container, pools, { detailed = false, llm = false } = {}) {
             if (!container) return;
             container.innerHTML = '';
             if (!Array.isArray(pools) || !pools.length) return;
@@ -201,15 +201,25 @@
                 item.className = 'balance-item';
                 const label = documentRef.createElement('span');
                 label.className = 'balance-label';
-                label.textContent = detailed && pool.plan_name
-                    ? `${pool.plan_name} · ${subscriptionPoolLabel(pool.period)}`
+                const periodLabel = llm
+                    ? `LLM ${subscriptionPoolLabel(pool.period)}`
                     : subscriptionPoolLabel(pool.period);
+                label.textContent = detailed && pool.plan_name
+                    ? `${pool.plan_name} · ${periodLabel}`
+                    : periodLabel;
                 const value = documentRef.createElement('span');
                 value.className = 'balance-value';
                 const expiry = detailed ? formatExpiry(pool.expires_at) : '';
-                value.textContent = expiry
-                    ? `${subscriptionPoolValue(pool)} (${t('balance_subscription_expires', { date: expiry })})`
+                const poolValue = llm
+                    ? ((pool.unlimited || Number(pool.max_credits) < 0)
+                        ? t('balance_free_unlimited')
+                        : t('balance_free_remaining', {
+                            remaining: formatCredits(pool.remaining), cap: formatCredits(pool.max_credits),
+                        }))
                     : subscriptionPoolValue(pool);
+                value.textContent = expiry
+                    ? `${poolValue} (${t('balance_subscription_expires', { date: expiry })})`
+                    : poolValue;
                 item.append(label, value);
                 container.appendChild(item);
             }
@@ -310,6 +320,11 @@
             renderSubscriptionPools(
                 documentRef.getElementById('subscriptionPools'),
                 view.subscriptions,
+            );
+            renderSubscriptionPools(
+                documentRef.getElementById('llmSubscriptionPools'),
+                view.llm_subscription && view.llm_subscription.pools,
+                { llm: true },
             );
             onAccountBalanceChanged();
         }

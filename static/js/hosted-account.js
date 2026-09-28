@@ -219,6 +219,7 @@
             const balanceHint = elements.balanceHint || null;
             const poolsBox = elements.freePools || null;
             const subscriptionPoolsBox = elements.subscriptionPools || null;
+            const llmSubscriptionPoolsBox = elements.llmSubscriptionPools || null;
             const server = loadServerSettings();
             const signedIn = isSignedIn(server);
             const view = balanceCall('currentBalanceView');
@@ -241,6 +242,10 @@
                 const pools = signedIn && view ? view.subscriptions : null;
                 // The panel has room for the plan name and expiry the bar omits.
                 balanceCall('renderSubscriptionPools', subscriptionPoolsBox, pools, { detailed: true });
+            }
+            if (llmSubscriptionPoolsBox) {
+                const pools = signedIn && view && view.llm_subscription ? view.llm_subscription.pools : null;
+                balanceCall('renderSubscriptionPools', llmSubscriptionPoolsBox, pools, { detailed: true, llm: true });
             }
         }
 

@@ -1068,6 +1068,7 @@ class WebServer:
             "model": model,
             "prepaid_balance": prepaid,
             "subscriptions": subscriptions,
+            "llm_subscription": summary.get("llm_subscription") or {"pools": []},
             "price_per_second": float(price_per_second),
             "free": free,
             "first_redeem_bonus_credits": summary.get("first_redeem_bonus_credits") or 0,

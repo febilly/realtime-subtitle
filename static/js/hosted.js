@@ -55,6 +55,11 @@
         return data && Array.isArray(data.subscriptions) ? data.subscriptions : [];
     }
 
+    function llmSubscriptionPools(data) {
+        const value = data && data.llm_subscription;
+        return value && Array.isArray(value.pools) ? value.pools : [];
+    }
+
     /**
      * The server reports an unlimited pool as a -1 quota with a null remaining.
      * Reading that as 0 would treat the most generous plan there is as the most
@@ -201,6 +206,28 @@
         return output;
     }
 
+    function applyEstimatedLlmDeduction(data, estimatedCost) {
+        if (!data) return data;
+        let remaining = Math.max(0, Number(estimatedCost) || 0);
+        const pools = llmSubscriptionPools(data).map((pool) => Object.assign({}, pool));
+        for (const pool of pools) {
+            if (remaining <= 0) break;
+            if (pool.unlimited || Number(pool.max_credits) < 0) {
+                remaining = 0;
+                break;
+            }
+            const available = Math.max(0, Number(pool.remaining || 0));
+            const taken = Math.min(available, remaining);
+            pool.remaining = available - taken;
+            remaining -= taken;
+        }
+        return {
+            ...data,
+            llm_subscription: { ...(data.llm_subscription || {}), pools },
+            prepaid_balance: Math.max(0, Number(data.prepaid_balance || 0) - remaining),
+        };
+    }
+
     function currentBalanceView({
         balanceBaseline,
         lastBalanceData,
@@ -210,11 +237,7 @@
         const base = balanceBaseline || lastBalanceData;
         if (!base) return null;
         const view = applyEstimatedDeduction(base, estimatedCost);
-        if (view && sessionLlmCost > 0) {
-            const prepaid = Math.max(0, Number(view.prepaid_balance || 0));
-            view.prepaid_balance = Math.max(0, prepaid - sessionLlmCost);
-        }
-        return view;
+        return sessionLlmCost > 0 ? applyEstimatedLlmDeduction(view, sessionLlmCost) : view;
     }
 
     function formatSessionCost(cost, pricePerSecond) {

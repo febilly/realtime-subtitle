@@ -125,6 +125,27 @@ async def test_no_subscription_yields_an_empty_list(monkeypatch, web_server_runt
 
 
 @pytest.mark.asyncio
+async def test_shared_llm_subscription_is_forwarded_without_model_filtering(
+    monkeypatch, web_server_runtime
+):
+    config, WebServer = web_server_runtime
+    summary = json.loads(json.dumps(SUMMARY))
+    summary["llm_subscription"] = {"pools": [{
+        "subscription_id": "subscription_shared",
+        "plan_name": "Monthly",
+        "period": "daily",
+        "max_credits": 100,
+        "remaining": 70,
+        "expires_at": "2026-11-02T00:00:00.000Z",
+    }]}
+
+    payload = await _balance_payload(config, WebServer, monkeypatch, summary)
+
+    assert payload["llm_subscription"] == summary["llm_subscription"]
+    assert [pool["model_name"] for pool in payload["subscriptions"]] == ["stt-rt-v5"]
+
+
+@pytest.mark.asyncio
 async def test_gemini_uses_the_configured_relay_model_for_subscription_filtering(
     monkeypatch, web_server_runtime
 ):

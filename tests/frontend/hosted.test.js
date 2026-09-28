@@ -91,6 +91,35 @@ describe('Hosted.Billing metering', () => {
         expect(view.prepaid_balance).toBe(7.5);
     });
 
+    it('spends the shared LLM subscription before prepaid without touching ASR pools', () => {
+        const base = {
+            prepaid_balance: 10,
+            free: { pools: [{ remaining: 3 }] },
+            subscriptions: [{ remaining_credits: 4, quota_credits: 4 }],
+            llm_subscription: { pools: [{ remaining: 5, max_credits: 5 }] },
+        };
+        const view = Billing.currentBalanceView({
+            lastBalanceData: base, estimatedCost: 2, sessionLlmCost: 7,
+        });
+        expect(view.free.pools[0].remaining).toBe(1);
+        expect(view.subscriptions[0].remaining_credits).toBe(4);
+        expect(view.llm_subscription.pools[0].remaining).toBe(0);
+        expect(view.prepaid_balance).toBe(8);
+        expect(base.llm_subscription.pools[0].remaining).toBe(5);
+        expect(Billing.balanceTotalRemaining({ ...base, prepaid_balance: 0, free: { pools: [] }, subscriptions: [] })).toBe(0);
+    });
+
+    it('lets unlimited LLM subscription cover its cost', () => {
+        const view = Billing.currentBalanceView({
+            lastBalanceData: {
+                prepaid_balance: 10,
+                llm_subscription: { pools: [{ unlimited: true, max_credits: undefined, remaining: undefined }] },
+            },
+            sessionLlmCost: 100,
+        });
+        expect(view.prepaid_balance).toBe(10);
+    });
+
     it('checks all spendable balance sources for exhaustion', () => {
         expect(Billing.isAccountExhausted({ prepaid_balance: 0, free: { pools: [] }, subscriptions: [] })).toBe(true);
         expect(Billing.isAccountExhausted({ prepaid_balance: 0, free: { pools: [{ unlimited: true }] } })).toBe(false);

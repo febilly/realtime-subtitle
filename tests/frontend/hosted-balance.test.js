@@ -23,6 +23,7 @@ function setup(overrides = {}) {
             <span id="sessionLabel"></span><span id="sessionValue"></span>
             <div id="freePools"></div>
             <div id="subscriptionPools"></div>
+            <div id="llmSubscriptionPools"></div>
             <div id="balanceActionItem" hidden></div>
             <button id="balanceOpenSettingsButton"></button>
         </div>
@@ -210,6 +211,22 @@ describe('HostedBalance rendering and metering', () => {
         // Nothing is rendered for an account that has no subscription at all.
         expect(page.document.querySelectorAll('#subscriptionPools .balance-item')).toHaveLength(0);
         expect(page.document.getElementById('balanceActionItem').hidden).toBe(false);
+        page.dom.window.close();
+    });
+
+    it('renders shared LLM subscription pools separately from ASR quota', () => {
+        const page = setup();
+        page.controller.renderBalance(balance({
+            llm_subscription: { pools: [
+                { period: 'daily', remaining: 7, max_credits: 10, plan_name: 'Monthly' },
+                { period: 'monthly', unlimited: true },
+            ] },
+        }));
+        const rows = page.document.querySelectorAll('#llmSubscriptionPools .balance-item');
+        expect(rows).toHaveLength(2);
+        expect(rows[0].textContent).toContain('LLM');
+        expect(rows[0].textContent).toContain('7/10');
+        expect(page.document.querySelectorAll('#subscriptionPools .balance-item')).toHaveLength(0);
         page.dom.window.close();
     });
 
