@@ -951,6 +951,7 @@ async function switchToGeminiAfterQuotaExhaustion() {
 }
 
 async function handleBillingExhausted() {
+    hostedBalance.expand();
     if (checkingGeminiQuota) return;
     if (translationProvider !== 'soniox' || settingsPorts.getConnectionMode() !== 'relay') {
         showStandardBillingExhaustedToast();
@@ -1483,6 +1484,7 @@ const hostedLogin = HostedLogin.create({
 });
 hostedLogin.init();
 const balanceBar = document.getElementById('balanceBar');
+const balanceToggle = document.getElementById('balanceToggle');
 const balanceActionItem = document.getElementById('balanceActionItem');
 const balanceOpenSettingsButton = document.getElementById('balanceOpenSettingsButton');
 const hostedBalance = HostedBalance.create({
@@ -1506,6 +1508,7 @@ const hostedBalance = HostedBalance.create({
     onPurchaseCredits: openCreditsPurchasePage,
     elements: {
         balanceBar,
+        balanceToggle,
         balanceActionItem,
         balanceOpenSettingsButton,
     },
