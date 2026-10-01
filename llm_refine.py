@@ -7,6 +7,7 @@ own ``chat`` coroutine (its ``_llm_chat``, which routes to the relay or a local
 key) and the per-utterance target language.
 """
 import asyncio
+import re
 import time
 from typing import Awaitable, Callable, Optional
 
@@ -105,13 +106,28 @@ def _is_no_change_marker(text: str) -> bool:
     return normalized == "nochange"
 
 
+def _has_refine_explanation(answer: str, draft: str, source: str) -> bool:
+    """Reject clear output scaffolding while allowing literal labels in input text."""
+    patterns = (
+        r"(?im)^(?:Source|Draft|Issues|Corrected|Output|Explanation)\s*:",
+        r"(?:应改为|应译为|建议改为)\s*[:：]",
+    )
+    if any(re.search(pattern, answer) and not any(re.search(pattern, text or "")
+                                                for text in (draft, source))
+           for pattern in patterns):
+        return True
+    return bool(draft and answer.startswith(draft.strip()) and re.search(r"→|->|=>", answer)
+                and not re.search(r"→|->|=>", (draft or "") + (source or "")))
+
+
 def parse_refine_response(raw_content: str, draft: str, source: str = "") -> dict:
     """Parse a refine response into a gate decision.
 
     The production protocol is deliberately plain text: either the
     ``__NO_CHANGE__`` marker or the corrected translation. Common marker
     spelling variations are accepted so they cannot leak into subtitles. A
-    "fix" that merely echoes the draft or untranslated source is discarded.
+    "fix" that echoes the draft/source or adds explicit explanation scaffolding
+    is discarded, keeping the draft without extra network retries.
 
     Returns ``{"has_answer", "no_change", "refined", "category"}``; offline
     eval tools use this too, so experiments exercise the production gate.
@@ -121,8 +137,10 @@ def parse_refine_response(raw_content: str, draft: str, source: str = "") -> dic
         return {"has_answer": False, "no_change": True, "refined": "", "category": ""}
     if (
         _is_no_change_marker(answer)
+        or any(_is_no_change_marker(line) for line in answer.splitlines())
         or answer == (draft or "").strip()
         or answer == (source or "").strip()
+        or _has_refine_explanation(answer, draft, source)
     ):
         return {"has_answer": True, "no_change": True, "refined": "", "category": ""}
     return {"has_answer": True, "no_change": False, "refined": answer, "category": ""}
