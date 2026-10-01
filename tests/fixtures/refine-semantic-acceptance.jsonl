@@ -1,0 +1,20 @@
+{"id":"accept_en_01","source_lang":"en","source":"It is really cold.","draft_translation":"冷死了。","should_change":false,"reference":"冷死了。","check":"Keep a valid colloquial translation."}
+{"id":"accept_en_02","source_lang":"en","source":"You are right.","draft_translation":"你说得没错。","should_change":false,"reference":"你说得没错。","check":"Do not replace correct synonyms."}
+{"id":"accept_en_03","source_lang":"en","source":"Well, um...","draft_translation":"嗯，那个……","should_change":false,"reference":"嗯，那个……","check":"Do not complete a fragment."}
+{"id":"accept_en_04","source_lang":"en","source":"Very, very good.","draft_translation":"非常非常好。","should_change":false,"reference":"非常非常好。","check":"Keep repetition and tone."}
+{"id":"accept_en_05","source_lang":"en","source":"Tomorrow, if we can...","draft_translation":"明天，如果能的话……","should_change":false,"reference":"明天，如果能的话……","check":"Do not guess missing actions."}
+{"id":"accept_en_06","source_lang":"en","source":"I did not invite her.","draft_translation":"我邀请了她。","should_change":true,"reference":"我没有邀请她。","check":"Repair negation."}
+{"id":"accept_en_07","source_lang":"en","source":"She sent him eight messages.","draft_translation":"他给她发了三条消息。","should_change":true,"reference":"她给他发了八条消息。","check":"Repair actor, recipient and quantity."}
+{"id":"accept_en_08","source_lang":"en","source":"Sam is not a doctor.","draft_translation":"Sam是医生。","should_change":true,"reference":"Sam不是医生。","check":"Repair negation while preserving the correct name."}
+{"id":"accept_en_09","source_lang":"en","source":"Only if you are ready will we leave.","draft_translation":"只要你还没准备好，我们就走。","should_change":true,"reference":"只有你准备好了，我们才走。","check":"Repair the condition and polarity."}
+{"id":"accept_en_10","source_lang":"en","source":"It is an animal.","draft_translation":"它是一只猫。","should_change":true,"reference":"它是动物。","check":"Remove unsupported specificity."}
+{"id":"accept_ja_01","source_lang":"ja","source":"今日は雨じゃない。","draft_translation":"今天没有下雨。","should_change":false,"reference":"今天没有下雨。","check":"Keep a correct negated statement."}
+{"id":"accept_ja_02","source_lang":"ja","source":"うん、難しいね。","draft_translation":"嗯，挺难的啊。","should_change":false,"reference":"嗯，挺难的啊。","check":"Keep colloquial tone."}
+{"id":"accept_ja_03","source_lang":"ja","source":"待って、待って。","draft_translation":"等等，等等。","should_change":false,"reference":"等等，等等。","check":"Keep repetition."}
+{"id":"accept_ja_04","source_lang":"ja","source":"もし明日できたら。","draft_translation":"如果明天能做到的话。","should_change":false,"reference":"如果明天能做到的话。","check":"Do not complete a conditional fragment."}
+{"id":"accept_ja_05","source_lang":"ja","source":"どうぞお座りください。","draft_translation":"请坐。","should_change":false,"reference":"请坐。","check":"Accept a natural concise translation."}
+{"id":"accept_ja_06","source_lang":"ja","source":"私は医者じゃない。","draft_translation":"我是医生。","should_change":true,"reference":"我不是医生。","check":"Repair negation."}
+{"id":"accept_ja_07","source_lang":"ja","source":"彼女が私に電話した。","draft_translation":"我给她打了电话。","should_change":true,"reference":"她给我打了电话。","check":"Repair actor and recipient."}
+{"id":"accept_ja_08","source_lang":"ja","source":"三つ買った。","draft_translation":"买了五个。","should_change":true,"reference":"买了三个。","check":"Repair quantity."}
+{"id":"accept_ja_09","source_lang":"ja","source":"鳥ですよ。","draft_translation":"这是鱼。","should_change":true,"reference":"这是鸟。","check":"Repair a clear entity error."}
+{"id":"accept_ja_10","source_lang":"ja","source":"名前はジョンです。","draft_translation":"名叫简。","should_change":true,"reference":"名叫约翰。","check":"Repair an established name rather than restyling everything."}

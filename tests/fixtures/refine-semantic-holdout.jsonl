@@ -1,0 +1,20 @@
+{"id":"hold_en_01","source_lang":"en","source":"I guess so.","draft_translation":"估计是这样。","should_change":false,"reference":"估计是这样。","check":"Keep acceptable colloquial wording."}
+{"id":"hold_en_02","source_lang":"en","source":"Wait, wait a moment.","draft_translation":"等下，等一下。","should_change":false,"reference":"等下，等一下。","check":"Keep repetition."}
+{"id":"hold_en_03","source_lang":"en","source":"Maybe tomorrow...","draft_translation":"也许明天……","should_change":false,"reference":"也许明天……","check":"Do not complete a fragment."}
+{"id":"hold_en_04","source_lang":"en","source":"That sounds great.","draft_translation":"听着挺不错的。","should_change":false,"reference":"听着挺不错的。","check":"Do not replace a correct synonym."}
+{"id":"hold_en_05","source_lang":"en","source":"We have already finished.","draft_translation":"我们已经搞定了。","should_change":false,"reference":"我们已经搞定了。","check":"Keep a valid idiom."}
+{"id":"hold_en_06","source_lang":"en","source":"He gave her four tickets.","draft_translation":"她给他六张票。","should_change":true,"reference":"他给她四张票。","check":"Repair both roles and quantity."}
+{"id":"hold_en_07","source_lang":"en","source":"Amy did not lose the key.","draft_translation":"Amy弄丢了钥匙。","should_change":true,"reference":"Amy没有弄丢钥匙。","check":"Repair negation and keep the name."}
+{"id":"hold_en_08","source_lang":"en","source":"We will stay unless the rain stops.","draft_translation":"只有雨一直下，我们才离开。","should_change":true,"reference":"除非雨停了，否则我们会留下。","check":"Repair unless, action and polarity."}
+{"id":"hold_en_09","source_lang":"en","source":"This is a tool.","draft_translation":"这是一把锤子。","should_change":true,"reference":"这是一个工具。","check":"Remove unsupported specificity."}
+{"id":"hold_en_10","source_lang":"en","source":"The dog followed the boy.","draft_translation":"男孩跟着狗。","should_change":true,"reference":"狗跟着男孩。","check":"Repair actor and object."}
+{"id":"hold_ja_01","source_lang":"ja","source":"それでもいいよ。","draft_translation":"那样也行。","should_change":false,"reference":"那样也行。","check":"Keep a correct concise translation."}
+{"id":"hold_ja_02","source_lang":"ja","source":"すごく、すごく楽しい。","draft_translation":"特别特别开心。","should_change":false,"reference":"特别特别开心。","check":"Keep repetition and colloquial tone."}
+{"id":"hold_ja_03","source_lang":"ja","source":"あの、ところで。","draft_translation":"那个，话说。","should_change":false,"reference":"那个，话说。","check":"Do not complete a fragment."}
+{"id":"hold_ja_04","source_lang":"ja","source":"まだ終わってない。","draft_translation":"还没弄完。","should_change":false,"reference":"还没弄完。","check":"Preserve correct negation."}
+{"id":"hold_ja_05","source_lang":"ja","source":"お先に失礼します。","draft_translation":"我先走了。","should_change":false,"reference":"我先走了。","check":"Accept an idiomatic rendering."}
+{"id":"hold_ja_06","source_lang":"ja","source":"彼が私を助けた。","draft_translation":"我帮了他。","should_change":true,"reference":"他帮了我。","check":"Repair actor and recipient."}
+{"id":"hold_ja_07","source_lang":"ja","source":"彼女は来なかった。","draft_translation":"她来了。","should_change":true,"reference":"她没来。","check":"Repair negation."}
+{"id":"hold_ja_08","source_lang":"ja","source":"七人いる。","draft_translation":"有两个人。","should_change":true,"reference":"有七个人。","check":"Repair quantity."}
+{"id":"hold_ja_09","source_lang":"ja","source":"赤い箱です。","draft_translation":"这是蓝色的袋子。","should_change":true,"reference":"这是红色的箱子。","check":"Repair both property and entity."}
+{"id":"hold_ja_10","source_lang":"ja","source":"彼の名前はマイケルです。","draft_translation":"他的名字叫彼得。","should_change":true,"reference":"他的名字叫迈克尔。","check":"Repair a clear name while preserving the subject."}
