@@ -177,7 +177,7 @@ def test_build_translate_messages_contains_source_only_context():
 
 def test_zero_context_omits_context_from_both_prompts(monkeypatch):
     monkeypatch.setattr(llm_refine.config, "LLM_REFINE_CONTEXT_MAX_COUNT", 0)
-    supplied_context = [{"source": "before", "translation": "之前"}]
+    supplied_context = [{"source": "context_fixture_source_must_be_omitted", "translation": "之前"}]
 
     refine_messages = llm_refine.build_refine_messages(
         "source", "draft", supplied_context, target_lang="zh"
@@ -189,7 +189,7 @@ def test_zero_context_omits_context_from_both_prompts(monkeypatch):
     for messages in (refine_messages, translate_messages):
         rendered = "\n".join(message["content"] for message in messages)
         assert "Context" not in rendered
-        assert "before" not in rendered
+        assert "context_fixture_source_must_be_omitted" not in rendered
         assert "之前" not in rendered
 
 
