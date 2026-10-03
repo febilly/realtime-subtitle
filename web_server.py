@@ -17,6 +17,7 @@ from config import (
     LOCK_MANUAL_CONTROLS,
     ENABLE_CHROMA_THEME,
     LLM_REFINE_DEFAULT_MODE,
+    LLM_REFINE_DIFF_MODE,
     TRANSLATION_MODE,
     get_capabilities,
     get_language_codes_ordered,
@@ -386,6 +387,9 @@ class WebServer:
             "llm_refine_available": bool(is_llm_refine_available()),
             "llm_refine_mode": self.session.get_llm_refine_mode(),
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
+            # How refine edits are visualized on the frontend:
+            # off | additions | additions_deletions | two_lines
+            "llm_refine_diff_mode": str(LLM_REFINE_DIFF_MODE or "off"),
             "llm_refine_context_min_count": int(config.llm_context_bounds()[0]),
             "llm_refine_context_max_count": int(config.llm_context_bounds()[1]),
             # Unified 翻译模式: 快速(fast) / 准确(accurate) / 混合(hybrid). 混合 shows

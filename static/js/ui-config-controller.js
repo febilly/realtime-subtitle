@@ -142,6 +142,9 @@
             if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
                 translationPatch.backendTranslationMode = data.translation_mode.trim().toLowerCase();
             }
+            if (typeof data.llm_refine_diff_mode === 'string') {
+                translationPatch.llmRefineDiffMode = data.llm_refine_diff_mode.trim().toLowerCase();
+            }
             if (typeof data.target_lang_1 === 'string' && data.target_lang_1.trim()) {
                 translationPatch.backendTargetLang1 = data.target_lang_1.trim().toLowerCase();
             }

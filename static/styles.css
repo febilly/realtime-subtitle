@@ -446,6 +446,54 @@ body.chroma-theme .subtitle-text.non-final {
     -webkit-text-fill-color: #ff66b3;
 }
 
+/* LLM refine diff highlights */
+.llm-diff-del {
+    background: rgba(239, 68, 68, 0.18);
+    text-decoration: line-through;
+    text-decoration-thickness: 2px;
+    border-radius: 3px;
+    padding: 0 2px;
+}
+
+.llm-diff-ins {
+    background: rgba(34, 197, 94, 0.18);
+    border-radius: 3px;
+    padding: 0 2px;
+}
+
+/* two_lines mode: the full original translation (red) on one line, the refined
+   one (green) on the next line. */
+.llm-diff-line-old,
+.llm-diff-line-new {
+    display: block;
+    border-radius: 3px;
+    padding: 0 2px;
+}
+
+.llm-diff-line-old {
+    background: rgba(239, 68, 68, 0.18);
+}
+
+.llm-diff-line-new {
+    background: rgba(34, 197, 94, 0.18);
+}
+
+body.dark-theme .llm-diff-del {
+    background: rgba(239, 68, 68, 0.28);
+}
+
+body.dark-theme .llm-diff-ins {
+    background: rgba(34, 197, 94, 0.28);
+}
+
+body.dark-theme .llm-diff-line-old {
+    background: rgba(239, 68, 68, 0.28);
+}
+
+body.dark-theme .llm-diff-line-new {
+    background: rgba(34, 197, 94, 0.28);
+}
+
 /* 混合 mode: the STT draft translation, shown as the live/primary text and only
    slightly downtoned (not half-hidden) until the LLM confirms or replaces it —
    the user reads this line in real time, so readability comes first. Base text

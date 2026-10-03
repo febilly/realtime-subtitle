@@ -792,6 +792,21 @@ LLM_PROMPT_SUFFIX = _env_str("LLM_PROMPT_SUFFIX", "")
 # LLM temperature (0.0-2.0). Lower is more deterministic.
 LLM_TEMPERATURE = min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.2)))
 
+# How the frontend visualizes refine edits (diff between the original and the
+# refined translation). One of:
+# - "off":                 show the refined translation as-is, no diff (default)
+# - "additions":           word/char diff with added text highlighted in green
+# - "additions_deletions": same as "additions" but deleted text is also shown in
+#                          red with strikethrough
+# - "two_lines":           no inline diff; the full original translation is shown
+#                          on one line (red background) and the refined translation
+#                          on the next line (green background)
+_LLM_REFINE_DIFF_MODE_RAW = _env_str("LLM_REFINE_DIFF_MODE", "off")
+_LLM_REFINE_DIFF_MODE = str(_LLM_REFINE_DIFF_MODE_RAW).strip().lower()
+if _LLM_REFINE_DIFF_MODE not in ("off", "additions", "additions_deletions", "two_lines"):
+    _LLM_REFINE_DIFF_MODE = "off"
+LLM_REFINE_DIFF_MODE = _LLM_REFINE_DIFF_MODE
+
 # Context item range used for LLM refine / translate (completed recent source lines).
 # Strategy:
 # - each request starts from min count and increases by +1 up to max count

@@ -12,6 +12,8 @@
         const segmentation = options.Segmentation || root.Segmentation;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const escapeHtml = options.escapeHtml;
+        const translationDiff = options.TranslationDiff
+            || (root.TranslationDiff ? root.TranslationDiff.create({ escapeHtml }) : null);
         const getViewState = typeof options.getViewState === 'function'
             ? options.getViewState
             : () => ({});
@@ -166,7 +168,14 @@
                         ? getDisplayTranslation(sentence, normalizedTranslation)
                         : normalizedTranslation);
                 if (displayTranslation && displayTranslation !== normalizedTranslation) {
-                    body = `<span class="subtitle-text" lang="${sentence.translationLang || ''}">${escapeHtml(displayTranslation)}</span>`;
+                    // Refined/overridden translation replaces the STT draft. When the
+                    // backend enables a diff mode (and we're not in pure LLM translate
+                    // mode), visualize the edits against the original translation.
+                    const diffMode = view.llmRefineDiffMode || 'off';
+                    const diffHtml = (!view.translateMode && diffMode !== 'off' && translationDiff)
+                        ? translationDiff.render(normalizedTranslation, displayTranslation, diffMode)
+                        : escapeHtml(displayTranslation);
+                    body = `<span class="subtitle-text" lang="${sentence.translationLang || ''}">${diffHtml}</span>`;
                 } else if (override) {
                     body = `<span class="subtitle-text" lang="${sentence.translationLang || ''}">${escapeHtml(displayTranslation || '')}</span>`;
                 } else {

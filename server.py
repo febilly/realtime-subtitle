@@ -155,6 +155,13 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                                      help='Enable LLM refine by default (can be toggled in UI if unlocked)')
     refine_toggle_group.add_argument('--no-llm-refine', dest='llm_refine_default_enabled', action='store_false', default=None,
                                      help='Disable LLM refine by default (can be toggled in UI if unlocked)')
+    parser.add_argument(
+        '--llm-refine-diff-mode',
+        dest='llm_refine_diff_mode',
+        choices=('off', 'additions', 'additions_deletions', 'two_lines'),
+        default=None,
+        help='Frontend visualization of refine edits: off | additions | additions_deletions | two_lines (no UI toggle)',
+    )
 
     return parser.parse_known_args(argv)
 
@@ -206,6 +213,7 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     _set_env_if_provided('FFMPEG_PATH', args.ffmpeg_path)
 
     _set_env_bool_if_provided('LLM_REFINE_DEFAULT_ENABLED', args.llm_refine_default_enabled)
+    _set_env_if_provided('LLM_REFINE_DIFF_MODE', args.llm_refine_diff_mode)
 
 
 class ProviderManager:

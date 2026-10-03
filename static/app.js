@@ -153,6 +153,8 @@ let backendTranslationMode = 'one_way';
 let backendTargetLang1 = 'en';
 let backendTargetLang2 = 'zh';
 let suppressTranslationDisplay = false;
+// How refine edits are visualized (backend LLM_REFINE_DIFF_MODE): off | additions | additions_deletions | two_lines
+let llmRefineDiffMode = 'off';
 let pushedOverrideBootId = null;
 let useBundledCjkFont = localStorage.getItem(BUNDLED_CJK_FONT_STORAGE_KEY) === 'true';
 let customFontAvailable = false;
@@ -647,6 +649,7 @@ window.__overlayFurigana = function (text) {
         return { ready: true, pairs: [] };
     }
 };
+const translationDiff = TranslationDiff.create({ escapeHtml });
 const subtitleRenderer = SubtitleRenderer.create({
     document,
     container: subtitleContainer,
@@ -658,11 +661,13 @@ const subtitleRenderer = SubtitleRenderer.create({
     Segmentation,
     t,
     escapeHtml,
+    TranslationDiff: translationDiff,
     getViewState: () => ({
         displayMode,
         suppressTranslationDisplay,
         translateMode: controlPorts.isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
+        llmRefineDiffMode,
         currentTranslationTargetLang,
         furiganaEnabled: furiganaToggleController.isEnabled(),
         speakerDiarizationEnabled: speakerLabelController.isDiarizationEnabled(),
@@ -1149,6 +1154,7 @@ function updateUiConfigState(patch) {
             case 'backendTargetLang2': backendTargetLang2 = value; break;
             case 'uiTranslationMode': uiTranslationMode = value; break;
             case 'suppressTranslationDisplay': suppressTranslationDisplay = value; break;
+            case 'llmRefineDiffMode': llmRefineDiffMode = value; break;
             case 'customFontAvailable': customFontAvailable = value; break;
             default: break;
         }
