@@ -92,6 +92,7 @@ def test_get_api_key_rejects_empty_temporary_response(monkeypatch):
     ("audio_format", "expected"),
     [
         ("auto", {"audio_format": "auto"}),
+        ("ogg", {"audio_format": "ogg"}),
         (
             "pcm_s16le",
             {"audio_format": "pcm_s16le", "sample_rate": 16000, "num_channels": 1},

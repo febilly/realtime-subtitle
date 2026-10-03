@@ -67,6 +67,7 @@ from stream_session_runtime import (
     run_stream_session,
 )
 from soniox_client import get_config
+from soniox_audio import SonioxOpusWebSocket
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from osc_draft import OscDraftPublisher
@@ -1910,7 +1911,7 @@ class SonioxSession:
         effective_translation = "none" if self._suppress_soniox_translation else translation
         stream_config = get_config(
             api_key,
-            audio_format,
+            "ogg",
             effective_translation,
             translation_target_lang=translation_target_lang,
             target_lang_1=self.target_lang_1,
@@ -1940,7 +1941,12 @@ class SonioxSession:
         else:
             print(f"Connecting to Soniox ({label}{purpose})...")
             ws = sync_connect(config.SONIOX_WEBSOCKET_URL)
-        ws.send(json.dumps(stream_config))
+        try:
+            ws.send(json.dumps(stream_config))
+            ws = SonioxOpusWebSocket(ws, sample_rate=self.sample_rate)
+        except Exception:
+            ws.close()
+            raise
         state = _SonioxStreamState(
             ws=ws,
             index=stream_index,

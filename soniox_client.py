@@ -101,8 +101,8 @@ def get_config(
     }
 
     # Audio format for microphone input
-    if audio_format == "auto":
-        stt_config["audio_format"] = "auto"
+    if audio_format in ("auto", "ogg"):
+        stt_config["audio_format"] = audio_format
     elif audio_format == "pcm_s16le":
         stt_config["audio_format"] = "pcm_s16le"
         stt_config["sample_rate"] = 16000

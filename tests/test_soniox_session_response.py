@@ -1888,6 +1888,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     relay_calls = []
     sent_payloads = []
     config_translations = []
+    config_audio_formats = []
     close_calls = []
 
     class FakeWs:
@@ -1911,6 +1912,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
 
     def get_config(api_key, audio_format, translation, **kwargs):
         config_translations.append(translation)
+        config_audio_formats.append(audio_format)
         return {
             "api_key": api_key,
             "model": "stt-rt-v5",
@@ -1934,6 +1936,8 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     )
 
     assert config_translations == ["none"]
+    assert config_audio_formats == ["ogg"]
+    assert isinstance(stream.ws, module.SonioxOpusWebSocket)
     assert relay_calls[-1]["translation"] == "none"
     # The run id ties this stream to the run that opened it, so silence-sleep
     # and rollover reconnects do not read as separate sessions.
