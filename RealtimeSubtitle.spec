@@ -26,6 +26,10 @@ tmp_ret = collect_all('aiohttp')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('websockets')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# PyAV includes the FFmpeg/libopus libraries used by the Soniox audio encoder.
+tmp_ret = collect_all('av')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('pythonosc')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ten_vad')

@@ -1,4 +1,5 @@
 websockets
+av==16.1.0
 soundcard
 numpy<2.0.0
 ten-vad
