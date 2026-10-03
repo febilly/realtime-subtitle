@@ -59,5 +59,8 @@ scratch-eval/
 
 .agents/
 
+# ZCode helper directories
+.zcode/
+
 # pytest temporary sandboxes
 .pytest-tmp*/
