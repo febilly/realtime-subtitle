@@ -128,7 +128,16 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
     monkeypatch.setattr(gemini_client, "sync_connect", sync_connect)
 
     stream = gemini_client.connect_live("local-key", "one_way", "en", run_id="abc123def456")
+    stream.send(bytes(640))
+    stream.finalize()
     stream.close("user_stop")
+
+    import base64
+    import json
+    audio = json.loads(sent_payloads[1])["realtimeInput"]["audio"]
+    assert audio["mimeType"] == "audio/opus;rate=16000;channels=1"
+    assert len(base64.b64decode(audio["data"])) == 80
+    assert json.loads(sent_payloads[-1]) == {"realtimeInput": {"audioStreamEnd": True}}
 
     assert relay_calls == [{
         "provider": "gemini",
@@ -145,3 +154,104 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
     )]
     assert "Authorization" not in connect_calls[0][1].get("additional_headers", {})
     assert sent_payloads
+
+
+def test_hosted_stream_sends_raw_opus_and_drains_before_end(gemini_client):
+    import base64
+    import json
+    import av
+
+    class Socket:
+        sent = []
+        def send(self, value): self.sent.append(value)
+        def close(self, *args): self.closed = args
+
+    socket = Socket()
+    stream = gemini_client.GeminiLiveStream(socket, opus=True)
+    stream.send('{"type":"llm_request","text":"hello"}')
+    for samples in (37, 320, 1001, 1600):
+        stream.send(bytes(samples * 2))
+    before_finish = len(socket.sent)
+    stream.finalize()
+    assert len(socket.sent) > before_finish + 1
+    assert json.loads(socket.sent[-1]) == {"realtimeInput": {"audioStreamEnd": True}}
+    assert socket.sent[0] == '{"type":"llm_request","text":"hello"}'
+    packets = []
+    for payload in socket.sent[1:-1]:
+        audio = json.loads(payload)["realtimeInput"]["audio"]
+        assert audio["mimeType"] == "audio/opus;rate=16000;channels=1"
+        packet = base64.b64decode(audio["data"])
+        assert len(packet) == 80  # 32 kbps CBR * 20 ms
+        assert not packet.startswith(b"OggS")
+        packets.append(packet)
+    decoder = av.CodecContext.create("opus", "r")
+    frames = [frame for packet in packets for frame in decoder.decode(av.Packet(packet))]
+    assert sum(frame.samples for frame in frames) >= (37 + 320 + 1001 + 1600) * 3
+    stream.close("rollover")
+    assert socket.closed == (1000, "rollover")
+
+
+def test_own_key_stream_keeps_original_pcm(gemini_client):
+    import base64
+    import json
+
+    class Socket:
+        def __init__(self): self.sent = []
+        def send(self, value): self.sent.append(value)
+        def close(self, *args): pass
+
+    socket = Socket()
+    stream = gemini_client.GeminiLiveStream(socket)
+    pcm = bytes(range(256)) * 5
+    stream.send(pcm)
+    stream.finalize()
+    audio = json.loads(socket.sent[0])["realtimeInput"]["audio"]
+    assert audio["mimeType"] == "audio/pcm;rate=16000"
+    assert base64.b64decode(audio["data"]) == pcm
+    stream.close()
+
+
+def test_raw_opus_rejects_invalid_input_and_frees_on_finish():
+    import pytest
+    from opus_audio import RawOpusEncoder
+
+    with pytest.raises(ValueError, match="16000"):
+        RawOpusEncoder(48000)
+    encoder = RawOpusEncoder()
+    with pytest.raises(ValueError, match="16-bit"):
+        encoder.encode(b"x")
+    packets = encoder.encode(bytes(1600 * 2)) + encoder.finish()
+    assert packets and all(len(packet) == 80 for packet in packets)
+    assert encoder._codec is None
+    assert encoder.finish() == []
+    with pytest.raises(RuntimeError, match="finished"):
+        encoder.encode(bytes(640))
+    encoder.close()
+
+
+def test_own_key_connection_uses_google_pcm_even_with_direct_temporary_key_mode(gemini_client, monkeypatch):
+    import base64
+    import json
+    import config
+
+    class Socket:
+        def __init__(self): self.sent = []
+        def send(self, value): self.sent.append(value)
+        def recv(self, timeout=None): return '{"setupComplete":{}}'
+        def close(self, *args): pass
+
+    socket = Socket()
+    calls = []
+    def connect(url, **kwargs):
+        calls.append(url)
+        return socket
+    monkeypatch.setattr(config, "RELAY_MODE", False)
+    monkeypatch.setattr(gemini_client, "sync_connect", connect)
+    stream = gemini_client.connect_live("own-key", "one_way", "en")
+    pcm = bytes(range(256)) * 5
+    stream.send(pcm)
+    audio = json.loads(socket.sent[1])["realtimeInput"]["audio"]
+    assert audio["mimeType"] == "audio/pcm;rate=16000"
+    assert base64.b64decode(audio["data"]) == pcm
+    assert calls == [gemini_client.GEMINI_WEBSOCKET_URL + "?key=own-key"]
+    stream.close()
