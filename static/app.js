@@ -1354,7 +1354,13 @@ const clientUpdateNoUrl = document.getElementById('clientUpdateNoUrl');
 const clientUpdateDirectButton = document.getElementById('clientUpdateDirectButton');
 const clientUpdateLaterButton = document.getElementById('clientUpdateLaterButton');
 const clientUpdateButton = document.getElementById('clientUpdateButton');
+const announcements = SubtitleAnnouncements.create({
+    endpoint: '/account/announcements',
+    getStorageKey: () => 'announcementReads:v1:' + relayServerUrl,
+});
+announcements.bind(document);
 const hostedUpdate = HostedUpdate.create({
+    onChecked: () => announcements.check({ autoPopup: true }),
     Billing: Hosted.Billing,
     window,
     storage: localStorage,

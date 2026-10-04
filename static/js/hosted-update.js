@@ -115,6 +115,13 @@
                 updateButton.onclick = () => {
                     if (updateState.updateUrl) {
                         windowRef.open(updateState.updateUrl, '_blank', 'noopener,noreferrer');
+                        if (updateState.forced) {
+                            // A required update stays blocking, but announcements may be read
+                            // after the user has chosen to download the update.
+                            if (typeof options.onChecked === 'function') void options.onChecked();
+                        } else {
+                            close('update');
+                        }
                     }
                 };
             }
@@ -147,7 +154,15 @@
             return new Promise((resolve) => { resolver = resolve; });
         }
 
-        async function ensure({ candidateMode = null } = {}) {
+        async function ensure(optionsForCheck = {}) {
+            try {
+                return await ensureVersion(optionsForCheck);
+            } finally {
+                if (typeof options.onChecked === 'function') await options.onChecked();
+            }
+        }
+
+        async function ensureVersion({ candidateMode = null } = {}) {
             const updateState = state(candidateMode);
             let newerThanLastCheck = false;
             if (updateState.latest) {
@@ -184,7 +199,7 @@
             }
             const action = await show(updateState);
             if (updateState.forced && action === 'direct') {
-                onSwitchDirect();
+                await onSwitchDirect();
                 return false;
             }
             return !updateState.forced;

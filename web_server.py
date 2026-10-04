@@ -964,6 +964,12 @@ class WebServer:
             f"<p style=\"opacity:.75;margin:0\">{body}</p>{button}</div></body></html>"
         )
 
+    async def account_announcements_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"detail": "localhost only"}, status=403)
+        status, data = await self._server_request("GET", "/public/announcements")
+        return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
+
     async def account_registration_info_handler(self, request):
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
@@ -2306,6 +2312,7 @@ class WebServer:
         app.router.add_post('/account/login-begin', self.account_login_begin_handler)
         app.router.add_get('/account/login-callback', self.account_login_callback_handler)
         app.router.add_get('/account/login-poll', self.account_login_poll_handler)
+        app.router.add_get('/account/announcements', self.account_announcements_handler)
         app.router.add_get('/account/registration-info', self.account_registration_info_handler)
         app.router.add_get('/account/status', self.account_status_handler)
         app.router.add_get('/account/balance', self.account_balance_handler)
