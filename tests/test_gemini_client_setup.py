@@ -107,12 +107,12 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
         def close(self, code=None, reason=None):
             close_calls.append((code, reason))
 
-    def relay_connect_info(provider=None, model=None, translation=None, run_id=None):
+    def relay_connect_info(provider=None, model=None, translation=None, run_id=None, audio_codec=None):
         relay_calls.append({
             "provider": provider,
             "model": model,
             "translation": translation,
-            "run_id": run_id,
+            "run_id": run_id, "audio_codec": audio_codec,
         })
         return {
             "url": "wss://relay-2.example.invalid/?ticket=test",
@@ -143,7 +143,7 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
         "provider": "gemini",
         "model": f"models/{gemini_client.GEMINI_MODEL}",
         "translation": None,
-        "run_id": "abc123def456",
+        "run_id": "abc123def456", "audio_codec": "opus",
     }]
     # The reason has to reach the close frame; it is how the server tells a
     # deliberate stop from a dropped connection.

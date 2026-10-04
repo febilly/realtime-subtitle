@@ -264,7 +264,7 @@ def connect_live(
     if hosted:
         # Mirror the model the setup frame carries (models/<GEMINI_MODEL>) so the
         # relay can authorize/meter the stream before the first setup frame.
-        relay_info = _config.relay_connect_info("gemini", model=f"models/{GEMINI_MODEL}", run_id=run_id)
+        relay_info = _config.relay_connect_info("gemini", model=f"models/{GEMINI_MODEL}", run_id=run_id, audio_codec="opus")
         url = relay_info["url"]
         connect_kwargs = {"max_size": None}
         relay_headers = relay_info.get("headers") or {}

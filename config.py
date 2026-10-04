@@ -1149,6 +1149,7 @@ def _relay_connect_url(
     model: str | None = None,
     translation: str | None = None,
     run_id: str | None = None,
+    audio_codec: str | None = None,
 ) -> str:
     """REST endpoint used to mint a short-lived provider relay connection."""
     p = _relay_provider(provider)
@@ -1160,6 +1161,8 @@ def _relay_connect_url(
         params["translation"] = str(translation)
     if run_id:
         params["run_id"] = str(run_id)
+    if audio_codec:
+        params["audio_codec"] = str(audio_codec)
     if params:
         url += "?" + urlencode(params)
     return url
@@ -1170,6 +1173,7 @@ def relay_connect_info(
     model: str | None = None,
     translation: str | None = None,
     run_id: str | None = None,
+    audio_codec: str | None = None,
 ) -> dict:
     """Request the actual relay WebSocket URL from subtitle-server.
 
@@ -1188,7 +1192,7 @@ def relay_connect_info(
     if not token:
         raise RuntimeError("Relay account token is missing; please sign in again")
 
-    url = _relay_connect_url(provider, model=model, translation=translation, run_id=run_id)
+    url = _relay_connect_url(provider, model=model, translation=translation, run_id=run_id, audio_codec=audio_codec)
     try:
         response = requests.get(
             url,
