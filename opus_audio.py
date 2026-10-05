@@ -1,53 +1,48 @@
-"""Raw mono Opus packets for hosted Gemini (32 kbps CBR, 20 ms)."""
+"""Raw mono Opus packets for hosted Gemini (32 kbps CBR, 40 ms)."""
 
-from fractions import Fraction
+import opus_native
 
 OPUS_BIT_RATE = 32_000
+FRAME_MS = 40
+FRAME_SAMPLES = 16000 * FRAME_MS // 1000  # 640 samples per packet at 16 kHz
 
 
 class RawOpusEncoder:
     def __init__(self, sample_rate=16000):
-        import av
-
         if sample_rate != 16000:
             raise ValueError("Hosted Gemini Opus requires 16000 Hz mono PCM capture")
-        self._av = av
-        self._samples = 0
         self._finished = False
-        self._codec = av.CodecContext.create("libopus", "w")
-        self._codec.sample_rate = sample_rate
-        self._codec.layout = "mono"
-        self._codec.format = "s16"
-        self._codec.bit_rate = OPUS_BIT_RATE
-        self._codec.time_base = Fraction(1, sample_rate)
-        self._codec.options = {"vbr": "off", "application": "voip", "frame_duration": "20"}
-        self._codec.open()
+        self._encoder = opus_native.LibOpusEncoder(sample_rate, OPUS_BIT_RATE)
+        self._buffer = bytearray()
 
     def encode(self, pcm):
         if self._finished:
             raise RuntimeError("Opus stream is already finished")
         if len(pcm) % 2:
             raise ValueError("Mono PCM16 must contain complete 16-bit samples")
-        if not pcm:
-            return []
-        frame = self._av.AudioFrame(format="s16", layout="mono", samples=len(pcm) // 2)
-        frame.sample_rate = 16000
-        frame.time_base = Fraction(1, 16000)
-        frame.pts = self._samples
-        frame.planes[0].update(pcm)
-        self._samples += frame.samples
-        return [bytes(packet) for packet in self._codec.encode(frame)]
+        self._buffer += pcm
+        packets = []
+        frame_bytes = FRAME_SAMPLES * 2
+        while len(self._buffer) >= frame_bytes:
+            packets.append(self._encoder.encode(bytes(self._buffer[:frame_bytes]), FRAME_SAMPLES))
+            del self._buffer[:frame_bytes]
+        return packets
 
     def finish(self):
+        """Encode the buffered partial frame (zero-padded) and release libopus."""
         if self._finished:
             return []
         self._finished = True
         try:
-            # Drain the buffered partial frame and codec lookahead before audioStreamEnd.
-            return [bytes(packet) for packet in self._codec.encode(None)]
+            if not self._buffer:
+                return []
+            self._buffer += bytes(FRAME_SAMPLES * 2 - len(self._buffer))
+            return [self._encoder.encode(bytes(self._buffer), FRAME_SAMPLES)]
         finally:
-            self._codec = None
+            self._buffer.clear()
+            self._encoder.close()
 
     def close(self):
         self._finished = True
-        self._codec = None  # PyAV releases AVCodecContext through reference counting.
+        self._buffer.clear()
+        self._encoder.close()

@@ -136,7 +136,7 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
     import json
     audio = json.loads(sent_payloads[1])["realtimeInput"]["audio"]
     assert audio["mimeType"] == "audio/opus;rate=16000;channels=1"
-    assert len(base64.b64decode(audio["data"])) == 80
+    assert len(base64.b64decode(audio["data"])) == 160  # 32 kbps CBR * 40 ms
     assert json.loads(sent_payloads[-1]) == {"realtimeInput": {"audioStreamEnd": True}}
 
     assert relay_calls == [{
@@ -181,7 +181,7 @@ def test_hosted_stream_sends_raw_opus_and_drains_before_end(gemini_client):
         audio = json.loads(payload)["realtimeInput"]["audio"]
         assert audio["mimeType"] == "audio/opus;rate=16000;channels=1"
         packet = base64.b64decode(audio["data"])
-        assert len(packet) == 80  # 32 kbps CBR * 20 ms
+        assert len(packet) == 160  # 32 kbps CBR * 40 ms
         assert not packet.startswith(b"OggS")
         packets.append(packet)
     decoder = av.CodecContext.create("opus", "r")
@@ -221,8 +221,8 @@ def test_raw_opus_rejects_invalid_input_and_frees_on_finish():
     with pytest.raises(ValueError, match="16-bit"):
         encoder.encode(b"x")
     packets = encoder.encode(bytes(1600 * 2)) + encoder.finish()
-    assert packets and all(len(packet) == 80 for packet in packets)
-    assert encoder._codec is None
+    assert packets and all(len(packet) == 160 for packet in packets)
+    assert encoder._encoder._handle is None  # libopus encoder freed on finish()
     assert encoder.finish() == []
     with pytest.raises(RuntimeError, match="finished"):
         encoder.encode(bytes(640))

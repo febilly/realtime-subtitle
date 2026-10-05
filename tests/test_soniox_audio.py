@@ -27,8 +27,8 @@ def test_constant_32kbps_and_output_before_finish():
     assert decode(data) == 38400 * 3  # Opus decodes at 48 kHz.
     with av.open(io.BytesIO(data)) as container:
         packets = [p for p in container.demux(audio=0) if p.size]
-        # 20 ms at 32 kbps = 80 bytes, for every packet, including silence.
-        assert all(p.size == 80 for p in packets)
+        # 40 ms at 32 kbps = 160 bytes, for every packet, including silence.
+        assert all(p.size == 160 for p in packets)
     assert len(data) < 38400 * 2 / 6
 
 

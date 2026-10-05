@@ -1,16 +1,16 @@
 # Gemini 托管音频传输
 
-Gemini 托管模式（RELAY_MODE=true）现在发送 **32 kbps CBR、单声道、20ms/packet 的原始 Opus**。采集采样率仍为 16kHz，32k 是码率而非采样率。用户自带 Gemini Key 的直连模式仍发送原来的 PCM；直连临时 Key 模式也保持 PCM。
+Gemini 托管模式（RELAY_MODE=true）现在发送 **32 kbps CBR、单声道、40ms/packet 的原始 Opus**。采集采样率仍为 16kHz，32k 是码率而非采样率。用户自带 Gemini Key 的直连模式仍发送原来的 PCM；直连临时 Key 模式也保持 PCM。
 
 托管连接由 subtitle-server 的 connect API 返回 URL/headers/票据，客户端仍连接该 URL。服务端随后经过独立 Gemini PCM/Opus Worker，把 Opus 解码为官方要求的 PCM；客户端不用获得上游 Key、连接 Worker 或新增参数。所有返回音频在托管链路被丢弃，转写与控制消息保留。
 
-音频路由和 VAD 仍传入 mono PCM16 little-endian。gemini_client.GeminiLiveStream 在每条托管连接内创建 opus_audio.RawOpusEncoder，send(bytes) 按序发送 realtimeInput.audio JSON，MIME 为 audio/opus;rate=16000;channels=1，data 为单个完整 Opus packet 的标准 Base64（20ms CBR 包为80字节）。send(str) 保留 JSON 控制消息，包括托管 LLM。
+音频路由和 VAD 仍传入 mono PCM16 little-endian。gemini_client.GeminiLiveStream 在每条托管连接内创建 opus_audio.RawOpusEncoder，send(bytes) 按序发送 realtimeInput.audio JSON，MIME 为 audio/opus;rate=16000;channels=1，data 为单个完整 Opus packet 的标准 Base64（40ms CBR 包为160字节）。send(str) 保留 JSON 控制消息，包括托管 LLM。
 
 finalize() 先排空编码器缓存和 lookahead，再发送 audioStreamEnd；停止、静音休眠和轮换旧流使用同一路径。close() 释放编码器；每次重连新建编码状态。Google 官方接口不接受 Opus，不能把托管路径的音频直接交给官方。
 
 Soniox 保持现有 soniox_audio.py 的 32 kbps Ogg Opus。Gemini raw Opus 与 Soniox Ogg 不能交换：Gemini 不接收 OggS/OpusHead，Soniox 配置 audio_format=ogg，需要完整的 Ogg 流头、顺序页和 EOS。
 
-已有 av==16.1.0 提供 FFmpeg/libopus，不新增依赖或外部 ffmpeg 进程。打包 spec 已 collect_all('av')，opus_audio.py 是静态可发现的本地模块。
+Opus 编码不再依赖 PyAV/FFmpeg：opus_native.py 通过 ctypes 直接调用仓库内 libopus/win64/opus.dll（约 500 KB，随 exe 分发），Ogg mux 由 soniox_audio.py 手写实现（RFC 7845）。av==16.1.0 仅在本地跑测试时充当 Opus 解码器，不再进入 requirements 与打包 spec。
 
 验证（项目现有虚拟环境；依赖同步仍使用 uv）：
 

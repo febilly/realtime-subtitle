@@ -1,5 +1,7 @@
 websockets
-av==16.1.0
+# 运行时 Opus 编码用仓库内 libopus/win64/opus.dll（见 opus_native.py），
+# 不依赖 PyAV/FFmpeg；av 仅本地跑测试时当 Opus 解码器用（tests/）。
+# av==16.1.0
 soundcard
 numpy<2.0.0
 ten-vad

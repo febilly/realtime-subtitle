@@ -27,9 +27,9 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('websockets')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-# PyAV includes the FFmpeg/libopus libraries used by the Soniox audio encoder.
-tmp_ret = collect_all('av')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Opus 编码只依赖独立的 libopus（libopus/win64/opus.dll），由 opus_native.py
+# 在运行时按 frozen 路径加载；不再打包 PyAV 整套 FFmpeg DLL。
+binaries += [('libopus/win64/opus.dll', '.')]
 tmp_ret = collect_all('pythonosc')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ten_vad')

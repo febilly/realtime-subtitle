@@ -1,86 +1,182 @@
 """Per-connection PCM16 -> 32 kbps Ogg Opus transport for Soniox."""
 
-from fractions import Fraction
 import json
+import random
+import struct
 import threading
 
+import opus_native
+from opus_audio import OPUS_BIT_RATE, FRAME_MS, FRAME_SAMPLES
 
-OPUS_BIT_RATE = 32_000
+# RFC 7845: granule positions always tick at 48 kHz regardless of input rate.
+_OPUS_RATE = 48_000
+# Pages flush at ~120 ms (matches the previous PyAV muxer's ~100 ms cadence).
+_PACKETS_PER_PAGE = 3
 
 
-class _OggOutput:
+def _ogg_crc_table():
+    table = []
+    for byte in range(256):
+        crc = byte << 24
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x04C11DB7) & 0xFFFFFFFF if crc & 0x80000000 \
+                else (crc << 1) & 0xFFFFFFFF
+        table.append(crc)
+    return tuple(table)
+
+
+_OGG_CRC = _ogg_crc_table()
+
+
+def _ogg_crc(data):
+    crc = 0
+    for byte in data:
+        crc = ((crc << 8) & 0xFFFFFFFF) ^ _OGG_CRC[((crc >> 24) ^ byte) & 0xFF]
+    return crc
+
+
+def _lacing(length):
+    # A lacing value of 255 means the packet continues in the next segment,
+    # so an exact multiple of 255 still needs a terminating 0.
+    if length == 0:
+        return []  # empty packet — contributes no segments
+    values = [255] * (length // 255)
+    values.append(length % 255)
+    return values
+
+
+class _OggMuxer:
+    """Just enough of RFC 7845 for one Opus logical stream."""
+
+    def __init__(self, serial):
+        self._serial = serial
+        self._page_seq = 0
+
+    def page(self, header_type, granule, packets):
+        # Segment table is per-packet: joining the bodies first would lose
+        # packet boundaries (a 480-byte page of 3x160 would lace as one packet).
+        segments = [value for packet in packets for value in _lacing(len(packet))]
+        header = b"".join([
+            b"OggS", bytes((0, header_type)), struct.pack("<q", granule),
+            struct.pack("<I", self._serial), struct.pack("<I", self._page_seq), b"\0\0\0\0",
+            bytes((len(segments),)), bytes(segments),
+        ])
+        self._page_seq += 1
+        crc = _ogg_crc(header + b"".join(packets))
+        return header[:22] + struct.pack("<I", crc) + header[26:] + b"".join(packets)
+
+
+class _PageBuffer:
+    """Buffers packets for muxing; always holds one back for the EOS page.
+
+    FFmpeg's Ogg demuxer attaches the pre-skip end-trim to the final packet,
+    which must therefore live on the EOS page — an empty EOS page loses the
+    last preskip samples. Holding one packet costs at most one frame of
+    extra muxer latency.
+    """
+
     def __init__(self):
-        self.data = bytearray()
+        self._packets = []
 
-    def write(self, data):
-        self.data.extend(data)
-        return len(data)
+    def add(self, packet):
+        self._packets.append(packet)
 
-    def take(self):
-        data = bytes(self.data)
-        self.data.clear()
-        return data
+    def ready(self):
+        return len(self._packets) > _PACKETS_PER_PAGE
+
+    def take_ready(self):
+        packets = self._packets[:-1]
+        self._packets = self._packets[-1:]
+        return packets
+
+    def take_all(self):
+        packets = self._packets
+        self._packets = []
+        return packets
 
 
 class OggOpusEncoder:
-    """Encode mono PCM16 incrementally without an external ffmpeg process."""
+    """Encode mono PCM16 incrementally without PyAV/FFmpeg."""
 
     def __init__(self, sample_rate=16000):
-        import av
-
-        self._av = av
         self.sample_rate = sample_rate
-        self._samples = 0
         self._finished = False
-        self._output = _OggOutput()
-        # Flush pages every 100 ms instead of Ogg's default multi-second delay.
-        self._container = av.open(
-            self._output, "w", format="ogg",
-            options={"page_duration": "100000", "flush_packets": "1"},
+        self._encoder = opus_native.LibOpusEncoder(sample_rate, OPUS_BIT_RATE)
+        self._buffer = bytearray()
+        self._samples = 0      # real input samples; drives the EOS granule
+        self._toc_samples = 0  # encoded samples incl. padding; drives page granules
+        self._preskip = self._encoder.lookahead * (_OPUS_RATE // sample_rate)
+        self._muxer = _OggMuxer(random.getrandbits(32))
+        self._pages = _PageBuffer()
+        self._head = self._muxer.page(
+            0x02, 0,  # BOS
+            [b"OpusHead" + bytes((1, 1)) + struct.pack("<H", self._preskip)
+             + struct.pack("<I", sample_rate) + struct.pack("<h", 0) + bytes((0,))],
         )
-        try:
-            self._stream = self._container.add_stream("libopus", rate=sample_rate)
-            self._stream.layout = "mono"
-            self._stream.bit_rate = OPUS_BIT_RATE
-            self._stream.codec_context.options = {
-                "vbr": "off", "application": "voip", "frame_duration": "20",
-            }
-            self._container.start_encoding()
-        except Exception:
-            self._container.close()
-            raise
+        self._tags = self._muxer.page(
+            0x00, 0, [b"OpusTags" + struct.pack("<I", 0) + struct.pack("<I", 0)],
+        )
+        self._headers_sent = False
+
+    def _headers(self):
+        if self._headers_sent:
+            return b""
+        self._headers_sent = True
+        return self._head + self._tags
 
     def encode(self, pcm):
         if self._finished:
             raise RuntimeError("Opus stream is already finished")
         if len(pcm) % 2:
             raise ValueError("Mono PCM16 must contain complete 16-bit samples")
-        if pcm:
-            samples = len(pcm) // 2
-            frame = self._av.AudioFrame(format="s16", layout="mono", samples=samples)
-            frame.sample_rate = self.sample_rate
-            frame.time_base = Fraction(1, self.sample_rate)
-            frame.pts = self._samples
-            frame.planes[0].update(pcm)
-            self._samples += samples
-            self._container.mux(self._stream.encode(frame))
-        return self._output.take()
+        self._buffer += pcm
+        data = bytearray(self._headers())
+        frame_bytes = FRAME_SAMPLES * 2
+        while len(self._buffer) >= frame_bytes:
+            packet = self._encoder.encode(bytes(self._buffer[:frame_bytes]), FRAME_SAMPLES)
+            del self._buffer[:frame_bytes]
+            self._samples += FRAME_SAMPLES
+            self._toc_samples += FRAME_SAMPLES
+            self._pages.add(packet)
+            if self._pages.ready():
+                data += self._muxer.page(0x00, self._toc_samples * 3, self._pages.take_all())
+        return bytes(data)
 
     def finish(self):
-        if not self._finished:
-            self._finished = True
-            try:
-                self._container.mux(self._stream.encode(None))
-            finally:
-                self._container.close()
-        return self._output.take()
+        if self._finished:
+            return b""
+        self._finished = True
+        try:
+            data = bytearray(self._headers())
+            if self._buffer:
+                real_samples = len(self._buffer) // 2
+                self._buffer += bytes(FRAME_SAMPLES * 2 - len(self._buffer))
+                packet = self._encoder.encode(bytes(self._buffer), FRAME_SAMPLES)
+                self._buffer.clear()
+                self._samples += real_samples
+                self._toc_samples += FRAME_SAMPLES
+                self._pages.add(packet)
+            packets = self._pages.take_all()
+            # Decoders trim the pre-skip off both ends: the start trim comes out
+            # of the first packet, the end trim off the last, landing the decoded
+            # duration exactly on the EOS granule. Zero-padding at finalize
+            # usually provides that slack, but when it doesn't (input was an
+            # exact frame multiple), emit one silence packet to absorb it.
+            rate_ratio = _OPUS_RATE // self.sample_rate
+            if (self._toc_samples - self._samples) * rate_ratio <= self._preskip:
+                packets.append(self._encoder.encode(bytes(FRAME_SAMPLES * 2), FRAME_SAMPLES))
+            eos_granule = self._preskip + self._samples * rate_ratio
+            data += self._muxer.page(0x04, eos_granule, packets)  # EOS
+            return bytes(data)
+        finally:
+            self._encoder.close()
 
     def close(self):
         """Release native resources when the connection is abandoned."""
         if not self._finished:
             self._finished = True
-            self._container.close()
-        self._output.take()
+            self._encoder.close()
+        self._buffer.clear()
 
 
 class SonioxOpusWebSocket:
