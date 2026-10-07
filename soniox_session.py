@@ -68,6 +68,7 @@ from stream_session_runtime import (
 )
 from soniox_client import get_config
 from soniox_audio import SonioxOpusWebSocket
+from opus_audio import FRAME_SAMPLES
 from audio_capture import AudioStreamer
 from osc_manager import osc_manager
 from osc_draft import OscDraftPublisher
@@ -132,7 +133,7 @@ class SonioxSession:
         self._relay_session_active = False
         self.last_disconnect_payload: Optional[dict] = None
         self.sample_rate = 16000
-        self.chunk_size = 3840
+        self.chunk_size = FRAME_SAMPLES  # Capture one 40 ms Opus packet at a time.
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
         self.microphone_device_id = str(MICROPHONE_DEVICE_ID or "").strip()
         self.output_device_id = str(OUTPUT_DEVICE_ID or "").strip()

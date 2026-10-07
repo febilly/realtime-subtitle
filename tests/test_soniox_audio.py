@@ -32,6 +32,40 @@ def test_constant_32kbps_and_output_before_finish():
     assert len(data) < 38400 * 2 / 6
 
 
+@pytest.mark.parametrize("samples", [1, 37, 536, 537, 640, 641, 1280, 3840])
+def test_immediate_pages_preserve_complete_audio_at_finalize(samples):
+    encoder = OggOpusEncoder()
+    data = encoder.encode(speech_like_pcm(samples)) + encoder.finish()
+    assert decode(data) == samples * 3
+
+
+def test_transport_sends_each_40ms_chunk_without_muxer_buffering():
+    socket = Socket()
+    ws = SonioxOpusWebSocket(socket)
+    try:
+        for index in range(10):
+            ws.send(speech_like_pcm(640))
+            assert len(socket.sent) == index + 1
+            assert len(socket.sent[-1]) == (279 if index == 0 else 188)
+        ws.send(b"")
+        data = b"".join(p for p in socket.sent if isinstance(p, bytes))
+        assert decode(data) == 6400 * 3
+    finally:
+        ws.close()
+
+
+def test_transport_splits_buffered_pcm_into_single_packet_messages():
+    socket = Socket()
+    ws = SonioxOpusWebSocket(socket)
+    try:
+        ws.send(speech_like_pcm(3840))  # A routed burst of 240 ms PCM.
+        assert [len(p) for p in socket.sent] == [279, 188, 188, 188, 188, 188]
+        ws.send(b"")
+        assert decode(b"".join(socket.sent)) == 3840 * 3
+    finally:
+        ws.close()
+
+
 def test_partial_frames_preserve_duration_and_each_stream_has_headers():
     for _ in range(2):
         encoder = OggOpusEncoder()
