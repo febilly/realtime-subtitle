@@ -159,7 +159,7 @@ class GeminiSession:
         self._relay_session_active = False
         self.last_disconnect_payload: Optional[dict] = None
         self.sample_rate = 16000
-        # Gemini Live API recommends ~100ms audio chunks (1600 samples @16kHz).
+        # Gemini Live Translation specifies 100 ms PCM chunks at 16 kHz.
         self.chunk_size = 1600
         self.audio_source = "twitch" if USE_TWITCH_AUDIO_STREAM else "system"
         self.microphone_device_id = str(MICROPHONE_DEVICE_ID or "").strip()

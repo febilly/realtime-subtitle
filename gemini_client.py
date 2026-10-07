@@ -183,24 +183,31 @@ class GeminiLiveStream:
 
     暴露与旧Soniox流相同的接口（send/recv/close），以便音频路由、
     静音填充等组件无需修改即可复用：
-    - send(bytes)  -> 托管模式编码为32 kbps Opus；自带key模式发送PCM
+    - send(bytes)  -> 托管模式发送100 ms Opus二进制批次；自带key模式发送PCM JSON
     - send(str)    -> 原样发送（JSON控制消息）
     - finalize()   -> 发送 audioStreamEnd，让服务端尽快吐出剩余转写
     - recv/close   -> 透传
     """
 
-    def __init__(self, ws, sample_rate: int = 16000, *, opus: bool = False):
+    def __init__(self, ws, sample_rate: int = 16000, *, opus: bool = False, opus_batch: bool = True):
         self._ws = ws
         self._sample_rate = int(sample_rate)
         self._lock = threading.Lock()
         self._encoder = None
+        self._binary_opus = bool(opus and opus_batch)
         if opus:
-            from opus_audio import RawOpusEncoder
-            self._encoder = RawOpusEncoder(self._sample_rate)
+            from opus_audio import GeminiOpusBatchEncoder, RawOpusEncoder
+            encoder_type = GeminiOpusBatchEncoder if opus_batch else RawOpusEncoder
+            self._encoder = encoder_type(self._sample_rate)
         self._mime_type = ("audio/opus;rate=16000;channels=1" if opus
                            else f"audio/pcm;rate={self._sample_rate}")
 
     def _send_audio(self, data):
+        if self._binary_opus:
+            # One 100 ms OPB1 batch per binary message. Upgrade the decoder
+            # relay first; it also accepts old JSON/Base64 and raw Opus packets.
+            self._ws.send(data)
+            return
         self._ws.send(json.dumps({"realtimeInput": {"audio": {
             "data": base64.b64encode(data).decode("ascii"), "mimeType": self._mime_type,
         }}}))
@@ -294,7 +301,11 @@ def connect_live(
             if isinstance(res, dict) and "setupComplete" in res:
                 if _working_setup_layout != layout:
                     _working_setup_layout = layout
-                return GeminiLiveStream(ws, sample_rate=sample_rate, opus=hosted)
+                # Old decoder releases do not advertise batch support. Keep
+                # their JSON/Base64 path usable throughout a rolling upgrade.
+                formats = res.get("relayAudioFormats")
+                opus_batch = isinstance(formats, list) and "opus-batch-v1" in formats
+                return GeminiLiveStream(ws, sample_rate=sample_rate, opus=hosted, opus_batch=opus_batch)
 
             if isinstance(res, dict) and res.get("error"):
                 error = res["error"]

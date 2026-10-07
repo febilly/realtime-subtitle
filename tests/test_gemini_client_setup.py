@@ -102,7 +102,7 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
             sent_payloads.append(payload)
 
         def recv(self, timeout=None):
-            return '{"setupComplete": {}}'
+            return '{"setupComplete": {}, "relayAudioFormats": ["opus-batch-v1"]}'
 
         def close(self, code=None, reason=None):
             close_calls.append((code, reason))
@@ -132,11 +132,10 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
     stream.finalize()
     stream.close("user_stop")
 
-    import base64
     import json
-    audio = json.loads(sent_payloads[1])["realtimeInput"]["audio"]
-    assert audio["mimeType"] == "audio/opus;rate=16000;channels=1"
-    assert len(base64.b64decode(audio["data"])) == 160  # 32 kbps CBR * 40 ms
+    assert isinstance(sent_payloads[1], bytes)
+    assert sent_payloads[1].startswith(b"OPB1")
+    assert len(sent_payloads[1]) == 414  # Five 80-byte packets + 14-byte framing
     assert json.loads(sent_payloads[-1]) == {"realtimeInput": {"audioStreamEnd": True}}
 
     assert relay_calls == [{
@@ -157,7 +156,6 @@ def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch
 
 
 def test_hosted_stream_sends_raw_opus_and_drains_before_end(gemini_client):
-    import base64
     import json
     import av
 
@@ -178,17 +176,71 @@ def test_hosted_stream_sends_raw_opus_and_drains_before_end(gemini_client):
     assert socket.sent[0] == '{"type":"llm_request","text":"hello"}'
     packets = []
     for payload in socket.sent[1:-1]:
-        audio = json.loads(payload)["realtimeInput"]["audio"]
-        assert audio["mimeType"] == "audio/opus;rate=16000;channels=1"
-        packet = base64.b64decode(audio["data"])
-        assert len(packet) == 160  # 32 kbps CBR * 40 ms
-        assert not packet.startswith(b"OggS")
-        packets.append(packet)
+        assert isinstance(payload, bytes)
+        assert payload.startswith(b"OPB1")
+        offset = 4
+        batch_packets = []
+        while offset < len(payload):
+            length = int.from_bytes(payload[offset:offset + 2], "big")
+            offset += 2
+            packet = payload[offset:offset + length]
+            offset += length
+            assert len(packet) == 80  # 32 kbps CBR * 20 ms
+            batch_packets.append(packet)
+        assert offset == len(payload)
+        assert len(batch_packets) == 5  # One 100 ms upstream PCM message
+        packets.extend(batch_packets)
     decoder = av.CodecContext.create("opus", "r")
     frames = [frame for packet in packets for frame in decoder.decode(av.Packet(packet))]
     assert sum(frame.samples for frame in frames) >= (37 + 320 + 1001 + 1600) * 3
     stream.close("rollover")
     assert socket.closed == (1000, "rollover")
+
+
+def test_hosted_stream_sends_one_binary_batch_per_100ms(gemini_client):
+    class Socket:
+        def __init__(self): self.sent = []
+        def send(self, value): self.sent.append(value)
+        def close(self, *args): pass
+
+    socket = Socket()
+    stream = gemini_client.GeminiLiveStream(socket, opus=True)
+    try:
+        for index in range(10):
+            stream.send(bytes(3200))
+            assert len(socket.sent) == index + 1
+            assert len(socket.sent[-1]) == 414
+        stream.finalize()
+        assert len(socket.sent) == 11  # No extra audio for complete 100 ms chunks.
+    finally:
+        stream.close()
+
+
+def test_hosted_connection_falls_back_to_json_for_old_decoder(gemini_client, monkeypatch):
+    import base64
+    import json
+    import config
+
+    class Socket:
+        def __init__(self): self.sent = []
+        def send(self, value): self.sent.append(value)
+        def recv(self, timeout=None): return '{"setupComplete": {}}'
+        def close(self, *args): pass
+
+    socket = Socket()
+    monkeypatch.setattr(config, "RELAY_MODE", True)
+    monkeypatch.setattr(config, "relay_connect_info", lambda *args, **kwargs: {"url": "wss://relay.example.invalid"})
+    monkeypatch.setattr(gemini_client, "sync_connect", lambda *args, **kwargs: socket)
+    stream = gemini_client.connect_live("placeholder", "none")
+    try:
+        stream.send(bytes(3200))
+        assert len(socket.sent) == 3  # Setup and two legacy 40 ms audio packets.
+        for payload in socket.sent[1:]:
+            audio = json.loads(payload)["realtimeInput"]["audio"]
+            assert audio["mimeType"] == "audio/opus;rate=16000;channels=1"
+            assert len(base64.b64decode(audio["data"])) == 160
+    finally:
+        stream.close()
 
 
 def test_own_key_stream_keeps_original_pcm(gemini_client):
