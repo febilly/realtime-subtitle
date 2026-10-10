@@ -1,0 +1,3 @@
+{"type":"update","final_tokens":[],"non_final_tokens":[{"text":"source A","speaker":"1","translation_status":"original","is_final":false}]}
+{"type":"update","final_tokens":[{"text":"source A","speaker":"1","translation_status":"original","llm_sentence_id":"A","is_final":true},{"text":"draft A","speaker":"1","translation_status":"translation","llm_sentence_id":"A","is_final":true},{"is_separator":true,"is_final":true}],"non_final_tokens":[]}
+{"type":"refine_result","sentence_id":"A","source":"source A","original_translation":"draft A","refined_translation":"refined A","no_change":false}
