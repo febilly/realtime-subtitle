@@ -53,13 +53,20 @@ class _InterleavedBatch:
     tokens: list[dict]
     # No translation is coming, so the source drives line breaks.
     source_as_output: bool
-    # The response's non-final tokens, consulted only when source_as_output:
-    # a closing quote already showing there holds a batch-final sentence end.
-    lookahead: list[dict] = field(default_factory=list)
+    # The response's non-final tokens: a closing quote already showing there
+    # holds a batch-final sentence end.
+    non_final: list[dict] = field(default_factory=list)
     outgoing: list[dict] = field(default_factory=list)
     last_real_speaker: str | None = None
     # Speakers whose display sentence was closed in this batch.
     finalized_speakers: set[str] = field(default_factory=set)
+
+    @property
+    def boundary_lookahead(self) -> list[dict]:
+        """Non-final tail for PendingBoundaryState. With a translation stream
+        coming, source punctuation only defers the break and the pending
+        endpoint holds for the quote instead (_source_awaits_closing_quote)."""
+        return self.non_final if self.source_as_output else []
 
 
 class SonioxSession(RealtimeSessionBase):
@@ -174,7 +181,7 @@ class SonioxSession(RealtimeSessionBase):
         self._llm_sentence_counter += 1
         return f"{self._llm_sentence_session_id}-{self._llm_sentence_counter}"
 
-    def _process_token_for_sentence(self, token: dict) -> None:
+    def _process_token_for_sentence(self, token: dict, *, closes_quote: bool = False) -> None:
         """Route the token twice, for two independent concerns:
 
         1. SentencePairer — semantic (source, translation) pairing for the
@@ -185,6 +192,10 @@ class SonioxSession(RealtimeSessionBase):
         2. The display sentence buffer — a per-speaker accumulator that only
            feeds separator/boundary decisions (where the line break lands in
            the outgoing stream). It carries no sentence identity.
+
+        `closes_quote`: this source token is the closing quote of the
+        buffered sentence whose source already closed (see
+        _close_pending_endpoint_before_source).
         """
         text = token.get("text", "")
         if self._is_internal_token(text):
@@ -197,6 +208,8 @@ class SonioxSession(RealtimeSessionBase):
             self._pairer.route_translation_token(
                 token, speaker, expected_language=token.get("language")
             )
+        elif closes_quote:
+            self._continue_closed_source(token, speaker)
         else:
             self._pairer.route_source_token(token, speaker)
 
@@ -212,6 +225,19 @@ class SonioxSession(RealtimeSessionBase):
             buffer["translation_tokens"].append(token)
         else:
             buffer["original_tokens"].append(token)
+
+    def _continue_closed_source(self, token: dict, speaker: str) -> None:
+        """A closing quote finalized after its sentence's source closed
+        belongs to that sentence, not the next one: join its paired entry
+        while that still waits for its translation, and carry its id either
+        way so the quote renders with the line it closes."""
+        originals = (self._sentence_buffers.get(speaker) or {}).get("original_tokens") or []
+        sentence_id = originals[-1].get("llm_sentence_id") if originals else None
+        if not sentence_id:
+            self._pairer.route_source_token(token, speaker)
+            return
+        if self._pairer.continue_closed_source(token, speaker, str(sentence_id)) is None:
+            token["llm_sentence_id"] = sentence_id
 
     def _pairing_close_source(self, speaker: str, *, reason: str = "punctuation") -> None:
         """Close the source side of the speaker's open paired sentence at a
@@ -1023,13 +1049,10 @@ class SonioxSession(RealtimeSessionBase):
 
         Returns (outgoing final tokens, last speaker seen, speakers whose
         display sentence was closed in this batch)."""
-        source_as_output = not self._expects_translation_stream(new_final_tokens)
         batch = _InterleavedBatch(
             tokens=new_final_tokens,
-            source_as_output=source_as_output,
-            # With a translation stream coming, source punctuation only defers
-            # the break; keep that path exactly as it was.
-            lookahead=list(non_final_tokens or []) if source_as_output else [],
+            source_as_output=not self._expects_translation_stream(new_final_tokens),
+            non_final=list(non_final_tokens or []),
         )
         for index, token in enumerate(new_final_tokens):
             if token.get("text") is not None:
@@ -1044,8 +1067,9 @@ class SonioxSession(RealtimeSessionBase):
         # Before any flush below can pop this speaker's buffer.
         context_text = "" if is_internal else self._sentence_context_text_for_token(token)
 
+        closes_quote = False
         if not is_internal and not is_translation:
-            self._close_pending_endpoint_before_source(batch, token)
+            closes_quote = self._close_pending_endpoint_before_source(batch, token)
 
         # After the flush above: the check reads the (possibly reset) buffer.
         has_sentence_punctuation = (
@@ -1054,7 +1078,7 @@ class SonioxSession(RealtimeSessionBase):
                 batch.tokens,
                 index,
                 source_as_output=batch.source_as_output,
-                lookahead_tokens=batch.lookahead,
+                lookahead_tokens=batch.boundary_lookahead,
             )
         )
         token_speaker = None
@@ -1062,7 +1086,7 @@ class SonioxSession(RealtimeSessionBase):
             token_speaker = self._token_speaker(token)
             self._handle_speaker_turn(batch, token, token_speaker, is_translation)
 
-        self._process_token_for_sentence(token)
+        self._process_token_for_sentence(token, closes_quote=closes_quote)
         if is_translation and has_sentence_punctuation and token_speaker:
             self._close_pairing_at_translation_punctuation(token, token_speaker)
 
@@ -1076,7 +1100,7 @@ class SonioxSession(RealtimeSessionBase):
                 context_text=context_text,
                 is_internal_token=self._is_internal_token,
                 source_as_output=batch.source_as_output,
-                lookahead_tokens=batch.lookahead,
+                lookahead_tokens=batch.boundary_lookahead,
             )
 
         if text == "<end>" or has_sentence_punctuation:
@@ -1088,7 +1112,7 @@ class SonioxSession(RealtimeSessionBase):
                 has_sentence_punctuation=has_sentence_punctuation,
             )
 
-    def _close_pending_endpoint_before_source(self, batch: "_InterleavedBatch", token: dict) -> None:
+    def _close_pending_endpoint_before_source(self, batch: "_InterleavedBatch", token: dict) -> bool:
         """A pending endpoint means an earlier boundary fired before that
         sentence's translation had streamed in, so the line break was deferred
         (see _handle_sentence_boundary). The first *original* token of the next
@@ -1096,16 +1120,47 @@ class SonioxSession(RealtimeSessionBase):
         whatever translation has since been buffered — is complete: finalize it
         now and break the line before this new token, so the late translation
         stays attached to the previous sentence instead of merging into this
-        one."""
+        one.
+
+        Returns True when `token` is instead the closing quote of that
+        sentence (``" gallon."`` ended the previous batch, ``"`` starts this
+        one): it belongs to the previous sentence, so the endpoint stays
+        pending and lands before the next original token."""
         if not self._pending_endpoint_speakers:
-            return
+            return False
         speaker = self._token_speaker(token) or batch.last_real_speaker
         if speaker is None and len(self._pending_endpoint_speakers) == 1:
             speaker = next(iter(self._pending_endpoint_speakers))
         if speaker not in self._pending_endpoint_speakers:
-            return
+            return False
+        if self._source_ends_before_closing_quote(speaker, str(token.get("text") or "")):
+            return True
         self._pending_endpoint_speakers.discard(speaker)
         self._close_display_sentence(speaker, batch.outgoing, "endpoint", batch.finalized_speakers)
+        return False
+
+    def _source_ends_before_closing_quote(self, speaker: str, next_text: str) -> bool:
+        """Whether `next_text` starts with the closing quote of the speaker's
+        buffered display sentence, which already ends in sentence punctuation."""
+        buffer = self._sentence_buffers.get(speaker) or {}
+        context = self._join_token_texts(buffer.get("original_tokens") or [])
+        return sentence_segmentation.has_sentence_ending_punctuation(
+            context
+        ) and sentence_segmentation.token_text_starts_with_closing_quote(context, next_text)
+
+    def _source_awaits_closing_quote(self, batch: "_InterleavedBatch", speaker: str) -> bool:
+        """Whether the response's non-final tail already shows the closing
+        quote of the speaker's finished source sentence. Its deferred line
+        break then holds until that quote is final, or the quote would land on
+        the next line (same evidence PendingBoundaryState uses when the source
+        drives line breaks)."""
+        for token in batch.non_final:
+            if self._is_internal_token(token) or _is_translation_token(token):
+                continue
+            if (self._token_speaker(token) or speaker) != speaker:
+                continue
+            return self._source_ends_before_closing_quote(speaker, str(token.get("text") or ""))
+        return False
 
     def _handle_speaker_turn(
         self,
@@ -1195,6 +1250,14 @@ class SonioxSession(RealtimeSessionBase):
         if defer_source_punctuation:
             self._pending_endpoint_speakers.add(speaker)
             return
+        # The source sentence ended but its closing quote is still non-final:
+        # keep the break pending so the quote lands on this line.
+        if (
+            is_translation
+            and speaker in self._pending_endpoint_speakers
+            and self._source_awaits_closing_quote(batch, speaker)
+        ):
+            return
         if not self._close_display_sentence(
             speaker, batch.outgoing, "punctuation", batch.finalized_speakers
         ):
@@ -1214,6 +1277,8 @@ class SonioxSession(RealtimeSessionBase):
                 self._pending_endpoint_speakers.discard(speaker)
                 continue
             if not self._display_sentence_has_output(buffer):
+                continue
+            if self._source_awaits_closing_quote(batch, speaker):
                 continue
             self._pending_endpoint_speakers.discard(speaker)
             self._close_display_sentence(speaker, batch.outgoing, "punctuation", batch.finalized_speakers)

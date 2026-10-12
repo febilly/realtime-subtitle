@@ -1045,6 +1045,145 @@ def test_translation_off_quote_wait_flushes_when_final_quote_never_comes(monkeyp
     assert _final_kinds(updates) == [" gallon.", "SEP", " Many"]
 
 
+def _translation_stream_session(monkeypatch):
+    """Cross-language one_way: source punctuation defers the line break until
+    the translation streams in."""
+    session, updates = _translation_off_session(monkeypatch)
+    session.translation = "one_way"
+    return session, updates
+
+
+def _feed_stream(session, all_final_tokens, sent_count, finals, non_finals=()):
+    """`finals` / `non_finals`: texts; a ("zh", text) tuple is a translation."""
+
+    def token(item, is_final):
+        if isinstance(item, tuple):
+            return {
+                "text": item[1],
+                "is_final": is_final,
+                "speaker": "1",
+                "translation_status": "translation",
+                "language": item[0],
+                "source_language": "en",
+            }
+        return {
+            "text": item,
+            "is_final": is_final,
+            "speaker": "1",
+            "translation_status": "original",
+            "language": "en",
+        }
+
+    sent_count, *_ = session._process_stream_response(
+        {
+            "tokens": [token(item, True) for item in finals]
+            + [token(item, False) for item in non_finals]
+        },
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    return sent_count
+
+
+def _final_sentence_ids(updates):
+    return {
+        t.get("text"): t.get("llm_sentence_id")
+        for u in updates
+        for t in u.get("final_tokens", [])
+        if not t.get("is_separator") and t.get("translation_status") != "translation"
+    }
+
+
+def test_translation_stream_keeps_late_closing_quote_with_its_sentence(monkeypatch):
+    """`` gallon.`` ended a batch and deferred its break (translation still
+    expected). The ``"`` that closes the quotation was finalized only in the
+    next batch, after some translation had arrived: the deferred break must
+    land after the quote, not before it, and the quote belongs to the same
+    paired sentence."""
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(session, all_final_tokens, 0, [" by the", " gallon."])
+    assert _final_kinds(updates) == [" by the", " gallon."]
+    _feed_stream(
+        session, all_final_tokens, sent_count, [("zh", "按加仑"), "\"", " Many"]
+    )
+
+    assert _final_kinds(updates) == [" by the", " gallon.", "按加仑", "\"", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids["\""] == ids[" gallon."]
+    assert ids[" Many"] != ids[" gallon."]
+    head = session._pairer.entries("1")[0]
+    assert head.source_text() == " by the gallon.\""
+    assert head.translation_text() == "按加仑"
+
+
+def test_translation_stream_quote_without_translation_keeps_break_pending(monkeypatch):
+    """No translation yet when the quote arrives: the break stays deferred
+    (it used to be dropped) and lands before the next sentence once the
+    translation has shown up."""
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(session, all_final_tokens, 0, [" gallon."])
+    sent_count = _feed_stream(session, all_final_tokens, sent_count, ["\""])
+    _feed_stream(session, all_final_tokens, sent_count, [("zh", "加仑"), " Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "\"", "加仑", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids["\""] == ids[" gallon."] != ids[" Many"]
+
+
+def test_translation_stream_holds_break_while_tail_shows_closing_quote(monkeypatch):
+    """The translation completed in the same batch as `` gallon.`` while the
+    closing quote was still non-final: hold the break for the quote."""
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(
+        session, all_final_tokens, 0, [" gallon.", ("zh", "按加仑计算。")], ["\""]
+    )
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。"]
+    sent_count = _feed_stream(session, all_final_tokens, sent_count, ["\""], [" Many"])
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "\"", "SEP"]
+    _feed_stream(session, all_final_tokens, sent_count, [" Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "\"", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids["\""] == ids[" gallon."] != ids[" Many"]
+
+
+def test_translation_stream_batch_end_flush_waits_for_quote_in_tail(monkeypatch):
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(
+        session, all_final_tokens, 0, [" gallon.", ("zh", "按加仑")], ["\"", " Many"]
+    )
+    assert _final_kinds(updates) == [" gallon.", "按加仑"]
+    _feed_stream(session, all_final_tokens, sent_count, ["\"", " Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑", "\"", "SEP", " Many"]
+
+
+def test_translation_stream_quote_hold_breaks_when_final_quote_never_comes(monkeypatch):
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(
+        session, all_final_tokens, 0, [" gallon.", ("zh", "按加仑计算。")], ["\"", " Many"]
+    )
+    _feed_stream(session, all_final_tokens, sent_count, [" Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids[" gallon."] != ids[" Many"]
+
+
+def test_translation_stream_ordinary_sentence_end_breaks_without_quote_in_tail(monkeypatch):
+    """The quote hold must not delay ordinary sentence ends."""
+    session, updates = _translation_stream_session(monkeypatch)
+    _feed_stream(session, [], 0, [" gallon.", ("zh", "按加仑计算。")], [" Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "SEP"]
+
+
 def _feed_tokens(session, tokens):
     return session._process_stream_response(
         {

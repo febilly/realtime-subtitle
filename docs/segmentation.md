@@ -50,6 +50,8 @@
 `PendingBoundaryState` 暂存，下一个 token 到达时再决定。
 源文驱动换行时（翻译关闭/准确/同语言），批末句号后若同一响应的 non-final 尾巴已经露出右引号
 （`" gallon.` final、`"` 仍是 non-final），也按右引号暂存；尾巴里没有引号时立即换行，不增加延迟。
+翻译流模式下句号本来就推迟换行：推迟的换行不会落在紧跟句末的右引号之前（引号随上一句，
+语义配对也归入同一个 `llm_sentence_id`）；non-final 尾巴露出右引号时，译文句号/批末也先不换行。
 
 **预测与 final 必须一致**：前端预测在某处换行，而后端 final 后不换，用户就会看到“断开又拼回去”。
 `tests/frontend/segmentation-replay.test.js` 对此做硬性检查。
