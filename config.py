@@ -26,7 +26,7 @@ for _output_stream in (sys.stdout, sys.stderr):
 # Two providers are supported and each accepts a different set of target languages.
 # The active set/list is selected by TRANSLATION_PROVIDER (resolved further below).
 
-# Soniox-supported languages (ISO 639-1). Source: docs/supported-languages.mdx
+# Soniox-supported languages (ISO 639-1). Source: https://soniox.com/docs/stt/concepts/supported-languages
 SONIOX_SUPPORTED_LANGUAGE_CODES = {
     "af", "sq", "ar", "az", "eu", "be", "bn", "bs", "bg", "ca",
     "zh", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "gl",
