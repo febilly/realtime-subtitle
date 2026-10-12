@@ -96,3 +96,8 @@ def test_clone_strips_final_source_punctuation_only():
     assert [t["text"] for t in cloned] == [" 今日は", "", "Today."]
     assert {t["llm_sentence_id"] for t in cloned} == {"s-9"}
     assert tokens[1]["text"] == "。"  # originals untouched
+
+
+def test_clone_strips_punctuation_before_trailing_whitespace():
+    tokens = [{"text": "今日は。 ", "translation_status": "original"}]
+    assert clone_tokens_for_merge(tokens, "s-9")[0]["text"] == "今日は "

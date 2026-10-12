@@ -112,7 +112,8 @@ def clone_tokens_for_merge(tokens: list[dict], new_sentence_id: str) -> list[dic
             continue
         cleaned = re.sub(r"[。．.!！？?…︒︕︖]+$", "", stripped)
         if cleaned != stripped:
-            token["text"] = text[:len(text) - len(stripped)] + cleaned
+            # Keep the trailing whitespace that rstrip() set aside.
+            token["text"] = cleaned + text[len(stripped):]
         break
     return cloned
 
