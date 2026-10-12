@@ -505,6 +505,26 @@ class RealtimeSessionBase:
             text = token_or_text
         return text in INTERNAL_TOKEN_TEXTS
 
+    @staticmethod
+    def _token_speaker(token: dict) -> str | None:
+        """The token's speaker label, or None when the provider sent none."""
+        speaker = token.get("speaker")
+        return str(speaker) if (speaker is not None and speaker != "") else None
+
+    def _last_token_speaker(self, tokens: list[dict], *, translation_only: bool = False) -> str | None:
+        """Speaker of the last token (optionally: last translation token) that has one."""
+        for token in reversed(tokens):
+            if translation_only and token.get("translation_status") != "translation":
+                continue
+            speaker = self._token_speaker(token)
+            if speaker:
+                return speaker
+        return None
+
+    def _any_buffered_speaker(self) -> str | None:
+        """Fallback speaker: the first one with an open display sentence."""
+        return next(iter(self._sentence_buffers.keys()), None)
+
     def _make_separator_token(self, separator_type: str) -> dict:
         return {
             "is_separator": True,

@@ -7,7 +7,7 @@ import time
 import re
 import unicodedata
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from websockets.sync.client import connect as sync_connect
 
@@ -60,6 +60,19 @@ SPEC_TRANSLATE_COOLDOWN_SECONDS = 1.0
 SPEC_TRANSLATE_CACHE_MAX = 64
 SPEC_TRANSLATE_MAX_INFLIGHT = 3
 INTERRUPT_REPAIR_HISTORY_MAX = 8
+
+
+@dataclass
+class _InterleavedBatch:
+    """Per-response state of the interleaved punctuation pass."""
+
+    tokens: list[dict]
+    # No translation is coming, so the source drives line breaks.
+    source_as_output: bool
+    outgoing: list[dict] = field(default_factory=list)
+    last_real_speaker: str | None = None
+    # Speakers whose display sentence was closed in this batch.
+    finalized_speakers: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -475,6 +488,43 @@ class SonioxSession(RealtimeSessionBase):
             self._join_token_texts(entry.source_tokens)
         )
 
+    def _close_display_sentence(
+        self,
+        speaker: str,
+        outgoing_final_tokens: list,
+        separator_type: str,
+        finalized_speakers: set | None = None,
+    ) -> bool:
+        """Close the speaker's display sentence and emit a `separator_type`
+        line break. False when the line cannot break yet (no output text)."""
+        if not self._trigger_sentence_finalization(speaker):
+            return False
+        if finalized_speakers is not None:
+            finalized_speakers.add(speaker)
+        outgoing_final_tokens.append(
+            self._minify_token(self._make_separator_token(separator_type))
+        )
+        return True
+
+    def _close_at_deferred_boundary(
+        self,
+        speaker: str,
+        outgoing_final_tokens: list,
+        finalized_speakers: set,
+    ) -> None:
+        """A boundary that waited for one more token (quote / abbreviation /
+        decimal) turned out to be real: close the sentence here, or defer the
+        line break until its output text arrives."""
+        if speaker in finalized_speakers:
+            return
+        if self._open_source_in_unclosed_quote(speaker):
+            return
+        self._pairing_close_source(speaker)
+        if not self._close_display_sentence(
+            speaker, outgoing_final_tokens, "punctuation", finalized_speakers
+        ):
+            self._pending_endpoint_speakers.add(speaker)
+
     def _flush_pending_boundary(
         self,
         token: dict,
@@ -483,19 +533,9 @@ class SonioxSession(RealtimeSessionBase):
     ) -> None:
         if not self._pending_boundaries.flush_before_token(token):
             return
-        speaker = str(token.get("speaker", "?"))
-        if speaker in finalized_speakers:
-            return
-        if self._open_source_in_unclosed_quote(speaker):
-            return
-        self._pairing_close_source(speaker)
-        if self._trigger_sentence_finalization(speaker):
-            finalized_speakers.add(speaker)
-            outgoing_final_tokens.append(
-                self._minify_token(self._make_separator_token("punctuation"))
-            )
-        else:
-            self._pending_endpoint_speakers.add(speaker)
+        self._close_at_deferred_boundary(
+            str(token.get("speaker", "?")), outgoing_final_tokens, finalized_speakers
+        )
 
     def _flush_stale_quote_boundaries(
         self,
@@ -504,18 +544,7 @@ class SonioxSession(RealtimeSessionBase):
         finalized_speakers: set,
     ) -> None:
         for speaker in self._pending_boundaries.flush_stale_quote_boundaries_before_incompatible_token(token):
-            if speaker in finalized_speakers:
-                continue
-            if self._open_source_in_unclosed_quote(speaker):
-                continue
-            self._pairing_close_source(speaker)
-            if self._trigger_sentence_finalization(speaker):
-                finalized_speakers.add(speaker)
-                outgoing_final_tokens.append(
-                    self._minify_token(self._make_separator_token("punctuation"))
-                )
-            else:
-                self._pending_endpoint_speakers.add(speaker)
+            self._close_at_deferred_boundary(speaker, outgoing_final_tokens, finalized_speakers)
 
     def _finalize_superseded_speakers(
         self,
@@ -539,13 +568,9 @@ class SonioxSession(RealtimeSessionBase):
             if other == current_speaker or other in finalized_speakers:
                 continue
             self._pairing_close_source(other, reason="speaker_change")
-            if self._trigger_sentence_finalization(other):
-                finalized_speakers.add(other)
-                self._clear_pending_boundaries_for_speaker(other)
-                outgoing_final_tokens.append(
-                    self._minify_token(self._make_separator_token("speaker_change"))
-                )
-            else:
+            if not self._close_display_sentence(
+                other, outgoing_final_tokens, "speaker_change", finalized_speakers
+            ):
                 # Translation not ready yet: defer so it finalizes once the
                 # translation tokens arrive (see the pending-speaker pass).
                 self._clear_pending_boundaries_for_speaker(other)
@@ -779,6 +804,13 @@ class SonioxSession(RealtimeSessionBase):
                 return merged_sentence_id
         return None
 
+    def _display_sentence_has_output(self, buffer: dict) -> bool:
+        """A display line may only break once its output text has started:
+        some translation streamed in, or the source itself is the output."""
+        if buffer.get("translation_tokens"):
+            return True
+        return not self._expects_translation_stream(buffer.get("original_tokens") or [])
+
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """Close the speaker's DISPLAY sentence: decides whether a separator
         (line break) may be emitted at this point in the outgoing stream.
@@ -794,13 +826,10 @@ class SonioxSession(RealtimeSessionBase):
         if not buffer:
             return False
 
-        original_tokens = buffer.get("original_tokens") or []
-        translation_tokens = buffer.get("translation_tokens") or []
-
-        if not original_tokens:
+        if not buffer.get("original_tokens"):
             return False
 
-        if not translation_tokens and self._expects_translation_stream(original_tokens):
+        if not self._display_sentence_has_output(buffer):
             return False
 
         self._sentence_buffers.pop(speaker, None)
@@ -1164,186 +1193,207 @@ class SonioxSession(RealtimeSessionBase):
         self,
         new_final_tokens: list[dict],
     ) -> tuple[list[dict], str | None, set[str]]:
-        outgoing_final_tokens: list[dict] = []
-        last_real_speaker: str | None = None
-        finalized_speakers: set[str] = set()
-        source_as_output = not self._expects_translation_stream(new_final_tokens)
+        """Walk one response's final tokens in order, building the outgoing
+        stream and inserting each line break exactly where its sentence ends.
+
+        Returns (outgoing final tokens, last speaker seen, speakers whose
+        display sentence was closed in this batch)."""
+        batch = _InterleavedBatch(
+            tokens=new_final_tokens,
+            source_as_output=not self._expects_translation_stream(new_final_tokens),
+        )
         for index, token in enumerate(new_final_tokens):
-            text = token.get("text")
-            if text is None:
-                continue
-            is_internal = self._is_internal_token(token)
-            is_translation = token.get("translation_status") == "translation"
-            abbreviation_context_text = "" if is_internal else self._sentence_context_text_for_token(token)
+            if token.get("text") is not None:
+                self._process_interleaved_token(batch, index, token)
+        self._flush_ready_pending_endpoints(batch)
+        return batch.outgoing, batch.last_real_speaker, batch.finalized_speakers
 
-            # A pending endpoint means an earlier <end> fired before this
-            # sentence's translation had streamed in, so the line break was
-            # deferred (see the <end> branch below). The first *original*
-            # token of the next sentence is the signal that the previous
-            # sentence — together with whatever translation has since been
-            # buffered — is complete: finalize it now and break the line
-            # before this new token, so the late translation stays attached
-            # to the previous sentence instead of merging into this one.
-            if (not is_internal) and (not is_translation) and self._pending_endpoint_speakers:
-                spk = token.get("speaker")
-                pending_speaker = str(spk) if (spk is not None and spk != "") else last_real_speaker
-                if pending_speaker is None and len(self._pending_endpoint_speakers) == 1:
-                    pending_speaker = next(iter(self._pending_endpoint_speakers))
-                if pending_speaker in self._pending_endpoint_speakers:
-                    self._pending_endpoint_speakers.discard(pending_speaker)
-                    if self._trigger_sentence_finalization(pending_speaker):
-                        finalized_speakers.add(pending_speaker)
-                        self._clear_pending_boundaries_for_speaker(pending_speaker)
-                        outgoing_final_tokens.append(
-                            self._minify_token(self._make_separator_token("endpoint"))
-                        )
+    def _process_interleaved_token(self, batch: "_InterleavedBatch", index: int, token: dict) -> None:
+        text = token.get("text")
+        is_internal = self._is_internal_token(token)
+        is_translation = token.get("translation_status") == "translation"
+        # Before any flush below can pop this speaker's buffer.
+        context_text = "" if is_internal else self._sentence_context_text_for_token(token)
 
-            has_sentence_punctuation = (
-                not is_internal
-                and self._token_text_is_sentence_ending(
-                    new_final_tokens,
-                    index,
-                    source_as_output=source_as_output,
-                )
+        if not is_internal and not is_translation:
+            self._close_pending_endpoint_before_source(batch, token)
+
+        # After the flush above: the check reads the (possibly reset) buffer.
+        has_sentence_punctuation = (
+            not is_internal
+            and self._token_text_is_sentence_ending(
+                batch.tokens,
+                index,
+                source_as_output=batch.source_as_output,
             )
-            is_boundary = (text == "<end>") or has_sentence_punctuation
-            defer_source_punctuation = (
-                has_sentence_punctuation
-                and not is_translation
-                and not source_as_output
+        )
+        token_speaker = None
+        if not is_internal:
+            token_speaker = self._token_speaker(token)
+            self._handle_speaker_turn(batch, token, token_speaker, is_translation)
+
+        self._process_token_for_sentence(token)
+        if is_translation and has_sentence_punctuation and token_speaker:
+            self._close_pairing_at_translation_punctuation(token, token_speaker)
+
+        if not is_internal:
+            batch.outgoing.append(self._minify_token(token, is_final=True))
+            if token_speaker:
+                batch.last_real_speaker = token_speaker
+            self._pending_boundaries.mark_after_token(
+                batch.tokens,
+                index,
+                context_text=context_text,
+                is_internal_token=self._is_internal_token,
+                source_as_output=batch.source_as_output,
             )
-            if not is_internal:
-                spk = token.get("speaker")
-                token_speaker = str(spk) if (spk is not None and spk != "") else None
-                # A new speaker's token means the previous speaker is done:
-                # finalize their still-open sentence (triggers the LLM) before
-                # this speaker's token joins the outgoing stream.
-                if token_speaker and token_speaker != last_real_speaker:
-                    self._finalize_superseded_speakers(
-                        token_speaker, outgoing_final_tokens, finalized_speakers
-                    )
-                    if not is_translation:
-                        self._maybe_merge_interrupted_sentence(
-                            token_speaker, token, outgoing_final_tokens
-                        )
-                if token_speaker:
-                    self._flush_stale_quote_boundaries(
-                        token,
-                        outgoing_final_tokens,
-                        finalized_speakers,
-                    )
-                    self._flush_pending_boundary(
-                        token,
-                        outgoing_final_tokens,
-                        finalized_speakers,
-                    )
-            self._process_token_for_sentence(token)
-            if is_translation and has_sentence_punctuation and token_speaker:
-                # Translation punctuation already closes the DISPLAY
-                # sentence below. Keep the semantic pairer aligned with
-                # that boundary too, otherwise the next source sentence
-                # inherits the same llm_sentence_id and one refine result
-                # is rendered under both display blocks. Only close when
-                # this translation belongs to the currently open source;
-                # a late translation for an older FIFO entry must never
-                # close a newer sentence.
-                open_entry = self._pairer.open_entry(token_speaker)
-                token_sentence_id = token.get("llm_sentence_id")
-                if (
-                    open_entry is not None
-                    and token_sentence_id
-                    and open_entry.sentence_id == str(token_sentence_id)
-                    and open_entry.source_tokens
-                    # A source still inside an unclosed 「」-style quote is
-                    # not done even if its translation-so-far ends a
-                    # sentence: the quotation's remaining source (and its
-                    # translation tail) still belongs to this entry.
-                    and not self._open_source_in_unclosed_quote(token_speaker)
-                ):
-                    self._pairing_close_source(
-                        token_speaker,
-                        reason="translation_punctuation",
-                    )
-            if not is_internal:
-                outgoing_final_tokens.append(self._minify_token(token, is_final=True))
-                if token_speaker:
-                    last_real_speaker = token_speaker
-                self._pending_boundaries.mark_after_token(
-                    new_final_tokens,
-                    index,
-                    context_text=abbreviation_context_text,
-                    is_internal_token=self._is_internal_token,
-                    source_as_output=source_as_output,
-                )
-            if not is_boundary:
-                continue
-            spk = token.get("speaker")
-            speaker_value = str(spk) if (spk is not None and spk != "") else last_real_speaker
-            if speaker_value is None and self._sentence_buffers:
-                speaker_value = next(iter(self._sentence_buffers.keys()))
-            if not speaker_value:
-                continue
-            # Two source sentences finalized in ONE batch usually get ONE
-            # glued zero-gap translation burst, which no time-based rule
-            # can split (live 2026-07-11, llm_20260711_210847: the first
-            # sentence swallowed both translations and every later pair
-            # shifted). The display already keeps them on one line (the
-            # break defers until translation text arrives), so keep the
-            # semantic sentence together too: skip this close and let the
-            # batch's LAST complete sentence close the merged entry. The
-            # refine LLM then sees both sentences with both translations.
-            if defer_source_punctuation and self._batch_completes_another_sentence(
-                new_final_tokens, index, speaker_value
-            ):
-                continue
-            # A source-side boundary (source punctuation or <end>) ends
-            # the sentence semantically right here, even when the display
-            # line break is deferred until translation text shows up.
+
+        if text == "<end>" or has_sentence_punctuation:
+            self._handle_sentence_boundary(
+                batch,
+                index,
+                token,
+                is_translation=is_translation,
+                has_sentence_punctuation=has_sentence_punctuation,
+            )
+
+    def _close_pending_endpoint_before_source(self, batch: "_InterleavedBatch", token: dict) -> None:
+        """A pending endpoint means an earlier boundary fired before that
+        sentence's translation had streamed in, so the line break was deferred
+        (see _handle_sentence_boundary). The first *original* token of the next
+        sentence is the signal that the previous sentence — together with
+        whatever translation has since been buffered — is complete: finalize it
+        now and break the line before this new token, so the late translation
+        stays attached to the previous sentence instead of merging into this
+        one."""
+        if not self._pending_endpoint_speakers:
+            return
+        speaker = self._token_speaker(token) or batch.last_real_speaker
+        if speaker is None and len(self._pending_endpoint_speakers) == 1:
+            speaker = next(iter(self._pending_endpoint_speakers))
+        if speaker not in self._pending_endpoint_speakers:
+            return
+        self._pending_endpoint_speakers.discard(speaker)
+        self._close_display_sentence(speaker, batch.outgoing, "endpoint", batch.finalized_speakers)
+
+    def _handle_speaker_turn(
+        self,
+        batch: "_InterleavedBatch",
+        token: dict,
+        token_speaker: str | None,
+        is_translation: bool,
+    ) -> None:
+        if not token_speaker:
+            return
+        # A new speaker's token means the previous speaker is done: finalize
+        # their still-open sentence (triggers the LLM) before this speaker's
+        # token joins the outgoing stream.
+        if token_speaker != batch.last_real_speaker:
+            self._finalize_superseded_speakers(token_speaker, batch.outgoing, batch.finalized_speakers)
             if not is_translation:
-                self._pairing_close_source(
-                    speaker_value,
-                    reason="endpoint" if text == "<end>" else "punctuation",
-                )
-            if defer_source_punctuation:
-                self._pending_endpoint_speakers.add(speaker_value)
-                continue
-            if self._trigger_sentence_finalization(speaker_value):
-                finalized_speakers.add(speaker_value)
-                outgoing_final_tokens.append(
-                    self._minify_token(self._make_separator_token("punctuation"))
-                )
-            elif text == "<end>" or has_sentence_punctuation:
-                # The source/endpoint says the sentence ended, but the
-                # translation may not have arrived yet. Defer the line break:
-                # finalize as soon as this batch (or a later batch) has a
-                # translation, or at the latest before the next source
-                # sentence starts.
-                self._pending_endpoint_speakers.add(speaker_value)
+                self._maybe_merge_interrupted_sentence(token_speaker, token, batch.outgoing)
+        self._flush_stale_quote_boundaries(token, batch.outgoing, batch.finalized_speakers)
+        self._flush_pending_boundary(token, batch.outgoing, batch.finalized_speakers)
 
-        for pending_speaker in list(self._pending_endpoint_speakers):
-            if pending_speaker in finalized_speakers:
+    def _close_pairing_at_translation_punctuation(self, token: dict, speaker: str) -> None:
+        """Translation punctuation already closes the DISPLAY sentence. Keep
+        the semantic pairer aligned with that boundary too, otherwise the next
+        source sentence inherits the same llm_sentence_id and one refine result
+        is rendered under both display blocks. Only close when this translation
+        belongs to the currently open source; a late translation for an older
+        FIFO entry must never close a newer sentence."""
+        open_entry = self._pairer.open_entry(speaker)
+        token_sentence_id = token.get("llm_sentence_id")
+        if (
+            open_entry is not None
+            and token_sentence_id
+            and open_entry.sentence_id == str(token_sentence_id)
+            and open_entry.source_tokens
+            # A source still inside an unclosed 「」-style quote is not done
+            # even if its translation-so-far ends a sentence: the quotation's
+            # remaining source (and its translation tail) still belongs to
+            # this entry.
+            and not self._open_source_in_unclosed_quote(speaker)
+        ):
+            self._pairing_close_source(speaker, reason="translation_punctuation")
+
+    def _handle_sentence_boundary(
+        self,
+        batch: "_InterleavedBatch",
+        index: int,
+        token: dict,
+        *,
+        is_translation: bool,
+        has_sentence_punctuation: bool,
+    ) -> None:
+        """Sentence-ending punctuation or <end> at `token`."""
+        is_endpoint = token.get("text") == "<end>"
+        speaker = self._token_speaker(token) or batch.last_real_speaker
+        if speaker is None and self._sentence_buffers:
+            speaker = next(iter(self._sentence_buffers.keys()))
+        if not speaker:
+            return
+        # Source punctuation while a translation is still expected: the line
+        # break waits until translation text shows up.
+        defer_source_punctuation = (
+            has_sentence_punctuation
+            and not is_translation
+            and not batch.source_as_output
+        )
+        # Two source sentences finalized in ONE batch usually get ONE glued
+        # zero-gap translation burst, which no time-based rule can split (live
+        # 2026-07-11, llm_20260711_210847: the first sentence swallowed both
+        # translations and every later pair shifted). The display already
+        # keeps them on one line (the break defers until translation text
+        # arrives), so keep the semantic sentence together too: skip this
+        # close and let the batch's LAST complete sentence close the merged
+        # entry. The refine LLM then sees both sentences with both
+        # translations.
+        if defer_source_punctuation and self._batch_completes_another_sentence(
+            batch.tokens, index, speaker
+        ):
+            return
+        # A source-side boundary (source punctuation or <end>) ends the
+        # sentence semantically right here, even when the display line break
+        # is deferred until translation text shows up.
+        if not is_translation:
+            self._pairing_close_source(
+                speaker,
+                reason="endpoint" if is_endpoint else "punctuation",
+            )
+        if defer_source_punctuation:
+            self._pending_endpoint_speakers.add(speaker)
+            return
+        if not self._close_display_sentence(
+            speaker, batch.outgoing, "punctuation", batch.finalized_speakers
+        ):
+            # The source/endpoint says the sentence ended, but the translation
+            # may not have arrived yet. Defer the line break: finalize as soon
+            # as this batch (or a later batch) has a translation, or at the
+            # latest before the next source sentence starts.
+            self._pending_endpoint_speakers.add(speaker)
+
+    def _flush_ready_pending_endpoints(self, batch: "_InterleavedBatch") -> None:
+        """Break deferred lines whose output text arrived later in this batch."""
+        for speaker in list(self._pending_endpoint_speakers):
+            if speaker in batch.finalized_speakers:
                 continue
-            buffer = self._sentence_buffers.get(pending_speaker)
+            buffer = self._sentence_buffers.get(speaker)
             if not buffer:
-                self._pending_endpoint_speakers.discard(pending_speaker)
+                self._pending_endpoint_speakers.discard(speaker)
                 continue
-            translation_tokens = buffer.get("translation_tokens") or []
-            original_tokens = buffer.get("original_tokens") or []
-            if not translation_tokens and self._expects_translation_stream(original_tokens):
+            if not self._display_sentence_has_output(buffer):
                 continue
-            self._pending_endpoint_speakers.discard(pending_speaker)
-            if self._trigger_sentence_finalization(pending_speaker):
-                finalized_speakers.add(pending_speaker)
-                outgoing_final_tokens.append(
-                    self._minify_token(self._make_separator_token("punctuation"))
-                )
-        return outgoing_final_tokens, last_real_speaker, finalized_speakers
+            self._pending_endpoint_speakers.discard(speaker)
+            self._close_display_sentence(speaker, batch.outgoing, "punctuation", batch.finalized_speakers)
 
     def _process_non_interleaved_tokens(
         self,
         new_final_tokens: list[dict],
         endpoint_detected: bool,
     ) -> tuple[list[dict], list[dict]]:
+        """Translation / endpoint segment modes: at most one line break, after
+        the whole batch."""
         outgoing_final_tokens: list[dict] = []
         separator_tokens: list[dict] = []
         for token in new_final_tokens:
@@ -1373,21 +1423,11 @@ class SonioxSession(RealtimeSessionBase):
                     for index, t in enumerate(new_final_tokens)
                 )
             if translation_hit:
-                speaker_value = None
-                for token in reversed(new_final_tokens):
-                    if token.get("translation_status") == "translation":
-                        spk = token.get("speaker")
-                        if spk is not None and spk != "":
-                            speaker_value = str(spk)
-                            break
-                if speaker_value is None:
-                    for token in reversed(new_final_tokens):
-                        spk = token.get("speaker")
-                        if spk is not None and spk != "":
-                            speaker_value = str(spk)
-                            break
-                if speaker_value is None and self._sentence_buffers:
-                    speaker_value = next(iter(self._sentence_buffers.keys()))
+                speaker_value = (
+                    self._last_token_speaker(new_final_tokens, translation_only=True)
+                    or self._last_token_speaker(new_final_tokens)
+                    or self._any_buffered_speaker()
+                )
                 if speaker_value:
                     self._pairing_close_source(speaker_value)
                     self._trigger_sentence_finalization(speaker_value)
@@ -1399,14 +1439,10 @@ class SonioxSession(RealtimeSessionBase):
                 for t in new_final_tokens
             )
             if endpoint_hit:
-                speaker_value = None
-                for token in reversed(new_final_tokens):
-                    spk = token.get("speaker")
-                    if spk is not None and spk != "":
-                        speaker_value = str(spk)
-                        break
-                if speaker_value is None and self._sentence_buffers:
-                    speaker_value = next(iter(self._sentence_buffers.keys()))
+                speaker_value = (
+                    self._last_token_speaker(new_final_tokens)
+                    or self._any_buffered_speaker()
+                )
                 if speaker_value:
                     self._pairing_close_source(speaker_value, reason="endpoint")
                     self._trigger_sentence_finalization(speaker_value)
@@ -1496,11 +1532,7 @@ class SonioxSession(RealtimeSessionBase):
                 speaker_value = next(iter(self._sentence_buffers.keys()))
             if speaker_value and speaker_value not in finalized_speakers:
                 self._pairing_close_source(speaker_value, reason="endpoint")
-                if self._trigger_sentence_finalization(speaker_value):
-                    outgoing_final_tokens.append(
-                        self._minify_token(self._make_separator_token("endpoint"))
-                    )
-                else:
+                if not self._close_display_sentence(speaker_value, outgoing_final_tokens, "endpoint"):
                     self._pending_endpoint_speakers.add(speaker_value)
 
         if not interleaved_punctuation:
