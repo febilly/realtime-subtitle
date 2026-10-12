@@ -13,6 +13,7 @@ _warmup_response_ends_stream, _two_way_pair) plus their own segmentation.
 
 import asyncio
 import importlib
+import inspect
 import json
 import logging
 import threading
@@ -905,6 +906,30 @@ class RealtimeSessionBase:
             target_lang=target_lang if (isinstance(target_lang, str) and target_lang.strip())
             else self.get_translation_target_lang(),
         )
+
+    @staticmethod
+    def _target_lang_kwargs(fn, target_lang: str) -> dict:
+        """{"target_lang": ...} when `fn` accepts it (tests swap in doubles
+        with the older signature), else {}."""
+        try:
+            sig = inspect.signature(fn)
+        except Exception:
+            return {"target_lang": target_lang}
+        if "target_lang" in sig.parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ):
+            return {"target_lang": target_lang}
+        return {}
+
+    def _remember_refine_context(self, item: dict) -> None:
+        """Append a finished sentence to the LLM context history, trimmed to
+        the current maximum context size."""
+        self._refine_context_history.append(item)
+        max_history = max(0, int(self._context_bounds()[1]))
+        if max_history == 0:
+            self._refine_context_history.clear()
+        elif len(self._refine_context_history) > max_history:
+            self._refine_context_history = self._refine_context_history[-max_history:]
 
     def _hosted_llm_send(self, text: str) -> None:
         """Send a text frame on the current active relay stream (LLM multiplex)."""

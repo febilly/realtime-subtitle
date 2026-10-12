@@ -4,7 +4,6 @@ Gemini会话模块 - 管理与Gemini Live Translation服务的WebSocket会话
 import asyncio
 import re
 import time
-import inspect
 from typing import Optional
 
 import config  # noqa: F401  (tests reach the config stub through this module)
@@ -280,15 +279,7 @@ class GeminiSession(RealtimeSessionBase):
         if is_llm_refine_available() and mode != "off" and translation:
             try:
                 if mode == "refine":
-                    refine_kwargs = {}
-                    try:
-                        sig = inspect.signature(self._perform_refine)
-                        if "target_lang" in sig.parameters or any(
-                            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-                        ):
-                            refine_kwargs["target_lang"] = utterance_target_lang
-                    except Exception:
-                        refine_kwargs["target_lang"] = utterance_target_lang
+                    refine_kwargs = self._target_lang_kwargs(self._perform_refine, utterance_target_lang)
 
                     result = await self._perform_refine(
                         source, translation, context_items, **refine_kwargs
@@ -297,15 +288,7 @@ class GeminiSession(RealtimeSessionBase):
                         refined_translation = result.get("refined_translation") or translation
                         no_change = False
                 elif mode == "translate":
-                    translate_kwargs = {}
-                    try:
-                        sig = inspect.signature(self._perform_translate)
-                        if "target_lang" in sig.parameters or any(
-                            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-                        ):
-                            translate_kwargs["target_lang"] = utterance_target_lang
-                    except Exception:
-                        translate_kwargs["target_lang"] = utterance_target_lang
+                    translate_kwargs = self._target_lang_kwargs(self._perform_translate, utterance_target_lang)
 
                     result = await self._perform_translate(
                         source, context_items, **translate_kwargs
@@ -337,12 +320,7 @@ class GeminiSession(RealtimeSessionBase):
             no_change=no_change,
         )
 
-        self._refine_context_history.append({"source": source, "translation": refined_translation})
-        max_history = max(0, int(self._context_bounds()[1]))
-        if max_history == 0:
-            self._refine_context_history.clear()
-        elif len(self._refine_context_history) > max_history:
-            self._refine_context_history = self._refine_context_history[-max_history:]
+        self._remember_refine_context({"source": source, "translation": refined_translation})
 
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
         """Apply the unified 翻译模式 (fast/accurate/hybrid), mirroring the soniox
