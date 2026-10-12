@@ -233,6 +233,12 @@ class ProviderManager:
         self.broadcast_callback = broadcast_callback
         self.web_server = None
         self.loop = None
+        # Serializes every session stop/start (provider hot-switch, /restart,
+        # pause/resume). Two overlapping lifecycles can each start a stream —
+        # e.g. the startup relay setup rebuilding the session while /restart
+        # restarts the old one — leaving two live streams broadcasting
+        # interleaved frames (subtitles flicker between two hypotheses).
+        self.lifecycle_lock = asyncio.Lock()
 
         # New random id per process; lets the frontend tell whether its
         # localStorage override has already been pushed to this backend instance.
@@ -418,7 +424,12 @@ class ProviderManager:
                 print(f"⚠️  Failed to restore audio source selection: {error}")
 
     # ----- hot switch -----
-    async def apply_provider(
+    async def apply_provider(self, provider, **kwargs) -> dict:
+        """Switch provider/key/mode (and optionally translation) in-process."""
+        async with self.lifecycle_lock:
+            return await self._apply_provider_locked(provider, **kwargs)
+
+    async def _apply_provider_locked(
         self,
         provider,
         *,
@@ -432,7 +443,6 @@ class ProviderManager:
         target_lang_1=None,
         target_lang_2=None,
     ) -> dict:
-        """Switch provider/key/mode (and optionally translation) in-process."""
         provider = self.config.set_active_provider(provider)
         self.provider = provider
 

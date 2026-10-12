@@ -76,6 +76,8 @@ class WebServer:
         self.get_api_key = None
         # Runtime provider/key manager (hot-switch); injected by server.py.
         self.provider_manager = None
+        # Fallback session-lifecycle lock when no provider manager is wired.
+        self._fallback_lifecycle_lock = asyncio.Lock()
         self._ipc_polling_task = None
         # Lazy aiohttp client for proxying REST calls to the subtitle-server.
         self._http = None
@@ -489,6 +491,13 @@ class WebServer:
 
     # 未知来源值只告警一次，避免每次请求刷屏。
     _warned_unknown_remotes: set = set()
+
+    def _session_lifecycle_lock(self) -> asyncio.Lock:
+        """The one lock serializing session stop/start across /restart,
+        pause/resume and the provider manager's hot-switch."""
+        manager = self.provider_manager
+        lock = getattr(manager, "lifecycle_lock", None) if manager is not None else None
+        return lock if isinstance(lock, asyncio.Lock) else self._fallback_lifecycle_lock
 
     @staticmethod
     def _is_loopback_request(request) -> bool:
@@ -1560,105 +1569,108 @@ class WebServer:
                 status=400,
             )
 
-        get_api_key = self.get_api_key
+        # Serialized with the provider hot-switch and pause/resume, so two
+        # overlapping lifecycles can never leave two live streams.
+        async with self._session_lifecycle_lock():
+            get_api_key = self.get_api_key
 
-        print(f"\n[Server] Received {'auto ' if is_auto else ''}restart request...")
+            print(f"\n[Server] Received {'auto ' if is_auto else ''}restart request...")
 
-        if requested_target_lang is not None:
-            ok, message = self.session.set_translation_target_lang(requested_target_lang)
-            if not ok:
-                return web.json_response({"status": "error", "message": message}, status=400)
-
-        if requested_mode == "two_way":
-            lang_a = requested_lang_1 if requested_lang_1 is not None else self.session.get_target_langs()[0]
-            lang_b = requested_lang_2 if requested_lang_2 is not None else self.session.get_target_langs()[1]
-            if hasattr(self.session, "set_target_langs"):
-                ok, message = self.session.set_target_langs(lang_a, lang_b)
+            if requested_target_lang is not None:
+                ok, message = self.session.set_translation_target_lang(requested_target_lang)
                 if not ok:
                     return web.json_response({"status": "error", "message": message}, status=400)
 
-        # Determine the translation mode to (re)start with.
-        if requested_mode is not None:
-            translation_mode = requested_mode
-        elif self.provider_manager is not None:
-            translation_mode = self.provider_manager.translation_mode
-        else:
-            translation_mode = str(getattr(self.session, "translation", None) or TRANSLATION_MODE)
+            if requested_mode == "two_way":
+                lang_a = requested_lang_1 if requested_lang_1 is not None else self.session.get_target_langs()[0]
+                lang_b = requested_lang_2 if requested_lang_2 is not None else self.session.get_target_langs()[1]
+                if hasattr(self.session, "set_target_langs"):
+                    ok, message = self.session.set_target_langs(lang_a, lang_b)
+                    if not ok:
+                        return web.json_response({"status": "error", "message": message}, status=400)
 
-        # Keep the manager state in sync so subsequent hot-switches preserve it.
-        if self.provider_manager is not None:
-            self.provider_manager.translation_mode = translation_mode
-            self.provider_manager.target_lang = self.session.get_translation_target_lang()
-            if hasattr(self.session, "get_target_langs"):
-                l1, l2 = self.session.get_target_langs()
-                self.provider_manager.target_lang_1 = l1
-                self.provider_manager.target_lang_2 = l2
+            # Determine the translation mode to (re)start with.
+            if requested_mode is not None:
+                translation_mode = requested_mode
+            elif self.provider_manager is not None:
+                translation_mode = self.provider_manager.translation_mode
+            else:
+                translation_mode = str(getattr(self.session, "translation", None) or TRANSLATION_MODE)
 
-        # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
-        # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求
-        # 停滞），因此放到线程池里等待。
-        await asyncio.to_thread(self.session.stop)
-
-        # 关闭当前日志文件（同步文件 IO，同样移出事件循环）
-        await asyncio.to_thread(self.logger.close_log_file)
-        
-        if is_auto:
-            await self.broadcast_to_clients({
-                "type": "clear",
-                "message": "Recognition reconnecting...",
-                "preserve_existing": True,
-            })
-        else:
-            # 向所有客户端发送清空指令
-            await self.broadcast_to_clients({
-                "type": "clear",
-                "message": "Recognition restarting..."
-            })
-
-            # 给客户端一点时间处理clear消息
-            await asyncio.sleep(0.3)
-
-            # 关闭所有现有的WebSocket连接
-            print(f"[Server] Closing {len(self.websocket_clients)} WebSocket connections...")
-            clients_to_close = list(self.websocket_clients)
-            for client in clients_to_close:
-                try:
-                    await client.close()
-                except Exception as e:
-                    print(f"[Server] Error closing client connection: {e}")
-            self.websocket_clients.clear()
-        
-        # 启动新的Soniox会话
-        try:
-            print("[Server] Starting new recognition session...")
-            api_key = get_api_key()
-            audio_format = "pcm_s16le"
-
-            loop = asyncio.get_event_loop()
-            started = self.session.start(
-                api_key,
-                audio_format,
-                translation_mode,
-                loop,
-                translation_target_lang=self.session.get_translation_target_lang(),
-            )
-            if started is False:
-                message = "Recognition session is still stopping; start request was ignored"
-                print(f"[Server] Failed to restart: {message}")
-                return web.json_response({"status": "error", "message": message}, status=409)
-
-            # Translation may have been toggled on/off; keep IPC in sync.
+            # Keep the manager state in sync so subsequent hot-switches preserve it.
             if self.provider_manager is not None:
-                try:
-                    await self.provider_manager._sync_ipc(True)
-                except Exception:
-                    pass
+                self.provider_manager.translation_mode = translation_mode
+                self.provider_manager.target_lang = self.session.get_translation_target_lang()
+                if hasattr(self.session, "get_target_langs"):
+                    l1, l2 = self.session.get_target_langs()
+                    self.provider_manager.target_lang_1 = l1
+                    self.provider_manager.target_lang_2 = l2
 
-            print("[Server] New session started successfully")
-            return web.json_response({"status": "ok", "message": "Recognition restarted", "paused": False})
-        except Exception as e:
-            print(f"[Server] Failed to restart: {e}")
-            return web.json_response({"status": "error", "message": str(e)}, status=500)
+            # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
+            # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求
+            # 停滞），因此放到线程池里等待。
+            await asyncio.to_thread(self.session.stop)
+
+            # 关闭当前日志文件（同步文件 IO，同样移出事件循环）
+            await asyncio.to_thread(self.logger.close_log_file)
+        
+            if is_auto:
+                await self.broadcast_to_clients({
+                    "type": "clear",
+                    "message": "Recognition reconnecting...",
+                    "preserve_existing": True,
+                })
+            else:
+                # 向所有客户端发送清空指令
+                await self.broadcast_to_clients({
+                    "type": "clear",
+                    "message": "Recognition restarting..."
+                })
+
+                # 给客户端一点时间处理clear消息
+                await asyncio.sleep(0.3)
+
+                # 关闭所有现有的WebSocket连接
+                print(f"[Server] Closing {len(self.websocket_clients)} WebSocket connections...")
+                clients_to_close = list(self.websocket_clients)
+                for client in clients_to_close:
+                    try:
+                        await client.close()
+                    except Exception as e:
+                        print(f"[Server] Error closing client connection: {e}")
+                self.websocket_clients.clear()
+        
+            # 启动新的Soniox会话
+            try:
+                print("[Server] Starting new recognition session...")
+                api_key = get_api_key()
+                audio_format = "pcm_s16le"
+
+                loop = asyncio.get_event_loop()
+                started = self.session.start(
+                    api_key,
+                    audio_format,
+                    translation_mode,
+                    loop,
+                    translation_target_lang=self.session.get_translation_target_lang(),
+                )
+                if started is False:
+                    message = "Recognition session is still stopping; start request was ignored"
+                    print(f"[Server] Failed to restart: {message}")
+                    return web.json_response({"status": "error", "message": message}, status=409)
+
+                # Translation may have been toggled on/off; keep IPC in sync.
+                if self.provider_manager is not None:
+                    try:
+                        await self.provider_manager._sync_ipc(True)
+                    except Exception:
+                        pass
+
+                print("[Server] New session started successfully")
+                return web.json_response({"status": "ok", "message": "Recognition restarted", "paused": False})
+            except Exception as e:
+                print(f"[Server] Failed to restart: {e}")
+                return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     async def osc_translation_get_handler(self, request):
         """查询翻译结果 OSC 发送开关状态"""
@@ -1759,7 +1771,8 @@ class WebServer:
         print("\n[Server] Received pause request...")
         # pause() -> stop() 会同步 join 会话/音频线程（最长约 4.5s），
         # 移出事件循环避免阻塞其他请求。
-        paused = await asyncio.to_thread(self.session.pause)
+        async with self._session_lifecycle_lock():
+            paused = await asyncio.to_thread(self.session.pause)
 
         # 广播暂停状态给所有 WebSocket 客户端
         await self.broadcast_to_clients({
@@ -1789,41 +1802,42 @@ class WebServer:
             )
 
         print("\n[Server] Received resume request...")
-        get_api_key = self.get_api_key
+        async with self._session_lifecycle_lock():
+            get_api_key = self.get_api_key
 
-        if not self.session.is_paused:
-            # 即使已经运行，也确保状态同步
+            if not self.session.is_paused:
+                # 即使已经运行，也确保状态同步
+                await self.broadcast_to_clients({
+                    "type": "recognition_paused",
+                    "paused": False
+                })
+                return web.json_response({"status": "ok", "message": "Recognition already running"})
+
+            try:
+                api_key = get_api_key()
+            except RuntimeError as error:
+                print(f"[Server] Resume failed: {error}")
+                return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+            loop = asyncio.get_event_loop()
+            resumed = self.session.resume(
+                api_key=api_key,
+                audio_format="pcm_s16le",
+                translation=TRANSLATION_MODE,
+                loop=loop
+            )
+
+            # 广播恢复状态给所有 WebSocket 客户端
             await self.broadcast_to_clients({
                 "type": "recognition_paused",
                 "paused": False
             })
-            return web.json_response({"status": "ok", "message": "Recognition already running"})
 
-        try:
-            api_key = get_api_key()
-        except RuntimeError as error:
-            print(f"[Server] Resume failed: {error}")
-            return web.json_response({"status": "error", "message": str(error)}, status=500)
+            if resumed:
+                return web.json_response({"status": "ok", "message": "Recognition resumed"})
 
-        loop = asyncio.get_event_loop()
-        resumed = self.session.resume(
-            api_key=api_key,
-            audio_format="pcm_s16le",
-            translation=TRANSLATION_MODE,
-            loop=loop
-        )
-
-        # 广播恢复状态给所有 WebSocket 客户端
-        await self.broadcast_to_clients({
-            "type": "recognition_paused",
-            "paused": False
-        })
-
-        if resumed:
-            return web.json_response({"status": "ok", "message": "Recognition resumed"})
-
-        # resume 请求失败但仍处于暂停状态，返回错误
-        return web.json_response({"status": "error", "message": "Failed to resume recognition"}, status=500)
+            # resume 请求失败但仍处于暂停状态，返回错误
+            return web.json_response({"status": "error", "message": "Failed to resume recognition"}, status=500)
 
     async def get_audio_source_handler(self, request):
         """获取当前音频源"""

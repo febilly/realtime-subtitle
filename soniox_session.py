@@ -405,7 +405,9 @@ class SonioxSession:
             if thread.is_alive():
                 print("⚠️  Soniox session thread did not terminate within timeout")
 
-        if thread and not thread.is_alive():
+        # Only forget the thread we joined: a concurrent start() may already
+        # have replaced it, and clearing that one would orphan a live stream.
+        if thread and not thread.is_alive() and self.thread is thread:
             self.thread = None
 
         if self.thread is None:

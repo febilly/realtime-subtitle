@@ -315,6 +315,55 @@ class TestWebServerSecurity:
             ws.provider_manager._sync_ipc.assert_not_awaited()
 
     @async_test
+    async def test_restart_waits_for_provider_hot_switch_lifecycle_lock(self):
+        """Regression: the startup relay setup (apply_provider) and a /restart
+        overlapped; each started a stream and both stayed live, so the UI
+        flickered between two interleaved hypotheses. /restart must not touch
+        the session while the provider manager holds the lifecycle lock."""
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "config": MagicMock(),
+            "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            session = self.mock_session()
+            session.get_translation_target_lang.return_value = "zh"
+            session.get_target_langs.return_value = ("en", "zh")
+            session.start.return_value = True
+            ws = WebServer(session, self.mock_logger())
+            ws.get_api_key = MagicMock(return_value="relay-token")
+            ws.provider_manager = MagicMock()
+            ws.provider_manager.translation_mode = "none"
+            ws.provider_manager.lifecycle_lock = asyncio.Lock()
+            ws.provider_manager._sync_ipc = AsyncMock()
+            ws.broadcast_to_clients = AsyncMock()
+
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            request.json.return_value = {"auto": True, "translation_mode": "none"}
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            await ws.provider_manager.lifecycle_lock.acquire()
+            restart = asyncio.ensure_future(ws.restart_handler(request))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            assert not restart.done()
+            session.stop.assert_not_called()
+            session.start.assert_not_called()
+
+            ws.provider_manager.lifecycle_lock.release()
+            _response_data, status = await restart
+
+            assert status == 200
+            session.stop.assert_called_once_with()
+            session.start.assert_called_once()
+
+    @async_test
     async def test_account_web_login_url_uses_short_web_login_code(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),
