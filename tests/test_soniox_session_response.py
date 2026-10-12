@@ -424,6 +424,49 @@ def test_punctuation_separator_lands_at_period_within_batch(monkeypatch):
     assert kinds == ["foo.", "SEP", "and", "you"], kinds
 
 
+def _final_kinds_for_translation_off_batch(monkeypatch, texts):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "none"
+    session.translation_target_lang = "zh"  # source en != target zh
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    _feed_original_batch(session, texts, "en")
+    return [
+        "SEP" if t.get("is_separator") else t.get("text")
+        for u in updates
+        for t in u.get("final_tokens", [])
+    ]
+
+
+def test_translation_off_breaks_line_at_source_period(monkeypatch):
+    """Regression: with translation off (翻译关闭) no translation token ever
+    arrives, so a cross-language source period must break the line right
+    away. It used to defer the break waiting for translation text, gluing the
+    next finalized sentence onto the previous line."""
+    kinds = _final_kinds_for_translation_off_batch(
+        monkeypatch, [" hearing.", " You", " just"]
+    )
+    assert kinds == [" hearing.", "SEP", " You", " just"], kinds
+
+
+def test_translation_off_splits_two_sentences_in_one_batch(monkeypatch):
+    kinds = _final_kinds_for_translation_off_batch(
+        monkeypatch, [" hearing.", " You", " lied."]
+    )
+    assert kinds == [" hearing.", "SEP", " You", " lied.", "SEP"], kinds
+
+
 def test_punctuation_does_not_split_unspaced_decimal_point(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

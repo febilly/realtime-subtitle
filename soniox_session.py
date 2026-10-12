@@ -806,10 +806,15 @@ class SonioxSession:
         - 准确 (accurate) mode: soniox's built-in translation is disabled and the
           LLM translates from the source, so segmentation/finalization must key
           off the source instead of translation tokens (which never arrive).
+        - translation off (翻译关闭): no translation stream exists, so a
+          source boundary must break the line immediately instead of waiting
+          for translation text that never comes.
         - or the speech is already in the target language (built-in translation
           empty), the pre-existing source-as-output case.
         """
         if self._suppress_soniox_translation:
+            return True
+        if not self._translation_enabled():
             return True
         return self._can_use_source_as_translation(source_tokens)
 
