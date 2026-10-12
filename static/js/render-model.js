@@ -62,7 +62,14 @@
         const following = String(nextText || '');
         const context = String(contextText || '');
 
-        if (!Segmentation.hasSentenceEndingPunctuation(value)) return false;
+        // A closing quote streamed as its own token ("here." + "\"" + " They")
+        // has no punctuation of its own; the backend cuts after it because the
+        // accumulated sentence ends in punctuation + quote.
+        const trimmed = value.trim();
+        const closesQuotedSentence = !!trimmed
+            && Segmentation.CLOSING_QUOTE_CHARS.has(trimmed.at(-1))
+            && Segmentation.textEndsWithClosingQuoteAfterSentencePunctuation(context);
+        if (!closesQuotedSentence && !Segmentation.hasSentenceEndingPunctuation(value)) return false;
 
         // The backend makes these decisions against the accumulated sentence,
         // not only the latest token. This matters when an opener or the first

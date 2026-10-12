@@ -19,6 +19,7 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Sequence
 from typing import Optional, Tuple
 
 from websockets import ConnectionClosed, ConnectionClosedOK
@@ -746,6 +747,7 @@ class RealtimeSessionBase:
         index: int,
         *,
         source_as_output: bool = False,
+        lookahead_tokens: Sequence[dict] = (),
     ) -> bool:
         token = tokens[index]
         return self._pending_boundaries.is_token_sentence_ending(
@@ -754,6 +756,7 @@ class RealtimeSessionBase:
             context_text=self._sentence_context_text_for_token(token),
             is_internal_token=self._is_internal_token,
             source_as_output=source_as_output,
+            lookahead_tokens=lookahead_tokens,
         )
 
     def _clear_pending_boundaries_for_speaker(self, speaker: str) -> None:

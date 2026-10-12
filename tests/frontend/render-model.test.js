@@ -260,6 +260,52 @@ describe('RenderModel speculative token stream', () => {
         expect(tokens).toEqual([finalized, ...values]);
     });
 
+    // Live 2026-10-12: the backend cuts after a standalone closing quote, so
+    // the preview has to as well or the next sentence sits on the quote's line.
+    it.each([
+        ['ASCII', [' doing here.', '"', ' They'], 'en'],
+        ['corner bracket', [' 「いいえ、野菜です。', '」', ' But'], 'ja'],
+    ])('splits after a standalone %s closing quote', (_label, parts, language) => {
+        const [sentence, quote, next] = parts.map(
+            (text) => original(text, { is_final: false, language }),
+        );
+        const tokens = RenderModel.buildRenderTokens({
+            currentNonFinalTokens: [sentence, quote, next],
+        });
+
+        expect(tokens).toEqual([
+            sentence,
+            quote,
+            { is_separator: true, is_final: false, separator_type: 'speculative' },
+            next,
+        ]);
+    });
+
+    it('splits after a standalone closing quote whose sentence is already final', () => {
+        const finalized = original(' by the gallon.');
+        const quote = original('"', { is_final: false });
+        const next = original(' Many', { is_final: false });
+        const tokens = RenderModel.buildRenderTokens({
+            allFinalTokens: [finalized],
+            currentNonFinalTokens: [quote, next],
+        });
+
+        expect(tokens).toEqual([
+            finalized,
+            quote,
+            { is_separator: true, is_final: false, separator_type: 'speculative' },
+            next,
+        ]);
+    });
+
+    it.each([
+        [['He said "no', '"', ' more']],
+        [['Wait...', '"', ' more']],
+    ])('does not split after a closing quote without a sentence end: %j', (parts) => {
+        const values = parts.map((text) => original(text, { is_final: false }));
+        expect(RenderModel.buildRenderTokens({ currentNonFinalTokens: values })).toEqual(values);
+    });
+
     it('does not split a streamed ASCII ellipsis dot run', () => {
         const values = [
             original('.', { is_final: false }),

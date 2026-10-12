@@ -1,6 +1,6 @@
 """Shared sentence-boundary helpers for punctuation-based subtitle splitting."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -270,10 +270,24 @@ class PendingBoundaryState:
         is_internal_token: Callable[[object], bool],
         source_as_output: bool,
     ) -> str | None:
-        token = tokens[index]
+        return self._first_compatible_text(
+            tokens[index],
+            tokens[index + 1:],
+            is_internal_token=is_internal_token,
+            source_as_output=source_as_output,
+        )
+
+    def _first_compatible_text(
+        self,
+        token: dict,
+        candidates: Sequence[dict],
+        *,
+        is_internal_token: Callable[[object], bool],
+        source_as_output: bool,
+    ) -> str | None:
         speaker = token.get("speaker")
         is_translation = token.get("translation_status") == "translation"
-        for next_token in tokens[index + 1:]:
+        for next_token in candidates:
             if is_internal_token(next_token):
                 continue
             if next_token.get("speaker") != speaker:
@@ -286,6 +300,35 @@ class PendingBoundaryState:
                 return next_text
         return None
 
+    def _lookahead_starts_with_closing_quote(
+        self,
+        token: dict,
+        lookahead_tokens: Sequence[dict],
+        *,
+        is_internal_token: Callable[[object], bool],
+        source_as_output: bool,
+    ) -> bool:
+        """Whether the not-yet-final tail already shows a closing quote right
+        after this batch-final token.
+
+        Soniox can finalize ``" gallon."`` while the ``"`` that closes the
+        quotation is still non-final (live 2026-10-12): cutting at the period
+        then pushes the quote onto the next line. Waiting only when the tail
+        already shows the quote costs no latency for ordinary sentence ends.
+        """
+        if not lookahead_tokens:
+            return False
+        lookahead_text = self._first_compatible_text(
+            token,
+            lookahead_tokens,
+            is_internal_token=is_internal_token,
+            source_as_output=source_as_output,
+        )
+        return lookahead_text is not None and token_text_starts_with_closing_quote(
+            str(token.get("text") or ""),
+            lookahead_text,
+        )
+
     def is_token_sentence_ending(
         self,
         tokens: list[dict],
@@ -294,7 +337,10 @@ class PendingBoundaryState:
         context_text: str,
         is_internal_token: Callable[[object], bool],
         source_as_output: bool,
+        lookahead_tokens: Sequence[dict] = (),
     ) -> bool:
+        """``lookahead_tokens`` are the response's non-final tokens: only a
+        hint that a closing quote follows a token that ends the final batch."""
         token = tokens[index]
         text = str(token.get("text") or "")
         if not has_sentence_ending_punctuation(text):
@@ -319,6 +365,13 @@ class PendingBoundaryState:
             source_as_output=source_as_output,
         )
         if next_text is not None and token_text_starts_with_closing_quote(text, next_text):
+            return False
+        if next_text is None and self._lookahead_starts_with_closing_quote(
+            token,
+            lookahead_tokens,
+            is_internal_token=is_internal_token,
+            source_as_output=source_as_output,
+        ):
             return False
         stripped = text.strip()
         if next_text is None and stripped == ".":
@@ -378,6 +431,7 @@ class PendingBoundaryState:
         context_text: str,
         is_internal_token: Callable[[object], bool],
         source_as_output: bool,
+        lookahead_tokens: Sequence[dict] = (),
     ) -> None:
         token = tokens[index]
         is_translation = token.get("translation_status") == "translation"
@@ -399,6 +453,7 @@ class PendingBoundaryState:
             context_text=context_text,
             is_internal_token=is_internal_token,
             source_as_output=source_as_output,
+            lookahead_tokens=lookahead_tokens,
         )
         if quote_boundary:
             self._pending[key] = quote_boundary
@@ -424,6 +479,7 @@ class PendingBoundaryState:
         context_text: str,
         is_internal_token: Callable[[object], bool],
         source_as_output: bool,
+        lookahead_tokens: Sequence[dict] = (),
     ) -> _PendingBoundary | None:
         token = tokens[index]
         if text_ends_with_closing_quote_after_sentence_punctuation(context_text):
@@ -453,7 +509,12 @@ class PendingBoundaryState:
                     awaiting_quote=True,
                 )
             return None
-        if stripped == ".":
+        if stripped == "." or self._lookahead_starts_with_closing_quote(
+            token,
+            lookahead_tokens,
+            is_internal_token=is_internal_token,
+            source_as_output=source_as_output,
+        ):
             return _PendingBoundary(
                 kind="quote",
                 context_text=context_text,

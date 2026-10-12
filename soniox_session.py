@@ -53,6 +53,9 @@ class _InterleavedBatch:
     tokens: list[dict]
     # No translation is coming, so the source drives line breaks.
     source_as_output: bool
+    # The response's non-final tokens, consulted only when source_as_output:
+    # a closing quote already showing there holds a batch-final sentence end.
+    lookahead: list[dict] = field(default_factory=list)
     outgoing: list[dict] = field(default_factory=list)
     last_real_speaker: str | None = None
     # Speakers whose display sentence was closed in this batch.
@@ -1013,15 +1016,20 @@ class SonioxSession(RealtimeSessionBase):
     def _process_interleaved_punctuation_tokens(
         self,
         new_final_tokens: list[dict],
+        non_final_tokens: list[dict] | None = None,
     ) -> tuple[list[dict], str | None, set[str]]:
         """Walk one response's final tokens in order, building the outgoing
         stream and inserting each line break exactly where its sentence ends.
 
         Returns (outgoing final tokens, last speaker seen, speakers whose
         display sentence was closed in this batch)."""
+        source_as_output = not self._expects_translation_stream(new_final_tokens)
         batch = _InterleavedBatch(
             tokens=new_final_tokens,
-            source_as_output=not self._expects_translation_stream(new_final_tokens),
+            source_as_output=source_as_output,
+            # With a translation stream coming, source punctuation only defers
+            # the break; keep that path exactly as it was.
+            lookahead=list(non_final_tokens or []) if source_as_output else [],
         )
         for index, token in enumerate(new_final_tokens):
             if token.get("text") is not None:
@@ -1046,6 +1054,7 @@ class SonioxSession(RealtimeSessionBase):
                 batch.tokens,
                 index,
                 source_as_output=batch.source_as_output,
+                lookahead_tokens=batch.lookahead,
             )
         )
         token_speaker = None
@@ -1067,6 +1076,7 @@ class SonioxSession(RealtimeSessionBase):
                 context_text=context_text,
                 is_internal_token=self._is_internal_token,
                 source_as_output=batch.source_as_output,
+                lookahead_tokens=batch.lookahead,
             )
 
         if text == "<end>" or has_sentence_punctuation:
@@ -1345,7 +1355,7 @@ class SonioxSession(RealtimeSessionBase):
                 outgoing_final_tokens,
                 last_real_speaker,
                 finalized_speakers,
-            ) = self._process_interleaved_punctuation_tokens(new_final_tokens)
+            ) = self._process_interleaved_punctuation_tokens(new_final_tokens, non_final_tokens)
 
         if interleaved_punctuation and endpoint_detected:
             speaker_value = last_real_speaker

@@ -961,6 +961,90 @@ def test_punctuation_quoted_sentence_in_one_token_splits_after_quote(monkeypatch
     assert kinds == ["He said hello.\"", "SEP", " Next sentence"], kinds
 
 
+def _translation_off_session(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "none"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    return session, updates
+
+
+def _feed_final_and_non_final(session, all_final_tokens, sent_count, finals, non_finals):
+    sent_count, *_ = session._process_stream_response(
+        {
+            "tokens": [
+                {
+                    "text": text,
+                    "is_final": is_final,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": "en",
+                }
+                for texts, is_final in ((finals, True), (non_finals, False))
+                for text in texts
+            ]
+        },
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    return sent_count
+
+
+def _final_kinds(updates):
+    return [
+        "SEP" if t.get("is_separator") else t.get("text")
+        for u in updates
+        for t in u.get("final_tokens", [])
+    ]
+
+
+def test_translation_off_waits_for_closing_quote_shown_in_non_final_tail(monkeypatch):
+    """Regression (live 2026-10-12): ``" gallon."`` ended a final batch while
+    the closing ``"`` was still non-final. Cutting at the period pushed the
+    quote onto the next line; the non-final tail already showed it coming."""
+    session, updates = _translation_off_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_final_and_non_final(
+        session, all_final_tokens, 0, [" by the", " gallon."], ["\"", " Many"]
+    )
+    assert _final_kinds(updates) == [" by the", " gallon."]
+    _feed_final_and_non_final(
+        session, all_final_tokens, sent_count, ["\"", " Many"], [" printer"]
+    )
+    assert _final_kinds(updates) == [" by the", " gallon.", "\"", "SEP", " Many"]
+
+
+def test_translation_off_batch_final_period_splits_now_without_quote_in_tail(monkeypatch):
+    """The quote wait must not delay ordinary sentence ends."""
+    session, updates = _translation_off_session(monkeypatch)
+    _feed_final_and_non_final(
+        session, [], 0, [" by the", " gallon."], [" Many", " printer"]
+    )
+    assert _final_kinds(updates) == [" by the", " gallon.", "SEP"]
+
+
+def test_translation_off_quote_wait_flushes_when_final_quote_never_comes(monkeypatch):
+    session, updates = _translation_off_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_final_and_non_final(
+        session, all_final_tokens, 0, [" gallon."], ["\"", " Many"]
+    )
+    _feed_final_and_non_final(session, all_final_tokens, sent_count, [" Many"], [])
+    assert _final_kinds(updates) == [" gallon.", "SEP", " Many"]
+
+
 def _feed_tokens(session, tokens):
     return session._process_stream_response(
         {
