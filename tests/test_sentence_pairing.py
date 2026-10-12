@@ -964,14 +964,14 @@ def test_session_mid_token_period_still_splits_sentences(monkeypatch):
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
-    feed([src("Some of you might be thinking, well, we all know how to say"
-              ' "no" in Japanese. It\'s')])
-    feed([src(' "いいえ," right?')])
+    feed([src("Most textbooks start with greetings, so let me ask how to say"
+              ' "yes" in Japanese. It\'s')])
+    feed([src(' "はい," right?')])
     feed([], advance=2.0)  # settle
 
     assert calls == [
-        'Some of you might be thinking, well, we all know how to say "no" in Japanese.',
-        'It\'s "いいえ," right?',
+        'Most textbooks start with greetings, so let me ask how to say "yes" in Japanese.',
+        'It\'s "はい," right?',
     ], calls
 
 
