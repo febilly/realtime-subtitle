@@ -274,11 +274,15 @@ def replay(module, records: list[dict], config: dict) -> tuple[list[dict], list[
         future.set_result(None)
         return future
 
+    # One loop for the whole replay: asyncio.run() per broadcast would build a
+    # fresh event loop (a socket pair on Windows) for every frame.
+    event_loop = asyncio.new_event_loop()
+
     def run_threadsafe(coro, _loop):
         if getattr(getattr(coro, "cr_code", None), "co_name", "") != "broadcast":
             coro.close()
             return done_future()
-        asyncio.run(coro)
+        event_loop.run_until_complete(coro)
         return done_future()
 
     from unittest.mock import MagicMock
@@ -317,6 +321,7 @@ def replay(module, records: list[dict], config: dict) -> tuple[list[dict], list[
     finally:
         module.time.monotonic = real_monotonic
         module.asyncio.run_coroutine_threadsafe = real_run_threadsafe
+        event_loop.close()
     return frames, errors
 
 
