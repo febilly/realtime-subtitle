@@ -166,6 +166,34 @@
             return picker;
         }
 
+        // Binary on/off control with the same `.value` contract as buildCustomSelect,
+        // so draft/save code reads it like any other picker.
+        function buildToggleSwitch({
+            value = null, onValue = 'true', offValue = 'false', onChange = null, disabled = false,
+        } = {}) {
+            const toggle = documentRef.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'settings-switch';
+            toggle.setAttribute('role', 'switch');
+            toggle.disabled = !!disabled;
+            let currentValue = value === onValue ? onValue : offValue;
+            const render = () => {
+                toggle.setAttribute('aria-checked', currentValue === onValue ? 'true' : 'false');
+            };
+            toggle.addEventListener('click', () => {
+                if (toggle.disabled) return;
+                currentValue = currentValue === onValue ? offValue : onValue;
+                render();
+                if (typeof onChange === 'function') onChange(currentValue);
+            });
+            Object.defineProperty(toggle, 'value', {
+                get: () => currentValue,
+                set: (next) => { currentValue = next === onValue ? onValue : offValue; render(); },
+            });
+            render();
+            return toggle;
+        }
+
         function bind(target, event, handler) {
             if (!target || typeof handler !== 'function') return;
             target.addEventListener(event, handler);
@@ -199,6 +227,7 @@
             setPanelOpen,
             positionDropdownMenu,
             buildCustomSelect,
+            buildToggleSwitch,
             init,
             destroy,
         };

@@ -768,6 +768,136 @@ body.dark-theme .segmented-option:has(input:checked) {
     gap: 12px;
 }
 
+/* Settings hierarchy: muted group title → card of items → hint text. */
+.settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.settings-group-title {
+    margin: 0;
+    padding: 0 2px;
+    color: #6b7280;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    line-height: 1.4;
+}
+
+body.dark-theme .settings-group-title {
+    color: #9ca3af;
+}
+
+.settings-card {
+    display: flex;
+    flex-direction: column;
+    padding: 0 14px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.025);
+    color: #111827;
+}
+
+body.dark-theme .settings-card {
+    border-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.035);
+    color: #e5e7eb;
+}
+
+.settings-item {
+    padding: 12px 0;
+}
+
+.settings-item.auth-section {
+    gap: 8px;
+}
+
+.settings-card > .settings-item:not([hidden]) ~ .settings-item:not([hidden]) {
+    border-top: 1px solid rgba(0, 0, 0, 0.07);
+}
+
+body.dark-theme .settings-card > .settings-item:not([hidden]) ~ .settings-item:not([hidden]) {
+    border-top-color: rgba(255, 255, 255, 0.07);
+}
+
+.settings-item-label,
+.settings-card .form-field,
+body.dark-theme .settings-card .form-field {
+    color: inherit;
+    font-size: 14px;
+}
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.settings-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    line-height: 1.4;
+}
+
+.settings-row-text .field-hint {
+    margin: 0;
+}
+
+.settings-switch {
+    position: relative;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 20px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.18);
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+body.dark-theme .settings-switch {
+    background: rgba(255, 255, 255, 0.20);
+}
+
+.settings-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform 0.15s ease;
+}
+
+.settings-switch[aria-checked="true"],
+body.dark-theme .settings-switch[aria-checked="true"] {
+    background: #3b82f6;
+}
+
+.settings-switch[aria-checked="true"]::after {
+    transform: translateX(16px);
+}
+
+.settings-switch:focus-visible {
+    outline: 2px solid #60a5fa;
+    outline-offset: 2px;
+}
+
+.settings-switch:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
 .form-field {
     display: flex;
     flex-direction: column;
@@ -911,10 +1041,6 @@ body.dark-theme .field-hint-warn {
 
 body.dark-theme .field-hint a {
     color: #60a5fa;
-}
-
-#providerDescription {
-    margin-top: -10px;
 }
 
 .settings-actions {
@@ -1076,25 +1202,40 @@ body.dark-theme .confirm-dialog {
     gap: 10px;
 }
 
+/*
+ * Notifications dock at the end of the subtitle flow that holds the OLDEST lines
+ * (top for upward flow, bottom for downward flow). The dock is in normal layout,
+ * so it shrinks the subtitle area instead of covering it; the scroller then
+ * re-pins to the newest line.
+ */
 .toast-container {
-    position: absolute;
-    left: 16px;
-    top: 16px;
-    bottom: auto;
-    z-index: 10000;
+    order: -1;
+    flex: 0 0 auto;
     display: flex;
-    /* Newest notification sits at the upward-flow endpoint. */
+    /* Newest notification sits farthest from the subtitles. */
     flex-direction: column-reverse;
-    gap: 10px;
-    width: min(420px, calc(100vw - 80px));
-    pointer-events: none;
+    gap: 6px;
+    padding: 8px 12px 6px;
+    background: rgba(255, 255, 255, 0.95);
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
 }
 
 .toast-container.toast-container--bottom {
-    top: auto;
-    bottom: 16px;
-    /* Newest notification sits at the downward-flow endpoint. */
+    order: 1;
     flex-direction: column;
+    padding: 6px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+    border-bottom: none;
+}
+
+body.dark-theme .toast-container {
+    background: rgba(30, 30, 46, 0.95);
+    border-color: rgba(255, 255, 255, 0.06);
+}
+
+body.chroma-theme .toast-container {
+    background: #00ff00;
+    border-color: transparent;
 }
 
 .toast-container[hidden] {
@@ -1103,21 +1244,64 @@ body.dark-theme .confirm-dialog {
 
 .toast {
     position: relative;
-    width: 100%;
     box-sizing: border-box;
-    max-width: min(420px, calc(100vw - 80px));
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    border-left: 3px solid #3b82f6;
     border-radius: 8px;
-    padding: 10px 12px;
-    background: rgba(17, 24, 39, 0.92);
-    color: #f9fafb;
-    font-size: 14px;
-    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
-    padding-right: 38px;
-    pointer-events: auto;
+    padding: 8px 36px 8px 12px;
+    background: #ffffff;
+    color: #1f2937;
+    font-size: 13px;
+    line-height: 1.5;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    animation: toast-in 0.18s ease-out;
+}
+
+body.dark-theme .toast {
+    border-color: rgba(255, 255, 255, 0.08);
+    border-left-color: #60a5fa;
+    background: #2a2a3d;
+    color: #e5e7eb;
+    box-shadow: none;
+}
+
+.toast.error,
+body.dark-theme .toast.error {
+    border-left-color: #ef4444;
 }
 
 .toast.error {
-    background: rgba(153, 27, 27, 0.94);
+    background: #fef2f2;
+    color: #991b1b;
+}
+
+body.dark-theme .toast.error {
+    background: #3a2430;
+    color: #fecaca;
+}
+
+@keyframes toast-in {
+    from {
+        opacity: 0;
+        transform: translateY(-4px);
+    }
+}
+
+.toast-container--bottom .toast {
+    animation-name: toast-in-up;
+}
+
+@keyframes toast-in-up {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .toast {
+        animation: none;
+    }
 }
 
 .toast .toast-action,
@@ -1134,28 +1318,45 @@ body.dark-theme .confirm-dialog {
 
 .toast .toast-action {
     margin-left: 8px;
+    color: #2563eb;
+    font-weight: 600;
+    text-decoration: none;
+}
+
+.toast .toast-action:hover {
+    text-decoration: underline;
+}
+
+body.dark-theme .toast .toast-action {
+    color: #93c5fd;
+}
+
+.toast.error .toast-action {
+    color: inherit;
+    text-decoration: underline;
 }
 
 .toast .toast-close {
     position: absolute;
-    top: 4px;
-    right: 5px;
-    width: 28px;
-    height: 28px;
+    top: 50%;
+    right: 6px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     border: 0;
     border-radius: 6px;
     background: transparent;
     color: inherit;
-    font-size: 22px;
-    line-height: 28px;
+    font-size: 18px;
+    line-height: 24px;
     cursor: pointer;
-    opacity: 0.8;
+    opacity: 0.55;
+    transform: translateY(-50%);
 }
 
 .toast .toast-close:hover,
 .toast .toast-close:focus-visible {
-    background: rgba(255, 255, 255, 0.16);
+    background: rgba(127, 127, 127, 0.16);
     opacity: 1;
 }
 
@@ -1448,16 +1649,19 @@ body.dark-theme .lang-select-divider {
     flex-direction: column;
 }
 
-/* The notification layer is anchored to the subtitle area, below the usage bar. */
+/* Subtitle area plus its notification dock, below the usage bar. */
 .subtitle-region {
     position: relative;
     flex: 1;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
-/* The subtitle area fills the remaining height under the (optional) balance bar. */
+/* The subtitle area fills what the balance bar and notification dock leave over. */
 .content-area .subtitle-container {
-    height: 100%;
+    flex: 1 1 auto;
+    height: auto;
     min-height: 0;
 }
 
@@ -1587,6 +1791,22 @@ body.dark-theme .balance-action-button {
     display: flex;
     flex-direction: column;
     gap: 2px;
+}
+
+.account-free-pools:empty {
+    display: none;
+}
+
+.settings-item.account-info {
+    gap: 4px;
+}
+
+.account-info .field-hint {
+    margin: 0;
+}
+
+.settings-item > .account-actions {
+    margin-top: 0;
 }
 
 .account-free-pools .balance-item {

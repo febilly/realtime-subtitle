@@ -74,12 +74,6 @@
                 </svg>
             </button>
 
-            <button class="control-button" id="subtitleFlowButton" title="Subtitles flow upward">
-                <svg class="control-icon" id="subtitleFlowIcon" aria-hidden="true">
-                    <use href="icons/lucide-sprite.svg#arrow-up-from-line"></use>
-                </svg>
-            </button>
-
             <button class="control-button" id="translationLangButton" title="Translation language">
                 <svg class="control-icon" id="translationLangIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#languages"></use>
@@ -127,155 +121,191 @@
                 <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
             </div>
 
-            <div class="settings-section-label" id="providerLabel">API selection</div>
-            <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
-                <label class="segmented-option">
-                    <input type="radio" name="provider" value="soniox" id="providerSoniox">
-                    <span id="providerSonioxLabel">Soniox</span>
-                </label>
-                <label class="segmented-option">
-                    <input type="radio" name="provider" value="gemini" id="providerGemini">
-                    <span id="providerGeminiLabel">Gemini</span>
-                </label>
-            </fieldset>
-            <p class="field-hint" id="providerDescription"></p>
+            <section class="settings-group">
+                <h2 class="settings-group-title" id="serviceGroupLabel">Service</h2>
+                <div class="settings-card">
+                    <section class="auth-section settings-item">
+                        <div class="settings-item-label" id="providerLabel">API selection</div>
+                        <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
+                            <label class="segmented-option">
+                                <input type="radio" name="provider" value="soniox" id="providerSoniox">
+                                <span id="providerSonioxLabel">Soniox</span>
+                            </label>
+                            <label class="segmented-option">
+                                <input type="radio" name="provider" value="gemini" id="providerGemini">
+                                <span id="providerGeminiLabel">Gemini</span>
+                            </label>
+                        </fieldset>
+                        <p class="field-hint" id="providerDescription"></p>
+                    </section>
 
-            <section class="auth-section" id="translationModeSection" hidden>
-                <div class="form-field" id="translationModeSettingField" hidden>
-                    <span id="translationModeSettingLabel">Translation mode</span>
-                    <div id="translationModePicker"></div>
-                </div>
-                <p class="field-hint" id="translationModeHint" hidden></p>
-            </section>
-
-            <section class="auth-section" id="accountSection" hidden>
-                <label class="form-field" for="redeemInput">
-                    <span id="redeemLabel">Redeem code</span>
-                    <div class="redeem-row">
-                        <div class="embedded-paste-control redeem-code-control">
-                            <input id="redeemInput" type="text" autocomplete="off" spellcheck="false">
-                            <button class="embedded-paste-button redeem-paste-button" id="redeemPasteButton" type="button" aria-label="Paste" title="Paste">
-                                <svg class="embedded-paste-icon redeem-paste-icon" aria-hidden="true">
-                                    <use href="icons/lucide-sprite.svg#clipboard-paste"></use>
-                                </svg>
-                            </button>
+                    <section class="auth-section settings-item" id="translationModeSection" hidden>
+                        <div class="form-field" id="translationModeSettingField" hidden>
+                            <span id="translationModeSettingLabel">Translation mode</span>
+                            <div id="translationModePicker"></div>
                         </div>
-                        <button class="secondary-button" id="redeemButton" type="button">Redeem</button>
-                    </div>
-                </label>
-                <p class="field-hint" id="purchaseCreditsHint" hidden>
-                    <a id="purchaseCreditsLink" href="#" target="_blank" rel="noopener noreferrer">Click here to get more Credits</a>
-                </p>
-                <p class="field-hint" id="firstRedeemBonusHint" hidden></p>
-                <div class="settings-section-label" id="accountLabel">Account</div>
-                <p class="field-hint" id="accountServerHint"></p>
-                <p class="field-hint" id="accountIdentityHint"></p>
-                <p class="field-hint" id="accountBalanceHint"></p>
-                <div class="account-free-pools" id="accountFreePools"></div>
-                <div class="account-free-pools" id="accountSubscriptionPools"></div>
-                <div class="account-free-pools" id="accountLlmSubscriptionPools"></div>
-                <div class="account-actions">
-                    <button class="secondary-button" id="copyInviteButton" type="button">Copy invite link</button>
-                    <button class="secondary-button" id="openUserWebButton" type="button">Open user web</button>
-                    <button class="secondary-button" id="reLoginButton" type="button">Re-verify</button>
-                    <button class="danger-button" id="logoutButton" type="button">Log out</button>
-                </div>
-            </section>
+                        <p class="field-hint" id="translationModeHint" hidden></p>
+                    </section>
 
-            <section class="auth-section" id="sonioxRegionSection" hidden>
-                <div class="form-field">
-                    <span id="sonioxRegionLabel">API region</span>
-                    <div id="sonioxRegionPicker"></div>
-                </div>
-            </section>
+                    <section class="auth-section settings-item" id="sonioxRegionSection" hidden>
+                        <div class="form-field">
+                            <span id="sonioxRegionLabel">API region</span>
+                            <div id="sonioxRegionPicker"></div>
+                        </div>
+                    </section>
 
-            <section class="auth-section" id="outputDeviceSection">
-                <div class="form-field">
-                    <span id="outputDeviceLabel">Captured output device</span>
-                    <div id="outputDevicePicker"></div>
+                    <section class="auth-section settings-item" id="apiKeySection">
+                        <label class="form-field" for="apiKeyInput">
+                            <span id="apiKeyLabel">API Key</span>
+                            <input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" spellcheck="false">
+                        </label>
+                        <p class="field-hint" id="apiKeyGetHint">
+                            <a id="apiKeyGetLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+                        </p>
+                        <p class="field-hint" id="apiKeySourceHint"></p>
+                    </section>
                 </div>
-                <p class="field-hint" id="outputDeviceHint"></p>
-            </section>
-
-            <section class="auth-section" id="microphoneDeviceSection">
-                <div class="form-field">
-                    <span id="microphoneDeviceLabel">Microphone device</span>
-                    <div id="microphoneDevicePicker"></div>
-                </div>
-                <p class="field-hint" id="microphoneDeviceHint"></p>
-            </section>
-
-            <section class="auth-section" id="apiKeySection">
-                <label class="form-field" for="apiKeyInput">
-                    <span id="apiKeyLabel">API Key</span>
-                    <input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" spellcheck="false">
-                </label>
-                <p class="field-hint" id="apiKeyGetHint">
-                    <a id="apiKeyGetLink" href="#" target="_blank" rel="noopener noreferrer"></a>
-                </p>
-                <p class="field-hint" id="apiKeySourceHint"></p>
             </section>
 
             <p class="settings-error" id="settingsError" role="alert"></p>
 
-            <section class="auth-section" id="runtimeControlsSection">
-                <div class="settings-section-label" id="runtimeControlsLabel">Recognition controls</div>
-                <div class="form-field" id="autoRestartSettingField">
-                    <span id="autoRestartSettingLabel">Auto restart on disconnect</span>
-                    <div id="autoRestartPicker"></div>
-                </div>
-                <div class="form-field" id="sleepOnSilenceSettingField">
-                    <span id="sleepOnSilenceSettingLabel">Automatic sleep</span>
-                    <div id="sleepOnSilencePicker"></div>
-                </div>
-                <div class="form-field" id="speakerLabelsSettingField">
-                    <span id="speakerLabelsSettingLabel">Speaker labels</span>
-                    <div id="speakerLabelsPicker"></div>
-                </div>
-                <div class="form-field" id="interruptRepairSettingField">
-                    <span id="interruptRepairSettingLabel">Rejoin interrupted sentences</span>
-                    <div id="interruptRepairPicker"></div>
-                </div>
-                <div class="form-field" id="segmentModeSettingField">
-                    <span id="segmentModeSettingLabel">Segmentation mode</span>
-                    <div id="segmentModePicker"></div>
+            <section class="settings-group" id="accountSection" hidden>
+                <h2 class="settings-group-title" id="accountLabel">Account</h2>
+                <div class="settings-card">
+                    <div class="auth-section settings-item account-info">
+                        <p class="field-hint" id="accountServerHint"></p>
+                        <p class="field-hint" id="accountIdentityHint"></p>
+                        <p class="field-hint" id="accountBalanceHint"></p>
+                        <div class="account-free-pools" id="accountFreePools"></div>
+                        <div class="account-free-pools" id="accountSubscriptionPools"></div>
+                        <div class="account-free-pools" id="accountLlmSubscriptionPools"></div>
+                    </div>
+                    <div class="auth-section settings-item">
+                        <label class="form-field" for="redeemInput">
+                            <span id="redeemLabel">Redeem code</span>
+                            <div class="redeem-row">
+                                <div class="embedded-paste-control redeem-code-control">
+                                    <input id="redeemInput" type="text" autocomplete="off" spellcheck="false">
+                                    <button class="embedded-paste-button redeem-paste-button" id="redeemPasteButton" type="button" aria-label="Paste" title="Paste">
+                                        <svg class="embedded-paste-icon redeem-paste-icon" aria-hidden="true">
+                                            <use href="icons/lucide-sprite.svg#clipboard-paste"></use>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <button class="secondary-button" id="redeemButton" type="button">Redeem</button>
+                            </div>
+                        </label>
+                        <p class="field-hint" id="purchaseCreditsHint" hidden>
+                            <a id="purchaseCreditsLink" href="#" target="_blank" rel="noopener noreferrer">Click here to get more Credits</a>
+                        </p>
+                        <p class="field-hint" id="firstRedeemBonusHint" hidden></p>
+                    </div>
+                    <div class="settings-item">
+                        <div class="account-actions">
+                            <button class="secondary-button" id="copyInviteButton" type="button">Copy invite link</button>
+                            <button class="secondary-button" id="openUserWebButton" type="button">Open user web</button>
+                            <button class="secondary-button" id="reLoginButton" type="button">Re-verify</button>
+                            <button class="danger-button" id="logoutButton" type="button">Log out</button>
+                        </div>
+                    </div>
                 </div>
             </section>
 
-            <section class="auth-section" id="oscSettingsSection">
-                <div class="settings-section-label" id="oscSettingsLabel">OSC settings</div>
-                <div class="form-field" id="oscSensitiveFilterSettingField">
-                    <span id="oscSensitiveFilterSettingLabel">Filter sensitive words</span>
-                    <div id="oscSensitiveFilterPicker"></div>
-                </div>
-                <div class="form-field" id="oscSensitiveFilterNoticeSettingField">
-                    <span id="oscSensitiveFilterNoticeSettingLabel">Do not show sensitive-word filter notice</span>
-                    <div id="oscSensitiveFilterNoticePicker"></div>
+            <section class="settings-group">
+                <h2 class="settings-group-title" id="audioGroupLabel">Audio devices</h2>
+                <div class="settings-card">
+                    <section class="auth-section settings-item" id="outputDeviceSection">
+                        <div class="form-field">
+                            <span id="outputDeviceLabel">Captured output device</span>
+                            <div id="outputDevicePicker"></div>
+                        </div>
+                        <p class="field-hint" id="outputDeviceHint"></p>
+                    </section>
+
+                    <section class="auth-section settings-item" id="microphoneDeviceSection">
+                        <div class="form-field">
+                            <span id="microphoneDeviceLabel">Microphone device</span>
+                            <div id="microphoneDevicePicker"></div>
+                        </div>
+                        <p class="field-hint" id="microphoneDeviceHint"></p>
+                    </section>
                 </div>
             </section>
 
-            <section class="auth-section" id="appearanceSection">
-                <div class="settings-section-label" id="appearanceLabel">Appearance</div>
-                <div class="form-field" id="bundledCjkFontField">
-                    <span id="bundledCjkFontLabel">Use bundled CJK font</span>
-                    <div id="bundledCjkFontPicker"></div>
-                </div>
-                <p class="field-hint" id="bundledCjkFontHint">Prefer Noto Sans CJK for Chinese, Japanese, and Korean subtitles.</p>
-            </section>
-
-            <section class="auth-section" id="modeSection" hidden>
-                <div class="settings-section-label" id="modeLabel">Connection</div>
-                <fieldset class="segmented-control" id="modeFieldset" aria-label="Connection mode">
-                    <label class="segmented-option">
-                        <input type="radio" name="connmode" value="relay" id="modeRelay">
-                        <span id="modeRelayLabel">Hosted</span>
+            <section class="settings-group" id="runtimeControlsSection">
+                <h2 class="settings-group-title" id="runtimeControlsLabel">Recognition controls</h2>
+                <div class="settings-card">
+                    <label class="settings-item settings-row" id="autoRestartSettingField">
+                        <span class="settings-row-text" id="autoRestartSettingLabel">Auto restart on disconnect</span>
+                        <span id="autoRestartPicker"></span>
                     </label>
-                    <label class="segmented-option">
-                        <input type="radio" name="connmode" value="direct" id="modeDirect">
-                        <span id="modeDirectLabel">Own key</span>
+                    <label class="settings-item settings-row" id="sleepOnSilenceSettingField">
+                        <span class="settings-row-text" id="sleepOnSilenceSettingLabel">Sleep when no speech</span>
+                        <span id="sleepOnSilencePicker"></span>
                     </label>
-                </fieldset>
-                <p class="field-hint" id="modeDescription"></p>
+                    <label class="settings-item settings-row" id="speakerLabelsSettingField">
+                        <span class="settings-row-text" id="speakerLabelsSettingLabel">Speaker labels</span>
+                        <span id="speakerLabelsPicker"></span>
+                    </label>
+                    <label class="settings-item settings-row" id="interruptRepairSettingField">
+                        <span class="settings-row-text" id="interruptRepairSettingLabel">Rejoin interrupted sentences</span>
+                        <span id="interruptRepairPicker"></span>
+                    </label>
+                    <div class="settings-item form-field" id="segmentModeSettingField">
+                        <span id="segmentModeSettingLabel">Segmentation mode</span>
+                        <div id="segmentModePicker"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-group" id="oscSettingsSection">
+                <h2 class="settings-group-title" id="oscSettingsLabel">OSC settings</h2>
+                <div class="settings-card">
+                    <label class="settings-item settings-row" id="oscSensitiveFilterSettingField">
+                        <span class="settings-row-text" id="oscSensitiveFilterSettingLabel">Filter sensitive words</span>
+                        <span id="oscSensitiveFilterPicker"></span>
+                    </label>
+                    <label class="settings-item settings-row" id="oscSensitiveFilterNoticeSettingField">
+                        <span class="settings-row-text" id="oscSensitiveFilterNoticeSettingLabel">Do not show sensitive-word filter notice</span>
+                        <span id="oscSensitiveFilterNoticePicker"></span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="settings-group" id="appearanceSection">
+                <h2 class="settings-group-title" id="appearanceLabel">Appearance</h2>
+                <div class="settings-card">
+                    <div class="settings-item form-field" id="subtitleFlowSettingField">
+                        <span id="subtitleFlowSettingLabel">Subtitle flow direction</span>
+                        <div id="subtitleFlowPicker"></div>
+                    </div>
+                    <label class="settings-item settings-row" id="bundledCjkFontField">
+                        <span class="settings-row-text">
+                            <span id="bundledCjkFontLabel">Use bundled CJK font</span>
+                            <span class="field-hint" id="bundledCjkFontHint">Prefer Noto Sans CJK for Chinese, Japanese, and Korean subtitles.</span>
+                        </span>
+                        <span id="bundledCjkFontPicker"></span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="settings-group" id="modeSection" hidden>
+                <h2 class="settings-group-title" id="modeLabel">Connection</h2>
+                <div class="settings-card">
+                    <div class="auth-section settings-item">
+                        <fieldset class="segmented-control" id="modeFieldset" aria-label="Connection mode">
+                            <label class="segmented-option">
+                                <input type="radio" name="connmode" value="relay" id="modeRelay">
+                                <span id="modeRelayLabel">Hosted</span>
+                            </label>
+                            <label class="segmented-option">
+                                <input type="radio" name="connmode" value="direct" id="modeDirect">
+                                <span id="modeDirectLabel">Own key</span>
+                            </label>
+                        </fieldset>
+                        <p class="field-hint" id="modeDescription"></p>
+                    </div>
+                </div>
             </section>
 
             <div class="settings-footer-scroll">

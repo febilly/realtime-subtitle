@@ -21,8 +21,6 @@ const segmentModeButton = document.getElementById('segmentModeButton');
 const segmentModeText = document.getElementById('segmentModeText');
 const displayModeButton = document.getElementById('displayModeButton');
 const displayModeText = document.getElementById('displayModeText');
-const subtitleFlowButton = document.getElementById('subtitleFlowButton');
-const subtitleFlowIcon = document.getElementById('subtitleFlowIcon');
 const oscTranslationButton = document.getElementById('oscTranslationButton');
 const oscTranslationIcon = document.getElementById('oscTranslationIcon');
 const furiganaButton = document.getElementById('furiganaButton');
@@ -136,7 +134,6 @@ const {
 } = uiFeedbackController;
 
 function showToast(...args) {
-    updateToastPlacement();
     return uiFeedbackController.showToast(...args);
 }
 
@@ -201,6 +198,7 @@ const settingsPorts = {
     loadProviderSettings: () => settingsStore.loadProviderSettings(),
     saveProviderSettings: (settings) => { settingsStore.saveProviderSettings(settings); },
     buildCustomSelect: (options, config = {}) => settingsUi.buildCustomSelect(options, config),
+    buildToggleSwitch: (config = {}) => settingsUi.buildToggleSwitch(config),
     renderMicrophoneDevicePicker: () => settingsRuntime.renderMicrophoneDevicePicker(),
     renderOutputDevicePicker: () => settingsRuntime.renderOutputDevicePicker(),
     fetchMicrophoneDevices: () => settingsRuntime.fetchMicrophoneDevices(),
@@ -227,6 +225,7 @@ const settingsRuntime = SettingsRuntime.create({
     t,
     localizeBackendMessage,
     buildCustomSelect: settingsPorts.buildCustomSelect,
+    buildToggleSwitch: settingsPorts.buildToggleSwitch,
     console,
     elements: {
         runtimeControlsSection,
@@ -252,6 +251,7 @@ const settingsRuntime = SettingsRuntime.create({
         translationModeHint: translationModeHintEl,
         segmentModeSettingField,
         segmentModePickerHost,
+        subtitleFlowPickerHost: document.getElementById('subtitleFlowPicker'),
     },
     getState: () => ({
         get selectedProvider() { return settingsPorts.getSelectedProvider(); },
@@ -273,6 +273,7 @@ const settingsRuntime = SettingsRuntime.create({
         get segmentModeSupported() { return segmentModeSupported; },
         get segmentMode() { return segmentModeController.getMode(); },
         get segmentModes() { return controlPorts.getSegmentModes(); },
+        get subtitleFlowDirection() { return subtitleFlowDirection; },
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
@@ -303,6 +304,10 @@ const settingsRuntime = SettingsRuntime.create({
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
         setTranslationUiMode: controlPorts.setTranslationUiMode,
+        setSubtitleFlowDirection: (direction) => setSubtitleFlowDirection(direction, {
+            persist: true,
+            render: true,
+        }),
     },
 });
 
@@ -683,48 +688,29 @@ const subtitleRenderer = SubtitleRenderer.create({
 const subtitleRuntimeController = SubtitleRuntimeController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
-    afterRender: updateToastPlacement,
     getState: () => ({
         translateMode: controlPorts.isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
     }),
 });
 
-function updateSubtitleFlowButton() {
-    const flowingDown = subtitleFlowDirection === 'down';
-    ControlIcon.set(
-        subtitleFlowIcon,
-        flowingDown ? 'arrow-down-to-line' : 'arrow-up-from-line',
-    );
-    subtitleFlowButton.title = t(flowingDown ? 'subtitle_flow_down' : 'subtitle_flow_up');
-    subtitleFlowButton.setAttribute('aria-label', subtitleFlowButton.title);
-    updateToastPlacement();
-}
-
+// Notifications dock at the old-subtitle end so they never cover the newest line.
 function updateToastPlacement() {
-    const subtitleCount = subtitleContainer.querySelectorAll('.sentence-block').length;
-    const shouldUseBottom = subtitleCount <= 3 || subtitleFlowDirection === 'down';
-    toastContainer.classList.toggle('toast-container--bottom', shouldUseBottom);
+    toastContainer.classList.toggle('toast-container--bottom', subtitleFlowDirection === 'down');
 }
 
 function setSubtitleFlowDirection(direction, { persist = false, render = false } = {}) {
     subtitleFlowDirection = direction === 'down' ? 'down' : 'up';
     subtitleScroll.setFlowDirection(subtitleFlowDirection);
     if (persist) settingsStore.saveSubtitleFlowDirection(subtitleFlowDirection);
-    updateSubtitleFlowButton();
+    updateToastPlacement();
     if (render) {
         subtitleRenderer.invalidateAll({ dom: true });
         subtitleRuntimeController.render();
     }
 }
 
-subtitleFlowButton.addEventListener('click', () => {
-    setSubtitleFlowDirection(subtitleFlowDirection === 'up' ? 'down' : 'up', {
-        persist: true,
-        render: true,
-    });
-});
-updateSubtitleFlowButton();
+updateToastPlacement();
 const subtitleFrameController = SubtitleFrameController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,

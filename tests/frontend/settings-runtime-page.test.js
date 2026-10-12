@@ -9,6 +9,13 @@ function chooseOption(page, hostSelector, index) {
     options[index].click();
 }
 
+function setSwitch(page, hostSelector, checked) {
+    const toggle = page.document.querySelector(`${hostSelector} .settings-switch`);
+    expect(toggle).not.toBeNull();
+    if ((toggle.getAttribute('aria-checked') === 'true') !== checked) toggle.click();
+    expect(toggle.getAttribute('aria-checked')).toBe(String(checked));
+}
+
 describe('full-page runtime settings wiring', () => {
     it('applies picker drafts in the existing save order', async () => {
         const page = await createPageHarness({
@@ -23,11 +30,11 @@ describe('full-page runtime settings wiring', () => {
             page.document.getElementById('settingsButton').click();
             await page.flush(2);
 
-            chooseOption(page, '#autoRestartPicker', 1);
-            chooseOption(page, '#speakerLabelsPicker', 1);
-            chooseOption(page, '#oscSensitiveFilterPicker', 1);
-            chooseOption(page, '#oscSensitiveFilterNoticePicker', 1);
-            chooseOption(page, '#interruptRepairPicker', 1);
+            setSwitch(page, '#autoRestartPicker', false);
+            setSwitch(page, '#speakerLabelsPicker', false);
+            setSwitch(page, '#oscSensitiveFilterPicker', false);
+            setSwitch(page, '#oscSensitiveFilterNoticePicker', true);
+            setSwitch(page, '#interruptRepairPicker', false);
             chooseOption(page, '#segmentModePicker', 1);
             chooseOption(page, '#translationModePicker', 0);
 

@@ -61,6 +61,18 @@ function setup(overrides = {}) {
         selectConfigs.push({ options, config, element });
         return element;
     });
+    const buildToggleSwitch = vi.fn((config = {}) => {
+        const onValue = config.onValue ?? 'true';
+        const offValue = config.offValue ?? 'false';
+        const element = document.createElement('button');
+        element.className = 'fake-switch';
+        element.value = config.value === onValue ? onValue : offValue;
+        element.choose = (value) => {
+            element.value = String(value);
+            if (config.onChange) config.onChange(element.value);
+        };
+        return element;
+    });
     const fetch = overrides.fetch || vi.fn().mockResolvedValue(response({}));
     const calls = [];
     const actions = {
@@ -82,6 +94,7 @@ function setup(overrides = {}) {
         t: (key, vars) => vars ? `${key}:${vars.name || ''}` : key,
         localizeBackendMessage: (message) => `localized:${message}`,
         buildCustomSelect,
+        buildToggleSwitch,
         getState: () => state,
         updateState: (patch) => Object.assign(state, patch),
         actions,

@@ -282,6 +282,8 @@
             setText('modeLabel', 'conn_mode');
             setText('modeRelayLabel', 'conn_mode_relay');
             setText('modeDirectLabel', 'conn_mode_direct');
+            setText('serviceGroupLabel', 'settings_group_service');
+            setText('audioGroupLabel', 'settings_group_audio');
             setText('accountLabel', 'account');
             setText('redeemLabel', 'account_redeem_label');
             setText('redeemButton', 'account_redeem');
@@ -312,6 +314,7 @@
             setText('segmentModeSettingLabel', 'segment_mode_setting');
             setText('translationModeSettingLabel', 'translation_mode_setting');
             setText('appearanceLabel', 'appearance');
+            setText('subtitleFlowSettingLabel', 'subtitle_flow_setting');
             setText('bundledCjkFontLabel', 'bundled_cjk_font');
             setText('bundledCjkFontHint', 'bundled_cjk_font_hint');
             renderSonioxRegionPicker(getSelectedSonioxRegion());
