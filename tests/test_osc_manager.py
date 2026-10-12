@@ -4,6 +4,8 @@ import tempfile
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock config module with all attributes needed by both projects
@@ -26,6 +28,7 @@ mock_config.LOCAL_SETTINGS_FILE = os.environ.get(
     "LOCAL_SETTINGS_FILE",
     os.path.join(os.path.dirname(__file__), "..", "build", "test-local-settings.json"),
 )
+_previous_config = sys.modules.get("config")
 sys.modules["config"] = mock_config
 
 # Mock vrchat_oscquery package and submodules before importing osc_manager
@@ -44,6 +47,18 @@ sys.modules["vrchat_oscquery"] = type(sys)("vrchat_oscquery")
 from osc_manager import OSCManager, QueuedMessage
 from osc_sensitive_filter import OscSensitiveWordFilter, phrase_digest
 import text_processor
+
+# Imports above bound the stub; put the real config back so later test
+# modules (e.g. llm_refine users) do not inherit it.
+if _previous_config is None:
+    sys.modules.pop("config", None)
+else:
+    sys.modules["config"] = _previous_config
+
+
+@pytest.fixture(autouse=True)
+def _stub_config(monkeypatch):
+    monkeypatch.setitem(sys.modules, "config", mock_config)
 
 
 def _fresh_osc_manager():
