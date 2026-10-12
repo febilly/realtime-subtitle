@@ -111,7 +111,7 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     session = module.SonioxSession(logger, broadcast)
     session.last_sent_count = 99
 
-    first_count, should_end, reason = session._process_soniox_response(
+    first_count, should_end, reason = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -131,7 +131,7 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     assert reason is None
     assert updates[-1]["final_tokens"][0]["text"] == "first"
 
-    second_count, should_end, reason = session._process_soniox_response(
+    second_count, should_end, reason = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -170,7 +170,7 @@ def test_soniox_response_capture_includes_raw_batch_and_active_modes(monkeypatch
     }
     accumulated = [{"text": "Earlier."}]
 
-    session._process_soniox_response(response, accumulated, 7, object())
+    session._process_stream_response(response, accumulated, 7, object())
 
     capture.assert_called_once()
     args, context = capture.call_args
@@ -218,7 +218,7 @@ def test_relay_http_402_broadcasts_billing_exhausted_disconnect(monkeypatch):
     monkeypatch.setattr(module, "AudioSendRouter", MagicMock())
 
     session = module.SonioxSession(MagicMock(), broadcast)
-    session._open_soniox_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
+    session._open_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
         402,
         '{"detail":"Insufficient credits"}',
     ))
@@ -252,7 +252,7 @@ def test_relay_http_402_concurrency_code_broadcasts_concurrency_disconnect(monke
     monkeypatch.setattr(module, "AudioSendRouter", MagicMock())
 
     session = module.SonioxSession(MagicMock(), broadcast)
-    session._open_soniox_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
+    session._open_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
         402,
         '{"detail":"Concurrent session limit reached","relay_close_code":4005}',
     ))
@@ -270,7 +270,7 @@ def test_relay_http_402_concurrency_code_broadcasts_concurrency_disconnect(monke
 
 
 def _feed_original(session, text, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -328,7 +328,7 @@ def test_standalone_translation_punctuation_segments_in_punctuation_mode(monkeyp
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -353,7 +353,7 @@ def test_standalone_translation_punctuation_segments_in_punctuation_mode(monkeyp
         0,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -377,7 +377,7 @@ def test_standalone_translation_punctuation_segments_in_punctuation_mode(monkeyp
 
 
 def _feed_original_batch(session, texts, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -564,7 +564,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -580,7 +580,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
         0,
         object(),
     )
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -598,7 +598,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
         sent_count,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -645,7 +645,7 @@ def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeyp
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -661,7 +661,7 @@ def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeyp
         0,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -711,7 +711,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -727,7 +727,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         0,
         object(),
     )
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -743,7 +743,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         sent_count,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -785,7 +785,7 @@ def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch)
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -801,7 +801,7 @@ def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch)
         0,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -869,7 +869,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(m
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -892,7 +892,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(m
         0,
         object(),
     )
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -908,7 +908,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(m
         sent_count,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -960,7 +960,7 @@ def test_punctuation_quoted_sentence_in_one_token_splits_after_quote(monkeypatch
 
 
 def _feed_tokens(session, tokens):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {"is_final": True, "speaker": "1", **token}
@@ -1090,7 +1090,7 @@ def test_accurate_mode_segments_period_on_fragmented_word_suffix(monkeypatch):
     session._suppress_soniox_translation = True
     session._llm_refine_mode = "translate"
 
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1212,7 +1212,7 @@ def test_outgoing_final_tokens_carry_llm_sentence_id_in_punctuation_mode(monkeyp
 
 
 def _feed_non_final(session, text, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1231,7 +1231,7 @@ def _feed_non_final(session, text, language):
 
 
 def _feed_non_final_translation(session, text, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1250,7 +1250,7 @@ def _feed_non_final_translation(session, text, language):
 
 
 def _feed_original_and_translation(session, source, translation, source_language="en", translation_language="zh"):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1278,7 +1278,7 @@ def _feed_original_and_translation(session, source, translation, source_language
 
 
 def _feed_original_and_translation_pair(session, source, translation, source_language="en", translation_language="zh"):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1314,11 +1314,11 @@ def _settle_pairing(monkeypatch, module, session, seconds=2.0):
 
     base = _time.monotonic()
     monkeypatch.setattr(module.time, "monotonic", lambda: base + seconds)
-    session._process_soniox_response({"tokens": []}, [], 0, object())
+    session._process_stream_response({"tokens": []}, [], 0, object())
 
 
 def _feed_original_and_translation_pair_with_endpoint(session, source, translation, source_language="en", translation_language="zh"):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "endpoint_detected": True,
             "tokens": [
@@ -1973,7 +1973,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     session = module.SonioxSession(MagicMock(), MagicMock())
     session.relay_run_id = "abc123def456"
 
-    stream = session._open_soniox_stream_state(
+    stream = session._open_stream_state(
         "relay-placeholder",
         1,
         "pcm_s16le",
@@ -1995,10 +1995,10 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     assert sent_payloads
     assert '"api_key": ""' in sent_payloads[-1]
 
-    session._close_soniox_stream_state(stream, "silence_sleep")
-    session._close_soniox_stream_state(stream, "rollover")
-    session._close_soniox_stream_state(stream, "user_stop")
-    session._close_soniox_stream_state(stream)
+    session._close_stream_state(stream, "silence_sleep")
+    session._close_stream_state(stream, "rollover")
+    session._close_stream_state(stream, "user_stop")
+    session._close_stream_state(stream)
     assert close_calls == [
         (1000, "silence_sleep"),
         (1000, "rollover"),
@@ -2038,7 +2038,7 @@ def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
     session.thread.is_alive.return_value = True
     session._start_audio_streamer = MagicMock()
     session._stop_audio_streamer = MagicMock()
-    session._open_soniox_stream_state = MagicMock(return_value=module._SonioxStreamState(
+    session._open_stream_state = MagicMock(return_value=module._StreamState(
         ws=FakeWs(),
         index=1,
         api_key="key",
@@ -2080,12 +2080,12 @@ def test_run_session_wakes_at_sentence_pairing_deadline(monkeypatch):
     session = module.SonioxSession(MagicMock(), MagicMock())
     session._start_audio_streamer = MagicMock()
     session._stop_audio_streamer = MagicMock()
-    session._close_soniox_stream_state = MagicMock()
+    session._close_stream_state = MagicMock()
     session._stream_rollover_seconds = MagicMock(return_value=None)
     session._sleep_idle_seconds = MagicMock(return_value=None)
     session._pairer.seconds_until_next_deadline = MagicMock(return_value=0.02)
     session._dispatch_paired_sentences = MagicMock()
-    session._open_soniox_stream_state = MagicMock(return_value=module._SonioxStreamState(
+    session._open_stream_state = MagicMock(return_value=module._StreamState(
         ws=FakeWs(),
         index=1,
         api_key="key",
@@ -2140,7 +2140,7 @@ def test_manual_finalize_fin_token_is_consumed_but_not_displayed(monkeypatch):
     logger = MagicMock()
     session = module.SonioxSession(logger, broadcast)
 
-    sent_count, should_end, reason = session._process_soniox_response(
+    sent_count, should_end, reason = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -2233,7 +2233,7 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
 
     def open_stream(api_key, stream_index, audio_format, translation, translation_target_lang, *, warming=False):
         opened_warming_flags.append(warming)
-        return module._SonioxStreamState(
+        return module._StreamState(
             ws=FakeWs(),
             index=stream_index,
             api_key=api_key,
@@ -2246,7 +2246,7 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
         session.stop_event.set()
         return True
 
-    session._open_soniox_stream_state = MagicMock(side_effect=open_stream)
+    session._open_stream_state = MagicMock(side_effect=open_stream)
     session._drain_warmup_stream = MagicMock(side_effect=drain_warmup)
 
     session._run_session("key", "pcm_s16le", "two_way", "zh", object())
@@ -2292,7 +2292,7 @@ def test_punctuation_speaker_change_finalizes_previous_speaker(monkeypatch):
     # Speaker 1 speaks with no sentence-ending punctuation and no endpoint yet:
     # the sentence stays open (nothing to finalize).
     monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
-    sent_count, _, _ = session._process_soniox_response(
+    sent_count, _, _ = session._process_stream_response(
         {
             "tokens": [
                 {"text": "Hello there", "is_final": True, "speaker": "1",
@@ -2312,7 +2312,7 @@ def test_punctuation_speaker_change_finalizes_previous_speaker(monkeypatch):
     # punctuation, so the pairer needs the quiet-close window to have
     # elapsed before it treats the translation as complete.
     monkeypatch.setattr(module.time, "monotonic", lambda: 100.0 + 1.0)
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {"text": "Goodbye", "is_final": True, "speaker": "2",
@@ -2345,7 +2345,7 @@ def _timed_token(text, speaker, start_ms, end_ms, status="original", language="e
 
 
 def _feed_timed_tokens(session, all_final_tokens, sent_count, tokens):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {"tokens": tokens},
         all_final_tokens,
         sent_count,

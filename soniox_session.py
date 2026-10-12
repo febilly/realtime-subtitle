@@ -52,7 +52,7 @@ ipc_server = None
 from audio_router import AudioSendRouter
 from stream_session_runtime import (
     RealtimeSilenceSender as _RealtimeSilenceSender,
-    StreamState as _SonioxStreamState,
+    StreamState as _StreamState,
     STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
     STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS,
     STREAM_ROLLOVER_FORCE_GUARD_SECONDS,
@@ -148,7 +148,7 @@ class SonioxSession:
         # The line break is deferred until the translation arrives (or the next
         # sentence starts) so the late translation stays attached to this
         # sentence instead of merging into the next one. See the interleaved
-        # punctuation pass in _process_soniox_response.
+        # punctuation pass in _process_stream_response.
         self._pending_endpoint_speakers: set[str] = set()
         self._llm_sentence_session_id = f"llm-{time.time_ns()}"
         self._llm_sentence_counter = 0
@@ -567,7 +567,7 @@ class SonioxSession:
             "separator_type": separator_type,
         }
 
-    def _is_internal_soniox_token(self, token_or_text) -> bool:
+    def _is_internal_token(self, token_or_text) -> bool:
         if isinstance(token_or_text, dict):
             text = token_or_text.get("text")
         else:
@@ -616,7 +616,7 @@ class SonioxSession:
            the outgoing stream). It carries no sentence identity.
         """
         text = token.get("text", "")
-        if self._is_internal_soniox_token(text):
+        if self._is_internal_token(text):
             return
 
         speaker = str(token.get("speaker", "?"))
@@ -732,7 +732,7 @@ class SonioxSession:
         return "".join(
             str(t.get("text", ""))
             for t in (tokens or [])
-            if t.get("text") is not None and not self._is_internal_soniox_token(t)
+            if t.get("text") is not None and not self._is_internal_token(t)
         ).strip()
 
     def _infer_source_language(self, tokens: list[dict]) -> str:
@@ -860,7 +860,7 @@ class SonioxSession:
         non_final_original_by_speaker: dict[str, list[dict]] = {}
         for token in non_final_tokens or []:
             text = token.get("text")
-            if text is None or self._is_internal_soniox_token(text):
+            if text is None or self._is_internal_token(text):
                 continue
             speaker = str(token.get("speaker", "?"))
             if token.get("translation_status") == "translation":
@@ -926,7 +926,7 @@ class SonioxSession:
         non_final_by_speaker: dict[str, list[dict]] = {}
         for token in non_final_tokens or []:
             text = token.get("text")
-            if text is None or self._is_internal_soniox_token(text):
+            if text is None or self._is_internal_token(text):
                 continue
             if token.get("translation_status") == "translation":
                 continue
@@ -1039,7 +1039,7 @@ class SonioxSession:
             tokens,
             index,
             context_text=self._sentence_context_text_for_token(token),
-            is_internal_token=self._is_internal_soniox_token,
+            is_internal_token=self._is_internal_token,
             source_as_output=source_as_output,
         )
 
@@ -1062,7 +1062,7 @@ class SonioxSession:
                 continue
             if text == "<end>":
                 return False
-            if self._is_internal_soniox_token(later):
+            if self._is_internal_token(later):
                 continue
             spk = later.get("speaker")
             if spk is not None and spk != "" and str(spk) != speaker:
@@ -1188,7 +1188,7 @@ class SonioxSession:
                 continue
             if token.get("translation_status") == "translation":
                 continue
-            if self._is_internal_soniox_token(token):
+            if self._is_internal_token(token):
                 continue
             try:
                 start = float(token["start_ms"])
@@ -1329,7 +1329,7 @@ class SonioxSession:
         token: dict,
         outgoing_final_tokens: list,
     ) -> str | None:
-        if token.get("translation_status") == "translation" or self._is_internal_soniox_token(token):
+        if token.get("translation_status") == "translation" or self._is_internal_token(token):
             return None
         try:
             current_start_ms = float(token["start_ms"])
@@ -1914,7 +1914,7 @@ class SonioxSession:
             thread_name="SonioxRolloverSilence",
         )
 
-    def _open_soniox_stream_state(
+    def _open_stream_state(
         self,
         api_key: str,
         stream_index: int,
@@ -1923,7 +1923,7 @@ class SonioxSession:
         translation_target_lang: str,
         *,
         warming: bool = False,
-    ) -> _SonioxStreamState:
+    ) -> _StreamState:
         # Disable Soniox's built-in translation for any STT-only stream: either
         # the user selected no translation, or accurate mode lets the LLM handle it.
         effective_translation = "none" if self._suppress_soniox_translation else translation
@@ -1965,7 +1965,7 @@ class SonioxSession:
         except Exception:
             ws.close()
             raise
-        state = _SonioxStreamState(
+        state = _StreamState(
             ws=ws,
             index=stream_index,
             api_key=api_key,
@@ -1976,9 +1976,9 @@ class SonioxSession:
         print(f"Session started ({label}{purpose}).")
         return state
 
-    def _close_soniox_stream_state(
+    def _close_stream_state(
         self,
-        stream: _SonioxStreamState | None,
+        stream: _StreamState | None,
         reason: str = "stream_close",
     ) -> None:
         """Close a stream, telling the relay why it ended.
@@ -1998,7 +1998,7 @@ class SonioxSession:
         except Exception as close_error:
             print(f"⚠️  Error closing Soniox stream #{stream.index}: {close_error}")
 
-    def _drain_warmup_stream(self, stream: _SonioxStreamState) -> bool:
+    def _drain_warmup_stream(self, stream: _StreamState) -> bool:
         """Read and discard silence warmup responses. Returns False if stream ended."""
         for _ in range(STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT):
             try:
@@ -2031,7 +2031,7 @@ class SonioxSession:
     def _open_and_switch_to_replacement_stream(
         self,
         audio_router: AudioSendRouter,
-        old_stream: _SonioxStreamState,
+        old_stream: _StreamState,
         current_api_key: str,
         stream_index: int,
         audio_format: str,
@@ -2039,12 +2039,12 @@ class SonioxSession:
         translation_target_lang: str,
         loop: asyncio.AbstractEventLoop,
         reason: str,
-    ) -> tuple[_SonioxStreamState, str, int] | None:
+    ) -> tuple[_StreamState, str, int] | None:
         next_stream_index = stream_index + 1
-        replacement_stream: _SonioxStreamState | None = None
+        replacement_stream: _StreamState | None = None
         try:
             next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
-            replacement_stream = self._open_soniox_stream_state(
+            replacement_stream = self._open_stream_state(
                 next_api_key,
                 next_stream_index,
                 audio_format,
@@ -2060,7 +2060,7 @@ class SonioxSession:
                 replacement_stream.ws,
                 expected_current=old_stream.ws,
             ):
-                self._close_soniox_stream_state(replacement_stream)
+                self._close_stream_state(replacement_stream)
                 return None
 
             old_stream.sent_count = self._finalize_stream_before_rollover(
@@ -2069,11 +2069,11 @@ class SonioxSession:
                 old_stream.sent_count,
                 loop,
             )
-            self._close_soniox_stream_state(old_stream, "rollover")
+            self._close_stream_state(old_stream, "rollover")
             return replacement_stream, next_api_key, next_stream_index
         except Exception as error:
             if replacement_stream is not None:
-                self._close_soniox_stream_state(replacement_stream)
+                self._close_stream_state(replacement_stream)
             print(f"⚠️  Failed to switch Soniox stream at {reason}: {error}")
             return None
 
@@ -2107,15 +2107,15 @@ class SonioxSession:
         audio_format: str,
         translation: str,
         translation_target_lang: str,
-    ) -> _SonioxStreamState:
+    ) -> _StreamState:
         """Run in background thread: fetch key + connect WebSocket + send config.
 
         All blocking operations (HTTP request for temp key, WebSocket connect,
         send config) happen here so the main session loop stays responsive.
-        Returns a _SonioxStreamState with a pre-created silence_sender (not started).
+        Returns a _StreamState with a pre-created silence_sender (not started).
         """
         next_api_key = self._fetch_api_key_for_next_stream(current_api_key)
-        ws_state = self._open_soniox_stream_state(
+        ws_state = self._open_stream_state(
             next_api_key, stream_index, audio_format, translation,
             translation_target_lang, warming=True,
         )
@@ -2159,7 +2159,7 @@ class SonioxSession:
         pass through unchanged; split pieces are clones sharing the original's
         metadata, and their texts concatenate back to the original exactly."""
         text = str(token.get("text") or "")
-        if self._is_internal_soniox_token(text):
+        if self._is_internal_token(text):
             return [token]
         pieces = sentence_segmentation.split_text_at_sentence_boundaries(text)
         if len(pieces) <= 1:
@@ -2183,7 +2183,7 @@ class SonioxSession:
             text = token.get("text")
             if text is None:
                 continue
-            is_internal = self._is_internal_soniox_token(token)
+            is_internal = self._is_internal_token(token)
             is_translation = token.get("translation_status") == "translation"
             abbreviation_context_text = "" if is_internal else self._sentence_context_text_for_token(token)
 
@@ -2283,7 +2283,7 @@ class SonioxSession:
                     new_final_tokens,
                     index,
                     context_text=abbreviation_context_text,
-                    is_internal_token=self._is_internal_soniox_token,
+                    is_internal_token=self._is_internal_token,
                     source_as_output=source_as_output,
                 )
             if not is_boundary:
@@ -2364,7 +2364,7 @@ class SonioxSession:
         if self._segment_mode == "translation":
             translation_hit = any(
                 t.get("text") is not None
-                and not self._is_internal_soniox_token(t)
+                and not self._is_internal_token(t)
                 and t.get("translation_status") == "translation"
                 for t in new_final_tokens
             )
@@ -2374,7 +2374,7 @@ class SonioxSession:
             if not translation_hit and self._source_drives_segmentation(new_final_tokens):
                 translation_hit = any(
                     t.get("text")
-                    and not self._is_internal_soniox_token(t)
+                    and not self._is_internal_token(t)
                     and t.get("translation_status") != "translation"
                     and self._token_text_is_sentence_ending(
                         new_final_tokens,
@@ -2425,11 +2425,11 @@ class SonioxSession:
         for token in new_final_tokens:
             if token.get("text") is None:
                 continue
-            if not self._is_internal_soniox_token(token):
+            if not self._is_internal_token(token):
                 outgoing_final_tokens.append(self._minify_token(token, is_final=True))
         return outgoing_final_tokens, separator_tokens
 
-    def _process_soniox_response(
+    def _process_stream_response(
         self,
         res: dict,
         all_final_tokens: list[dict],
@@ -2472,7 +2472,7 @@ class SonioxSession:
                     # (live 2026-07-12, llm_20260712_083058). Pre-split it into
                     # one token per sentence piece (exact text, no trimming).
                     all_final_tokens.extend(self._split_final_token(token))
-                elif not self._is_internal_soniox_token(text):
+                elif not self._is_internal_token(text):
                     # Non-final tokens每次重置
                     non_final_tokens.append(token)
 
@@ -2534,7 +2534,7 @@ class SonioxSession:
         self._maybe_speculative_translate(non_final_tokens)
 
         # 将新的final tokens写入日志
-        loggable_tokens = [t for t in new_final_tokens if not self._is_internal_soniox_token(t)]
+        loggable_tokens = [t for t in new_final_tokens if not self._is_internal_token(t)]
         if loggable_tokens and not self.is_paused:
             self.logger.write_to_log(loggable_tokens)
 
@@ -2564,7 +2564,7 @@ class SonioxSession:
                 self.broadcast_callback({
                     "type": "update",
                     "final_tokens": outgoing_final_tokens + [self._minify_token(t) for t in separator_tokens] + ipc_final_tokens,
-                    "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_soniox_token(t)] + ipc_non_final_tokens
+                    "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_token(t)] + ipc_non_final_tokens
                 }),
                 loop
             )
@@ -2627,7 +2627,7 @@ class SonioxSession:
             if isinstance(res, dict) and self._hosted_llm.handle_frame(res):
                 continue
 
-            sent_count, should_end, _reason = self._process_soniox_response(
+            sent_count, should_end, _reason = self._process_stream_response(
                 res,
                 all_final_tokens,
                 sent_count,
@@ -2638,7 +2638,7 @@ class SonioxSession:
 
         return sent_count
 
-    def _finalize_and_close_stream(self, old_stream: _SonioxStreamState, loop: asyncio.AbstractEventLoop) -> None:
+    def _finalize_and_close_stream(self, old_stream: _StreamState, loop: asyncio.AbstractEventLoop) -> None:
         """Finalize and close an old stream after rollover, in a background thread.
 
         This avoids blocking the main loop on old-stream finalization so that
@@ -2650,7 +2650,7 @@ class SonioxSession:
             )
         except Exception as error:
             print(f"⚠️  Error finalizing old stream #{old_stream.index}: {error}")
-        self._close_soniox_stream_state(old_stream, "rollover")
+        self._close_stream_state(old_stream, "rollover")
 
     
     def _run_session(
@@ -2690,9 +2690,9 @@ class SonioxSession:
             sleep_wake_vad_threshold=SLEEP_WAKE_VAD_THRESHOLD,
         )
         hooks = StreamSessionHooks(
-            open_stream=self._open_soniox_stream_state,
-            close_stream=self._close_soniox_stream_state,
-            process_response=self._process_soniox_response,
+            open_stream=self._open_stream_state,
+            close_stream=self._close_stream_state,
+            process_response=self._process_stream_response,
             adjust_receive_timeout=adjust_receive_timeout,
             on_receive_timeout=self._dispatch_paired_sentences,
             should_rollover_finished=lambda _reason, started_at, rollover: (

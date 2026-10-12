@@ -309,7 +309,7 @@ def replay(module, records: list[dict], config: dict) -> tuple[list[dict], list[
             key = record.get("stream_key") or record.get("stream") or "?"
             state = streams.setdefault(key, {"finals": [], "sent": 0})
             try:
-                state["sent"], _end, _reason = session._process_soniox_response(
+                state["sent"], _end, _reason = session._process_stream_response(
                     record.get("response") or {}, state["finals"], state["sent"], object()
                 )
             except Exception as error:  # report, keep replaying

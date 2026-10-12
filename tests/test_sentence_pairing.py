@@ -594,7 +594,7 @@ def test_session_fast_banter_never_shifts_refine_pairs(monkeypatch):
     def feed(tokens, advance=0.4):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -677,7 +677,7 @@ def test_session_translation_tail_after_source_close_stays_with_sentence(monkeyp
     def feed(tokens, advance):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -734,7 +734,7 @@ def test_session_translation_punctuation_closes_matching_open_source(monkeypatch
 
     def feed(tokens):
         nonlocal sent
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -812,7 +812,7 @@ def test_session_ellipsis_does_not_split_sentence(monkeypatch):
     def feed(tokens, advance=0.0):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -888,7 +888,7 @@ def test_session_same_batch_sentences_merge_into_one_pair(monkeypatch):
     def feed(tokens, advance=0.0):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -960,7 +960,7 @@ def test_session_mid_token_period_still_splits_sentences(monkeypatch):
     def feed(tokens, advance=0.4):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -1016,11 +1016,11 @@ def test_session_mid_token_decimal_stays_one_sentence(monkeypatch):
         "source_language": "en",
     }
     all_final = []
-    sent = session._process_soniox_response(
+    sent = session._process_stream_response(
         {"tokens": [token]}, all_final, 0, object()
     )[0]
     now["t"] += 2.0
-    session._process_soniox_response({"tokens": []}, all_final, sent, object())
+    session._process_stream_response({"tokens": []}, all_final, sent, object())
 
     assert calls == [text], calls
 
@@ -1073,7 +1073,7 @@ def test_session_quoted_passage_stays_one_pair(monkeypatch):
     def feed(tokens, advance=0.4):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -1141,7 +1141,7 @@ def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
     def feed(tokens, advance=0.4):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
@@ -1220,7 +1220,7 @@ def test_session_late_short_translation_does_not_swap_with_open_next_sentence(mo
     def feed(tokens, advance=0.0):
         nonlocal sent
         now["t"] += advance
-        sent = session._process_soniox_response(
+        sent = session._process_stream_response(
             {"tokens": tokens}, all_final, sent, object()
         )[0]
 
