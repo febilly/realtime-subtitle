@@ -44,7 +44,7 @@
 | `speaker_change` | 换了说话人，关闭其他人未结束的句子 |
 | `interrupt_repair` | 短打断修复：撤回 A1（`subtitle_retract` 帧），重发 A1 让 A2 接上 |
 | `translation` | 翻译模式（非标点模式）：本批出现译文后整批末尾换一次 |
-| `speculative` | 仅前端：non-final 尾巴的预测换行 |
+| `speculative` | 仅前端：non-final 尾巴的预测换行；后端标了 `awaits_translation` 的源文 token（换行要等译文）后面不预测 |
 
 需要多看一个 token 才能确定的边界（右引号、`a.` + `m.`、`5.` + `3%`）由
 `PendingBoundaryState` 暂存，下一个 token 到达时再决定。
@@ -58,8 +58,12 @@
 
 ## 已知问题
 
-- 翻译模式下，短句的译文晚于下一句源文到达时，两句会留在同一行
-  （“確かに。”+ 下一句）。最近 45 段录制中约 18 处。
+- 翻译模式下，两句源文在同一批 final 里到达时，Soniox 只给一坨连着的译文，
+  两句故意留在同一行（`_batch_completes_another_sentence`）。前端因此在
+  `awaits_translation` 的 token 后不做预测换行，避免“断开又拼回”；代价是
+  翻译模式下没 final 前行会长一点。
+- 剩余的“断开又拼回”来自语言判断不一致：前端标记按单个 token 的语言，
+  后端按整批最后一个 token 的语言（混说中英、识别不出的语言）。
 
 ## 回放验证
 

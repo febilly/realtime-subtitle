@@ -641,6 +641,18 @@ class RealtimeSessionBase:
             value["is_final"] = bool(is_final)
         return value
 
+    def _minify_non_final_token(self, token: dict) -> dict:
+        value = self._minify_token(token, is_final=False)
+        if self._non_final_token_awaits_translation(token):
+            value["awaits_translation"] = True
+        return value
+
+    def _non_final_token_awaits_translation(self, token: dict) -> bool:
+        """Whether a line break after this not-yet-final source token will
+        wait for its translation. The frontend then does not predict a break
+        there: the final break may never come (see docs/segmentation.md)."""
+        return False
+
     def _join_token_texts(self, tokens: list[dict]) -> str:
         return "".join(
             str(t.get("text", ""))
@@ -842,7 +854,7 @@ class RealtimeSessionBase:
             self.broadcast_callback({
                 "type": "update",
                 "final_tokens": outgoing_final_tokens + [self._minify_token(t) for t in separator_tokens] + ipc_final_tokens,
-                "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_token(t)] + ipc_non_final_tokens
+                "non_final_tokens": [self._minify_non_final_token(t) for t in non_final_tokens if not self._is_internal_token(t)] + ipc_non_final_tokens
             }),
             loop
         )

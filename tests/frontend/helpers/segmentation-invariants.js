@@ -90,8 +90,8 @@ function findSplitBoundaryMismatches(frames) {
         const speaker = String(token.speaker);
         const before = previous.get(speaker);
         if (before) {
-            const wouldSplit = RenderModel.shouldSpeculativelySplitAfterToken(
-                before.text,
+            const wouldSplit = RenderModel.shouldSpeculativelySplitAfter(
+                before.token,
                 token.text,
                 before.context,
             );
@@ -108,7 +108,7 @@ function findSplitBoundaryMismatches(frames) {
         }
         const context = `${contexts.get(speaker) || ''}${token.text || ''}`;
         contexts.set(speaker, context);
-        previous.set(speaker, { text: token.text, context, separatorType: null });
+        previous.set(speaker, { token, context, separatorType: null });
     };
     for (const frame of frames) {
         if (frame.type === 'update') (frame.final_tokens || []).forEach(visit);

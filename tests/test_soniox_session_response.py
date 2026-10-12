@@ -1086,6 +1086,32 @@ def _feed_stream(session, all_final_tokens, sent_count, finals, non_finals=()):
     return sent_count
 
 
+def _non_final_awaits(updates):
+    return [bool(t.get("awaits_translation")) for t in updates[-1]["non_final_tokens"]]
+
+
+def test_non_final_source_awaits_translation_only_when_break_waits_for_it(monkeypatch):
+    """The frontend predicts no line break after a source token flagged
+    ``awaits_translation``: the backend breaks there only once translation
+    arrives, and keeps sentences finalized together on one line."""
+    session, updates = _translation_stream_session(monkeypatch)
+    _feed_stream(session, [], 0, [], [" Done.", ("zh", "好"), " Next"])
+    assert _non_final_awaits(updates) == [True, False, True]
+
+    session.translation_target_lang = "en"  # speech already in the target language
+    _feed_stream(session, [], 0, [], [" Done.", " Next"])
+    assert _non_final_awaits(updates) == [False, False]
+
+    session.translation_target_lang = "zh"
+    session._segment_mode = "translation"
+    _feed_stream(session, [], 0, [], [" Done.", " Next"])
+    assert _non_final_awaits(updates) == [False, False]
+
+    session, updates = _translation_off_session(monkeypatch)
+    _feed_final_and_non_final(session, [], 0, [], [" Done.", " Next"])
+    assert _non_final_awaits(updates) == [False, False]
+
+
 def _final_sentence_ids(updates):
     return {
         t.get("text"): t.get("llm_sentence_id")

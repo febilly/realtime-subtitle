@@ -337,6 +337,15 @@ class SonioxSession(RealtimeSessionBase):
             return False
         return super()._expects_translation_stream(source_tokens)
 
+    def _non_final_token_awaits_translation(self, token: dict) -> bool:
+        # Punctuation mode defers a source break until translation text shows
+        # up, and keeps two sentences finalized in one batch on one line.
+        if self._segment_mode != "punctuation":
+            return False
+        if token.get("translation_status") == "translation":
+            return False
+        return self._expects_translation_stream([token])
+
     def _maybe_speculative_translate(self, non_final_tokens: list[dict]) -> None:
         """准确 mode: fire the LLM for sentences already complete in the
         not-yet-final text so the translation is ready (cached + previewed)

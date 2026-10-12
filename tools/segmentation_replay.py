@@ -270,8 +270,19 @@ def replay(
     "punctuation"; forcing "translation"/"endpoint" exercises those paths).
     """
     frames: list[dict] = []
+    session = None
 
     async def broadcast(data):
+        if data.get("type") == "update" and data.get("final_tokens"):
+            # Golden frames keep only final tokens. Mark the source tokens the
+            # frontend saw as `awaits_translation` while they were non-final,
+            # so the frontend checks know where it predicted no line break.
+            data = {**data, "final_tokens": [
+                {**token, "awaits_translation": True}
+                if not token.get("is_separator") and session._non_final_token_awaits_translation(token)
+                else token
+                for token in data["final_tokens"]
+            ]}
         frames.append(data)
 
     clock = {"t": _ts(records[0]) if records else 0.0}

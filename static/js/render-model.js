@@ -90,6 +90,14 @@
         return true;
     }
 
+    function shouldSpeculativelySplitAfter(token, nextText, contextText) {
+        // The backend waits for the translation before breaking after this
+        // source token, and keeps two sentences finalized together on one
+        // line; a predicted break would split and then rejoin.
+        if (token.awaits_translation) return false;
+        return shouldSpeculativelySplitAfterToken(token.text, nextText, contextText);
+    }
+
     /**
      * Return the flat stream consumed by sentence construction. Final tokens
      * already contain authoritative separators; speculative separators are
@@ -120,7 +128,7 @@
                 !isLast
                 && token
                 && !token.is_separator
-                && shouldSpeculativelySplitAfterToken(token.text, nextText, contextText)
+                && shouldSpeculativelySplitAfter(token, nextText, contextText)
             ) {
                 tokens.push({
                     is_separator: true,
@@ -361,6 +369,7 @@
         ensureSpeakerValue,
         shouldSpeculativelySplitAfterToken,
         buildRenderTokens,
+        shouldSpeculativelySplitAfter,
         resolveLlmSentenceId,
         getSentenceRenderKey,
         buildSentences,

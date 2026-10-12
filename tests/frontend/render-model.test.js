@@ -172,6 +172,14 @@ describe('RenderModel speculative token stream', () => {
         ]);
     });
 
+    it('does not predict a break the backend will wait on for translation', () => {
+        const values = [
+            original('Done.', { is_final: false, awaits_translation: true }),
+            original(' Next', { is_final: false, awaits_translation: true }),
+        ];
+        expect(RenderModel.buildRenderTokens({ currentNonFinalTokens: values })).toEqual(values);
+    });
+
     it('splits after a period on a fragmented word suffix using full context', () => {
         const first = original(' her', { is_final: false });
         const suffix = original('e.', { is_final: false });
