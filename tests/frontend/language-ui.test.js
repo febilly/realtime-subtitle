@@ -95,6 +95,48 @@ describe('LanguageUI', () => {
         dom.window.close();
     });
 
+    it('restarts when re-applying none while the backend still translates', () => {
+        const { dom, controller, state, restartRecognition } = setup({ uiTranslationMode: 'none' });
+        controller.setDraft({ mode: 'none' });
+        controller.applyDraft();
+        expect(restartRecognition).toHaveBeenCalledWith({ translationMode: 'none' });
+        expect(state.backendTranslationMode).toBe('none');
+
+        controller.setDraft({ mode: 'none' });
+        controller.applyDraft();
+        expect(restartRecognition).toHaveBeenCalledOnce();
+        dom.window.close();
+    });
+
+    it('pushes the saved translation mode to a backend that booted with another', () => {
+        const { dom, controller, state, restartRecognition } = setup({
+            uiTranslationMode: 'none',
+            backendBootId: 'boot-1',
+        });
+        expect(controller.syncBackendMode()).toBe(true);
+        expect(restartRecognition).toHaveBeenCalledWith({ auto: true, translationMode: 'none' });
+        expect(state.backendTranslationMode).toBe('none');
+        expect(controller.syncBackendMode()).toBe(false);
+
+        state.backendTranslationMode = 'one_way';
+        expect(controller.syncBackendMode()).toBe(false);
+        expect(restartRecognition).toHaveBeenCalledOnce();
+        dom.window.close();
+    });
+
+    it('does not push the translation mode for Gemini, locked or unconfigured backends', () => {
+        for (const overrides of [
+            { translationProvider: 'gemini' },
+            { lockManualControls: true },
+            { setupRequired: true },
+        ]) {
+            const { dom, controller, restartRecognition } = setup({ uiTranslationMode: 'none', ...overrides });
+            expect(controller.syncBackendMode()).toBe(false);
+            expect(restartRecognition).not.toHaveBeenCalled();
+            dom.window.close();
+        }
+    });
+
     it('suppresses restart for Gemini none mode and rerenders locally', () => {
         const { dom, controller, restartRecognition, renderSubtitles } = setup({ translationProvider: 'gemini' });
         controller.setDraft({ mode: 'none' });

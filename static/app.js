@@ -460,10 +460,15 @@ const languageUi = LanguageUI.create({
         suppressTranslationDisplay,
         translationProvider,
         lockManualControls,
+        setupRequired,
+        backendBootId,
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'currentTranslationTargetLang')) {
             currentTranslationTargetLang = patch.currentTranslationTargetLang;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'backendTranslationMode')) {
+            backendTranslationMode = patch.backendTranslationMode;
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'backendTargetLang1')) {
             backendTargetLang1 = patch.backendTargetLang1;
@@ -1194,6 +1199,7 @@ const uiConfigController = UiConfigController.create({
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,
         enforceTranslateSegmentMode: controlPorts.enforceTranslateSegmentMode,
+        syncTranslationModeWithBackend: () => languageUi.syncBackendMode(),
     },
 });
 

@@ -2850,6 +2850,31 @@ def test_two_way_translation_accurate_mode_translates_with_partner_target_lang(m
     assert osc_messages[-1] == "This is English translation."
 
 
+def test_accurate_mode_does_not_llm_translate_when_translation_is_off(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "none"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("accurate")
+
+    session._perform_translate = AsyncMock(
+        return_value={"status": "ok", "translation": "你听得到我吗？"}
+    )
+    session._spec_translate = MagicMock()
+
+    en_tokens = [{"text": "You hear me?", "language": "en", "is_final": True, "speaker": "1"}]
+    session._maybe_speculative_translate(en_tokens)
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, [], "s-1"))
+
+    session._spec_translate.assert_not_called()
+    session._perform_translate.assert_not_called()
+
+
 def test_two_way_translation_live_preview_sends_partner_translation_and_not_source(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module

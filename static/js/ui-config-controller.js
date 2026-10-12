@@ -189,6 +189,7 @@
             speakerLabels.applyVisibility();
             call('applyLockPauseRestartControlsUI');
             call('enforceTranslateSegmentMode');
+            call('syncTranslationModeWithBackend');
             return data;
         }
 

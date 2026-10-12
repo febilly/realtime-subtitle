@@ -646,7 +646,7 @@ class SonioxSession:
         translation-off sessions complete on source close alone."""
         if self._suppress_soniox_translation:
             return False
-        if not self.translation:
+        if not self._translation_enabled():
             return False
         if self._can_use_source_as_translation(entry.source_tokens):
             return False
@@ -781,6 +781,10 @@ class SonioxSession:
         partner = self._two_way_partner_lang(source_lang)
         return partner or fallback
 
+    def _translation_enabled(self) -> bool:
+        """False when the session was started with translation "none" (翻译关闭)."""
+        return (self.translation or "").strip().lower() not in ("", "none")
+
     def _can_use_source_as_translation(self, source_tokens: list[dict]) -> bool:
         mode = (self.translation or "").strip().lower()
         # In two-way translation mode, speech is translated bidirectionally between the two languages.
@@ -906,6 +910,8 @@ class SonioxSession:
         if not self._suppress_soniox_translation:
             return
         if self._llm_refine_mode != "translate":
+            return
+        if not self._translation_enabled():
             return
         if not is_llm_refine_available() or not self.loop:
             return
@@ -1462,6 +1468,10 @@ class SonioxSession:
         # Source already in the target language: nothing to translate — skip the
         # LLM call (saves credits, avoids echoing the same text as a translation).
         if mode == "translate" and fallback_to_source:
+            llm_can_run = False
+        # 翻译「关闭」: the user turned translation off, so 准确 must not
+        # translate through the LLM either (soniox translation is already off).
+        if not self._translation_enabled():
             llm_can_run = False
         will_llm_translate = llm_can_run and mode == "translate"
 
