@@ -594,6 +594,13 @@ class RealtimeSessionBase:
         partner = self._two_way_partner_lang(source_lang)
         return partner or fallback
 
+    def _expects_translation_stream(self, source_tokens: list[dict]) -> bool:
+        """Whether the provider will stream a translation for this source text.
+
+        When it will not, the source itself drives line breaks (and, for
+        Soniox, semantic pairing): same-language speech has no translation."""
+        return not self._can_use_source_as_translation(source_tokens)
+
     def _can_use_source_as_translation(self, source_tokens: list[dict]) -> bool:
         mode = (self.translation or "").strip().lower()
         # In two-way translation mode, speech is translated bidirectionally between the two languages.

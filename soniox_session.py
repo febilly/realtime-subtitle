@@ -225,18 +225,6 @@ class SonioxSession(RealtimeSessionBase):
         else:
             buffer["original_tokens"].append(token)
 
-    def _pairing_expects_translation(self, entry: PairedSentence) -> bool:
-        """Whether a separate translation stream is coming for this sentence.
-        Same-language speech, 准确 mode (soniox translation suppressed), and
-        translation-off sessions complete on source close alone."""
-        if self._suppress_soniox_translation:
-            return False
-        if not self._translation_enabled():
-            return False
-        if self._can_use_source_as_translation(entry.source_tokens):
-            return False
-        return True
-
     def _pairing_close_source(self, speaker: str, *, reason: str = "punctuation") -> None:
         """Close the source side of the speaker's open paired sentence at a
         display sentence boundary (punctuation / <end> / speaker change).
@@ -251,7 +239,7 @@ class SonioxSession(RealtimeSessionBase):
         self._pairer.close_source(
             str(speaker),
             reason=reason,
-            expects_translation=self._pairing_expects_translation(entry),
+            expects_translation=self._expects_translation_stream(entry.source_tokens),
         )
         llm_log.log_event(
             "pairing_source_close",
@@ -315,24 +303,24 @@ class SonioxSession(RealtimeSessionBase):
         """False when the session was started with translation "none" (翻译关闭)."""
         return (self.translation or "").strip().lower() not in ("", "none")
 
-    def _source_drives_segmentation(self, source_tokens: list[dict]) -> bool:
-        """Whether the source text itself drives segmentation / finalization.
+    def _expects_translation_stream(self, source_tokens: list[dict]) -> bool:
+        """Whether soniox will stream a translation for this source text.
 
-        True when there is no soniox translation to wait for:
+        False — so the source itself drives line breaks and semantic pairing —
+        when there is no translation to wait for:
         - 准确 (accurate) mode: soniox's built-in translation is disabled and the
-          LLM translates from the source, so segmentation/finalization must key
-          off the source instead of translation tokens (which never arrive).
+          LLM translates from the source.
         - translation off (翻译关闭): no translation stream exists, so a
           source boundary must break the line immediately instead of waiting
           for translation text that never comes.
-        - or the speech is already in the target language (built-in translation
-          empty), the pre-existing source-as-output case.
+        - the speech is already in the target language (built-in translation
+          empty), the source-as-output case.
         """
         if self._suppress_soniox_translation:
-            return True
+            return False
         if not self._translation_enabled():
-            return True
-        return self._can_use_source_as_translation(source_tokens)
+            return False
+        return super()._expects_translation_stream(source_tokens)
 
     def _maybe_speculative_translate(self, non_final_tokens: list[dict]) -> None:
         """准确 mode: fire the LLM for sentences already complete in the
@@ -812,7 +800,7 @@ class SonioxSession(RealtimeSessionBase):
         if not original_tokens:
             return False
 
-        if not translation_tokens and not self._source_drives_segmentation(original_tokens):
+        if not translation_tokens and self._expects_translation_stream(original_tokens):
             return False
 
         self._sentence_buffers.pop(speaker, None)
@@ -1179,7 +1167,7 @@ class SonioxSession(RealtimeSessionBase):
         outgoing_final_tokens: list[dict] = []
         last_real_speaker: str | None = None
         finalized_speakers: set[str] = set()
-        source_as_output = self._source_drives_segmentation(new_final_tokens)
+        source_as_output = not self._expects_translation_stream(new_final_tokens)
         for index, token in enumerate(new_final_tokens):
             text = token.get("text")
             if text is None:
@@ -1341,7 +1329,7 @@ class SonioxSession(RealtimeSessionBase):
                 continue
             translation_tokens = buffer.get("translation_tokens") or []
             original_tokens = buffer.get("original_tokens") or []
-            if not translation_tokens and not self._source_drives_segmentation(original_tokens):
+            if not translation_tokens and self._expects_translation_stream(original_tokens):
                 continue
             self._pending_endpoint_speakers.discard(pending_speaker)
             if self._trigger_sentence_finalization(pending_speaker):
@@ -1372,7 +1360,7 @@ class SonioxSession(RealtimeSessionBase):
             # Same-language speech produces no translation tokens; fall back
             # to sentence-ending punctuation in the source (used as output)
             # so it still segments instead of growing without bound.
-            if not translation_hit and self._source_drives_segmentation(new_final_tokens):
+            if not translation_hit and not self._expects_translation_stream(new_final_tokens):
                 translation_hit = any(
                     t.get("text")
                     and not self._is_internal_token(t)

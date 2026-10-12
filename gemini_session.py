@@ -218,7 +218,7 @@ class GeminiSession(RealtimeSessionBase):
         if not original_tokens:
             return False
 
-        if not translation_tokens and not self._can_use_source_as_translation(original_tokens):
+        if not translation_tokens and self._expects_translation_stream(original_tokens):
             return False
 
         self._sentence_buffers.pop(speaker, None)
@@ -569,7 +569,7 @@ class GeminiSession(RealtimeSessionBase):
 
         separator_tokens: list[dict] = []
         outgoing_final_tokens: list[dict] = []
-        source_as_output = self._can_use_source_as_translation(new_final_tokens)
+        source_as_output = not self._expects_translation_stream(new_final_tokens)
         output_sentence_done = False
 
         if new_final_tokens:
@@ -619,7 +619,7 @@ class GeminiSession(RealtimeSessionBase):
             # look at translation tokens, but when the speech is already in the
             # target language there are no translation tokens, so the source text
             # is used as the output — in that case segment on punctuation in the
-            # original tokens too (gated by _can_use_source_as_translation so we
+            # original tokens too (gated by _expects_translation_stream so we
             # never cut before a real translation arrives).
             # A turnComplete <end> is a hard turn boundary: always flush.
             hard_end = any(t.get("text") == "<end>" for t in new_final_tokens)
