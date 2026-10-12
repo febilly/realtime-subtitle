@@ -512,10 +512,10 @@ class RealtimeSessionBase:
         speaker = token.get("speaker")
         return str(speaker) if (speaker is not None and speaker != "") else None
 
-    def _last_token_speaker(self, tokens: list[dict], *, translation_only: bool = False) -> str | None:
-        """Speaker of the last token (optionally: last translation token) that has one."""
+    def _last_token_speaker(self, tokens: list[dict], where=None) -> str | None:
+        """Speaker of the last token (matching `where`, if given) that has one."""
         for token in reversed(tokens):
-            if translation_only and token.get("translation_status") != "translation":
+            if where is not None and not where(token):
                 continue
             speaker = self._token_speaker(token)
             if speaker:
@@ -717,6 +717,51 @@ class RealtimeSessionBase:
         if source_value and self._can_use_source_as_translation(source_tokens):
             return source_value
         return ""
+
+    def _take_ipc_tokens(self) -> tuple[list[dict], list[dict]]:
+        """Drain pending IPC messages as speaker-"0" tokens (final, non-final)."""
+        ipc_final_tokens = []
+        ipc_non_final_tokens = []
+        with self._ipc_lock:
+            if self._ipc_pending_final:
+                ipc_final_tokens.append(self._minify_token({
+                    "text": self._ipc_pending_final,
+                    "speaker": "0",
+                    "translation_status": "original",
+                    "is_final": True,
+                }, is_final=True))
+                self._ipc_pending_final = ""
+            if self._ipc_ongoing_text:
+                ipc_non_final_tokens.append(self._minify_token({
+                    "text": self._ipc_ongoing_text,
+                    "speaker": "0",
+                    "translation_status": "original",
+                    "is_final": False,
+                }, is_final=False))
+        return ipc_final_tokens, ipc_non_final_tokens
+
+    def _broadcast_token_update(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        outgoing_final_tokens: list[dict],
+        separator_tokens: list[dict],
+        non_final_tokens: list[dict],
+    ) -> bool:
+        """Send one "update" frame (IPC messages mixed in as speaker 0) when
+        there is anything to show. Returns whether a frame was sent."""
+        ipc_final_tokens, ipc_non_final_tokens = self._take_ipc_tokens()
+        if not (outgoing_final_tokens or separator_tokens or non_final_tokens
+                or ipc_final_tokens or ipc_non_final_tokens):
+            return False
+        asyncio.run_coroutine_threadsafe(
+            self.broadcast_callback({
+                "type": "update",
+                "final_tokens": outgoing_final_tokens + [self._minify_token(t) for t in separator_tokens] + ipc_final_tokens,
+                "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_token(t)] + ipc_non_final_tokens
+            }),
+            loop
+        )
+        return True
 
     def _reset_osc_live_state(self, speaker: Optional[str] = None) -> None:
         if speaker is None:

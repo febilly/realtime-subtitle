@@ -59,6 +59,10 @@ SPEC_TRANSLATE_CACHE_MAX = 64
 SPEC_TRANSLATE_MAX_INFLIGHT = 3
 
 
+def _is_translation_token(token: dict) -> bool:
+    return token.get("translation_status") == "translation"
+
+
 @dataclass
 class _InterleavedBatch:
     """Per-response state of the interleaved punctuation pass."""
@@ -1258,7 +1262,7 @@ class SonioxSession(RealtimeSessionBase):
                 )
             if translation_hit:
                 speaker_value = (
-                    self._last_token_speaker(new_final_tokens, translation_only=True)
+                    self._last_token_speaker(new_final_tokens, _is_translation_token)
                     or self._last_token_speaker(new_final_tokens)
                     or self._any_buffered_speaker()
                 )
@@ -1393,37 +1397,8 @@ class SonioxSession(RealtimeSessionBase):
         if loggable_tokens and not self.is_paused:
             self.logger.write_to_log(loggable_tokens)
 
-        # 混入 IPC 消息（作为 S0）
-        ipc_final_tokens = []
-        ipc_non_final_tokens = []
-        with self._ipc_lock:
-            if self._ipc_pending_final:
-                ipc_final_tokens.append(self._minify_token({
-                    "text": self._ipc_pending_final,
-                    "speaker": "0",
-                    "translation_status": "original",
-                    "is_final": True,
-                }, is_final=True))
-                self._ipc_pending_final = ""
-            if self._ipc_ongoing_text:
-                ipc_non_final_tokens.append(self._minify_token({
-                    "text": self._ipc_ongoing_text,
-                    "speaker": "0",
-                    "translation_status": "original",
-                    "is_final": False,
-                }, is_final=False))
-
         # 如果有新的数据，发送给前端（暂停时也显示，只是不记录）
-        if outgoing_final_tokens or separator_tokens or non_final_tokens or ipc_final_tokens or ipc_non_final_tokens:
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast_callback({
-                    "type": "update",
-                    "final_tokens": outgoing_final_tokens + [self._minify_token(t) for t in separator_tokens] + ipc_final_tokens,
-                    "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_token(t)] + ipc_non_final_tokens
-                }),
-                loop
-            )
-
+        if self._broadcast_token_update(loop, outgoing_final_tokens, separator_tokens, non_final_tokens):
             # 更新已发送的计数
             sent_count = len(all_final_tokens)
             self.last_sent_count = sent_count

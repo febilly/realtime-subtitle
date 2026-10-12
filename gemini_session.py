@@ -601,22 +601,17 @@ class GeminiSession(RealtimeSessionBase):
             # never cut before a real translation arrives).
             # A turnComplete <end> is a hard turn boundary: always flush.
             hard_end = any(t.get("text") == "<end>" for t in new_final_tokens)
-            speaker_value = None
-            for token in reversed(new_final_tokens):
-                if token.get("translation_status") == "translation" and token.get("text"):
-                    spk = token.get("speaker")
-                    if spk is not None and spk != "":
-                        speaker_value = str(spk)
-                        break
-            if speaker_value is None:
-                for token in reversed(new_final_tokens):
-                    if token.get("text") and not self._is_internal_token(token):
-                        spk = token.get("speaker")
-                        if spk is not None and spk != "":
-                            speaker_value = str(spk)
-                            break
-            if speaker_value is None and self._sentence_buffers:
-                speaker_value = next(iter(self._sentence_buffers.keys()))
+            speaker_value = (
+                self._last_token_speaker(
+                    new_final_tokens,
+                    lambda t: t.get("translation_status") == "translation" and bool(t.get("text")),
+                )
+                or self._last_token_speaker(
+                    new_final_tokens,
+                    lambda t: bool(t.get("text")) and not self._is_internal_token(t),
+                )
+                or self._any_buffered_speaker()
+            )
 
             if speaker_value:
                 # Remember an output-side sentence completion so we can cut once
@@ -646,37 +641,8 @@ class GeminiSession(RealtimeSessionBase):
         if outgoing_final_tokens and not self.is_paused:
             self.logger.write_to_log([t for t in new_final_tokens if not self._is_internal_token(t)])
 
-        # 混入 IPC 消息（作为 S0）
-        ipc_final_tokens = []
-        ipc_non_final_tokens = []
-        with self._ipc_lock:
-            if self._ipc_pending_final:
-                ipc_final_tokens.append(self._minify_token({
-                    "text": self._ipc_pending_final,
-                    "speaker": "0",
-                    "translation_status": "original",
-                    "is_final": True,
-                }, is_final=True))
-                self._ipc_pending_final = ""
-            if self._ipc_ongoing_text:
-                ipc_non_final_tokens.append(self._minify_token({
-                    "text": self._ipc_ongoing_text,
-                    "speaker": "0",
-                    "translation_status": "original",
-                    "is_final": False,
-                }, is_final=False))
-
         # 如果有新的数据，发送给前端（暂停时也显示，只是不记录）
-        if outgoing_final_tokens or separator_tokens or non_final_tokens or ipc_final_tokens or ipc_non_final_tokens:
-            asyncio.run_coroutine_threadsafe(
-                self.broadcast_callback({
-                    "type": "update",
-                    "final_tokens": outgoing_final_tokens + [self._minify_token(t) for t in separator_tokens] + ipc_final_tokens,
-                    "non_final_tokens": [self._minify_token(t, is_final=False) for t in non_final_tokens if not self._is_internal_token(t)] + ipc_non_final_tokens
-                }),
-                loop
-            )
-
+        if self._broadcast_token_update(loop, outgoing_final_tokens, separator_tokens, non_final_tokens):
             # 更新已发送的计数
             sent_count = len(all_final_tokens)
             self.last_sent_count = sent_count
