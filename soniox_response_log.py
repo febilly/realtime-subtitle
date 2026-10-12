@@ -3,6 +3,10 @@
 Disabled by default. Set ``SONIOX_RESPONSE_LOG=1`` to write one record per
 processed Soniox WebSocket response under ``logs/soniox-responses/``. Logging
 is diagnostic-only and must never interrupt recognition.
+
+Recordings are full transcripts of whatever was heard (third-party content,
+other people's voices): never commit them. To turn one into a regression
+fixture, use ``tools/segmentation_replay.py make-fixture``, which anonymizes.
 """
 
 import atexit
