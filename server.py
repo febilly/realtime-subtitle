@@ -532,7 +532,8 @@ class ProviderManager:
             self.web_server.session = new_session
             self.web_server.get_api_key = self.get_api_key
         self.ipc_server.set_session(new_session)
-        session_mod.ipc_server = self.ipc_server
+        import realtime_session_base
+        realtime_session_base.ipc_server = self.ipc_server
         self.osc_manager.set_speaker_labels_enabled(bool(self.config.ENABLE_SPEAKER_DIARIZATION))
 
         # Resolve key and start (or mark setup_required).
@@ -732,7 +733,8 @@ def main():
     web_server.provider_manager = provider_manager
 
     ipc_server.set_session(session)
-    _seed_mod.ipc_server = ipc_server
+    import realtime_session_base
+    realtime_session_base.ipc_server = ipc_server
     web_server.ipc_server = ipc_server
 
     provider_manager.web_server = web_server

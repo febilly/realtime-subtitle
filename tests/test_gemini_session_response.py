@@ -8,6 +8,8 @@ import pytest
 
 def _install_gemini_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "gemini_session", raising=False)
+    # The shared base binds osc_manager/config at import: reload it with the stubs.
+    monkeypatch.delitem(sys.modules, "realtime_session_base", raising=False)
     # Re-import the shared LLM helper fresh so it binds to this test's mocked
     # config / llm_client rather than a version cached by an earlier test.
     monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
