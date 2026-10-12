@@ -9,15 +9,6 @@ from typing import Optional
 import config  # noqa: F401  (tests reach the config stub through this module)
 from config import (
     GEMINI_STREAM_DURATION_SECONDS,
-    SLEEP_IDLE_SECONDS,
-    SLEEP_PRE_ROLL_SECONDS,
-    SLEEP_SPEECH_GRACE_SECONDS,
-    SLEEP_SPEECH_WINDOW_SECONDS,
-    SLEEP_WAKE_SPEECH_SECONDS,
-    SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
-    SLEEP_VAD_THRESHOLD,
-    SLEEP_WAKE_VAD_THRESHOLD,
-    ROLLOVER_VAD_THRESHOLD,
     is_llm_refine_available,
     normalize_language_code,
     GEMINI_FULLWIDTH_PUNCT_FIX,
@@ -25,15 +16,7 @@ from config import (
     TARGET_LANG_2,
 )
 from audio_router import AudioSendRouter
-from stream_session_runtime import (
-    StreamState as _StreamState,
-    STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
-    STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
-    STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
-    StreamRuntimeSettings,
-    StreamSessionHooks,
-    run_stream_session,
-)
+from stream_session_runtime import StreamState as _StreamState
 import gemini_client
 from osc_manager import osc_manager
 from osc_draft import OscDraftPublisher
@@ -662,51 +645,11 @@ class GeminiSession(RealtimeSessionBase):
         return sent_count, False, None
 
     
-    def _run_session(
-        self,
-        api_key: str,
-        audio_format: str,
-        translation: str,
-        translation_target_lang: str,
-        loop: asyncio.AbstractEventLoop,
-    ) -> None:
-        settings = StreamRuntimeSettings(
-            provider_name="Gemini",
-            key_thread_prefix="gemini-key",
-            finalize_thread_prefix="gemini-finalize-",
-            recv_timeout_seconds=STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
-            audio_buffer_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
-            silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
-            rollover_vad_threshold=ROLLOVER_VAD_THRESHOLD,
-            sleep_idle_seconds=float(SLEEP_IDLE_SECONDS),
-            sleep_pre_roll_seconds=SLEEP_PRE_ROLL_SECONDS,
-            sleep_speech_grace_seconds=SLEEP_SPEECH_GRACE_SECONDS,
-            sleep_speech_window_seconds=SLEEP_SPEECH_WINDOW_SECONDS,
-            sleep_vad_threshold=SLEEP_VAD_THRESHOLD,
-            sleep_wake_speech_seconds=SLEEP_WAKE_SPEECH_SECONDS,
-            sleep_wake_speech_window_seconds=SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
-            sleep_wake_vad_threshold=SLEEP_WAKE_VAD_THRESHOLD,
-        )
-        hooks = StreamSessionHooks(
-            open_stream=self._open_stream_state,
-            close_stream=self._close_stream_state,
-            process_response=self._process_stream_response,
-            adjust_receive_timeout=lambda receive_timeout: receive_timeout,
-            on_receive_timeout=lambda: None,
-            should_rollover_finished=lambda reason, started_at, rollover: (
-                reason == "server goAway"
-                or self._stream_is_near_rollover_limit(started_at, rollover)
-            ),
-            finished_rollover_description=lambda reason: f"({reason})",
-        )
-        run_stream_session(
-            self,
-            api_key,
-            audio_format,
-            translation,
-            translation_target_lang,
-            loop,
-            settings=settings,
-            hooks=hooks,
-            audio_router_factory=AudioSendRouter,
-        )
+    def _audio_router_factory(self):
+        return AudioSendRouter
+
+    def _should_rollover_finished(self, reason: str, started_at, rollover_seconds) -> bool:
+        return reason == "server goAway" or self._stream_is_near_rollover_limit(started_at, rollover_seconds)
+
+    def _finished_rollover_description(self, reason: str) -> str:
+        return f"({reason})"

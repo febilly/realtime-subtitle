@@ -37,7 +37,15 @@ from config import (
     MUTE_MIC_WHEN_VRCHAT_SELF_MUTED,
     OSC_SEND_TEXT_MODE,
     OUTPUT_DEVICE_ID,
+    ROLLOVER_VAD_THRESHOLD,
     SLEEP_IDLE_SECONDS,
+    SLEEP_PRE_ROLL_SECONDS,
+    SLEEP_SPEECH_GRACE_SECONDS,
+    SLEEP_SPEECH_WINDOW_SECONDS,
+    SLEEP_VAD_THRESHOLD,
+    SLEEP_WAKE_SPEECH_SECONDS,
+    SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
+    SLEEP_WAKE_VAD_THRESHOLD,
     TWITCH_CHANNEL,
     TWITCH_STREAM_QUALITY,
     USE_TWITCH_AUDIO_STREAM,
@@ -51,13 +59,19 @@ from llm_client import LlmConfig, chat_completion
 from osc_manager import osc_manager
 from stream_session_runtime import (
     RealtimeSilenceSender,
+    StreamRuntimeSettings,
+    StreamSessionHooks,
     StreamState,
+    STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
     STREAM_ROLLOVER_FINALIZE_TIMEOUT_SECONDS,
     STREAM_ROLLOVER_FORCE_GUARD_SECONDS,
     STREAM_ROLLOVER_NEAR_LIMIT_RATIO,
+    STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
+    STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
     STREAM_ROLLOVER_SWITCH_PATIENCE_SECONDS,
     STREAM_ROLLOVER_WARMUP_DRAIN_LIMIT,
     normalize_east_asian_translation_spacing,
+    run_stream_session,
 )
 import llm_refine
 import sentence_segmentation
@@ -222,6 +236,55 @@ class RealtimeSessionBase:
         self.thread.start()
         return True
 
+    def _run_session(
+        self,
+        api_key: str,
+        audio_format: str,
+        translation: str,
+        translation_target_lang: str,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Session thread body: the shared stream lifecycle (rollover, silence
+        sleep) of stream_session_runtime, wired to this provider's hooks."""
+        prefix = self.PROVIDER_NAME.lower()
+        settings = StreamRuntimeSettings(
+            provider_name=self.PROVIDER_NAME,
+            key_thread_prefix=f"{prefix}-key",
+            finalize_thread_prefix=f"{prefix}-finalize-",
+            recv_timeout_seconds=STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
+            audio_buffer_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
+            silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
+            rollover_vad_threshold=ROLLOVER_VAD_THRESHOLD,
+            sleep_idle_seconds=float(SLEEP_IDLE_SECONDS),
+            sleep_pre_roll_seconds=SLEEP_PRE_ROLL_SECONDS,
+            sleep_speech_grace_seconds=SLEEP_SPEECH_GRACE_SECONDS,
+            sleep_speech_window_seconds=SLEEP_SPEECH_WINDOW_SECONDS,
+            sleep_vad_threshold=SLEEP_VAD_THRESHOLD,
+            sleep_wake_speech_seconds=SLEEP_WAKE_SPEECH_SECONDS,
+            sleep_wake_speech_window_seconds=SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
+            sleep_wake_vad_threshold=SLEEP_WAKE_VAD_THRESHOLD,
+        )
+        hooks = StreamSessionHooks(
+            open_stream=self._open_stream_state,
+            close_stream=self._close_stream_state,
+            process_response=self._process_stream_response,
+            adjust_receive_timeout=self._adjust_receive_timeout,
+            on_receive_timeout=self._on_receive_timeout,
+            should_rollover_finished=self._should_rollover_finished,
+            finished_rollover_description=self._finished_rollover_description,
+        )
+        run_stream_session(
+            self,
+            api_key,
+            audio_format,
+            translation,
+            translation_target_lang,
+            loop,
+            settings=settings,
+            hooks=hooks,
+            audio_router_factory=self._audio_router_factory(),
+        )
+
     def stop(self):
         """停止当前会话"""
         self._relay_session_active = False
@@ -329,6 +392,25 @@ class RealtimeSessionBase:
     # ------------------------------------------------------------------
     # Provider hooks
     # ------------------------------------------------------------------
+
+    def _audio_router_factory(self):
+        """The AudioSendRouter class, resolved in the provider module at call
+        time (tests patch it there)."""
+        raise NotImplementedError
+
+    def _adjust_receive_timeout(self, receive_timeout: float | None) -> float | None:
+        """Shorten the stream receive timeout (e.g. to wake at a deadline)."""
+        return receive_timeout
+
+    def _on_receive_timeout(self) -> None:
+        """Called when a receive times out with nothing to process."""
+
+    def _should_rollover_finished(self, reason: str, started_at, rollover_seconds) -> bool:
+        """Whether a finished stream should roll over instead of ending."""
+        return self._stream_is_near_rollover_limit(started_at, rollover_seconds)
+
+    def _finished_rollover_description(self, reason: str) -> str:
+        return "near configured duration"
 
     def _close_ws(self, ws, reason: str) -> None:
         """Close a provider WebSocket with a short reason tag."""

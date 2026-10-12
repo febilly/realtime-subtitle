@@ -11,29 +11,12 @@ from websockets.sync.client import connect as sync_connect
 import config
 from config import (
     SONIOX_STREAM_DURATION_SECONDS,
-    SLEEP_IDLE_SECONDS,
-    SLEEP_PRE_ROLL_SECONDS,
-    SLEEP_SPEECH_GRACE_SECONDS,
-    SLEEP_SPEECH_WINDOW_SECONDS,
-    SLEEP_WAKE_SPEECH_SECONDS,
-    SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
-    SLEEP_VAD_THRESHOLD,
-    SLEEP_WAKE_VAD_THRESHOLD,
-    ROLLOVER_VAD_THRESHOLD,
     DEFAULT_SEGMENT_MODE,
     is_llm_refine_available,
     normalize_language_code,
 )
 from audio_router import AudioSendRouter
-from stream_session_runtime import (
-    StreamState as _StreamState,
-    STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
-    STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
-    STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
-    StreamRuntimeSettings,
-    StreamSessionHooks,
-    run_stream_session,
-)
+from stream_session_runtime import StreamState as _StreamState
 from soniox_client import get_config
 from soniox_audio import SonioxOpusWebSocket
 from opus_audio import FRAME_SAMPLES
@@ -1420,61 +1403,19 @@ class SonioxSession(RealtimeSessionBase):
         return sent_count, False, None
 
     
-    def _run_session(
-        self,
-        api_key: str,
-        audio_format: str,
-        translation: str,
-        translation_target_lang: str,
-        loop: asyncio.AbstractEventLoop,
-    ) -> None:
-        def adjust_receive_timeout(receive_timeout: float | None) -> float | None:
-            pairing_timeout = self._pairer.seconds_until_next_deadline()
-            if pairing_timeout is None:
-                return receive_timeout
-            # Avoid a zero-timeout spin while still waking at the semantic
-            # pairing deadline when Soniox goes quiet.
-            pairing_timeout = max(0.001, pairing_timeout)
-            if receive_timeout is None:
-                return pairing_timeout
-            return min(receive_timeout, pairing_timeout)
+    def _audio_router_factory(self):
+        return AudioSendRouter
 
-        settings = StreamRuntimeSettings(
-            provider_name="Soniox",
-            key_thread_prefix="soniox-key",
-            finalize_thread_prefix="soniox-finalize-",
-            recv_timeout_seconds=STREAM_ROLLOVER_RECV_TIMEOUT_SECONDS,
-            audio_buffer_chunks=STREAM_ROLLOVER_AUDIO_BUFFER_CHUNKS,
-            silence_hold_seconds=STREAM_ROLLOVER_SILENCE_HOLD_SECONDS,
-            rollover_vad_threshold=ROLLOVER_VAD_THRESHOLD,
-            sleep_idle_seconds=float(SLEEP_IDLE_SECONDS),
-            sleep_pre_roll_seconds=SLEEP_PRE_ROLL_SECONDS,
-            sleep_speech_grace_seconds=SLEEP_SPEECH_GRACE_SECONDS,
-            sleep_speech_window_seconds=SLEEP_SPEECH_WINDOW_SECONDS,
-            sleep_vad_threshold=SLEEP_VAD_THRESHOLD,
-            sleep_wake_speech_seconds=SLEEP_WAKE_SPEECH_SECONDS,
-            sleep_wake_speech_window_seconds=SLEEP_WAKE_SPEECH_WINDOW_SECONDS,
-            sleep_wake_vad_threshold=SLEEP_WAKE_VAD_THRESHOLD,
-        )
-        hooks = StreamSessionHooks(
-            open_stream=self._open_stream_state,
-            close_stream=self._close_stream_state,
-            process_response=self._process_stream_response,
-            adjust_receive_timeout=adjust_receive_timeout,
-            on_receive_timeout=self._dispatch_paired_sentences,
-            should_rollover_finished=lambda _reason, started_at, rollover: (
-                self._stream_is_near_rollover_limit(started_at, rollover)
-            ),
-            finished_rollover_description=lambda _reason: "near configured duration",
-        )
-        run_stream_session(
-            self,
-            api_key,
-            audio_format,
-            translation,
-            translation_target_lang,
-            loop,
-            settings=settings,
-            hooks=hooks,
-            audio_router_factory=AudioSendRouter,
-        )
+    def _adjust_receive_timeout(self, receive_timeout: float | None) -> float | None:
+        pairing_timeout = self._pairer.seconds_until_next_deadline()
+        if pairing_timeout is None:
+            return receive_timeout
+        # Avoid a zero-timeout spin while still waking at the semantic
+        # pairing deadline when Soniox goes quiet.
+        pairing_timeout = max(0.001, pairing_timeout)
+        if receive_timeout is None:
+            return pairing_timeout
+        return min(receive_timeout, pairing_timeout)
+
+    def _on_receive_timeout(self) -> None:
+        self._dispatch_paired_sentences()
