@@ -4,8 +4,6 @@ Soniox会话模块 - 管理与Soniox服务的WebSocket会话
 import json
 import asyncio
 import time
-import re
-import unicodedata
 from dataclasses import dataclass, field
 
 from websockets.sync.client import connect as sync_connect
@@ -42,6 +40,7 @@ from opus_audio import FRAME_SAMPLES
 from osc_manager import osc_manager
 from osc_draft import OscDraftPublisher
 from realtime_session_base import RealtimeSessionBase
+from interrupt_repair import InterruptRepairHistory, clone_tokens_for_merge
 import sentence_segmentation
 import llm_log
 import soniox_response_log
@@ -58,7 +57,6 @@ from sentence_pairing import SentencePairer, PairedSentence
 SPEC_TRANSLATE_COOLDOWN_SECONDS = 1.0
 SPEC_TRANSLATE_CACHE_MAX = 64
 SPEC_TRANSLATE_MAX_INFLIGHT = 3
-INTERRUPT_REPAIR_HISTORY_MAX = 8
 
 
 @dataclass
@@ -72,17 +70,6 @@ class _InterleavedBatch:
     last_real_speaker: str | None = None
     # Speakers whose display sentence was closed in this batch.
     finalized_speakers: set[str] = field(default_factory=set)
-
-
-@dataclass
-class _FinalizedSentenceSnapshot:
-    speaker: str
-    sentence_id: str
-    original_tokens: list[dict]
-    translation_tokens: list[dict]
-    source_start_ms: float
-    source_end_ms: float
-    retracted: bool = False
 
 
 class SonioxSession(RealtimeSessionBase):
@@ -114,8 +101,8 @@ class SonioxSession(RealtimeSessionBase):
         self._spec_last_fired_at = 0.0
         self._spec_inflight: dict[str, object] = {}
         self._spec_cache: dict[str, str] = {}
-        self._recent_finalized_sentences: list[_FinalizedSentenceSnapshot] = []
-        self._retracted_sentence_ids: set[str] = set()
+        # Finalized-sentence history for short-interrupt repair.
+        self._interrupt_history = InterruptRepairHistory()
 
         # Two-way translation language pair (instance-level so it can be changed
         # at runtime from the UI without restarting the process).
@@ -133,8 +120,7 @@ class SonioxSession(RealtimeSessionBase):
         self._spec_last_fired_at = 0.0
         self._spec_inflight.clear()
         self._spec_cache.clear()
-        self._recent_finalized_sentences.clear()
-        self._retracted_sentence_ids.clear()
+        self._interrupt_history.clear()
 
     def _close_ws(self, ws, reason: str) -> None:
         ws.close(1000, reason)
@@ -290,11 +276,12 @@ class SonioxSession(RealtimeSessionBase):
                 seeded=entry.translation_was_seeded or None,
                 revived=entry.translation_was_revived or None,
             )
-            self._record_finalized_sentence_snapshot(
+            self._interrupt_history.record(
                 entry.speaker,
                 entry.sentence_id,
                 entry.source_tokens,
                 entry.translation_tokens,
+                is_internal_token=self._is_internal_token,
             )
             if not self.loop:
                 continue
@@ -575,149 +562,6 @@ class SonioxSession(RealtimeSessionBase):
                 self._clear_pending_boundaries_for_speaker(other)
                 self._pending_endpoint_speakers.add(other)
 
-    def _source_time_bounds_ms(self, tokens: list[dict]) -> tuple[float | None, float | None]:
-        starts: list[float] = []
-        ends: list[float] = []
-        for token in tokens or []:
-            if not isinstance(token, dict):
-                continue
-            if token.get("translation_status") == "translation":
-                continue
-            if self._is_internal_token(token):
-                continue
-            try:
-                start = float(token["start_ms"])
-                end = float(token["end_ms"])
-            except (KeyError, TypeError, ValueError):
-                return (None, None)
-            starts.append(start)
-            ends.append(end)
-        if not starts or not ends:
-            return (None, None)
-        return (min(starts), max(ends))
-
-    def _record_finalized_sentence_snapshot(
-        self,
-        speaker: str,
-        sentence_id: str,
-        original_tokens: list[dict],
-        translation_tokens: list[dict],
-    ) -> None:
-        start_ms, end_ms = self._source_time_bounds_ms(original_tokens)
-        if start_ms is None or end_ms is None:
-            return
-        snapshot = _FinalizedSentenceSnapshot(
-            speaker=str(speaker),
-            sentence_id=str(sentence_id),
-            original_tokens=[dict(t) for t in original_tokens if isinstance(t, dict)],
-            translation_tokens=[dict(t) for t in translation_tokens if isinstance(t, dict)],
-            source_start_ms=start_ms,
-            source_end_ms=end_ms,
-        )
-        # A revived sentence (timeout_empty then late translation) dispatches
-        # twice: replace the stale empty-translation snapshot instead of
-        # keeping same-id duplicates for the interrupt-repair walk.
-        self._recent_finalized_sentences = [
-            s for s in self._recent_finalized_sentences
-            if s.sentence_id != snapshot.sentence_id
-        ]
-        self._recent_finalized_sentences.append(snapshot)
-        if len(self._recent_finalized_sentences) > INTERRUPT_REPAIR_HISTORY_MAX:
-            self._recent_finalized_sentences = self._recent_finalized_sentences[-INTERRUPT_REPAIR_HISTORY_MAX:]
-
-    def _source_duration_ms(self, snapshot: _FinalizedSentenceSnapshot) -> float | None:
-        if snapshot.source_start_ms is None or snapshot.source_end_ms is None:
-            return None
-        return max(0.0, float(snapshot.source_end_ms) - float(snapshot.source_start_ms))
-
-    def _normalize_interrupt_filler_text(self, text: str) -> str:
-        value = unicodedata.normalize("NFKC", str(text or "")).casefold()
-        chars: list[str] = []
-        for ch in value:
-            category = unicodedata.category(ch)
-            if category.startswith("P") or category.startswith("S") or category.startswith("Z"):
-                continue
-            chars.append(ch)
-        return "".join(chars).strip()
-
-    def _interrupt_filler_whitelist(self) -> set[str]:
-        raw = str(getattr(config, "SONIOX_INTERRUPT_FILLER_WHITELIST", "") or "")
-        values: set[str] = set()
-        for item in re.split(r"[,，\r\n\t]+", raw):
-            normalized = self._normalize_interrupt_filler_text(item)
-            if normalized:
-                values.add(normalized)
-        return values
-
-    def _interrupt_text_matches_whitelist(self, snapshot: _FinalizedSentenceSnapshot) -> bool:
-        if not bool(getattr(config, "SONIOX_INTERRUPT_FILLER_WHITELIST_ENABLED", True)):
-            return True
-        normalized = self._normalize_interrupt_filler_text(self._join_token_texts(snapshot.original_tokens))
-        if not normalized:
-            return False
-        return normalized in self._interrupt_filler_whitelist()
-
-    def _clone_tokens_for_interrupt_merge(self, tokens: list[dict], new_sentence_id: str) -> list[dict]:
-        cloned = [dict(t) for t in tokens or [] if isinstance(t, dict)]
-        for token in cloned:
-            token["llm_sentence_id"] = new_sentence_id
-        for token in reversed(cloned):
-            if token.get("translation_status") == "translation":
-                continue
-            text = str(token.get("text") or "")
-            stripped = text.rstrip()
-            if not stripped:
-                continue
-            cleaned = re.sub(r"[。．.!！？?…︒︕︖]+$", "", stripped)
-            if cleaned != stripped:
-                token["text"] = text[:len(text) - len(stripped)] + cleaned
-            break
-        return cloned
-
-    def _find_interrupt_merge_pair(
-        self,
-        current_speaker: str,
-        current_start_ms: float,
-    ) -> tuple[_FinalizedSentenceSnapshot, _FinalizedSentenceSnapshot] | None:
-        if not bool(getattr(config, "SONIOX_INTERRUPT_REPAIR_ENABLED", True)):
-            return None
-        max_duration_ms = float(getattr(config, "SONIOX_INTERRUPT_MAX_DURATION_MS", 300))
-        resume_gap_ms = float(getattr(config, "SONIOX_INTERRUPT_RESUME_GAP_MS", 1000))
-        if max_duration_ms <= 0 or resume_gap_ms <= 0:
-            return None
-
-        # Only the two latest active sentences may form A1 -> B. Searching
-        # farther back can incorrectly revive an old A1/B pair after another
-        # sentence has already occurred.
-        active = [
-            snapshot
-            for snapshot in self._recent_finalized_sentences
-            if not snapshot.retracted
-        ]
-        if len(active) < 2:
-            return None
-        previous, interrupt = active[-2:]
-        if previous.speaker != str(current_speaker):
-            return None
-        if interrupt.speaker == str(current_speaker):
-            return None
-        duration = self._source_duration_ms(interrupt)
-        if duration is None or duration > max_duration_ms:
-            return None
-        if not self._interrupt_text_matches_whitelist(interrupt):
-            return None
-
-        # Allow only small timestamp jitter/overlap at both handoffs. Large
-        # overlap is ordinary cross-talk, not a brief interruption to repair.
-        overlap_tolerance_ms = 120.0
-        previous_to_interrupt_ms = interrupt.source_start_ms - previous.source_end_ms
-        interrupt_to_current_ms = current_start_ms - interrupt.source_end_ms
-        if not -overlap_tolerance_ms <= previous_to_interrupt_ms <= resume_gap_ms:
-            return None
-        if not -overlap_tolerance_ms <= interrupt_to_current_ms <= resume_gap_ms:
-            return None
-        return previous, interrupt
-
     def _maybe_merge_interrupted_sentence(
         self,
         current_speaker: str,
@@ -731,20 +575,24 @@ class SonioxSession(RealtimeSessionBase):
         except (KeyError, TypeError, ValueError):
             return None
 
-        match = self._find_interrupt_merge_pair(current_speaker, current_start_ms)
+        match = self._interrupt_history.find_merge_pair(
+            current_speaker,
+            current_start_ms,
+            config=config,
+            join_text=self._join_token_texts,
+        )
         if not match:
             return None
 
         previous, _interrupt = match
-        previous.retracted = True
-        self._retracted_sentence_ids.add(previous.sentence_id)
+        self._interrupt_history.retract(previous)
         self._refine_context_history = [
             item for item in self._refine_context_history
             if item.get("sentence_id") != previous.sentence_id
         ]
         merged_sentence_id = self._alloc_sentence_id()
-        restored_original = self._clone_tokens_for_interrupt_merge(previous.original_tokens, merged_sentence_id)
-        restored_translation = self._clone_tokens_for_interrupt_merge(previous.translation_tokens, merged_sentence_id)
+        restored_original = clone_tokens_for_merge(previous.original_tokens, merged_sentence_id)
+        restored_translation = clone_tokens_for_merge(previous.translation_tokens, merged_sentence_id)
         self._sentence_buffers[str(current_speaker)] = {
             "original_tokens": restored_original,
             "translation_tokens": restored_translation,
@@ -851,7 +699,7 @@ class SonioxSession(RealtimeSessionBase):
 
         if not source:
             return
-        if sentence_id and str(sentence_id) in self._retracted_sentence_ids:
+        if self._interrupt_history.is_retracted(sentence_id):
             return
 
         if announce:
@@ -967,7 +815,7 @@ class SonioxSession(RealtimeSessionBase):
                     no_change = False
                 print(f"LLM refine error: {error}")
 
-        if sentence_id and str(sentence_id) in self._retracted_sentence_ids:
+        if self._interrupt_history.is_retracted(sentence_id):
             llm_log.log_event(
                 "refine_dropped_retracted",
                 sentence_id=sentence_id,
