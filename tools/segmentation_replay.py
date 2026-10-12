@@ -250,7 +250,13 @@ def build_fixture_records(records: list[dict], rng: random.Random) -> list[dict]
 # Replay
 # --------------------------------------------------------------------------
 
-def replay(module, records: list[dict], config: dict) -> tuple[list[dict], list[str]]:
+def replay(
+    module,
+    records: list[dict],
+    config: dict,
+    *,
+    segment_mode: str | None = None,
+) -> tuple[list[dict], list[str]]:
     """Feed records to a fresh SonioxSession from ``module`` (soniox_session,
     imported with stubbed I/O dependencies). Returns broadcast frames and any
     exceptions raised while processing.
@@ -259,6 +265,9 @@ def replay(module, records: list[dict], config: dict) -> tuple[list[dict], list[
     would have fired between two responses fire at their deadline, as the
     live receive-timeout path does. LLM finalize coroutines are dropped; they
     never influence segmentation.
+
+    ``segment_mode`` overrides the recorded mode (recordings are almost all
+    "punctuation"; forcing "translation"/"endpoint" exercises those paths).
     """
     frames: list[dict] = []
 
@@ -307,7 +316,7 @@ def replay(module, records: list[dict], config: dict) -> tuple[list[dict], list[
                 clock["t"] += max(wait, 0.001)
                 session._dispatch_paired_sentences()
             clock["t"] = now
-            session._segment_mode = record.get("segment_mode") or "punctuation"
+            session._segment_mode = segment_mode or record.get("segment_mode") or "punctuation"
             session._llm_refine_mode = record.get("llm_refine_mode") or "off"
             session._suppress_soniox_translation = bool(record.get("suppress_soniox_translation"))
             key = record.get("stream_key") or record.get("stream") or "?"
@@ -474,7 +483,7 @@ def _cmd_audit(args) -> int:
             finals = _final_count(run.records)
             if finals < args.min_finals:
                 continue
-            frames, errors = replay(module, run.records, run.config)
+            frames, errors = replay(module, run.records, run.config, segment_mode=args.segment_mode)
             problem = check_text_conservation(run.records, frames)
             status = "ok" if not errors and not problem else "FAIL"
             failures += status != "ok"
@@ -538,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
     audit.add_argument("recordings", nargs="+")
     audit.add_argument("--frames-dir", help="write replayed frames here for the JS frontend check")
     audit.add_argument("--min-finals", type=int, default=20)
+    audit.add_argument("--segment-mode", choices=("punctuation", "translation", "endpoint"),
+                       help="override the recorded segment mode")
     audit.set_defaults(func=_cmd_audit)
 
     make = sub.add_parser("make-fixture", help="cut an anonymized fixture from a recording")
