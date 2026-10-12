@@ -2443,6 +2443,11 @@ class SonioxSession:
             translation_mode=self.get_translation_mode(),
             llm_refine_mode=self._llm_refine_mode,
             suppress_soniox_translation=bool(self._suppress_soniox_translation),
+            # Session translation config, so a recording replays faithfully
+            # (tools/segmentation_replay.py) without inferring it.
+            translation=self.translation,
+            translation_target_lang=self.get_translation_target_lang(),
+            target_langs=list(self.get_target_langs()),
             sent_count=sent_count,
             all_final_token_count=len(all_final_tokens),
             stream_key=f"{id(all_final_tokens):x}",
