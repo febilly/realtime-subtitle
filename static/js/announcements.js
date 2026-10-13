@@ -83,6 +83,7 @@
                 if (doc.defaultView && doc.defaultView.closed) { docs.delete(doc); continue; }
                 const button = doc.getElementById('announcementsButton');
                 if (!button) continue;
+                button.hidden = rows.length === 0;
                 button.style.position = 'relative';
                 button.title = pending ? l.unread : l.title;
                 button.setAttribute('aria-label', button.title);

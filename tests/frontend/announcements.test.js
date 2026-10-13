@@ -49,6 +49,22 @@ describe('announcement list, local unread state and rich text', () => {
         expect(page.doc.querySelector('[role=dialog]')).not.toBeNull();
         page.client.destroy(); page.dom.window.close();
     });
+    it('hides the button until there is at least one announcement', async () => {
+        const page = setup();
+        const button = page.doc.getElementById('announcementsButton');
+        page.setRows([]);
+        await page.client.check();
+        expect(button.hidden).toBe(true);
+        page.setRows([{ id: 'uuid-2', title: 'Hi', content: '', published_at: '2026-10-04T00:00:00Z', visible: true, popup: false, revision: 1 }]);
+        await page.client.check({ force: true });
+        expect(button.hidden).toBe(false);
+        await page.client.open(); page.client.close();
+        expect(button.hidden).toBe(false);
+        page.setRows([]);
+        await page.client.check({ force: true });
+        expect(button.hidden).toBe(true);
+        page.client.destroy(); page.dom.window.close();
+    });
     it('removes hidden entries and coalesces concurrent checks', async () => {
         const page = setup();
         page.setRows([{ ...page.getRows()[0], visible: false, popup: true }]);
