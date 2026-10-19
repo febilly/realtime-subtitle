@@ -153,4 +153,12 @@
     <path d="M18 6 6 18" />
     <path d="m6 6 12 12" />
   </symbol>
+  <symbol id="zoom-in" viewBox="0 0 24 24">
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.35-4.35M11 8v6M8 11h6" />
+  </symbol>
+  <symbol id="zoom-out" viewBox="0 0 24 24">
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.35-4.35M8 11h6" />
+  </symbol>
 </svg>

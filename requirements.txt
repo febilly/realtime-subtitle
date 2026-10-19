@@ -18,6 +18,8 @@ pywebview
 python-osc
 zeroconf
 PySide6
+# SteamVR 字幕悬浮窗（vr_overlay.py）；自带 openvr_api 运行库
+openvr==2.12.1401
 vrchat_oscquery @ git+https://github.com/theepicsnail/vrchat_oscquery@main
 # streamlink
 # 锁版本：不同 PyInstaller 版本的 bootloader 有不同的杀软误报情况，

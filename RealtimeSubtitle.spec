@@ -19,7 +19,7 @@ binaries = []
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',
                  'provider_setup', 'soniox_session', 'gemini_session', 'soniox_client', 'gemini_client',
                  'soniox_key_setup', 'gemini_key_setup',
-                 'overlay_window', 'win_overlay_native']
+                 'overlay_window', 'win_overlay_native', 'vr_overlay', 'openvr']
 tmp_ret = collect_all('soundcard')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('aiohttp')
@@ -30,6 +30,19 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # Opus 编码只依赖独立的 libopus（libopus/win64/opus.dll），由 opus_native.py
 # 在运行时按 frozen 路径加载；不再打包 PyAV 整套 FFmpeg DLL。
 binaries += [('libopus/win64/opus.dll', '.')]
+
+# SteamVR 字幕悬浮窗：pyopenvr 用 importlib.resources 在 openvr 包目录里找
+# libopenvr_api_64.dll，所以要放进 openvr/ 子目录。只带 64 位 Windows 版，包里
+# 其余平台的库（32 位/.so/.dylib）以及 OpenGL 示例代码都用不到。
+import importlib.util as _ilu
+_openvr_spec = _ilu.find_spec('openvr')
+if _openvr_spec is not None:
+    _openvr_dir = os.path.dirname(_openvr_spec.origin)
+    binaries += [(os.path.join(_openvr_dir, 'libopenvr_api_64.dll'), 'openvr')]
+    excludes_openvr = ['openvr.glframework', 'openvr.gl_renderer',
+                       'openvr.color_cube_actor', 'openvr.tracked_devices_actor']
+else:
+    excludes_openvr = []
 tmp_ret = collect_all('pythonosc')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ten_vad')
@@ -78,7 +91,7 @@ excludes = [
     # 注意 'distutils' 不能排除：PyInstaller 会把它别名到 setuptools 内置的那份，
     # 排除后模块图会报 "Target module distutils already imported as ExcludedModule"。
     'setuptools', 'pkg_resources', 'PyInstaller',
-]
+] + excludes_openvr
 
 
 a = Analysis(

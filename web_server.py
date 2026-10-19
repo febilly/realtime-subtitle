@@ -71,6 +71,9 @@ class WebServer:
         # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
         self.overlay_manager = None
         self.overlay_ws = None
+        # SteamVR 字幕悬浮窗进程管理器；仅在 openvr 可用时由 server.py 注入。
+        self.vr_overlay_manager = None
+        self.vr_overlay_ws = None
         self.ipc_server = None
         # Provider-specific API key getter; injected by server.py.
         self.get_api_key = None
@@ -163,7 +166,7 @@ class WebServer:
             return False
         regular_clients = [
             client for client in self.websocket_clients
-            if client is not self.overlay_ws
+            if client is not self.overlay_ws and client is not self.vr_overlay_ws
         ]
         if not regular_clients:
             return False
@@ -197,7 +200,29 @@ class WebServer:
                     })
             except Exception as e:
                 self.logger.error(f"Error polling IPC status: {e}")
+            try:
+                await self._check_vr_overlay_process()
+            except Exception as e:
+                self.logger.error(f"Error checking VR overlay process: {e}")
             await asyncio.sleep(2)
+
+    VR_OVERLAY_RESPAWN_INTERVAL = 5.0
+
+    async def _check_vr_overlay_process(self):
+        """VR 字幕开着但子进程没了（SteamVR 退出时把它杀掉、或 SteamVR 崩溃连带）：
+        重新拉起，让它继续静默等待 SteamVR 下次启动。"""
+        manager = self.vr_overlay_manager
+        if manager is None or not manager.is_visible or manager.is_open():
+            return False
+        now = time.monotonic()
+        last = getattr(self, "_vr_overlay_last_respawn", None)
+        if last is not None and now - last < self.VR_OVERLAY_RESPAWN_INTERVAL:
+            return False
+        self._vr_overlay_last_respawn = now
+        manager.connected = False
+        manager.open(hidden=True)
+        await self.broadcast_to_clients(self._vr_overlay_state_frame())
+        return True
 
     async def ipc_status_handler(self, request):
         if not self._is_loopback_request(request):
@@ -253,12 +278,15 @@ class WebServer:
         if client_type == "overlay":
             self.overlay_ws = ws
             print("Overlay window client connected via WebSocket.")
+        elif client_type == "vr_overlay":
+            self.vr_overlay_ws = ws
+            print("VR overlay client connected via WebSocket.")
 
         # 添加到客户端列表
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
 
-        if client_type != "overlay":
+        if client_type not in ("overlay", "vr_overlay"):
             await self._deliver_osc_sensitive_filter_notice()
         
         try:
@@ -272,6 +300,9 @@ class WebServer:
             if self.overlay_manager is not None:
                 is_visible = getattr(self.overlay_manager, "is_visible", False)
             await ws.send_str(json.dumps({"type": "overlay_visibility", "visible": is_visible}))
+            if self.vr_overlay_manager is not None:
+                await ws.send_str(json.dumps(self._vr_overlay_state_frame()))
+                await ws.send_str(json.dumps(self._vr_overlay_config_frame()))
 
             # 发送当前识别暂停状态给新连入的客户端
             is_paused = getattr(self.session, "is_paused", False)
@@ -312,6 +343,10 @@ class WebServer:
                 if getattr(self, "overlay_ws", None) == ws:
                     self.overlay_ws = None
                     print("Overlay window client disconnected.")
+            elif client_type == "vr_overlay":
+                if getattr(self, "vr_overlay_ws", None) == ws:
+                    self.vr_overlay_ws = None
+                    print("VR overlay client disconnected.")
             # 从客户端列表移除
             self.websocket_clients.discard(ws)
             print(f"Client disconnected. Total clients: {len(self.websocket_clients)}")
@@ -2228,6 +2263,123 @@ class WebServer:
             self.logger.error(f"Failed to handle overlay request: {error}")
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
+    VR_ATTACH_MODES = ("world", "head", "body")
+
+    def _vr_overlay_state_frame(self) -> dict:
+        manager = self.vr_overlay_manager
+        visible = bool(manager is not None and manager.is_visible)
+        alive = bool(manager is not None and manager.is_open())
+        return {
+            "type": "vr_overlay_visibility",
+            "visible": visible,
+            # 已连上 SteamVR 并在显示；开着但 SteamVR 未运行时为 False（悬浮窗在静默等待）
+            "connected": bool(visible and alive and manager.connected),
+        }
+
+    def _vr_overlay_config_frame(self) -> dict:
+        manager = self.vr_overlay_manager
+        return {
+            "type": "vr_overlay_config",
+            "attach_mode": getattr(manager, "attach_mode", "body"),
+        }
+
+    async def vr_overlay_get_handler(self, request):
+        """查询 SteamVR 字幕悬浮窗状态。"""
+        manager = self.vr_overlay_manager
+        if manager is None:
+            return web.json_response({"status": "ok", "available": False, "open": False})
+        frame = self._vr_overlay_state_frame()
+        return web.json_response({
+            "status": "ok",
+            "available": True,
+            "open": frame["visible"],
+            "connected": frame["connected"],
+            "attach_mode": manager.attach_mode,
+        })
+
+    async def vr_overlay_post_handler(self, request):
+        """控制 SteamVR 字幕悬浮窗。
+
+        请求体 {"action": ...}：
+          * "toggle" | "open" | "close"：开关（缺省为 toggle）
+          * "config"：{"attach_mode": "world" | "head" | "body"} 位置模式
+          * "reset_position"：把悬浮窗放回视线正前方
+          * "report"：VR 子进程回报 {"connected": bool}
+        """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        manager = self.vr_overlay_manager
+        if manager is None:
+            return web.json_response(
+                {"status": "ignored", "available": False, "message": "VR overlay unavailable"}
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        action = payload.get("action") or "toggle"
+
+        if action == "report":
+            manager.connected = bool(payload.get("connected"))
+            await self.broadcast_to_clients(self._vr_overlay_state_frame())
+            return web.json_response({"status": "ok"})
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Overlay control is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            if action == "config":
+                mode = str(payload.get("attach_mode") or "").strip().lower()
+                if mode not in self.VR_ATTACH_MODES:
+                    return web.json_response(
+                        {"status": "error", "message": "Invalid attach_mode"}, status=400)
+                manager.attach_mode = mode
+                await self.broadcast_to_clients(self._vr_overlay_config_frame())
+                return web.json_response({"status": "ok", "attach_mode": mode})
+
+            if action == "reset_position":
+                await self.broadcast_to_clients({"type": "vr_overlay_reset_position"})
+                return web.json_response({"status": "ok"})
+
+            if action == "open":
+                is_visible = True
+            elif action == "close":
+                is_visible = False
+            else:  # toggle
+                is_visible = not (manager.is_visible and manager.is_open())
+
+            manager.is_visible = is_visible
+            if not is_visible:
+                manager.connected = False
+            elif not manager.is_open():
+                # 子进程连上 WebSocket 后会收到当前显隐与位置模式
+                manager.connected = False
+                manager.open(hidden=True)
+
+            frame = self._vr_overlay_state_frame()
+            if action == "close" and payload.get("source") == "vr_overlay":
+                frame["closed_from_overlay"] = True
+            await self.broadcast_to_clients(frame)
+            return web.json_response({
+                "status": "ok",
+                "available": True,
+                "open": frame["visible"],
+                "connected": frame["connected"],
+            })
+        except Exception as error:
+            self.logger.error(f"Failed to handle VR overlay request: {error}")
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
     async def shutdown_handler(self, request):
         """请求退出应用（前端“重置所有设置并退出”调用）。"""
         if not self._is_loopback_request(request):
@@ -2362,6 +2514,8 @@ class WebServer:
         app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)
         app.router.add_get('/overlay', self.overlay_get_handler)
         app.router.add_post('/overlay', self.overlay_post_handler)
+        app.router.add_get('/vr-overlay', self.vr_overlay_get_handler)
+        app.router.add_post('/vr-overlay', self.vr_overlay_post_handler)
         app.router.add_post('/furigana', self.furigana_handler)
         app.router.add_post('/shutdown', self.shutdown_handler)
         app.router.add_get('/fonts/NotoSansCJK-Regular.ttc', self.custom_font_file_handler)

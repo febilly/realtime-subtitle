@@ -639,6 +639,31 @@ class OverlayManager:
         return False
 
 
+class VrOverlayManager(OverlayManager):
+    """管理 SteamVR 字幕悬浮窗子进程（vr_overlay.py）。
+
+    子进程启动后自己等待 SteamVR（未运行时静默重试），并通过 POST /vr-overlay
+    {"action": "report"} 回报是否已连上；显隐与位置模式经 WebSocket 下发。
+    不预热：只有用户打开过 VR 字幕时才拉起进程。
+    """
+
+    RUN_FLAG = "--run-vr-overlay"
+    SCRIPT = "vr_overlay.py"
+
+    def __init__(self, server_url: str, web_server=None):
+        super().__init__(server_url, web_server=web_server)
+        self.connected = False
+        self.attach_mode = "body"
+
+    @staticmethod
+    def available() -> bool:
+        import importlib.util
+        try:
+            return importlib.util.find_spec("openvr") is not None
+        except Exception:
+            return False
+
+
 def run_server(app, sock):
     """在单独的线程中运行Web服务器"""
     loop = asyncio.new_event_loop()
@@ -658,6 +683,9 @@ def main():
     if "--run-overlay" in sys.argv:
         from overlay_window import main as overlay_main
         sys.exit(overlay_main())
+    if "--run-vr-overlay" in sys.argv:
+        from vr_overlay import main as vr_overlay_main
+        sys.exit(vr_overlay_main())
 
     # Existing desktop shortcuts follow the currently running downloaded version.
     # This never creates a shortcut; creation remains an explicit post-login choice.
@@ -794,12 +822,13 @@ def main():
 
     def close_overlay() -> None:
         """退出前关闭原生字幕悬浮窗子进程，避免遗留孤儿进程。"""
-        manager = getattr(web_server, "overlay_manager", None)
-        if manager is not None:
-            try:
-                manager.close()
-            except Exception:
-                pass
+        for name in ("overlay_manager", "vr_overlay_manager"):
+            manager = getattr(web_server, name, None)
+            if manager is not None:
+                try:
+                    manager.close()
+                except Exception:
+                    pass
 
     def graceful_shutdown() -> None:
         """优雅关闭所有连接和进程，防止遗留孤儿进程或断开异常。"""
@@ -932,6 +961,9 @@ def main():
 
     # 原生字幕悬浮窗始终走本地回环地址连接，避免依赖 LAN host 解析。
     web_server.overlay_manager = OverlayManager(f"http://127.0.0.1:{actual_port}", web_server=web_server)
+    if VrOverlayManager.available():
+        web_server.vr_overlay_manager = VrOverlayManager(
+            f"http://127.0.0.1:{actual_port}", web_server=web_server)
 
     debug = bool(args.debug)
 

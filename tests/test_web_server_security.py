@@ -738,6 +738,7 @@ class TestWebServerSecurity:
             ("/osc-translation", ws.osc_translation_set_handler),
             ("/furigana", ws.furigana_handler),
             ("/overlay", ws.overlay_post_handler),
+            ("/vr-overlay", ws.vr_overlay_post_handler),
             # recognition / display preferences
             ("/segment-mode", ws.segment_mode_set_handler),
             ("/speaker-labels", ws.speaker_labels_set_handler),
