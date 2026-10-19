@@ -45,7 +45,7 @@ class TranscriptLogger:
         self.log_file = open(log_path, 'w', encoding='utf-8')
         
         # 写入文件头
-        self.log_file.write(f"=== Real-time Subtitle Log ===\n")
+        self.log_file.write(f"=== Realtime Subtitle Log ===\n")
         self.log_file.write(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         self.log_file.write(f"=" * 50 + "\n\n")
         self.log_file.flush()

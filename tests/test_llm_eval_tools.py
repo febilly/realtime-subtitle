@@ -9,7 +9,7 @@ def test_parse_transcript_file_pairs_source_with_translation(tmp_path):
     log_path.write_text(
         "\n".join(
             [
-                "=== Real-time Subtitle Log ===",
+                "=== Realtime Subtitle Log ===",
                 "[18:30:58] [SPEAKER 1][JA] 怖い。",
                 "[18:30:58] [SPEAKER 1][ZH][TRANS] 好可怕。",
                 "[18:31:04] [SPEAKER 1][JA] しかも最近のパソコンって",

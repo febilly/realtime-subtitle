@@ -693,7 +693,7 @@ def main():
     # 创建Web服务器（会在创建session时传入）
     web_server = None
     window = None
-    window_title = "Real-time Subtitle"
+    window_title = "Realtime Subtitle"
     window_on_top_requests: queue.SimpleQueue[bool | None] = queue.SimpleQueue()
 
     # broadcast 回调引用 web_server（在 ProviderManager 重建 session 后仍然有效，
