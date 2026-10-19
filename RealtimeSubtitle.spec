@@ -34,15 +34,18 @@ binaries += [('libopus/win64/opus.dll', '.')]
 # SteamVR 字幕悬浮窗：pyopenvr 用 importlib.resources 在 openvr 包目录里找
 # libopenvr_api_64.dll，所以要放进 openvr/ 子目录。只带 64 位 Windows 版，包里
 # 其余平台的库（32 位/.so/.dylib）以及 OpenGL 示例代码都用不到。
+# 构建环境缺 openvr 时直接报错：否则产物会悄悄丢掉 VR 字幕（主界面不显示 VR 按钮）。
 import importlib.util as _ilu
 _openvr_spec = _ilu.find_spec('openvr')
-if _openvr_spec is not None:
-    _openvr_dir = os.path.dirname(_openvr_spec.origin)
-    binaries += [(os.path.join(_openvr_dir, 'libopenvr_api_64.dll'), 'openvr')]
-    excludes_openvr = ['openvr.glframework', 'openvr.gl_renderer',
-                       'openvr.color_cube_actor', 'openvr.tracked_devices_actor']
-else:
-    excludes_openvr = []
+if _openvr_spec is None:
+    raise SystemExit('openvr is not installed; run "pip install -r requirements.txt" '
+                     'so the build includes the SteamVR subtitle overlay')
+_openvr_dll = os.path.join(os.path.dirname(_openvr_spec.origin), 'libopenvr_api_64.dll')
+if not os.path.isfile(_openvr_dll):
+    raise SystemExit(f'OpenVR runtime not found: {_openvr_dll}')
+binaries += [(_openvr_dll, 'openvr')]
+excludes_openvr = ['openvr.glframework', 'openvr.gl_renderer',
+                   'openvr.color_cube_actor', 'openvr.tracked_devices_actor']
 tmp_ret = collect_all('pythonosc')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ten_vad')
