@@ -582,6 +582,9 @@ class OverlayManager:
     WebSocket(`/ws`) 接收字幕，并用 REST(`/pause`,`/resume`) 控制识别。
     """
 
+    RUN_FLAG = "--run-overlay"
+    SCRIPT = "overlay_window.py"
+
     def __init__(self, server_url: str, web_server=None):
         self.server_url = server_url
         self.web_server = web_server
@@ -592,13 +595,13 @@ class OverlayManager:
         return self._proc is not None and self._proc.poll() is None
 
     def _build_command(self, hidden: bool = True) -> list[str]:
-        args = ["--run-overlay", "--url", self.server_url]
+        args = [self.RUN_FLAG, "--url", self.server_url]
         if hidden:
             args.append("--hidden")
         if getattr(sys, "frozen", False):
             # PyInstaller：重新拉起自身可执行文件，由 main() 顶部分发到 overlay。
             return [sys.executable, *args]
-        overlay_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay_window.py")
+        overlay_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.SCRIPT)
         return [sys.executable, overlay_script, *args]
 
     def open(self, hidden: bool = False) -> bool:

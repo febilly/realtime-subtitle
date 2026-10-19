@@ -1333,6 +1333,11 @@ class SubtitleTextEdit(QTextEdit):
 class OverlayWindow(QWidget):
     _restart_finished = Signal(bool)
 
+    # 子类（如 VR 悬浮窗）覆盖这些属性即可拥有独立的设置与连接身份。
+    SETTINGS_NAME = "Overlay"
+    WS_CLIENT = "overlay"
+    DEFAULT_FONT_SIZE = 20
+
     def __init__(self, server_url: str):
         super().__init__()
         self.server_url = server_url.rstrip("/")
@@ -1342,9 +1347,9 @@ class OverlayWindow(QWidget):
         self._refined_lang_by_sid: dict[str, str] = {}
         self._spec_by_source: dict[str, tuple[str, str]] = {}
         self._spec_pending_by_source: dict[str, str] = {}
-        self.settings = QSettings("RealtimeSubtitle", "Overlay")
+        self.settings = QSettings("RealtimeSubtitle", self.SETTINGS_NAME)
 
-        self.font_size = int(self.settings.value("font_size", 20))
+        self.font_size = int(self.settings.value("font_size", self.DEFAULT_FONT_SIZE))
         self.bg_alpha = int(self.settings.value("bg_alpha", DEFAULT_ALPHA))
         self.background_mode = _normalize_background_mode(
             self.settings.value("background_mode", BACKGROUND_MODE_WINDOW))
@@ -1407,7 +1412,7 @@ class OverlayWindow(QWidget):
         self._apply_windows_no_activate_style()
 
         # 字幕文本区：不接收鼠标事件，让拖动/缩放在任意位置可用
-        self.text = SubtitleTextEdit(self)
+        self.text = self._create_text_edit()
         self.text.setReadOnly(True)
         self.text.setFrameStyle(0)
         self.text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1471,6 +1476,9 @@ class OverlayWindow(QWidget):
         self.button_bar.setVisible(False)
 
         self._render()
+
+    def _create_text_edit(self) -> SubtitleTextEdit:
+        return SubtitleTextEdit(self)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1894,7 +1902,7 @@ class OverlayWindow(QWidget):
     def _init_ws(self):
         scheme = "wss" if self.server_url.startswith("https") else "ws"
         host = self.server_url.split("://", 1)[-1]
-        ws_url = f"{scheme}://{host}/ws?client=overlay"
+        ws_url = f"{scheme}://{host}/ws?client={self.WS_CLIENT}"
         self.bridge = WsBridge()
         self.bridge.message.connect(self._on_message)
         self.ws_client = WsClient(ws_url, self.bridge)
