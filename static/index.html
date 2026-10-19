@@ -68,6 +68,23 @@
                 </svg>
             </button>
 
+            <!-- Shown by runtime-controls.js once the backend reports SteamVR support. -->
+            <button class="control-button" id="vrOverlayButton" title="Toggle VR subtitle overlay" style="display: none;">
+                <svg class="control-icon vr-overlay-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <defs>
+                        <mask id="vrOverlayIconMask" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+                            <rect width="24" height="24" fill="#fff"></rect>
+                            <rect x="9.5" y="12.5" width="15" height="12.5" rx="2" fill="#000"></rect>
+                        </mask>
+                    </defs>
+                    <g mask="url(#vrOverlayIconMask)">
+                        <rect width="18" height="14" x="3" y="5" rx="2" ry="2"></rect>
+                        <path d="M7 15h4M15 15h2M7 11h2M13 11h4"></path>
+                    </g>
+                    <text class="vr-overlay-icon-badge" x="24.5" y="24" text-anchor="end">VR</text>
+                </svg>
+            </button>
+
             <button class="control-button" id="displayModeButton" title="Toggle display mode">
                 <svg class="control-icon" id="displayModeText" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#eye"></use>
@@ -288,6 +305,20 @@
                         </span>
                         <span id="bundledCjkFontPicker"></span>
                     </label>
+                </div>
+            </section>
+
+            <section class="settings-group" id="vrOverlaySection" hidden>
+                <h2 class="settings-group-title" id="vrOverlaySectionLabel">VR subtitle overlay</h2>
+                <div class="settings-card">
+                    <div class="settings-item form-field" id="vrAttachModeSettingField">
+                        <span id="vrAttachModeSettingLabel">Position mode</span>
+                        <div class="input-with-button">
+                            <div class="vr-attach-mode-picker" id="vrAttachModePicker"></div>
+                            <button class="secondary-button" id="vrResetPositionButton" type="button">Reset position</button>
+                        </div>
+                        <p class="field-hint" id="vrOverlayHint"></p>
+                    </div>
                 </div>
             </section>
 

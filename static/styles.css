@@ -187,6 +187,16 @@ body.chroma-theme .subtitle-container {
     line-height: 1;
 }
 
+/* VR 字幕悬浮窗按钮：与字幕悬浮窗按钮同尺寸的字幕图标，右下角挖空写上 "VR" */
+.vr-overlay-icon .vr-overlay-icon-badge {
+    fill: currentColor;
+    stroke: none;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 11.5px;
+    font-weight: 800;
+    letter-spacing: -0.3px;
+}
+
 .control-button:hover {
     background: rgba(0, 0, 0, 0.1);
     transform: scale(1.05);
@@ -973,7 +983,8 @@ body.dark-theme .checkbox-field {
     gap: 8px;
 }
 
-.input-with-button input {
+.input-with-button input,
+.input-with-button .vr-attach-mode-picker {
     flex: 1;
     min-width: 0;
 }

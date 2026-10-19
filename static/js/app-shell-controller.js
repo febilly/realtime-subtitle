@@ -31,6 +31,7 @@
             }
             if (elements.pauseButton) call('updatePauseButtonUi');
             if (elements.overlayButton) call('updateOverlayButton');
+            if (elements.vrOverlayButton) call('updateVrOverlayButton');
             if (elements.settingsButton) elements.settingsButton.title = t('settings');
 
             if (elements.subtitleContainer) {

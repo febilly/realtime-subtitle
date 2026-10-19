@@ -3,6 +3,7 @@ const RuntimeFrameController = require('../../static/js/runtime-frame-controller
 const ACTION_NAMES = [
     'applyBundledCjkFontPreference',
     'syncOverlayState',
+    'syncVrOverlayState',
     'syncIpcStatus',
     'displayErrorMessage',
     'openSettings',
@@ -37,6 +38,9 @@ describe('RuntimeFrameController frame boundary', () => {
         expect(RuntimeFrameController.FRAME_TYPES).toEqual([
             'subtitle_font_preference',
             'overlay_visibility',
+            'vr_overlay_visibility',
+            'vr_overlay_config',
+            'vr_overlay_reset_position',
             'ipc_status',
             'error',
             'llm_cost',
@@ -57,6 +61,17 @@ describe('RuntimeFrameController frame boundary', () => {
 });
 
 describe('RuntimeFrameController direct runtime delegation', () => {
+    it('delegates VR overlay state and swallows commands meant for the VR process', () => {
+        const page = createHarness();
+        const frame = { type: 'vr_overlay_visibility', visible: true, connected: false };
+
+        expect(page.controller.handle(frame)).toBe(true);
+        expect(page.actions.syncVrOverlayState).toHaveBeenCalledWith(frame);
+        expect(page.controller.handle({ type: 'vr_overlay_config', attach_mode: 'head' })).toBe(true);
+        expect(page.controller.handle({ type: 'vr_overlay_reset_position' })).toBe(true);
+        expect(page.events).toHaveLength(1);
+    });
+
     it.each([
         [true, true],
         [0, false],

@@ -16,6 +16,7 @@ const audioSourceButton = document.getElementById('audioSourceButton');
 const audioSourceIcon = document.getElementById('audioSourceIcon');
 const overlayButton = document.getElementById('overlayButton');
 const overlayIcon = document.getElementById('overlayIcon');
+const vrOverlayButton = document.getElementById('vrOverlayButton');
 let overlayOpen = false;  // 原生字幕悬浮窗当前是否打开
 const segmentModeButton = document.getElementById('segmentModeButton');
 const segmentModeText = document.getElementById('segmentModeText');
@@ -252,6 +253,8 @@ const settingsRuntime = SettingsRuntime.create({
         segmentModeSettingField,
         segmentModePickerHost,
         subtitleFlowPickerHost: document.getElementById('subtitleFlowPicker'),
+        vrOverlaySection: document.getElementById('vrOverlaySection'),
+        vrAttachModePickerHost: document.getElementById('vrAttachModePicker'),
     },
     getState: () => ({
         get selectedProvider() { return settingsPorts.getSelectedProvider(); },
@@ -274,6 +277,8 @@ const settingsRuntime = SettingsRuntime.create({
         get segmentMode() { return segmentModeController.getMode(); },
         get segmentModes() { return controlPorts.getSegmentModes(); },
         get subtitleFlowDirection() { return subtitleFlowDirection; },
+        get vrOverlayAvailable() { return runtimeControls.isVrOverlayAvailable(); },
+        get vrAttachMode() { return runtimeControls.getVrAttachMode(); },
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
@@ -304,6 +309,7 @@ const settingsRuntime = SettingsRuntime.create({
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
         setTranslationUiMode: controlPorts.setTranslationUiMode,
+        setVrAttachMode: (mode) => runtimeControls.setVrAttachMode(mode),
         setSubtitleFlowDirection: (direction) => setSubtitleFlowDirection(direction, {
             persist: true,
             render: true,
@@ -744,6 +750,7 @@ const runtimeControls = RuntimeControls.create({
         audioSourceButton,
         audioSourceIcon,
         overlayButton,
+        vrOverlayButton,
     },
     fetch,
     storage: localStorage,
@@ -813,6 +820,7 @@ const appShellController = AppShellController.create({
         pauseButton,
         audioSourceButton,
         overlayButton,
+        vrOverlayButton,
         settingsButton,
         translationLangButton,
         segmentModeButton,
@@ -829,6 +837,7 @@ const appShellController = AppShellController.create({
     actions: {
         updatePauseButtonUi: runtimeControls.updatePauseButtonUi,
         updateOverlayButton: runtimeControls.updateOverlayButton,
+        updateVrOverlayButton: runtimeControls.updateVrOverlayButton,
         updateAutoRestartButton: recognitionControls.updateAutoRestartButton,
     },
 });
@@ -1018,6 +1027,7 @@ const runtimeFrameController = RuntimeFrameController.create({
     actions: {
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
         syncOverlayState: runtimeControls.syncOverlayState,
+        syncVrOverlayState: runtimeControls.syncVrOverlayState,
         syncIpcStatus: appShellController.syncIpcStatus,
         displayErrorMessage,
         openSettings: (options) => settingsFlowController.open(options),
@@ -1202,6 +1212,10 @@ function setUiTranslationMode(mode, { persistOnly = false } = {}) {
 }
 
 void controlPorts.refreshOverlayState();
+void runtimeControls.restoreVrOverlayState();
+document.getElementById('vrResetPositionButton')?.addEventListener('click', () => {
+    void runtimeControls.resetVrOverlayPosition();
+});
 
 
 function handleMessageFrame(data) {

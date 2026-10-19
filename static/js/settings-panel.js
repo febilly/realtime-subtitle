@@ -317,6 +317,10 @@
             setText('subtitleFlowSettingLabel', 'subtitle_flow_setting');
             setText('bundledCjkFontLabel', 'bundled_cjk_font');
             setText('bundledCjkFontHint', 'bundled_cjk_font_hint');
+            setText('vrOverlaySectionLabel', 'vr_overlay_section');
+            setText('vrAttachModeSettingLabel', 'vr_attach_mode_setting');
+            setText('vrResetPositionButton', 'vr_reset_position');
+            setText('vrOverlayHint', 'vr_overlay_hint');
             renderSonioxRegionPicker(getSelectedSonioxRegion());
             call('renderMicrophoneDevicePicker');
             call('renderOutputDevicePicker');

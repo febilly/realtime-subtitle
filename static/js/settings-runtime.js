@@ -57,6 +57,7 @@
             translationMode: null,
             segmentMode: null,
             subtitleFlow: null,
+            vrAttachMode: null,
         };
         let microphoneData = normalizeMicrophoneData(options.microphoneData || EMPTY_MICROPHONE_DATA);
         let outputData = normalizeMicrophoneData(options.outputData || EMPTY_OUTPUT_DATA);
@@ -119,6 +120,7 @@
                     'subtitleFlow',
                     draft.subtitleFlowDirection === 'down' ? 'down' : 'up',
                 ),
+                vrAttachMode: pickerValue('vrAttachMode', draft.vrAttachMode || 'body'),
             };
         }
 
@@ -618,6 +620,26 @@
             });
         }
 
+        function renderVrAttachModePicker() {
+            const available = !!state().vrOverlayAvailable;
+            if (elements.vrOverlaySection) elements.vrOverlaySection.hidden = !available;
+            if (!available) {
+                if (elements.vrAttachModePickerHost) elements.vrAttachModePickerHost.innerHTML = '';
+                pickers.vrAttachMode = null;
+                return null;
+            }
+            const mode = state().vrAttachMode || 'body';
+            setDraft({ vrAttachMode: mode });
+            return replaceHost(elements.vrAttachModePickerHost, 'vrAttachMode', [
+                { value: 'world', label: t('vr_attach_world') },
+                { value: 'head', label: t('vr_attach_head') },
+                { value: 'body', label: t('vr_attach_body') },
+            ], {
+                value: mode,
+                onChange: (value) => setDraft({ vrAttachMode: value }),
+            });
+        }
+
         function renderRuntimeSettingsPickers() {
             if (elements.runtimeControlsSection) elements.runtimeControlsSection.hidden = false;
             renderAutoRestartPicker();
@@ -628,6 +650,7 @@
             renderInterruptRepairPicker();
             renderSegmentModePicker();
             renderSubtitleFlowPicker();
+            renderVrAttachModePicker();
         }
 
         function renderSettingsPickers() {
@@ -660,6 +683,13 @@
                 if (direction !== state().subtitleFlowDirection
                     && typeof actions.setSubtitleFlowDirection === 'function') {
                     actions.setSubtitleFlowDirection(direction);
+                }
+            }
+
+            if (pickers.vrAttachMode) {
+                const mode = getDraft().vrAttachMode;
+                if (mode !== state().vrAttachMode && typeof actions.setVrAttachMode === 'function') {
+                    await actions.setVrAttachMode(mode);
                 }
             }
 
@@ -789,6 +819,7 @@
             segmentModeLabel,
             renderSegmentModePicker,
             renderSubtitleFlowPicker,
+            renderVrAttachModePicker,
             renderRuntimeSettingsPickers,
             renderSettingsPickers,
             writeProviderSettingsDraft,

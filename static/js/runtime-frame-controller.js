@@ -4,6 +4,10 @@
     const FRAME_TYPES = Object.freeze([
         'subtitle_font_preference',
         'overlay_visibility',
+        'vr_overlay_visibility',
+        // 下发给 VR 悬浮窗进程的指令；主界面无需处理，只是不让它们落到别的控制器里。
+        'vr_overlay_config',
+        'vr_overlay_reset_position',
         'ipc_status',
         'error',
         'llm_cost',
@@ -33,6 +37,13 @@
             }
             if (frame.type === 'overlay_visibility') {
                 call('syncOverlayState', frame.visible);
+                return true;
+            }
+            if (frame.type === 'vr_overlay_visibility') {
+                call('syncVrOverlayState', frame);
+                return true;
+            }
+            if (frame.type === 'vr_overlay_config' || frame.type === 'vr_overlay_reset_position') {
                 return true;
             }
             if (frame.type === 'ipc_status') {
