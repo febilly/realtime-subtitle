@@ -597,14 +597,16 @@ class LocalQwenRecognizer:
         if not committed:
             return text, raw
         # Matching a rewritten sentence by where it ends is only sound while
-        # the window still begins where the committed text begins.
+        # the window begins where the committed text begins: before any trim,
+        # or after a trim that left exactly one committed sentence, which the
+        # trim cut shortly before.
+        pieces = sentence_segmentation.split_text_at_sentence_boundaries(committed)
         remainder = strip_committed_prefix(
-            committed, text, sentence_end_fallback=not trimmed
+            committed, text, sentence_end_fallback=not trimmed or len(pieces) == 1
         )
         if remainder is None:
             # A trim can cost the hypothesis its first committed words; the
             # later committed sentences must then still be there in full.
-            pieces = sentence_segmentation.split_text_at_sentence_boundaries(committed)
             for start in range(1, len(pieces)):
                 remainder = strip_committed_prefix("".join(pieces[start:]), text)
                 if remainder is not None:

@@ -511,9 +511,10 @@ LOCAL_SPECULATIVE_DECODE = _env_bool("LOCAL_SPECULATIVE_DECODE", True)
 # near-tie (comma vs period, homophones) on each partial.
 LOCAL_QWEN_ASR_TEMPERATURE = max(0.0, _env_float("LOCAL_QWEN_ASR_TEMPERATURE", 0.0))
 # Keep a token from the previous partial when its logit is within this margin
-# of the model's pick (2.0 = still kept while the model rates it >= 13.5% as
+# of the model's pick (1.0 = still kept while the model rates it >= 37% as
 # likely). 0 disables. Needs LOCAL_SPECULATIVE_DECODE and greedy decoding.
-LOCAL_QWEN_ASR_DRAFT_BIAS = max(0.0, _env_float("LOCAL_QWEN_ASR_DRAFT_BIAS", 2.0))
+# Replays: 0 left ~2x the pending rows; 2.0 locked in a few early mishearings.
+LOCAL_QWEN_ASR_DRAFT_BIAS = max(0.0, _env_float("LOCAL_QWEN_ASR_DRAFT_BIAS", 1.0))
 # The newest previous-partial tokens were heard mid-word; leave them free.
 LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS = max(
     0, _env_int("LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS", 6)

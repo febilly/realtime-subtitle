@@ -265,7 +265,7 @@ class Qwen3ASREngine:
         # 相邻两次中间结果之间来回翻，待确认的旧句子也跟着反复改写。随机温度只留给
         # 复读熔断后的重试。
         temperature = max(0.0, float(getattr(config, "LOCAL_QWEN_ASR_TEMPERATURE", 0.0)))
-        draft_bias = max(0.0, float(getattr(config, "LOCAL_QWEN_ASR_DRAFT_BIAS", 2.0)))
+        draft_bias = max(0.0, float(getattr(config, "LOCAL_QWEN_ASR_DRAFT_BIAS", 1.0)))
         bias_tail = max(0, int(getattr(config, "LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS", 6)))
         gen = None
         t_prefill = 0.0

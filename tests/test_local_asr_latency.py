@@ -384,7 +384,7 @@ def test_after_a_trim_later_committed_sentences_still_realign(monkeypatch):
 def test_a_rewritten_sentence_matches_by_its_end_only_before_a_trim(monkeypatch):
     captured = []
     recognizer, audio = _text_mode(monkeypatch, captured)
-    recognizer._window_committed_text = "Committed words here."
+    recognizer._window_committed_text = "Its tail. Committed words here."
     recognizer._window_trimmed = True
     _partial(recognizer, "Totally different speech. And more", audio)
     assert captured == []  # held: after a trim the head may simply be gone
@@ -392,3 +392,13 @@ def test_a_rewritten_sentence_matches_by_its_end_only_before_a_trim(monkeypatch)
     recognizer._window_trimmed = False
     _partial(recognizer, "Totally different speech. And more", audio)
     assert captured[-1][:2] == ("And more", False)
+
+
+def test_a_single_committed_sentence_left_by_a_trim_matches_by_its_end(monkeypatch):
+    captured = []
+    recognizer, audio = _text_mode(monkeypatch, captured)
+    recognizer._window_committed_text = "帮我录啥？"
+    recognizer._window_trimmed = True
+    # A homophone rewrite of the one sentence the trim kept.
+    _partial(recognizer, "八万度啥？我不知道啊，那所以你在说什么？", audio)
+    assert captured[-1][:2] == ("我不知道啊，那所以你在说什么？", False)
