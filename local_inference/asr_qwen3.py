@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -333,6 +334,7 @@ class Qwen3ASREngine:
 
         context = self._prompt_context()
 
+        inference_started = time.monotonic()
         audio_embd, enc_s = self._engine.encoder.encode(audio)
         full_embd = self._engine._build_prompt_embd(
             audio_embd=audio_embd,
@@ -341,6 +343,11 @@ class Qwen3ASREngine:
             language=qwen_language,
         )
         result = self._decode(full_embd)
+        # 临时：本地模型每次推理后输出一行日志，记录本次耗时（毫秒）
+        print(
+            f"[Qwen ASR 本地] 推理完成（{'最终' if update_context else '中间'}）: "
+            f"耗时 {(time.monotonic() - inference_started) * 1000.0:.0f}ms"
+        )
         if getattr(config, "LOCAL_QWEN_LOG_PIPELINE_TIMING", False):
             audio_sec = len(audio) / QWEN_SAMPLE_RATE
             pre_s = float(result["t_prefill"])
