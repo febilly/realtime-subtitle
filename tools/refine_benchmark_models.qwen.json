@@ -1,0 +1,10 @@
+{
+  "models": [
+    {"name": "deepseek_selected", "env_model": "deepseek-flash", "prompt": "new"},
+    {"name": "qwen_short_cn", "env_model": "qwen3.7-flash", "prompt": "qwen_short_cn"}
+  ],
+  "comparison_models": ["deepseek_selected", "qwen_short_cn"],
+  "judge": {"name": "independent_judge", "env_model": "openai/gpt-6-luna"},
+  "temperature": 0.2,
+  "max_tokens": 1024
+}

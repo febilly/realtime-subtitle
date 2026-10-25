@@ -191,3 +191,73 @@ def test_real_shortcut_repair_recognizes_renamed_versioned_shortcut(tmp_path):
 
     assert repair["updated"] == 1
     assert repeat["updated"] == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Shell shortcuts")
+def test_real_shortcut_repair_moves_legacy_shortcut_to_new_name(tmp_path):
+    desktop = tmp_path / "Desktop"
+    old_dir = tmp_path / "v4.1.2"
+    new_dir = tmp_path / "v4.1.3"
+    desktop.mkdir()
+    old_dir.mkdir()
+    new_dir.mkdir()
+    old_executable = old_dir / "RealtimeSubtitle-hosted-v4.1.2.exe"
+    new_executable = new_dir / "RealtimeSubtitle-hosted-v4.1.3.exe"
+    old_executable.touch()
+    new_executable.touch()
+    legacy = desktop / desktop_shortcut.LEGACY_SHORTCUT_FILENAMES[0]
+    canonical = desktop / desktop_shortcut.SHORTCUT_FILENAME
+
+    with patch.object(desktop_shortcut, "_desktop_path", return_value=desktop):
+        desktop_shortcut._write_shortcut(legacy, old_executable, load_existing=False)
+        with patch.object(desktop_shortcut, "current_executable_path", return_value=new_executable):
+            repair = desktop_shortcut.repair_existing_shortcuts()
+            repeat = desktop_shortcut.repair_existing_shortcuts()
+        targets = {match["path"]: match["target"] for match in desktop_shortcut._matching_shortcuts()}
+
+    assert repair["updated"] == 1
+    assert repeat["updated"] == 0
+    assert not legacy.exists()
+    assert targets == {str(canonical): str(new_executable)}
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Shell shortcuts")
+def test_real_shortcut_repair_renames_legacy_shortcut_already_on_current_version(tmp_path):
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    executable = tmp_path / "RealtimeSubtitle-hosted-v4.1.3.exe"
+    executable.touch()
+    legacy = desktop / desktop_shortcut.LEGACY_SHORTCUT_FILENAMES[0]
+
+    with patch.object(desktop_shortcut, "_desktop_path", return_value=desktop):
+        desktop_shortcut._write_shortcut(legacy, executable, load_existing=False)
+        with patch.object(desktop_shortcut, "current_executable_path", return_value=executable):
+            repair = desktop_shortcut.repair_existing_shortcuts()
+            repeat = desktop_shortcut.repair_existing_shortcuts()
+
+    assert repair["updated"] == 1
+    assert repeat["updated"] == 0
+    assert not legacy.exists()
+    assert (desktop / desktop_shortcut.SHORTCUT_FILENAME).exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Shell shortcuts")
+def test_real_shortcut_repair_keeps_legacy_name_when_new_name_is_taken(tmp_path):
+    desktop = tmp_path / "Desktop"
+    desktop.mkdir()
+    old_executable = tmp_path / "RealtimeSubtitle-hosted-v4.1.2.exe"
+    new_executable = tmp_path / "RealtimeSubtitle-hosted-v4.1.3.exe"
+    old_executable.touch()
+    new_executable.touch()
+    legacy = desktop / desktop_shortcut.LEGACY_SHORTCUT_FILENAMES[0]
+    canonical = desktop / desktop_shortcut.SHORTCUT_FILENAME
+
+    with patch.object(desktop_shortcut, "_desktop_path", return_value=desktop):
+        desktop_shortcut._write_shortcut(legacy, old_executable, load_existing=False)
+        desktop_shortcut._write_shortcut(canonical, old_executable, load_existing=False)
+        with patch.object(desktop_shortcut, "current_executable_path", return_value=new_executable):
+            repair = desktop_shortcut.repair_existing_shortcuts()
+        targets = {match["path"]: match["target"] for match in desktop_shortcut._matching_shortcuts()}
+
+    assert repair["updated"] == 2
+    assert targets == {str(legacy): str(new_executable), str(canonical): str(new_executable)}

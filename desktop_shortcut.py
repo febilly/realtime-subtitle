@@ -11,8 +11,10 @@ import uuid
 from pathlib import Path
 
 
-SHORTCUT_FILENAME = "Real-time Subtitle.lnk"
-APP_DESCRIPTION = "Real-time Subtitle"
+SHORTCUT_FILENAME = "Realtime Subtitle.lnk"
+# Shortcuts created before the app was renamed; startup repair moves them to SHORTCUT_FILENAME.
+LEGACY_SHORTCUT_FILENAMES = ("Real-time Subtitle.lnk",)
+APP_DESCRIPTION = "Realtime Subtitle"
 _APP_EXECUTABLE_RE = re.compile(
     r"^RealtimeSubtitle-hosted-v(?P<version>.+)\.exe$",
     re.IGNORECASE,
@@ -117,13 +119,21 @@ def compare_versions(left: str, right: str) -> int | None:
     return 1 if len(left_pre) > len(right_pre) else -1
 
 
-def should_replace_target(current: Path, target: str | Path) -> bool:
+def _is_same_path(current: Path, target: str | Path) -> bool:
     try:
-        if current.resolve() == Path(target).resolve():
-            return False
+        return current.resolve() == Path(target).resolve()
     except (OSError, RuntimeError):
-        if os.path.normcase(os.path.abspath(current)) == os.path.normcase(os.path.abspath(target)):
-            return False
+        return os.path.normcase(os.path.abspath(current)) == os.path.normcase(os.path.abspath(target))
+
+
+def _is_legacy_shortcut(shortcut_path: Path) -> bool:
+    name = shortcut_path.name.casefold()
+    return any(name == legacy.casefold() for legacy in LEGACY_SHORTCUT_FILENAMES)
+
+
+def should_replace_target(current: Path, target: str | Path) -> bool:
+    if _is_same_path(current, target):
+        return False
     current_version = executable_version(current)
     target_version = executable_version(target)
     if current_version is None or target_version is None:
@@ -300,7 +310,10 @@ def _matching_shortcuts() -> list[dict[str, str]]:
                 with _NativeShellLink() as shortcut:
                     shortcut.load(shortcut_path)
                     target = shortcut.target_path()
-                is_canonical = shortcut_path.name.casefold() == SHORTCUT_FILENAME.casefold()
+                is_canonical = (
+                    shortcut_path.name.casefold() == SHORTCUT_FILENAME.casefold()
+                    or _is_legacy_shortcut(shortcut_path)
+                )
                 is_application = executable_version(target) is not None
                 if is_canonical or is_application:
                     matches.append({"path": str(shortcut_path), "target": target})
@@ -335,17 +348,39 @@ def create_desktop_shortcut() -> dict:
     return {"available": True, "created": True, "exists": True}
 
 
+def _rename_legacy_shortcut(shortcut_path: Path) -> bool:
+    destination = shortcut_path.with_name(SHORTCUT_FILENAME)
+    if destination.exists():
+        # Never overwrite a shortcut the user already has under the new name.
+        return False
+    try:
+        shortcut_path.rename(destination)
+    except OSError:
+        # The target is already updated; keeping the old name beats failing the repair.
+        return False
+    return True
+
+
 def repair_existing_shortcuts() -> dict:
-    """Update matching shortcuts when this version is equal/newer; never create or downgrade."""
+    """Update matching shortcuts when this version is equal/newer; never create or downgrade.
+
+    Shortcuts still carrying a pre-rename filename are moved to SHORTCUT_FILENAME too.
+    """
     executable = current_executable_path()
     if executable is None:
         return {"available": False, "exists": False, "matched": 0, "updated": 0}
     matches = _matching_shortcuts()
     updated = 0
     for match in matches:
-        if not should_replace_target(executable, match["target"]):
+        shortcut_path = Path(match["path"])
+        legacy = _is_legacy_shortcut(shortcut_path)
+        replace_target = should_replace_target(executable, match["target"])
+        # A legacy shortcut already pointing here still needs its new name and description.
+        if not replace_target and not (legacy and _is_same_path(executable, match["target"])):
             continue
-        _write_shortcut(Path(match["path"]), executable, load_existing=True)
+        _write_shortcut(shortcut_path, executable, load_existing=True)
+        if legacy:
+            _rename_legacy_shortcut(shortcut_path)
         updated += 1
     return {
         "available": True,

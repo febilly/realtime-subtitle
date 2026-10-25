@@ -36,6 +36,7 @@
             : null;
         const elements = options.elements || {};
         const balanceBar = elements.balanceBar || null;
+        const balanceToggle = elements.balanceToggle || null;
         const balanceActionItem = elements.balanceActionItem || null;
         const balanceOpenSettingsButton = elements.balanceOpenSettingsButton || null;
 
@@ -54,6 +55,48 @@
         let firstRedeemBonusCredits = 0;
         let firstRedeemBonusEligible = false;
         let initialized = false;
+        let expanded = true;
+        let toggleAvailable = false;
+
+        function showToggleIfNeeded() {
+            if (!balanceBar || !balanceToggle || toggleAvailable || balanceBar.hidden || !expanded) return;
+            const rowTops = [];
+            for (const item of balanceBar.querySelectorAll('.balance-item')) {
+                if (item.hidden) continue;
+                const rect = item.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) continue;
+                if (!rowTops.some((top) => Math.abs(top - rect.top) < 2)) rowTops.push(rect.top);
+                if (rowTops.length < 3) continue;
+                toggleAvailable = true;
+                balanceBar.classList.add('has-toggle');
+                balanceToggle.hidden = false;
+                break;
+            }
+        }
+
+        function setExpanded(value) {
+            expanded = !!value;
+            if (balanceBar) {
+                balanceBar.classList.toggle('is-collapsed', !expanded);
+                for (const id of ['balanceItem', 'freePools', 'subscriptionPools', 'llmSubscriptionPools']) {
+                    const item = documentRef.getElementById(id);
+                    if (item) item.hidden = !expanded;
+                }
+            }
+            if (balanceActionItem) {
+                balanceActionItem.hidden = !expanded || !lastBalanceData || !balanceIsLow();
+            }
+            if (balanceToggle) {
+                const label = t(expanded ? 'balance_collapse' : 'balance_expand');
+                balanceToggle.setAttribute('aria-expanded', String(expanded));
+                balanceToggle.setAttribute('aria-label', label);
+                balanceToggle.title = label;
+            }
+        }
+
+        function toggleExpanded() {
+            setExpanded(!expanded);
+        }
 
         function runtimeState() {
             const value = getRuntimeState();
@@ -112,6 +155,7 @@
             if (!balanceBar) return;
             if (balanceBarShouldShow()) {
                 balanceBar.hidden = false;
+                showToggleIfNeeded();
                 startBalancePolling();
             } else {
                 balanceBar.hidden = true;
@@ -192,7 +236,7 @@
          * subscription: a missing free allowance is worth telling the user
          * about, not having bought a plan is not.
          */
-        function renderSubscriptionPools(container, pools, { detailed = false } = {}) {
+        function renderSubscriptionPools(container, pools, { detailed = false, llm = false } = {}) {
             if (!container) return;
             container.innerHTML = '';
             if (!Array.isArray(pools) || !pools.length) return;
@@ -201,15 +245,25 @@
                 item.className = 'balance-item';
                 const label = documentRef.createElement('span');
                 label.className = 'balance-label';
-                label.textContent = detailed && pool.plan_name
-                    ? `${pool.plan_name} · ${subscriptionPoolLabel(pool.period)}`
+                const periodLabel = llm
+                    ? `LLM ${subscriptionPoolLabel(pool.period)}`
                     : subscriptionPoolLabel(pool.period);
+                label.textContent = detailed && pool.plan_name
+                    ? `${pool.plan_name} · ${periodLabel}`
+                    : periodLabel;
                 const value = documentRef.createElement('span');
                 value.className = 'balance-value';
                 const expiry = detailed ? formatExpiry(pool.expires_at) : '';
-                value.textContent = expiry
-                    ? `${subscriptionPoolValue(pool)} (${t('balance_subscription_expires', { date: expiry })})`
+                const poolValue = llm
+                    ? ((pool.unlimited || Number(pool.max_credits) < 0)
+                        ? t('balance_free_unlimited')
+                        : t('balance_free_remaining', {
+                            remaining: formatCredits(pool.remaining), cap: formatCredits(pool.max_credits),
+                        }))
                     : subscriptionPoolValue(pool);
+                value.textContent = expiry
+                    ? `${poolValue} (${t('balance_subscription_expires', { date: expiry })})`
+                    : poolValue;
                 item.append(label, value);
                 container.appendChild(item);
             }
@@ -301,7 +355,7 @@
                 balanceOpenSettingsButton.textContent = t(canPurchaseCredits() ? 'get_more_credits' : 'open_settings');
             }
             if (balanceActionItem) {
-                balanceActionItem.hidden = !balanceIsLow();
+                balanceActionItem.hidden = !expanded || !balanceIsLow();
             }
             renderFreePools(
                 documentRef.getElementById('freePools'),
@@ -311,6 +365,12 @@
                 documentRef.getElementById('subscriptionPools'),
                 view.subscriptions,
             );
+            renderSubscriptionPools(
+                documentRef.getElementById('llmSubscriptionPools'),
+                view.llm_subscription && view.llm_subscription.pools,
+                { llm: true },
+            );
+            showToggleIfNeeded();
             onAccountBalanceChanged();
         }
 
@@ -459,6 +519,14 @@
         function init() {
             if (initialized) return false;
             initialized = true;
+            setExpanded(true);
+            if (balanceToggle) {
+                balanceToggle.hidden = !toggleAvailable;
+                balanceToggle.addEventListener('click', toggleExpanded);
+            }
+            if (documentRef && documentRef.defaultView) {
+                documentRef.defaultView.addEventListener('resize', showToggleIfNeeded);
+            }
             if (balanceOpenSettingsButton) {
                 balanceOpenSettingsButton.addEventListener('click', handleBalanceAction);
             }
@@ -467,6 +535,10 @@
 
         function destroy() {
             stopBalancePolling();
+            if (balanceToggle) balanceToggle.removeEventListener('click', toggleExpanded);
+            if (documentRef && documentRef.defaultView) {
+                documentRef.defaultView.removeEventListener('resize', showToggleIfNeeded);
+            }
             if (sessionCostTimer) {
                 clearIntervalRef(sessionCostTimer);
                 sessionCostTimer = null;
@@ -482,6 +554,7 @@
             balanceBarShouldShow,
             currentBalanceView,
             destroy,
+            expand: () => setExpanded(true),
             fetchBalance,
             fetchProviderBalance,
             formatCredits,

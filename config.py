@@ -5,18 +5,28 @@ import json
 import os
 import sys
 import locale
-import time
 import threading
 from urllib.parse import urlencode
 import requests
 from dotenv import load_dotenv
+
+# Make console output resilient: on Windows a redirected stdout/stderr uses
+# the ANSI code page (e.g. GBK), where the emoji used throughout the logs
+# raises UnicodeEncodeError and can crash the app during import (seen in a
+# packaged-exe smoke test with output redirected to a file). UTF-8 with
+# errors="replace" keeps every print safe. Runs before any module print.
+for _output_stream in (sys.stdout, sys.stderr):
+    try:
+        _output_stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 
 # ======================== Supported languages (per provider) ========================
 # Providers accept different target-language sets.
 # The active set/list is selected by TRANSLATION_PROVIDER (resolved further below).
 
-# Soniox-supported languages (ISO 639-1). Source: docs/supported-languages.mdx
+# Soniox-supported languages (ISO 639-1). Source: https://soniox.com/docs/stt/concepts/supported-languages
 SONIOX_SUPPORTED_LANGUAGE_CODES = {
     "af", "sq", "ar", "az", "eu", "be", "bn", "bs", "bg", "ca",
     "zh", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "gl",
@@ -171,6 +181,40 @@ def canonicalize_target_lang(lang: str, provider: str | None = None) -> str:
     return canonicalize_language_code(lang) if p == "gemini" else normalize_language_code(lang)
 
 
+def _system_default_locale() -> str:
+    """Best-effort system default locale (e.g. 'zh_CN', 'en_US', 'zh-CN').
+
+    Replaces the deprecated ``locale.getdefaultlocale()`` (removal planned for
+    Python 3.15) with the same resolution order: LC_ALL/LC_CTYPE/LANG/
+    LANGUAGE environment variables, then (on Windows) the user default locale
+    via the Win32 API (which returns a BCP-47 name like 'zh-CN').
+    ``locale.getlocale()`` is only a last-resort fallback: on Windows it
+    returns the native setlocale form (e.g. 'Chinese (Simplified)_China'),
+    which cannot be mapped to an ISO language code.
+    """
+    for env_var in ("LC_ALL", "LC_CTYPE", "LANG", "LANGUAGE"):
+        value = (os.environ.get(env_var) or "").strip()
+        if value:
+            # Strip encoding ('zh_CN.UTF-8') and modifier ('zh_CN@pinyin').
+            return value.split(".", 1)[0].split("@", 1)[0] or value
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            buffer = ctypes.create_unicode_buffer(85)
+            if ctypes.windll.kernel32.GetUserDefaultLocaleName(buffer, len(buffer)):
+                return buffer.value or ""
+        except Exception:
+            pass
+    try:
+        value = (locale.getlocale() or (None, None))[0]
+        if value:
+            return str(value)
+    except Exception:
+        pass
+    return ""
+
+
 def is_system_traditional_chinese() -> bool:
     """Return True if the host system locale is set to Traditional Chinese."""
     try:
@@ -183,10 +227,7 @@ def is_system_traditional_chinese() -> bool:
         except Exception:
             loc = ""
         if not loc:
-            try:
-                loc = str(locale.getdefaultlocale()[0] or "").lower()
-            except Exception:
-                loc = ""
+            loc = _system_default_locale().lower()
         if any(loc.startswith(t) or loc == t for t in _TRADITIONAL_CHINESE_LOCALES) or "traditional" in loc or "tw" in loc or "hk" in loc or "mo" in loc or "hant" in loc:
             return True
     except Exception:
@@ -710,7 +751,7 @@ def set_sleep_on_silence_enabled(enabled: bool) -> bool:
 # the environment (.env) and is never editable from the UI.
 SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
-CLIENT_VERSION = "4.7.0"
+CLIENT_VERSION = "4.13.0"
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
@@ -911,6 +952,21 @@ LLM_PROMPT_SUFFIX = _env_str("LLM_PROMPT_SUFFIX", "")
 # LLM temperature (0.0-2.0). Lower is more deterministic.
 LLM_TEMPERATURE = min(2.0, max(0.0, _env_float("LLM_TEMPERATURE", 0.2)))
 
+# How the frontend visualizes refine edits (diff between the original and the
+# refined translation). One of:
+# - "off":                 show the refined translation as-is, no diff (default)
+# - "additions":           word/char diff with added text highlighted in green
+# - "additions_deletions": same as "additions" but deleted text is also shown in
+#                          red with strikethrough
+# - "two_lines":           no inline diff; the full original translation is shown
+#                          on one line (red background) and the refined translation
+#                          on the next line (green background)
+_LLM_REFINE_DIFF_MODE_RAW = _env_str("LLM_REFINE_DIFF_MODE", "off")
+_LLM_REFINE_DIFF_MODE = str(_LLM_REFINE_DIFF_MODE_RAW).strip().lower()
+if _LLM_REFINE_DIFF_MODE not in ("off", "additions", "additions_deletions", "two_lines"):
+    _LLM_REFINE_DIFF_MODE = "off"
+LLM_REFINE_DIFF_MODE = _LLM_REFINE_DIFF_MODE
+
 # Context item range used for LLM refine / translate (completed recent source lines).
 # Strategy:
 # - each request starts from min count and increases by +1 up to max count
@@ -1085,8 +1141,8 @@ def get_system_language(provider: str | None = None) -> str:
     """
     p = provider or TRANSLATION_PROVIDER
     try:
-        # Get system locale
-        system_locale = locale.getdefaultlocale()[0]  # e.g. 'zh_CN', 'en_US', 'ja_JP'
+        # Get system locale (getdefaultlocale replacement; see helper).
+        system_locale = _system_default_locale()  # e.g. 'zh_CN', 'en_US', 'zh-CN'
 
         if system_locale:
             if p == "gemini":
@@ -1258,6 +1314,7 @@ def _relay_connect_url(
     model: str | None = None,
     translation: str | None = None,
     run_id: str | None = None,
+    audio_codec: str | None = None,
 ) -> str:
     """REST endpoint used to mint a short-lived provider relay connection."""
     p = _relay_provider(provider)
@@ -1269,6 +1326,8 @@ def _relay_connect_url(
         params["translation"] = str(translation)
     if run_id:
         params["run_id"] = str(run_id)
+    if audio_codec:
+        params["audio_codec"] = str(audio_codec)
     if params:
         url += "?" + urlencode(params)
     return url
@@ -1279,6 +1338,7 @@ def relay_connect_info(
     model: str | None = None,
     translation: str | None = None,
     run_id: str | None = None,
+    audio_codec: str | None = None,
 ) -> dict:
     """Request the actual relay WebSocket URL from subtitle-server.
 
@@ -1297,7 +1357,7 @@ def relay_connect_info(
     if not token:
         raise RuntimeError("Relay account token is missing; please sign in again")
 
-    url = _relay_connect_url(provider, model=model, translation=translation, run_id=run_id)
+    url = _relay_connect_url(provider, model=model, translation=translation, run_id=run_id, audio_codec=audio_codec)
     try:
         response = requests.get(
             url,
@@ -1365,7 +1425,6 @@ IPC_HOST = _env_str("IPC_HOST", "127.0.0.1")
 IPC_PORT_RANGE = range(17353, 17364)
 
 # IPC discovery file path
-import tempfile
 from shared.vrchat_bridge import get_discovery_path
 IPC_DISCOVERY_FILE = _env_str(
     "IPC_DISCOVERY_FILE",

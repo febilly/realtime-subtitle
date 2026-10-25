@@ -1,5 +1,6 @@
 """Twitch 音频捕获模块 - 从 Twitch 串流提取音频并输出 PCM_s16le"""
 
+from collections import deque
 import subprocess
 import threading
 import time
@@ -35,6 +36,10 @@ class TwitchAudioStreamer:
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._process: Optional[subprocess.Popen] = None
+        self._process_lock = threading.Lock()
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._error_log: deque[str] = deque(maxlen=20)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -46,10 +51,46 @@ class TwitchAudioStreamer:
 
     def stop(self) -> None:
         self._stop_event.set()
+        with self._process_lock:
+            proc = self._process
+            if proc and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
         thread = self._thread
         if thread and thread.is_alive():
             thread.join(timeout=2.0)
+            if thread.is_alive():
+                # 若仍未退出，实施二次强制 kill
+                with self._process_lock:
+                    proc = self._process
+                    if proc and proc.poll() is None:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                thread.join(timeout=1.0)
         self._thread = None
+
+    @staticmethod
+    def _drain_stderr(proc: subprocess.Popen, error_log: deque) -> None:
+        try:
+            if proc.stderr:
+                for line in iter(proc.stderr.readline, b""):
+                    if not line:
+                        break
+                    if isinstance(line, bytes):
+                        text = line.decode("utf-8", errors="ignore")
+                    else:
+                        text = str(line)
+                    for subline in text.splitlines():
+                        stripped = subline.strip()
+                        if stripped:
+                            error_log.append(stripped)
+        except Exception:
+            pass
 
     def _resolve_stream_url(self) -> str:
         try:
@@ -89,11 +130,17 @@ class TwitchAudioStreamer:
 
     def _run(self) -> None:
         bytes_per_chunk = int(self.chunk_size) * 2  # int16 mono
+        retry_delay = 2.0
+        max_delay = 60.0
 
         while not self._stop_event.is_set():
             process: Optional[subprocess.Popen] = None
+            stderr_thread: Optional[threading.Thread] = None
+            had_error = False
+
             try:
                 stream_url = self._resolve_stream_url()
+                retry_delay = 2.0  # 成功解析后重置退避延迟
                 print(f"📺 Twitch audio streaming: {self.channel} ({self.quality})")
 
                 cmd = [
@@ -115,16 +162,35 @@ class TwitchAudioStreamer:
                     "pipe:1",
                 ]
 
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    bufsize=0,
+                with self._process_lock:
+                    if self._stop_event.is_set():
+                        return
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        bufsize=0,
+                    )
+                    self._process = process
+
+                error_log: deque[str] = deque(maxlen=20)
+                self._error_log = error_log
+
+                stderr_thread = threading.Thread(
+                    target=self._drain_stderr,
+                    args=(process, error_log),
+                    name="TwitchFFmpegStderrDrain",
+                    daemon=True,
                 )
+                self._stderr_thread = stderr_thread
+                stderr_thread.start()
 
                 assert process.stdout is not None
                 while not self._stop_event.is_set():
-                    data = process.stdout.read(bytes_per_chunk)
+                    try:
+                        data = process.stdout.read(bytes_per_chunk)
+                    except Exception:
+                        break
                     if not data:
                         break
                     try:
@@ -136,13 +202,11 @@ class TwitchAudioStreamer:
                 if self._stop_event.is_set():
                     return
 
-                stderr_text = ""
-                if process.stderr is not None:
-                    try:
-                        stderr_text = process.stderr.read().decode("utf-8", errors="ignore").strip()
-                    except Exception:
-                        stderr_text = ""
-                if stderr_text:
+                if stderr_thread.is_alive():
+                    stderr_thread.join(timeout=0.5)
+
+                if error_log:
+                    stderr_text = "\n".join(error_log)
                     print(f"ffmpeg error: {stderr_text}")
 
             except FileNotFoundError:
@@ -153,11 +217,42 @@ class TwitchAudioStreamer:
                 return
             except Exception as error:
                 print(f"Error streaming Twitch audio: {error}")
+                had_error = True
             finally:
-                if process and process.poll() is None:
+                with self._process_lock:
+                    if process is not None:
+                        if process.poll() is None:
+                            try:
+                                process.terminate()
+                            except Exception:
+                                pass
+                        if self._process is process:
+                            self._process = None
+
+                if stderr_thread and stderr_thread.is_alive():
+                    stderr_thread.join(timeout=0.5)
+
+                if process is not None:
                     try:
-                        process.terminate()
+                        if process.stdout:
+                            process.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        if process.stderr:
+                            process.stderr.close()
                     except Exception:
                         pass
 
-            time.sleep(1.0)
+            if self._stop_event.is_set():
+                return
+
+            if had_error:
+                wait_time = retry_delay
+                retry_delay = min(max_delay, retry_delay * 2.0)
+            else:
+                wait_time = 1.0
+                retry_delay = 2.0
+
+            if self._stop_event.wait(wait_time):
+                return

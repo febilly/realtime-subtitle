@@ -9,14 +9,25 @@ describe('full-page settings and controls smoke', () => {
             await page.flush(2);
             expect(settingsPanel.hidden).toBe(false);
             expect(page.document.getElementById('settingsOverlay').hidden).toBe(false);
+            const oscSection = page.document.getElementById('oscSettingsSection');
+            expect(oscSection).not.toBeNull();
+            expect(oscSection.contains(
+                page.document.getElementById('oscSensitiveFilterSettingField'),
+            )).toBe(true);
+            expect(oscSection.contains(
+                page.document.getElementById('oscSensitiveFilterNoticeSettingField'),
+            )).toBe(true);
+            expect(page.document.getElementById('runtimeControlsSection').contains(
+                page.document.getElementById('oscSensitiveFilterSettingField'),
+            )).toBe(false);
 
-            const autoRestartTrigger = page.document.querySelector('#autoRestartPicker .lang-picker-button');
-            expect(autoRestartTrigger).not.toBeNull();
-            autoRestartTrigger.click();
-            const pickerOptions = [...page.document.querySelectorAll('.lang-select-menu .lang-select-option')];
-            expect(pickerOptions.length).toBeGreaterThan(0);
-            pickerOptions.at(-1).click();
-            expect(autoRestartTrigger.getAttribute('aria-expanded')).toBe('false');
+            const autoRestartSwitch = page.document.querySelector('#autoRestartPicker .settings-switch');
+            expect(autoRestartSwitch).not.toBeNull();
+            expect(autoRestartSwitch.getAttribute('aria-checked')).toBe('false');
+            page.document.getElementById('autoRestartSettingLabel').click();
+            expect(autoRestartSwitch.getAttribute('aria-checked')).toBe('true');
+            autoRestartSwitch.click();
+            expect(autoRestartSwitch.getAttribute('aria-checked')).toBe('false');
 
             page.document.getElementById('settingsCancelButton').click();
             expect(settingsPanel.hidden).toBe(true);

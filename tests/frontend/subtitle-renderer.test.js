@@ -46,6 +46,7 @@ function createHarness(options = {}) {
         suppressTranslationDisplay: false,
         translateMode: false,
         translationUiMode: 'fast',
+        llmRefineDiffMode: 'off',
         currentTranslationTargetLang: '',
         furiganaEnabled: false,
         speakerDiarizationEnabled: true,
@@ -111,6 +112,7 @@ function createHarness(options = {}) {
         RenderHtml,
         Segmentation,
         escapeHtml,
+        TranslationDiff: options.TranslationDiff,
         t: (key, vars = {}) => {
             if (key === 'empty_state') return 'Nothing to show';
             if (key === 'speaker_label') return `Speaker ${vars.speaker}`;
@@ -418,5 +420,69 @@ describe('SubtitleRenderer flow direction', () => {
                 .map((text) => text.textContent)
                 .join(''));
         expect(sentences).toEqual(expected);
+    });
+});
+
+describe('SubtitleRenderer refine diff modes', () => {
+    const TranslationDiff = require('../../static/js/translation-diff');
+
+    function diffHarness(viewOverrides = {}) {
+        return createHarness({
+            tokens: [original('Hello.'), translation('你好。')],
+            TranslationDiff: TranslationDiff.create({
+                escapeHtml: (text) => String(text)
+                    .replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;'),
+            }),
+            view: viewOverrides,
+        });
+    }
+
+    it('renders the refined translation without diff markup when the mode is off', () => {
+        const page = diffHarness();
+        page.state.refined.set('sentence-1', '你好世界。');
+
+        page.renderer.render();
+
+        const line = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(line.textContent).toContain('你好世界。');
+        expect(line.innerHTML).not.toContain('llm-diff');
+    });
+
+    it('highlights refined additions inline in additions mode', () => {
+        const page = diffHarness({ llmRefineDiffMode: 'additions' });
+        page.state.refined.set('sentence-1', '你好世界。');
+
+        page.renderer.render();
+
+        const line = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(line.innerHTML).toContain('llm-diff-ins');
+        expect(line.textContent).toContain('你好世界。');
+    });
+
+    it('renders the old and refined translations on separate lines in two_lines mode', () => {
+        const page = diffHarness({ llmRefineDiffMode: 'two_lines' });
+        page.state.refined.set('sentence-1', '你好世界。');
+
+        page.renderer.render();
+
+        const line = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(line.querySelector('.llm-diff-line-old').textContent).toBe('你好。');
+        expect(line.querySelector('.llm-diff-line-new').textContent).toBe('你好世界。');
+    });
+
+    it('never applies the diff in pure LLM translate mode', () => {
+        const page = diffHarness({
+            translateMode: true,
+            translationUiMode: 'fast',
+            llmRefineDiffMode: 'additions_deletions',
+        });
+        page.state.refined.set('sentence-1', '你好世界。');
+
+        page.renderer.render();
+
+        const line = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(line.innerHTML).not.toContain('llm-diff');
     });
 });

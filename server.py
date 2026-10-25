@@ -155,6 +155,13 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
                                      help='Enable LLM refine by default (can be toggled in UI if unlocked)')
     refine_toggle_group.add_argument('--no-llm-refine', dest='llm_refine_default_enabled', action='store_false', default=None,
                                      help='Disable LLM refine by default (can be toggled in UI if unlocked)')
+    parser.add_argument(
+        '--llm-refine-diff-mode',
+        dest='llm_refine_diff_mode',
+        choices=('off', 'additions', 'additions_deletions', 'two_lines'),
+        default=None,
+        help='Frontend visualization of refine edits: off | additions | additions_deletions | two_lines (no UI toggle)',
+    )
 
     return parser.parse_known_args(argv)
 
@@ -206,6 +213,7 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     _set_env_if_provided('FFMPEG_PATH', args.ffmpeg_path)
 
     _set_env_bool_if_provided('LLM_REFINE_DEFAULT_ENABLED', args.llm_refine_default_enabled)
+    _set_env_if_provided('LLM_REFINE_DIFF_MODE', args.llm_refine_diff_mode)
 
 
 class ProviderManager:
@@ -225,6 +233,12 @@ class ProviderManager:
         self.broadcast_callback = broadcast_callback
         self.web_server = None
         self.loop = None
+        # Serializes every session stop/start (provider hot-switch, /restart,
+        # pause/resume). Two overlapping lifecycles can each start a stream —
+        # e.g. the startup relay setup rebuilding the session while /restart
+        # restarts the old one — leaving two live streams broadcasting
+        # interleaved frames (subtitles flicker between two hypotheses).
+        self.lifecycle_lock = asyncio.Lock()
 
         # New random id per process; lets the frontend tell whether its
         # localStorage override has already been pushed to this backend instance.
@@ -420,7 +434,12 @@ class ProviderManager:
                 print(f"⚠️  Failed to restore audio source selection: {error}")
 
     # ----- hot switch -----
-    async def apply_provider(
+    async def apply_provider(self, provider, **kwargs) -> dict:
+        """Switch provider/key/mode (and optionally translation) in-process."""
+        async with self.lifecycle_lock:
+            return await self._apply_provider_locked(provider, **kwargs)
+
+    async def _apply_provider_locked(
         self,
         provider,
         *,
@@ -434,7 +453,6 @@ class ProviderManager:
         target_lang_1=None,
         target_lang_2=None,
     ) -> dict:
-        """Switch provider/key/mode (and optionally translation) in-process."""
         provider = self.config.set_active_provider(provider)
         self.provider = provider
 
@@ -485,16 +503,18 @@ class ProviderManager:
                 self.target_lang = self.target_lang_1
             downgraded_two_way = True
 
-        # Stop old session.
+        # Stop old session. stop() joins the session/audio threads (up to
+        # ~4.5s); run it in a worker thread so the event loop keeps serving
+        # other requests (same reasoning as the restart/pause handlers).
         old_session = self.web_server.session if self.web_server else None
         self._capture_audio_preferences(old_session)
         if old_session is not None:
             try:
-                old_session.stop()
+                await asyncio.to_thread(old_session.stop)
             except Exception as e:
                 print(f"⚠️  Error stopping previous session: {e}")
         try:
-            self.logger.close_log_file()
+            await asyncio.to_thread(self.logger.close_log_file)
         except Exception:
             pass
 
@@ -524,7 +544,8 @@ class ProviderManager:
             self.web_server.session = new_session
             self.web_server.get_api_key = self.get_api_key
         self.ipc_server.set_session(new_session)
-        session_mod.ipc_server = self.ipc_server
+        import realtime_session_base
+        realtime_session_base.ipc_server = self.ipc_server
         if hasattr(session_mod, "bind_ipc_server"):
             session_mod.bind_ipc_server(self.ipc_server)
         self.osc_manager.set_speaker_labels_enabled(bool(self.config.ENABLE_SPEAKER_DIARIZATION))
@@ -575,6 +596,9 @@ class OverlayManager:
     WebSocket(`/ws`) 接收字幕，并用 REST(`/pause`,`/resume`) 控制识别。
     """
 
+    RUN_FLAG = "--run-overlay"
+    SCRIPT = "overlay_window.py"
+
     def __init__(self, server_url: str, web_server=None):
         self.server_url = server_url
         self.web_server = web_server
@@ -585,13 +609,13 @@ class OverlayManager:
         return self._proc is not None and self._proc.poll() is None
 
     def _build_command(self, hidden: bool = True) -> list[str]:
-        args = ["--run-overlay", "--url", self.server_url]
+        args = [self.RUN_FLAG, "--url", self.server_url]
         if hidden:
             args.append("--hidden")
         if getattr(sys, "frozen", False):
             # PyInstaller：重新拉起自身可执行文件，由 main() 顶部分发到 overlay。
             return [sys.executable, *args]
-        overlay_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "overlay_window.py")
+        overlay_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.SCRIPT)
         return [sys.executable, overlay_script, *args]
 
     def open(self, hidden: bool = False) -> bool:
@@ -629,6 +653,31 @@ class OverlayManager:
         return False
 
 
+class VrOverlayManager(OverlayManager):
+    """管理 SteamVR 字幕悬浮窗子进程（vr_overlay.py）。
+
+    子进程启动后自己等待 SteamVR（未运行时静默重试），并通过 POST /vr-overlay
+    {"action": "report"} 回报是否已连上；显隐与位置模式经 WebSocket 下发。
+    不预热：只有用户打开过 VR 字幕时才拉起进程。
+    """
+
+    RUN_FLAG = "--run-vr-overlay"
+    SCRIPT = "vr_overlay.py"
+
+    def __init__(self, server_url: str, web_server=None):
+        super().__init__(server_url, web_server=web_server)
+        self.connected = False
+        self.attach_mode = "body"
+
+    @staticmethod
+    def available() -> bool:
+        import importlib.util
+        try:
+            return importlib.util.find_spec("openvr") is not None
+        except Exception:
+            return False
+
+
 def run_server(app, sock):
     """在单独的线程中运行Web服务器"""
     loop = asyncio.new_event_loop()
@@ -658,6 +707,9 @@ def main():
     if "--run-overlay" in sys.argv:
         from overlay_window import main as overlay_main
         sys.exit(overlay_main())
+    if "--run-vr-overlay" in sys.argv:
+        from vr_overlay import main as vr_overlay_main
+        sys.exit(vr_overlay_main())
 
     # Existing desktop shortcuts follow the currently running downloaded version.
     # This never creates a shortcut; creation remains an explicit post-login choice.
@@ -696,7 +748,7 @@ def main():
     # 创建Web服务器（会在创建session时传入）
     web_server = None
     window = None
-    window_title = "Real-time Subtitle"
+    window_title = "Realtime Subtitle"
     window_on_top_requests: queue.SimpleQueue[bool | None] = queue.SimpleQueue()
 
     # broadcast 回调引用 web_server（在 ProviderManager 重建 session 后仍然有效，
@@ -736,7 +788,8 @@ def main():
     web_server.provider_manager = provider_manager
 
     ipc_server.set_session(session)
-    _seed_mod.ipc_server = ipc_server
+    import realtime_session_base
+    realtime_session_base.ipc_server = ipc_server
     if hasattr(_seed_mod, "bind_ipc_server"):
         _seed_mod.bind_ipc_server(ipc_server)
     web_server.ipc_server = ipc_server
@@ -795,12 +848,13 @@ def main():
 
     def close_overlay() -> None:
         """退出前关闭原生字幕悬浮窗子进程，避免遗留孤儿进程。"""
-        manager = getattr(web_server, "overlay_manager", None)
-        if manager is not None:
-            try:
-                manager.close()
-            except Exception:
-                pass
+        for name in ("overlay_manager", "vr_overlay_manager"):
+            manager = getattr(web_server, name, None)
+            if manager is not None:
+                try:
+                    manager.close()
+                except Exception:
+                    pass
 
     def graceful_shutdown() -> None:
         """优雅关闭所有连接和进程，防止遗留孤儿进程或断开异常。"""
@@ -933,6 +987,9 @@ def main():
 
     # 原生字幕悬浮窗始终走本地回环地址连接，避免依赖 LAN host 解析。
     web_server.overlay_manager = OverlayManager(f"http://127.0.0.1:{actual_port}", web_server=web_server)
+    if VrOverlayManager.available():
+        web_server.vr_overlay_manager = VrOverlayManager(
+            f"http://127.0.0.1:{actual_port}", web_server=web_server)
 
     debug = bool(args.debug)
 

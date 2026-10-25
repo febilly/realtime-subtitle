@@ -12,6 +12,7 @@ const functions = {
     text_ends_with_ellipsis: Segmentation.textEndsWithEllipsis,
     text_has_unclosed_quote: Segmentation.textHasUnclosedQuote,
     text_continues_abbreviation: Segmentation.textContinuesAbbreviation,
+    text_ends_with_numeric_period: Segmentation.textEndsWithNumericPeriod,
     token_text_continues_decimal: Segmentation.tokenTextContinuesDecimal,
     token_text_starts_with_closing_quote: Segmentation.tokenTextStartsWithClosingQuote,
     text_ends_with_closing_quote_after_sentence_punctuation: (

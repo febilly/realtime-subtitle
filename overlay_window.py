@@ -26,6 +26,12 @@ import threading
 import urllib.request
 from html import escape as _html_escape
 
+import sentence_segmentation
+
+# Win32 窗口样式相关调用集中在这个模块里，不要挪回本文件——火绒会对
+# overlay_window 的字节码误报 Trojan/Python.ShellLoader.am。详见该模块的注释。
+import win_overlay_native
+
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QPointF, QRect, QRectF, QSettings, QSize, QEvent, QLocale
 from PySide6.QtGui import (
     QCursor,
@@ -538,20 +544,7 @@ def is_parent_alive():
         if ppid <= 1:
             return False
         if os.name == "nt":
-            import ctypes
-            # Open process handle
-            PROCESS_QUERY_INFORMATION = 0x0400
-            SYNCHRONIZE = 0x00100000
-            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION | SYNCHRONIZE, False, ppid)
-            if not handle:
-                return False
-            # Check if it has exited
-            exit_code = ctypes.c_ulong()
-            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-            STILL_ACTIVE = 259
-            is_active = (exit_code.value == STILL_ACTIVE)
-            ctypes.windll.kernel32.CloseHandle(handle)
-            return is_active
+            return win_overlay_native.is_process_alive(ppid)
         else:
             try:
                 os.kill(ppid, 0)
@@ -560,6 +553,24 @@ def is_parent_alive():
                 return False
     except Exception:
         return True
+
+
+# 悬浮窗所有网络交互均指向本机 127.0.0.1 服务，必须显式绕过 Windows 系统代理（IE / WinINet 注册表代理），
+# 避免被各类本地代理软件（如 Clash、v2rayN）劫持导致连不上回环端口。
+_local_http_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def _ws_connect_kwargs() -> dict:
+    """本机 WebSocket 连接参数。显式指定 proxy=None，避免被系统代理劫持。"""
+    kwargs = {"max_size": None, "ping_interval": 20}
+    if websockets is not None:
+        try:
+            import inspect
+            if "proxy" in inspect.signature(websockets.connect).parameters:
+                kwargs["proxy"] = None
+        except Exception:
+            pass
+    return kwargs
 
 
 class WsClient(threading.Thread):
@@ -581,10 +592,10 @@ class WsClient(threading.Thread):
             pass
 
     async def _main(self):
+        connect_kwargs = _ws_connect_kwargs()
         while not self._stop:
             try:
-                async with websockets.connect(self.ws_url, max_size=None,
-                                              ping_interval=20) as ws:
+                async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
                     self.bridge.status.emit(True)
                     async for msg in ws:
                         if self._stop:
@@ -1492,113 +1503,6 @@ class SubtitleTextEdit(QTextEdit):
         return pm
 
 
-# ===========================================================================
-# Windows 专用：让窗口不抢焦点（点击不激活），并置顶。
-# ===========================================================================
-def _apply_no_activate_style(hwnd: int, app_window: bool = False):
-    """让窗口点击不激活并置顶。
-
-    app_window=True 时把窗口注册为任务栏窗口（WS_EX_APPWINDOW，去掉 WS_EX_TOOLWINDOW），
-    这样它会出现在 Windows 任务栏，并能被 OBS 等软件作为独立窗口捕捉；
-    False（默认）则保持工具窗口，不进任务栏。
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        import ctypes.wintypes
-
-        user32 = ctypes.windll.user32
-        is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
-
-        get_window_long = (
-            user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
-        )
-        set_window_long = (
-            user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
-        )
-        long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
-        get_window_long.restype = long_type
-        get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
-        set_window_long.restype = long_type
-        set_window_long.argtypes = (
-            ctypes.wintypes.HWND,
-            ctypes.c_int,
-            long_type,
-        )
-
-        GWL_EXSTYLE = -20
-        WS_EX_TOOLWINDOW = 0x00000080
-        WS_EX_APPWINDOW = 0x00040000
-        WS_EX_NOACTIVATE = 0x08000000
-        style = int(get_window_long(hwnd, GWL_EXSTYLE))
-        style |= WS_EX_NOACTIVATE
-        if app_window:
-            style |= WS_EX_APPWINDOW
-            style &= ~WS_EX_TOOLWINDOW
-        else:
-            style |= WS_EX_TOOLWINDOW
-        set_window_long(hwnd, GWL_EXSTYLE, long_type(style))
-
-        HWND_TOPMOST = -1
-        SWP_NOSIZE = 0x0001
-        SWP_NOMOVE = 0x0002
-        SWP_NOACTIVATE = 0x0010
-        SWP_FRAMECHANGED = 0x0020
-        user32.SetWindowPos(
-            ctypes.wintypes.HWND(hwnd),
-            ctypes.wintypes.HWND(HWND_TOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-        )
-    except Exception:
-        pass
-
-
-def _set_click_through(hwnd: int, enabled: bool):
-    """切换 Windows 鼠标穿透（WS_EX_TRANSPARENT）。
-
-    开启后该窗口不再接收任何鼠标事件，点击会落到下方窗口；关闭则恢复正常。
-    """
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        import ctypes.wintypes
-
-        user32 = ctypes.windll.user32
-        is_64bit = ctypes.sizeof(ctypes.c_void_p) == 8
-
-        get_window_long = (
-            user32.GetWindowLongPtrW if is_64bit else user32.GetWindowLongW
-        )
-        set_window_long = (
-            user32.SetWindowLongPtrW if is_64bit else user32.SetWindowLongW
-        )
-        long_type = ctypes.c_longlong if is_64bit else ctypes.c_long
-        get_window_long.restype = long_type
-        get_window_long.argtypes = (ctypes.wintypes.HWND, ctypes.c_int)
-        set_window_long.restype = long_type
-        set_window_long.argtypes = (
-            ctypes.wintypes.HWND,
-            ctypes.c_int,
-            long_type,
-        )
-
-        GWL_EXSTYLE = -20
-        WS_EX_TRANSPARENT = 0x00000020
-        WS_EX_LAYERED = 0x00080000
-        style = int(get_window_long(hwnd, GWL_EXSTYLE))
-        if enabled:
-            style |= WS_EX_TRANSPARENT | WS_EX_LAYERED
-        else:
-            style &= ~WS_EX_TRANSPARENT
-        set_window_long(hwnd, GWL_EXSTYLE, long_type(style))
-    except Exception:
-        pass
 
 
 # ===========================================================================
@@ -1607,17 +1511,23 @@ def _set_click_through(hwnd: int, enabled: bool):
 class OverlayWindow(QWidget):
     _restart_finished = Signal(bool)
 
+    # 子类（如 VR 悬浮窗）覆盖这些属性即可拥有独立的设置与连接身份。
+    SETTINGS_NAME = "Overlay"
+    WS_CLIENT = "overlay"
+    DEFAULT_FONT_SIZE = 20
+
     def __init__(self, server_url: str):
         super().__init__()
         self.server_url = server_url.rstrip("/")
         self.model = SubtitleModel()
-        # LLM 译文更新（改进 / 混合 / 准确）：按 sentence_id 覆盖 STT 译文。
-        # 悬浮窗只展示最终译文，不做网页版的绿色（已改进）/灰色（临时译文）标注。
+        # 最终译文按 sentence_id 覆盖；ASR 未 finalize 前的推测译文按原文匹配。
         self._refined_by_sid: dict[str, str] = {}
         self._refined_lang_by_sid: dict[str, str] = {}
-        self.settings = QSettings("RealtimeSubtitle", "Overlay")
+        self._spec_by_source: dict[str, tuple[str, str]] = {}
+        self._spec_pending_by_source: dict[str, str] = {}
+        self.settings = QSettings("RealtimeSubtitle", self.SETTINGS_NAME)
 
-        self.font_size = int(self.settings.value("font_size", 20))
+        self.font_size = int(self.settings.value("font_size", self.DEFAULT_FONT_SIZE))
         self.bg_alpha = int(self.settings.value("bg_alpha", DEFAULT_ALPHA))
         self.background_mode = _normalize_background_mode(
             self.settings.value("background_mode", BACKGROUND_MODE_WINDOW))
@@ -1680,7 +1590,7 @@ class OverlayWindow(QWidget):
         self._apply_windows_no_activate_style()
 
         # 字幕文本区：不接收鼠标事件，让拖动/缩放在任意位置可用
-        self.text = SubtitleTextEdit(self)
+        self.text = self._create_text_edit()
         self.text.setReadOnly(True)
         self.text.setFrameStyle(0)
         self.text.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1745,6 +1655,9 @@ class OverlayWindow(QWidget):
 
         self._render()
 
+    def _create_text_edit(self) -> SubtitleTextEdit:
+        return SubtitleTextEdit(self)
+
     def showEvent(self, event):
         super().showEvent(event)
         self._apply_windows_no_activate_style()
@@ -1752,7 +1665,7 @@ class OverlayWindow(QWidget):
 
     def _apply_windows_no_activate_style(self):
         """Keep clicks on the overlay from activating it on Windows fullscreen apps."""
-        _apply_no_activate_style(int(self.winId()), app_window=True)
+        win_overlay_native.apply_no_activate_style(int(self.winId()), app_window=True)
 
     _BTN_QSS = (
         "QPushButton {"
@@ -2072,7 +1985,7 @@ class OverlayWindow(QWidget):
         if enabled == self._click_through_on:
             return
         self._click_through_on = enabled
-        _set_click_through(int(self.winId()), enabled)
+        win_overlay_native.set_click_through(int(self.winId()), enabled)
 
     def _toggle_passthrough(self):
         self._passthrough = not self._passthrough
@@ -2142,7 +2055,7 @@ class OverlayWindow(QWidget):
             req = urllib.request.Request(
                 self.server_url + path, data=data, headers=headers, method="POST"
             )
-            urllib.request.urlopen(req, timeout=8).read()
+            _local_http_opener.open(req, timeout=8).read()
             return True
         except Exception:
             return False
@@ -2158,7 +2071,7 @@ class OverlayWindow(QWidget):
             req = urllib.request.Request(
                 self.server_url + path, data=data, headers=headers, method="POST"
             )
-            body = urllib.request.urlopen(req, timeout=8).read()
+            body = _local_http_opener.open(req, timeout=8).read()
             return json.loads(body.decode("utf-8"))
         except Exception:
             return None
@@ -2167,7 +2080,7 @@ class OverlayWindow(QWidget):
     def _init_ws(self):
         scheme = "wss" if self.server_url.startswith("https") else "ws"
         host = self.server_url.split("://", 1)[-1]
-        ws_url = f"{scheme}://{host}/ws?client=overlay"
+        ws_url = f"{scheme}://{host}/ws?client={self.WS_CLIENT}"
         self.bridge = WsBridge()
         self.bridge.message.connect(self._on_message)
         self.ws_client = WsClient(ws_url, self.bridge)
@@ -2182,6 +2095,22 @@ class OverlayWindow(QWidget):
         if mtype == "update":
             self.model.apply_update(data)
             self._render()
+        elif mtype == "spec_translation_pending":
+            source = (data.get("source") or "").strip()
+            if source:
+                self._spec_pending_by_source[source] = (data.get("target_lang") or "").strip()
+                self._trim_refine_maps()
+                self._render()
+        elif mtype == "spec_translation":
+            source = (data.get("source") or "").strip()
+            translation = (data.get("translation") or "").strip()
+            if source:
+                self._spec_pending_by_source.pop(source, None)
+                if translation:
+                    self._spec_by_source[source] = (
+                        translation, (data.get("target_lang") or "").strip())
+                self._trim_refine_maps()
+                self._render()
         elif mtype == "refine_result":
             self._apply_refine_result(data)
         elif mtype == "clear":
@@ -2192,6 +2121,8 @@ class OverlayWindow(QWidget):
             if not preserve:
                 self._refined_by_sid.clear()
                 self._refined_lang_by_sid.clear()
+                self._spec_by_source.clear()
+                self._spec_pending_by_source.clear()
             self._last_html = None
             self._render()
         elif mtype == "overlay_visibility":
@@ -2217,14 +2148,22 @@ class OverlayWindow(QWidget):
         no_change=True 表示 LLM 认为原译文已够好，保持不变；否则用 refined_translation
         覆盖。准确模式下 STT 无内置译文，这里的覆盖即该句唯一的译文来源。
         """
+        source = (data.get("source") or "").strip()
+        pending_removed = bool(source and self._spec_pending_by_source.pop(source, None) is not None)
         sid = data.get("sentence_id")
         if not sid:
+            if pending_removed:
+                self._render()
             return
         sid = str(sid)
         if data.get("no_change"):
+            if pending_removed:
+                self._render()
             return
         refined = (data.get("refined_translation") or "").strip()
         if not refined:
+            if pending_removed:
+                self._render()
             return
         self._refined_by_sid[sid] = refined
         target_lang = (data.get("target_lang") or "").strip()
@@ -2236,7 +2175,8 @@ class OverlayWindow(QWidget):
         self._render()
 
     def _trim_refine_maps(self, cap: int = 200):
-        for m in (self._refined_by_sid, self._refined_lang_by_sid):
+        for m in (self._refined_by_sid, self._refined_lang_by_sid,
+                  self._spec_by_source, self._spec_pending_by_source):
             while len(m) > cap:
                 m.pop(next(iter(m)))  # dict 保序：淘汰最旧的一条
 
@@ -2260,6 +2200,34 @@ class OverlayWindow(QWidget):
         # 改进 / 混合：沿用 STT 译文行的语言标签；准确模式无 STT 译文，退回 LLM 目标语言。
         lang = sentence.get("translation_lang") or self._refined_lang_by_sid.get(sid)
         return text, lang
+
+    def _speculative_translation(self, sentence: dict):
+        """Match the same non-final source text and sentence segments as the web UI."""
+        source = "".join(tk.get("text") or "" for tk in sentence["original"]).strip()
+        if not source:
+            return None
+        whole = self._spec_by_source.get(source)
+        if whole:
+            text, lang = whole
+            return [{"text": text, "is_final": False}], lang
+
+        pending_lang = self._spec_pending_by_source.get(source)
+        lang = pending_lang or ""
+        tokens = []
+        for segment in sentence_segmentation.split_into_sentence_lines(source):
+            if not sentence_segmentation.is_sentence_ending_punctuation(segment):
+                continue
+            hit = self._spec_by_source.get(segment)
+            if hit:
+                text, hit_lang = hit
+                tokens.append({"text": text, "is_final": False})
+                lang = lang or hit_lang
+            elif pending_lang is not None or segment in self._spec_pending_by_source:
+                tokens.append({"text": "\u00a0", "is_final": False})
+                lang = lang or self._spec_pending_by_source.get(segment, "")
+        if not tokens and pending_lang is not None:
+            tokens.append({"text": "\u00a0", "is_final": False})
+        return (tokens, lang) if tokens else None
 
     # ----------------------------------------------------------- 渲染 ------
     def _max_visible_lines(self) -> int:
@@ -2374,7 +2342,9 @@ class OverlayWindow(QWidget):
                 trans = sentence["translation"] if show_trans else []
                 # LLM 译文更新优先于 STT 内置译文；准确模式下 trans 为空，靠它补出译文行。
                 override = self._sentence_translation_override(sentence) if show_trans else None
-                has_trans = bool(trans) or override is not None
+                speculative = (self._speculative_translation(sentence)
+                               if show_trans and not trans and override is None else None)
+                has_trans = bool(trans) or override is not None or speculative is not None
                 if orig:
                     base_mb = pair_mb if has_trans else sent_mb
                     lang = sentence["original_lang"]
@@ -2396,6 +2366,10 @@ class OverlayWindow(QWidget):
                 elif trans:
                     recs.append({"kind": "plain", "tokens": trans,
                                  "lang": sentence["translation_lang"], "base_mb": sent_mb})
+                elif speculative is not None:
+                    tokens, lang = speculative
+                    recs.append({"kind": "plain", "tokens": tokens,
+                                 "lang": lang, "base_mb": sent_mb})
                 if recs:
                     groups.append(recs)
         return groups, blocked

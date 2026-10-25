@@ -1,4 +1,7 @@
 websockets
+# 运行时 Opus 编码用仓库内 libopus/win64/opus.dll（见 opus_native.py），
+# 不依赖 PyAV/FFmpeg；av 仅本地跑测试时当 Opus 解码器用（tests/）。
+# av==16.1.0
 soundcard
 numpy<2.0.0
 # On-device Qwen3-ASR + Hy-MT2 runtime (models are downloaded/installed separately).
@@ -18,6 +21,10 @@ pywebview
 python-osc
 zeroconf
 PySide6
+# SteamVR 字幕悬浮窗（vr_overlay.py）；自带 openvr_api 运行库
+openvr==2.12.1401
 vrchat_oscquery @ git+https://github.com/theepicsnail/vrchat_oscquery@main
 # streamlink
-pyinstaller
+# 锁版本：不同 PyInstaller 版本的 bootloader 有不同的杀软误报情况，
+# 浮动版本会让"这次报毒/上次不报"变得无法复现。升级时请手工改这里。
+pyinstaller==6.22.2

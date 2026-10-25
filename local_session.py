@@ -8,6 +8,7 @@ import time
 from typing import Optional
 
 import config
+import realtime_session_base
 import soniox_session
 from local_inference.model_manager import get_all_local_models_status
 from local_inference.recognizer import LocalQwenRecognizer
@@ -20,10 +21,10 @@ ipc_server = None
 
 
 def bind_ipc_server(server) -> None:
-    """Bind IPC to the inherited Soniox display/logging implementation."""
+    """Bind IPC to the inherited session display/logging implementation."""
     global ipc_server
     ipc_server = server
-    soniox_session.ipc_server = server
+    realtime_session_base.ipc_server = server
 
 
 class LocalInferenceSession(SonioxSession):
@@ -60,16 +61,6 @@ class LocalInferenceSession(SonioxSession):
     def set_llm_refine_mode(self, mode: str) -> tuple[bool, str]:
         self._llm_refine_mode = "off"
         return True, "off"
-
-    def _source_drives_segmentation(self, source_tokens: list[dict]) -> bool:
-        if str(self.translation or "").strip().lower() == "none":
-            return True
-        return super()._source_drives_segmentation(source_tokens)
-
-    def _pairing_expects_translation(self, entry) -> bool:
-        if str(self.translation or "").strip().lower() == "none":
-            return False
-        return super()._pairing_expects_translation(entry)
 
     def _broadcast_local_error(self, error: Exception | str) -> None:
         message = str(error)

@@ -159,7 +159,7 @@ This project is licensed under the GNU Affero General Public License version 3 o
 
 ## Acknowledgements
 
-This project stands on the shoulders of giants. A complete list of all third-party open-source libraries, dependencies, and their verified licenses can be found in the [ACKNOWLEDGMENTS.md](file:///c:/Users/hsxxs/Desktop/STT/soniox/realtime-subtitle/ACKNOWLEDGMENTS.md) file.
+This project stands on the shoulders of giants. A complete list of all third-party open-source libraries, dependencies, and their verified licenses can be found in the [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md) file. Third-party code and data vendored in this repository (kuromoji.js and its dictionary, Lucide icons, libopus) are listed with their license texts in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Configuration Options
 

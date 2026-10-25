@@ -15,6 +15,8 @@
         autoRestartEnabled: 'autoRestartEnabled',
         sleepOnSilenceEnabled: 'sleepOnSilenceEnabled',
         interruptRepairEnabled: 'interruptRepairEnabled',
+        oscSensitiveFilterEnabled: 'oscSensitiveFilterEnabled',
+        oscSensitiveFilterNoticeDisabled: 'oscSensitiveFilterNoticeDisabled',
         bottomSafeAreaEnabled: 'bottomSafeAreaEnabled',
         bundledCjkFontEnabled: 'useBundledCjkFont',
         theme: 'theme',
@@ -315,6 +317,22 @@
             },
             loadInterruptRepairEnabled: () => loadBoolean(KEYS.interruptRepairEnabled, true),
             saveInterruptRepairEnabled: (value) => saveBoolean(KEYS.interruptRepairEnabled, value),
+            readOscSensitiveFilterEnabled: () => {
+                const value = read(KEYS.oscSensitiveFilterEnabled);
+                return value === null ? null : value === 'true';
+            },
+            loadOscSensitiveFilterEnabled: () => loadBoolean(KEYS.oscSensitiveFilterEnabled, true),
+            saveOscSensitiveFilterEnabled: (value) => saveBoolean(KEYS.oscSensitiveFilterEnabled, value),
+            readOscSensitiveFilterNoticeDisabled: () => {
+                const value = read(KEYS.oscSensitiveFilterNoticeDisabled);
+                return value === null ? null : value === 'true';
+            },
+            loadOscSensitiveFilterNoticeDisabled: () => (
+                loadBoolean(KEYS.oscSensitiveFilterNoticeDisabled, false)
+            ),
+            saveOscSensitiveFilterNoticeDisabled: (value) => (
+                saveBoolean(KEYS.oscSensitiveFilterNoticeDisabled, value)
+            ),
             loadBottomSafeAreaEnabled: () => loadBoolean(KEYS.bottomSafeAreaEnabled, false),
             saveBottomSafeAreaEnabled: (value) => saveBoolean(KEYS.bottomSafeAreaEnabled, value),
             loadBundledCjkFontEnabled: () => loadBoolean(KEYS.bundledCjkFontEnabled, false),

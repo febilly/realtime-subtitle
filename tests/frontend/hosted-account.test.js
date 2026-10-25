@@ -12,6 +12,7 @@ function setup(overrides = {}) {
         <span id="firstRedeemBonusHint" hidden></span>
         <span id="accountBalanceHint" hidden></span><div id="accountFreePools"></div>
         <div id="accountSubscriptionPools"></div>
+        <div id="accountLlmSubscriptionPools"></div>
         <input id="redeemInput"><button id="redeemButton"></button>
         <button id="redeemPasteButton"></button><button id="reLoginButton"></button>
         <button id="logoutButton"></button><button id="copyInviteButton"></button>
@@ -94,6 +95,7 @@ function setup(overrides = {}) {
             balanceHint: document.getElementById('accountBalanceHint'),
             freePools: document.getElementById('accountFreePools'),
             subscriptionPools: document.getElementById('accountSubscriptionPools'),
+            llmSubscriptionPools: document.getElementById('accountLlmSubscriptionPools'),
             redeemButton: document.getElementById('redeemButton'),
             redeemInput: document.getElementById('redeemInput'),
             redeemPasteButton: document.getElementById('redeemPasteButton'),
@@ -296,6 +298,7 @@ describe('HostedAccount actions', () => {
                         { period: 'daily', remaining_credits: 600, quota_credits: 600 },
                         { period: 'monthly', remaining_credits: 18000, quota_credits: 18000 },
                     ],
+                    llm_subscription: { pools: [{ period: 'daily', remaining: 7, max_credits: 10 }] },
                 })),
             },
         });
@@ -307,6 +310,11 @@ describe('HostedAccount actions', () => {
             page.document.getElementById('accountSubscriptionPools'),
             expect.any(Array),
             { detailed: true },
+        );
+        expect(page.balance.renderSubscriptionPools).toHaveBeenCalledWith(
+            page.document.getElementById('accountLlmSubscriptionPools'),
+            expect.any(Array),
+            { detailed: true, llm: true },
         );
         page.dom.window.close();
     });

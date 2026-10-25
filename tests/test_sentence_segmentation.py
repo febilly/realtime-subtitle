@@ -25,6 +25,7 @@ def test_shared_sentence_segmentation_cases(case):
         "text_ends_with_ellipsis": seg.text_ends_with_ellipsis,
         "text_has_unclosed_quote": seg.text_has_unclosed_quote,
         "text_continues_abbreviation": seg.text_continues_abbreviation,
+        "text_ends_with_numeric_period": seg.text_ends_with_numeric_period,
         "token_text_continues_decimal": seg.token_text_continues_decimal,
         "token_text_starts_with_closing_quote": seg.token_text_starts_with_closing_quote,
         "text_ends_with_closing_quote_after_sentence_punctuation": (
@@ -167,6 +168,72 @@ def test_streamed_ellipsis_dots_do_not_close_mid_run():
     assert not check([trans("."), trans("..")], 0, "方に.")
     # An ordinary sentence-ending period is unaffected.
     assert check([trans("好。"), trans("下一句")], 0, "很好。")
+
+
+def test_standalone_period_token_uses_numeric_context():
+    state = seg.PendingBoundaryState()
+
+    def original(text):
+        return {"text": text, "speaker": "1", "translation_status": "original"}
+
+    tokens = [original("每月营收增长了5"), original("."), original("3%。")]
+    assert not state.is_token_sentence_ending(
+        tokens,
+        1,
+        context_text="每月营收增长了5.",
+        is_internal_token=lambda _t: False,
+        source_as_output=True,
+    )
+
+    # If the fractional token has not arrived yet, remember the accumulated
+    # numeric context behind the standalone period.
+    period = [original(".")]
+    state.mark_after_token(
+        period,
+        0,
+        context_text="每月营收增长了5.",
+        is_internal_token=lambda _t: False,
+        source_as_output=True,
+    )
+    assert not state.flush_before_token(original("3%。"))
+
+    state.mark_after_token(
+        period,
+        0,
+        context_text="共有5.",
+        is_internal_token=lambda _t: False,
+        source_as_output=True,
+    )
+    assert state.flush_before_token(original(" 下一句"))
+
+
+def test_pending_boundary_streams_remain_independent_when_quote_wait_flushes():
+    state = seg.PendingBoundaryState()
+
+    def token(text, speaker, status):
+        return {"text": text, "speaker": speaker, "translation_status": status}
+
+    numeric = token(".", "1", "original")
+    state.mark_after_token(
+        [numeric],
+        0,
+        context_text="增长了5.",
+        is_internal_token=lambda _t: False,
+        source_as_output=True,
+    )
+
+    quote_wait = token(".", "2", "translation")
+    state.mark_after_token(
+        [quote_wait],
+        0,
+        context_text="Done.",
+        is_internal_token=lambda _t: False,
+        source_as_output=False,
+    )
+
+    fraction = token("3%", "1", "original")
+    assert state.flush_stale_quote_boundaries_before_incompatible_token(fraction) == ["2"]
+    assert not state.flush_before_token(fraction)
 
 
 def test_fragmented_word_suffix_period_uses_full_context_for_abbreviations():

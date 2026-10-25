@@ -92,7 +92,7 @@ describe('HostedUpdate state', () => {
 });
 
 describe('HostedUpdate dialog and policy', () => {
-    it('renders optional update details, opens the URL, and resolves later', async () => {
+    it('renders optional update details and resolves after opening the update URL', async () => {
         const page = setup();
         const result = page.controller.show(page.controller.getState());
         expect(page.document.getElementById('overlay').hidden).toBe(false);
@@ -102,8 +102,8 @@ describe('HostedUpdate dialog and policy', () => {
         expect(page.open).toHaveBeenCalledWith(
             'https://example.com/update', '_blank', 'noopener,noreferrer',
         );
-        page.document.getElementById('later').click();
-        await expect(result).resolves.toBe('later');
+        expect(page.document.getElementById('dialog').hidden).toBe(true);
+        await expect(result).resolves.toBe('update');
         page.dom.window.close();
     });
 

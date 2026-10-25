@@ -16,13 +16,12 @@ const audioSourceButton = document.getElementById('audioSourceButton');
 const audioSourceIcon = document.getElementById('audioSourceIcon');
 const overlayButton = document.getElementById('overlayButton');
 const overlayIcon = document.getElementById('overlayIcon');
+const vrOverlayButton = document.getElementById('vrOverlayButton');
 let overlayOpen = false;  // 原生字幕悬浮窗当前是否打开
 const segmentModeButton = document.getElementById('segmentModeButton');
 const segmentModeText = document.getElementById('segmentModeText');
 const displayModeButton = document.getElementById('displayModeButton');
 const displayModeText = document.getElementById('displayModeText');
-const subtitleFlowButton = document.getElementById('subtitleFlowButton');
-const subtitleFlowIcon = document.getElementById('subtitleFlowIcon');
 const oscTranslationButton = document.getElementById('oscTranslationButton');
 const oscTranslationIcon = document.getElementById('oscTranslationIcon');
 const furiganaButton = document.getElementById('furiganaButton');
@@ -136,7 +135,6 @@ const {
 } = uiFeedbackController;
 
 function showToast(...args) {
-    updateToastPlacement();
     return uiFeedbackController.showToast(...args);
 }
 
@@ -153,6 +151,8 @@ let backendTranslationMode = 'one_way';
 let backendTargetLang1 = 'en';
 let backendTargetLang2 = 'zh';
 let suppressTranslationDisplay = false;
+// How refine edits are visualized (backend LLM_REFINE_DIFF_MODE): off | additions | additions_deletions | two_lines
+let llmRefineDiffMode = 'off';
 let pushedOverrideBootId = null;
 let useBundledCjkFont = localStorage.getItem(BUNDLED_CJK_FONT_STORAGE_KEY) === 'true';
 let customFontAvailable = false;
@@ -173,6 +173,10 @@ const controlPorts = {
     setTranslationUiMode: (mode, options = {}) => translationModeController.setTranslationUiMode(mode, options),
     setSleepOnSilenceEnabled: (enabled) => setSleepOnSilenceEnabled(enabled),
     setInterruptRepairEnabled: (enabled) => setInterruptRepairEnabled(enabled),
+    setOscSensitiveFilterEnabled: (enabled) => setOscSensitiveFilterEnabled(enabled),
+    setOscSensitiveFilterNoticeDisabled: (disabled) => (
+        setOscSensitiveFilterNoticeDisabled(disabled)
+    ),
     setSpeakerLabelsHidden: (hidden) => speakerLabelController.setHidden(hidden),
     setSegmentMode: (mode) => segmentModeController.setMode(mode),
     updateFuriganaButton: () => furiganaToggleController.updateButton(),
@@ -195,6 +199,7 @@ const settingsPorts = {
     loadProviderSettings: () => settingsStore.loadProviderSettings(),
     saveProviderSettings: (settings) => { settingsStore.saveProviderSettings(settings); },
     buildCustomSelect: (options, config = {}) => settingsUi.buildCustomSelect(options, config),
+    buildToggleSwitch: (config = {}) => settingsUi.buildToggleSwitch(config),
     renderMicrophoneDevicePicker: () => settingsRuntime.renderMicrophoneDevicePicker(),
     renderOutputDevicePicker: () => settingsRuntime.renderOutputDevicePicker(),
     fetchMicrophoneDevices: () => settingsRuntime.fetchMicrophoneDevices(),
@@ -221,6 +226,7 @@ const settingsRuntime = SettingsRuntime.create({
     t,
     localizeBackendMessage,
     buildCustomSelect: settingsPorts.buildCustomSelect,
+    buildToggleSwitch: settingsPorts.buildToggleSwitch,
     console,
     elements: {
         runtimeControlsSection,
@@ -236,6 +242,8 @@ const settingsRuntime = SettingsRuntime.create({
         sleepOnSilencePickerHost,
         speakerLabelsSettingField,
         speakerLabelsPickerHost,
+        oscSensitiveFilterPickerHost: document.getElementById('oscSensitiveFilterPicker'),
+        oscSensitiveFilterNoticePickerHost: document.getElementById('oscSensitiveFilterNoticePicker'),
         interruptRepairSettingField: document.getElementById('interruptRepairSettingField'),
         interruptRepairPickerHost: document.getElementById('interruptRepairPicker'),
         bundledCjkFontPickerHost,
@@ -246,6 +254,9 @@ const settingsRuntime = SettingsRuntime.create({
         translationModeHint: translationModeHintEl,
         segmentModeSettingField,
         segmentModePickerHost,
+        subtitleFlowPickerHost: document.getElementById('subtitleFlowPicker'),
+        vrOverlaySection: document.getElementById('vrOverlaySection'),
+        vrAttachModePickerHost: document.getElementById('vrAttachModePicker'),
     },
     getState: () => ({
         get selectedProvider() { return settingsPorts.getSelectedProvider(); },
@@ -253,6 +264,8 @@ const settingsRuntime = SettingsRuntime.create({
         get autoRestartEnabled() { return autoRestartEnabled; },
         get sleepOnSilenceEnabled() { return sleepOnSilenceEnabled; },
         get interruptRepairEnabled() { return interruptRepairEnabled; },
+        get oscSensitiveFilterEnabled() { return oscSensitiveFilterEnabled; },
+        get oscSensitiveFilterNoticeDisabled() { return oscSensitiveFilterNoticeDisabled; },
         get interruptRepairSupported() { return interruptRepairSupported; },
         get hideSpeakerLabels() { return speakerLabelController.isHidden(); },
         get customFontAvailable() { return customFontAvailable; },
@@ -265,6 +278,9 @@ const settingsRuntime = SettingsRuntime.create({
         get segmentModeSupported() { return segmentModeSupported; },
         get segmentMode() { return segmentModeController.getMode(); },
         get segmentModes() { return controlPorts.getSegmentModes(); },
+        get subtitleFlowDirection() { return subtitleFlowDirection; },
+        get vrOverlayAvailable() { return runtimeControls.isVrOverlayAvailable(); },
+        get vrAttachMode() { return runtimeControls.getVrAttachMode(); },
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
@@ -276,6 +292,12 @@ const settingsRuntime = SettingsRuntime.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'interruptRepairEnabled')) {
             interruptRepairEnabled = patch.interruptRepairEnabled;
         }
+        if (Object.prototype.hasOwnProperty.call(patch, 'oscSensitiveFilterEnabled')) {
+            oscSensitiveFilterEnabled = patch.oscSensitiveFilterEnabled;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'oscSensitiveFilterNoticeDisabled')) {
+            oscSensitiveFilterNoticeDisabled = patch.oscSensitiveFilterNoticeDisabled;
+        }
         if (Object.prototype.hasOwnProperty.call(patch, 'useBundledCjkFont')) {
             useBundledCjkFont = patch.useBundledCjkFont;
         }
@@ -284,9 +306,16 @@ const settingsRuntime = SettingsRuntime.create({
         updateAutoRestartButton: controlPorts.updateAutoRestartButton,
         setSleepOnSilenceEnabled: controlPorts.setSleepOnSilenceEnabled,
         setInterruptRepairEnabled: controlPorts.setInterruptRepairEnabled,
+        setOscSensitiveFilterEnabled: controlPorts.setOscSensitiveFilterEnabled,
+        setOscSensitiveFilterNoticeDisabled: controlPorts.setOscSensitiveFilterNoticeDisabled,
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
         setTranslationUiMode: controlPorts.setTranslationUiMode,
+        setVrAttachMode: (mode) => runtimeControls.setVrAttachMode(mode),
+        setSubtitleFlowDirection: (direction) => setSubtitleFlowDirection(direction, {
+            persist: true,
+            render: true,
+        }),
     },
 });
 
@@ -444,10 +473,15 @@ const languageUi = LanguageUI.create({
         suppressTranslationDisplay,
         translationProvider,
         lockManualControls,
+        setupRequired,
+        backendBootId,
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'currentTranslationTargetLang')) {
             currentTranslationTargetLang = patch.currentTranslationTargetLang;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, 'backendTranslationMode')) {
+            backendTranslationMode = patch.backendTranslationMode;
         }
         if (Object.prototype.hasOwnProperty.call(patch, 'backendTargetLang1')) {
             backendTargetLang1 = patch.backendTargetLang1;
@@ -469,7 +503,77 @@ let displayMode = settingsStore.loadDisplayMode();
 let autoRestartEnabled = settingsStore.loadAutoRestartEnabled();
 let sleepOnSilenceEnabled = settingsStore.loadSleepOnSilenceEnabled();
 let interruptRepairEnabled = settingsStore.loadInterruptRepairEnabled();
+let oscSensitiveFilterEnabled = settingsStore.loadOscSensitiveFilterEnabled();
+let oscSensitiveFilterNoticeDisabled = settingsStore.loadOscSensitiveFilterNoticeDisabled();
 let interruptRepairSupported = translationProvider === 'soniox';
+
+async function setOscSensitiveFilterEnabled(enabled) {
+    try {
+        const response = await fetch('/osc-sensitive-filter', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!enabled }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        oscSensitiveFilterEnabled = typeof data.enabled === 'boolean' ? data.enabled : !!enabled;
+        settingsStore.saveOscSensitiveFilterEnabled(oscSensitiveFilterEnabled);
+        settingsRuntime.renderOscSensitiveFilterPicker();
+        return true;
+    } catch (error) {
+        console.error('Error setting OSC sensitive word filter:', error);
+        return false;
+    }
+}
+
+function applyOscSensitiveFilterConfig(data = {}) {
+    if (typeof data.osc_sensitive_filter_enabled !== 'boolean') return;
+    const stored = settingsStore.readOscSensitiveFilterEnabled();
+    oscSensitiveFilterEnabled = stored === null ? data.osc_sensitive_filter_enabled : stored;
+    if (
+        stored !== null
+        && !lockManualControls
+        && stored !== data.osc_sensitive_filter_enabled
+    ) {
+        void setOscSensitiveFilterEnabled(stored);
+    }
+}
+
+async function setOscSensitiveFilterNoticeDisabled(disabled) {
+    try {
+        const response = await fetch('/osc-sensitive-filter-notice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ disabled: !!disabled }),
+        });
+        if (!response.ok) return false;
+        const data = await response.json().catch(() => ({}));
+        oscSensitiveFilterNoticeDisabled = typeof data.disabled === 'boolean'
+            ? data.disabled
+            : !!disabled;
+        settingsStore.saveOscSensitiveFilterNoticeDisabled(oscSensitiveFilterNoticeDisabled);
+        settingsRuntime.renderOscSensitiveFilterNoticePicker();
+        return true;
+    } catch (error) {
+        console.error('Error setting OSC sensitive word filter notice:', error);
+        return false;
+    }
+}
+
+function applyOscSensitiveFilterNoticeConfig(data = {}) {
+    if (typeof data.osc_sensitive_filter_notice_disabled !== 'boolean') return;
+    const stored = settingsStore.readOscSensitiveFilterNoticeDisabled();
+    oscSensitiveFilterNoticeDisabled = stored === null
+        ? data.osc_sensitive_filter_notice_disabled
+        : stored;
+    if (
+        stored !== null
+        && !lockManualControls
+        && stored !== data.osc_sensitive_filter_notice_disabled
+    ) {
+        void setOscSensitiveFilterNoticeDisabled(stored);
+    }
+}
 
 async function setSleepOnSilenceEnabled(enabled) {
     try {
@@ -563,6 +667,7 @@ window.__overlayFurigana = function (text) {
         return { ready: true, pairs: [] };
     }
 };
+const translationDiff = TranslationDiff.create({ escapeHtml });
 const subtitleRenderer = SubtitleRenderer.create({
     document,
     container: subtitleContainer,
@@ -574,11 +679,13 @@ const subtitleRenderer = SubtitleRenderer.create({
     Segmentation,
     t,
     escapeHtml,
+    TranslationDiff: translationDiff,
     getViewState: () => ({
         displayMode,
         suppressTranslationDisplay,
         translateMode: controlPorts.isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
+        llmRefineDiffMode,
         currentTranslationTargetLang,
         furiganaEnabled: furiganaToggleController.isEnabled(),
         speakerDiarizationEnabled: speakerLabelController.isDiarizationEnabled(),
@@ -589,48 +696,29 @@ const subtitleRenderer = SubtitleRenderer.create({
 const subtitleRuntimeController = SubtitleRuntimeController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
-    afterRender: updateToastPlacement,
     getState: () => ({
         translateMode: controlPorts.isLlmTranslateMode(),
         translationUiMode: translationModeController.getTranslationUiMode(),
     }),
 });
 
-function updateSubtitleFlowButton() {
-    const flowingDown = subtitleFlowDirection === 'down';
-    ControlIcon.set(
-        subtitleFlowIcon,
-        flowingDown ? 'arrow-down-to-line' : 'arrow-up-from-line',
-    );
-    subtitleFlowButton.title = t(flowingDown ? 'subtitle_flow_down' : 'subtitle_flow_up');
-    subtitleFlowButton.setAttribute('aria-label', subtitleFlowButton.title);
-    updateToastPlacement();
-}
-
+// Notifications dock at the old-subtitle end so they never cover the newest line.
 function updateToastPlacement() {
-    const subtitleCount = subtitleContainer.querySelectorAll('.sentence-block').length;
-    const shouldUseBottom = subtitleCount <= 3 || subtitleFlowDirection === 'down';
-    toastContainer.classList.toggle('toast-container--bottom', shouldUseBottom);
+    toastContainer.classList.toggle('toast-container--bottom', subtitleFlowDirection === 'down');
 }
 
 function setSubtitleFlowDirection(direction, { persist = false, render = false } = {}) {
     subtitleFlowDirection = direction === 'down' ? 'down' : 'up';
     subtitleScroll.setFlowDirection(subtitleFlowDirection);
     if (persist) settingsStore.saveSubtitleFlowDirection(subtitleFlowDirection);
-    updateSubtitleFlowButton();
+    updateToastPlacement();
     if (render) {
         subtitleRenderer.invalidateAll({ dom: true });
         subtitleRuntimeController.render();
     }
 }
 
-subtitleFlowButton.addEventListener('click', () => {
-    setSubtitleFlowDirection(subtitleFlowDirection === 'up' ? 'down' : 'up', {
-        persist: true,
-        render: true,
-    });
-});
-updateSubtitleFlowButton();
+updateToastPlacement();
 const subtitleFrameController = SubtitleFrameController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
@@ -664,6 +752,7 @@ const runtimeControls = RuntimeControls.create({
         audioSourceButton,
         audioSourceIcon,
         overlayButton,
+        vrOverlayButton,
     },
     fetch,
     storage: localStorage,
@@ -733,6 +822,7 @@ const appShellController = AppShellController.create({
         pauseButton,
         audioSourceButton,
         overlayButton,
+        vrOverlayButton,
         settingsButton,
         translationLangButton,
         segmentModeButton,
@@ -749,6 +839,7 @@ const appShellController = AppShellController.create({
     actions: {
         updatePauseButtonUi: runtimeControls.updatePauseButtonUi,
         updateOverlayButton: runtimeControls.updateOverlayButton,
+        updateVrOverlayButton: runtimeControls.updateVrOverlayButton,
         updateAutoRestartButton: recognitionControls.updateAutoRestartButton,
     },
 });
@@ -867,6 +958,7 @@ async function switchToGeminiAfterQuotaExhaustion() {
 }
 
 async function handleBillingExhausted() {
+    hostedBalance.expand();
     if (checkingGeminiQuota) return;
     if (translationProvider !== 'soniox' || settingsPorts.getConnectionMode() !== 'relay') {
         showStandardBillingExhaustedToast();
@@ -933,10 +1025,11 @@ const sessionFrameController = SessionFrameController.create({
 });
 const runtimeFrameController = RuntimeFrameController.create({
     t,
-    getState: () => ({ lockManualControls }),
+    getState: () => ({ lockManualControls, oscSensitiveFilterNoticeDisabled }),
     actions: {
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
         syncOverlayState: runtimeControls.syncOverlayState,
+        syncVrOverlayState: runtimeControls.syncVrOverlayState,
         syncIpcStatus: appShellController.syncIpcStatus,
         displayErrorMessage,
         openSettings: (options) => settingsFlowController.open(options),
@@ -1040,6 +1133,8 @@ function updateUiConfigState(patch) {
             case 'segmentModeSupported': segmentModeSupported = value; break;
             case 'interruptRepairSupported': interruptRepairSupported = value; break;
             case 'interruptRepairEnabled': interruptRepairEnabled = value; break;
+            case 'oscSensitiveFilterEnabled': oscSensitiveFilterEnabled = value; break;
+            case 'oscSensitiveFilterNoticeDisabled': oscSensitiveFilterNoticeDisabled = value; break;
             case 'twoWaySupported': twoWaySupported = value; break;
             case 'backendBootId': backendBootId = value; break;
             case 'setupRequired': setupRequired = value; break;
@@ -1062,6 +1157,7 @@ function updateUiConfigState(patch) {
             case 'backendTargetLang2': backendTargetLang2 = value; break;
             case 'uiTranslationMode': uiTranslationMode = value; break;
             case 'suppressTranslationDisplay': suppressTranslationDisplay = value; break;
+            case 'llmRefineDiffMode': llmRefineDiffMode = value; break;
             case 'customFontAvailable': customFontAvailable = value; break;
             default: break;
         }
@@ -1094,11 +1190,14 @@ const uiConfigController = UiConfigController.create({
         updateSettingsButtonVisibility: settingsPorts.updateSettingsButtonVisibility,
         applyBundledCjkFontPreference: settingsPorts.applyBundledCjkFontPreference,
         applySleepOnSilenceConfig,
+        applyOscSensitiveFilterConfig,
+        applyOscSensitiveFilterNoticeConfig,
         applyInterruptRepairConfig,
         renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,
         enforceTranslateSegmentMode: controlPorts.enforceTranslateSegmentMode,
+        syncTranslationModeWithBackend: () => languageUi.syncBackendMode(),
     },
 });
 
@@ -1115,6 +1214,10 @@ function setUiTranslationMode(mode, { persistOnly = false } = {}) {
 }
 
 void controlPorts.refreshOverlayState();
+void runtimeControls.restoreVrOverlayState();
+document.getElementById('vrResetPositionButton')?.addEventListener('click', () => {
+    void runtimeControls.resetVrOverlayPosition();
+});
 
 
 function handleMessageFrame(data) {
@@ -1276,7 +1379,13 @@ const clientUpdateNoUrl = document.getElementById('clientUpdateNoUrl');
 const clientUpdateDirectButton = document.getElementById('clientUpdateDirectButton');
 const clientUpdateLaterButton = document.getElementById('clientUpdateLaterButton');
 const clientUpdateButton = document.getElementById('clientUpdateButton');
+const announcements = SubtitleAnnouncements.create({
+    endpoint: '/account/announcements',
+    getStorageKey: () => 'announcementReads:v1:' + relayServerUrl,
+});
+announcements.bind(document);
 const hostedUpdate = HostedUpdate.create({
+    onChecked: () => announcements.check({ autoPopup: true }),
     Billing: Hosted.Billing,
     window,
     storage: localStorage,
@@ -1412,6 +1521,7 @@ const hostedLogin = HostedLogin.create({
 });
 hostedLogin.init();
 const balanceBar = document.getElementById('balanceBar');
+const balanceToggle = document.getElementById('balanceToggle');
 const balanceActionItem = document.getElementById('balanceActionItem');
 const balanceOpenSettingsButton = document.getElementById('balanceOpenSettingsButton');
 const hostedBalance = HostedBalance.create({
@@ -1435,6 +1545,7 @@ const hostedBalance = HostedBalance.create({
     onPurchaseCredits: openCreditsPurchasePage,
     elements: {
         balanceBar,
+        balanceToggle,
         balanceActionItem,
         balanceOpenSettingsButton,
     },
@@ -1476,6 +1587,7 @@ hostedAccount = HostedAccount.create({
         balanceHint: document.getElementById('accountBalanceHint'),
         freePools: document.getElementById('accountFreePools'),
         subscriptionPools: document.getElementById('accountSubscriptionPools'),
+        llmSubscriptionPools: document.getElementById('accountLlmSubscriptionPools'),
         redeemButton: document.getElementById('redeemButton'),
         redeemInput: document.getElementById('redeemInput'),
         redeemPasteButton: document.getElementById('redeemPasteButton'),

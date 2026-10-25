@@ -329,6 +329,8 @@ async def post_chat(
         "usage": usage,
         "latency_ms": latency_ms,
         "response_model": data.get("model"),
+        "response_provider": data.get("provider"),
+        "finish_reason": data.get("choices", [{}])[0].get("finish_reason"),
         "estimated_cost": _usage_cost(usage, model.get("pricing")),
         "cost_currency": _cost_currency(model),
     }

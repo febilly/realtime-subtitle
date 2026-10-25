@@ -36,6 +36,9 @@
         const buildCustomSelect = typeof options.buildCustomSelect === 'function'
             ? options.buildCustomSelect
             : null;
+        const buildToggleSwitch = typeof options.buildToggleSwitch === 'function'
+            ? options.buildToggleSwitch
+            : null;
         const getState = typeof options.getState === 'function' ? options.getState : () => ({});
         const updateState = typeof options.updateState === 'function' ? options.updateState : () => {};
         const actions = options.actions || {};
@@ -47,10 +50,14 @@
             autoRestart: null,
             sleepOnSilence: null,
             speakerLabels: null,
+            oscSensitiveFilter: null,
+            oscSensitiveFilterNotice: null,
             interruptRepair: null,
             bundledCjkFont: null,
             translationMode: null,
             segmentMode: null,
+            subtitleFlow: null,
+            vrAttachMode: null,
         };
         let microphoneData = normalizeMicrophoneData(options.microphoneData || EMPTY_MICROPHONE_DATA);
         let outputData = normalizeMicrophoneData(options.outputData || EMPTY_OUTPUT_DATA);
@@ -88,6 +95,14 @@
                     'speakerLabels',
                     draft.hideSpeakerLabels ? 'hide' : 'show',
                 ) === 'hide',
+                oscSensitiveFilterEnabled: pickerValue(
+                    'oscSensitiveFilter',
+                    draft.oscSensitiveFilterEnabled === false ? 'false' : 'true',
+                ) !== 'false',
+                oscSensitiveFilterNoticeDisabled: pickerValue(
+                    'oscSensitiveFilterNotice',
+                    draft.oscSensitiveFilterNoticeDisabled ? 'true' : 'false',
+                ) === 'true',
                 interruptRepairEnabled: pickerValue(
                     'interruptRepair',
                     draft.interruptRepairEnabled === false ? 'false' : 'true',
@@ -101,6 +116,11 @@
                     draft.translationUiMode || DEFAULT_TRANSLATION_UI_MODE,
                 ),
                 segmentMode: pickerValue('segmentMode', draft.segmentMode || ''),
+                subtitleFlowDirection: pickerValue(
+                    'subtitleFlow',
+                    draft.subtitleFlowDirection === 'down' ? 'down' : 'up',
+                ),
+                vrAttachMode: pickerValue('vrAttachMode', draft.vrAttachMode || 'body'),
             };
         }
 
@@ -140,6 +160,21 @@
             pickers[name] = picker;
             host.appendChild(picker);
             return picker;
+        }
+
+        function replaceSwitchHost(host, name, config) {
+            if (!host) {
+                pickers[name] = null;
+                return null;
+            }
+            host.innerHTML = '';
+            if (!buildToggleSwitch) {
+                throw new Error('SettingsRuntime requires buildToggleSwitch to render switches');
+            }
+            const toggle = buildToggleSwitch(config);
+            pickers[name] = toggle;
+            host.appendChild(toggle);
+            return toggle;
         }
 
         function selectedProvider() {
@@ -345,10 +380,7 @@
             }
             const enabled = !!state().autoRestartEnabled;
             setDraft({ autoRestartEnabled: enabled });
-            return replaceHost(elements.autoRestartPickerHost, 'autoRestart', [
-                { value: 'true', label: t('auto_restart_enabled') },
-                { value: 'false', label: t('auto_restart_disabled') },
-            ], {
+            return replaceSwitchHost(elements.autoRestartPickerHost, 'autoRestart', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ autoRestartEnabled: value !== 'false' }),
             });
@@ -364,10 +396,7 @@
             }
             const enabled = state().sleepOnSilenceEnabled !== false;
             setDraft({ sleepOnSilenceEnabled: enabled });
-            return replaceHost(elements.sleepOnSilencePickerHost, 'sleepOnSilence', [
-                { value: 'true', label: t('auto_sleep_enabled') },
-                { value: 'false', label: t('auto_sleep_disabled') },
-            ], {
+            return replaceSwitchHost(elements.sleepOnSilencePickerHost, 'sleepOnSilence', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ sleepOnSilenceEnabled: value !== 'false' }),
             });
@@ -385,12 +414,29 @@
             }
             const hidden = desiredHideSpeakerLabels();
             setDraft({ hideSpeakerLabels: hidden });
-            return replaceHost(elements.speakerLabelsPickerHost, 'speakerLabels', [
-                { value: 'show', label: t('speaker_labels_enabled') },
-                { value: 'hide', label: t('speaker_labels_disabled') },
-            ], {
+            return replaceSwitchHost(elements.speakerLabelsPickerHost, 'speakerLabels', {
+                onValue: 'show',
+                offValue: 'hide',
                 value: hidden ? 'hide' : 'show',
                 onChange: (value) => setDraft({ hideSpeakerLabels: value === 'hide' }),
+            });
+        }
+
+        function renderOscSensitiveFilterPicker() {
+            const enabled = state().oscSensitiveFilterEnabled !== false;
+            setDraft({ oscSensitiveFilterEnabled: enabled });
+            return replaceSwitchHost(elements.oscSensitiveFilterPickerHost, 'oscSensitiveFilter', {
+                value: enabled ? 'true' : 'false',
+                onChange: (value) => setDraft({ oscSensitiveFilterEnabled: value !== 'false' }),
+            });
+        }
+
+        function renderOscSensitiveFilterNoticePicker() {
+            const disabled = state().oscSensitiveFilterNoticeDisabled === true;
+            setDraft({ oscSensitiveFilterNoticeDisabled: disabled });
+            return replaceSwitchHost(elements.oscSensitiveFilterNoticePickerHost, 'oscSensitiveFilterNotice', {
+                value: disabled ? 'true' : 'false',
+                onChange: (value) => setDraft({ oscSensitiveFilterNoticeDisabled: value === 'true' }),
             });
         }
 
@@ -410,10 +456,7 @@
             }
             const enabled = current.interruptRepairEnabled !== false;
             setDraft({ interruptRepairEnabled: enabled });
-            return replaceHost(elements.interruptRepairPickerHost, 'interruptRepair', [
-                { value: 'true', label: t('interrupt_repair_enabled') },
-                { value: 'false', label: t('interrupt_repair_disabled') },
-            ], {
+            return replaceSwitchHost(elements.interruptRepairPickerHost, 'interruptRepair', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ interruptRepairEnabled: value !== 'false' }),
             });
@@ -444,10 +487,7 @@
             }
             const enabled = !!current.useBundledCjkFont;
             setDraft({ useBundledCjkFont: enabled });
-            const picker = replaceHost(host, 'bundledCjkFont', [
-                { value: 'true', label: t('bundled_cjk_font_enabled') },
-                { value: 'false', label: t('bundled_cjk_font_disabled') },
-            ], {
+            const picker = replaceSwitchHost(host, 'bundledCjkFont', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ useBundledCjkFont: value === 'true' }),
             });
@@ -584,6 +624,38 @@
             );
         }
 
+        function renderSubtitleFlowPicker() {
+            const direction = state().subtitleFlowDirection === 'down' ? 'down' : 'up';
+            setDraft({ subtitleFlowDirection: direction });
+            return replaceHost(elements.subtitleFlowPickerHost, 'subtitleFlow', [
+                { value: 'up', label: t('subtitle_flow_option_up') },
+                { value: 'down', label: t('subtitle_flow_option_down') },
+            ], {
+                value: direction,
+                onChange: (value) => setDraft({ subtitleFlowDirection: value }),
+            });
+        }
+
+        function renderVrAttachModePicker() {
+            const available = !!state().vrOverlayAvailable;
+            if (elements.vrOverlaySection) elements.vrOverlaySection.hidden = !available;
+            if (!available) {
+                if (elements.vrAttachModePickerHost) elements.vrAttachModePickerHost.innerHTML = '';
+                pickers.vrAttachMode = null;
+                return null;
+            }
+            const mode = state().vrAttachMode || 'body';
+            setDraft({ vrAttachMode: mode });
+            return replaceHost(elements.vrAttachModePickerHost, 'vrAttachMode', [
+                { value: 'world', label: t('vr_attach_world') },
+                { value: 'head', label: t('vr_attach_head') },
+                { value: 'body', label: t('vr_attach_body') },
+            ], {
+                value: mode,
+                onChange: (value) => setDraft({ vrAttachMode: value }),
+            });
+        }
+
         function renderRuntimeSettingsPickers() {
             if (elements.runtimeControlsSection) {
                 elements.runtimeControlsSection.hidden = selectedProvider() === 'local';
@@ -591,8 +663,12 @@
             renderAutoRestartPicker();
             renderSleepOnSilencePicker();
             renderSpeakerLabelsPicker();
+            renderOscSensitiveFilterPicker();
+            renderOscSensitiveFilterNoticePicker();
             renderInterruptRepairPicker();
             renderSegmentModePicker();
+            renderSubtitleFlowPicker();
+            renderVrAttachModePicker();
         }
 
         function renderSettingsPickers() {
@@ -620,6 +696,21 @@
         }
 
         async function applyRuntimeControlSettings() {
+            if (pickers.subtitleFlow) {
+                const direction = getDraft().subtitleFlowDirection;
+                if (direction !== state().subtitleFlowDirection
+                    && typeof actions.setSubtitleFlowDirection === 'function') {
+                    actions.setSubtitleFlowDirection(direction);
+                }
+            }
+
+            if (pickers.vrAttachMode) {
+                const mode = getDraft().vrAttachMode;
+                if (mode !== state().vrAttachMode && typeof actions.setVrAttachMode === 'function') {
+                    await actions.setVrAttachMode(mode);
+                }
+            }
+
             if (pickers.autoRestart && typeof pickers.autoRestart.value === 'string') {
                 const enabled = getDraft().autoRestartEnabled;
                 updateState({ autoRestartEnabled: enabled });
@@ -646,6 +737,37 @@
                     const ok = await actionSucceeded('setSpeakerLabelsHidden', requestedHidden);
                     if (!ok) return { ok: false, message: t('backend_speaker_labels_disabled') };
                 }
+            }
+
+            if (pickers.oscSensitiveFilter) {
+                const enabled = getDraft().oscSensitiveFilterEnabled;
+                if (enabled !== (state().oscSensitiveFilterEnabled !== false)) {
+                    const ok = await actionSucceeded('setOscSensitiveFilterEnabled', enabled);
+                    if (!ok) return { ok: false, message: t('backend_osc_sensitive_filter_disabled') };
+                    updateState({ oscSensitiveFilterEnabled: enabled });
+                }
+                storage.setItem('oscSensitiveFilterEnabled', enabled ? 'true' : 'false');
+            }
+
+            if (pickers.oscSensitiveFilterNotice) {
+                const disabled = getDraft().oscSensitiveFilterNoticeDisabled;
+                if (disabled !== (state().oscSensitiveFilterNoticeDisabled === true)) {
+                    const ok = await actionSucceeded(
+                        'setOscSensitiveFilterNoticeDisabled',
+                        disabled,
+                    );
+                    if (!ok) {
+                        return {
+                            ok: false,
+                            message: t('backend_osc_sensitive_filter_notice_disabled'),
+                        };
+                    }
+                    updateState({ oscSensitiveFilterNoticeDisabled: disabled });
+                }
+                storage.setItem(
+                    'oscSensitiveFilterNoticeDisabled',
+                    disabled ? 'true' : 'false',
+                );
             }
 
             if (pickers.interruptRepair && currentProvider === 'soniox') {
@@ -701,6 +823,8 @@
             renderSleepOnSilencePicker,
             getStoredHideSpeakerLabelsSetting,
             renderSpeakerLabelsPicker,
+            renderOscSensitiveFilterPicker,
+            renderOscSensitiveFilterNoticePicker,
             renderInterruptRepairPicker,
             renderBundledCjkFontPicker,
             syncBundledCjkFontPreference,
@@ -712,6 +836,8 @@
             renderTranslationModePicker,
             segmentModeLabel,
             renderSegmentModePicker,
+            renderSubtitleFlowPicker,
+            renderVrAttachModePicker,
             renderRuntimeSettingsPickers,
             renderSettingsPickers,
             writeProviderSettingsDraft,

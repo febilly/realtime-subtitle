@@ -172,6 +172,14 @@ describe('RenderModel speculative token stream', () => {
         ]);
     });
 
+    it('does not predict a break the backend will wait on for translation', () => {
+        const values = [
+            original('Done.', { is_final: false, awaits_translation: true }),
+            original(' Next', { is_final: false, awaits_translation: true }),
+        ];
+        expect(RenderModel.buildRenderTokens({ currentNonFinalTokens: values })).toEqual(values);
+    });
+
     it('splits after a period on a fragmented word suffix using full context', () => {
         const first = original(' her', { is_final: false });
         const suffix = original('e.', { is_final: false });
@@ -188,6 +196,17 @@ describe('RenderModel speculative token stream', () => {
         ]);
     });
 
+    it.each([
+        ['Hello Mr.', ' Smith'],
+        ['Hello Mr', '.', ' Smith'],
+        ['Hello M', 'r.', ' Smith'],
+        ['At 9 A.', 'M.', ' today'],
+        ['At 3 P', '.', 'M', '.', ' today'],
+    ])('keeps streamed titles and times together: %j', (...parts) => {
+        const values = parts.map((text) => original(text, { is_final: false }));
+        expect(RenderModel.buildRenderTokens({ currentNonFinalTokens: values })).toEqual(values);
+    });
+
     it('keeps a streamed e.g. abbreviation together', () => {
         const values = [
             original('For e.', { is_final: false }),
@@ -197,6 +216,30 @@ describe('RenderModel speculative token stream', () => {
         const tokens = RenderModel.buildRenderTokens({ currentNonFinalTokens: values });
 
         expect(tokens).toEqual(values);
+    });
+
+    it('keeps a decimal together when the fractional token has leading whitespace', () => {
+        const values = [
+            original('误差从21%降到7.', { is_final: false, language: 'zh' }),
+            original(' 2%，', { is_final: false, language: 'zh' }),
+            original('也就是之前的一个门槛', { is_final: false, language: 'zh' }),
+        ];
+        const tokens = RenderModel.buildRenderTokens({ currentNonFinalTokens: values });
+
+        expect(tokens).toEqual(values);
+        expect(tokens.some((token) => token.is_separator)).toBe(false);
+    });
+
+    it('keeps a decimal together when the period is a standalone token', () => {
+        const values = [
+            original('Monthly revenue grew by 5', { is_final: false, language: 'en' }),
+            original('.', { is_final: false, language: 'en' }),
+            original('3% points.', { is_final: false, language: 'en' }),
+        ];
+        const tokens = RenderModel.buildRenderTokens({ currentNonFinalTokens: values });
+
+        expect(tokens).toEqual(values);
+        expect(tokens.some((token) => token.is_separator)).toBe(false);
     });
 
     it('does not split punctuation inside an opener from an earlier token', () => {
@@ -223,6 +266,52 @@ describe('RenderModel speculative token stream', () => {
         });
 
         expect(tokens).toEqual([finalized, ...values]);
+    });
+
+    // Live 2026-10-12: the backend cuts after a standalone closing quote, so
+    // the preview has to as well or the next sentence sits on the quote's line.
+    it.each([
+        ['ASCII', [' doing here.', '"', ' They'], 'en'],
+        ['corner bracket', [' 「いいえ、野菜です。', '」', ' But'], 'ja'],
+    ])('splits after a standalone %s closing quote', (_label, parts, language) => {
+        const [sentence, quote, next] = parts.map(
+            (text) => original(text, { is_final: false, language }),
+        );
+        const tokens = RenderModel.buildRenderTokens({
+            currentNonFinalTokens: [sentence, quote, next],
+        });
+
+        expect(tokens).toEqual([
+            sentence,
+            quote,
+            { is_separator: true, is_final: false, separator_type: 'speculative' },
+            next,
+        ]);
+    });
+
+    it('splits after a standalone closing quote whose sentence is already final', () => {
+        const finalized = original(' by the gallon.');
+        const quote = original('"', { is_final: false });
+        const next = original(' Many', { is_final: false });
+        const tokens = RenderModel.buildRenderTokens({
+            allFinalTokens: [finalized],
+            currentNonFinalTokens: [quote, next],
+        });
+
+        expect(tokens).toEqual([
+            finalized,
+            quote,
+            { is_separator: true, is_final: false, separator_type: 'speculative' },
+            next,
+        ]);
+    });
+
+    it.each([
+        [['He said "no', '"', ' more']],
+        [['Wait...', '"', ' more']],
+    ])('does not split after a closing quote without a sentence end: %j', (parts) => {
+        const values = parts.map((text) => original(text, { is_final: false }));
+        expect(RenderModel.buildRenderTokens({ currentNonFinalTokens: values })).toEqual(values);
     });
 
     it('does not split a streamed ASCII ellipsis dot run', () => {

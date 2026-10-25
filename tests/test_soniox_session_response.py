@@ -2,11 +2,15 @@ import asyncio
 import concurrent.futures
 import sys
 from types import ModuleType
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 
 def _install_soniox_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "soniox_session", raising=False)
+    # The shared base binds osc_manager/config at import: reload it with the stubs.
+    monkeypatch.delitem(sys.modules, "realtime_session_base", raising=False)
     # Re-import the shared LLM helper fresh so it binds to this test's mocked
     # config / llm_client rather than a version cached by an earlier test.
     monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
@@ -109,7 +113,7 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     session = module.SonioxSession(logger, broadcast)
     session.last_sent_count = 99
 
-    first_count, should_end, reason = session._process_soniox_response(
+    first_count, should_end, reason = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -129,7 +133,7 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     assert reason is None
     assert updates[-1]["final_tokens"][0]["text"] == "first"
 
-    second_count, should_end, reason = session._process_soniox_response(
+    second_count, should_end, reason = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -168,7 +172,7 @@ def test_soniox_response_capture_includes_raw_batch_and_active_modes(monkeypatch
     }
     accumulated = [{"text": "Earlier."}]
 
-    session._process_soniox_response(response, accumulated, 7, object())
+    session._process_stream_response(response, accumulated, 7, object())
 
     capture.assert_called_once()
     args, context = capture.call_args
@@ -178,6 +182,9 @@ def test_soniox_response_capture_includes_raw_batch_and_active_modes(monkeypatch
         "translation_mode": "accurate",
         "llm_refine_mode": "translate",
         "suppress_soniox_translation": True,
+        "translation": session.translation,
+        "translation_target_lang": session.get_translation_target_lang(),
+        "target_langs": list(session.get_target_langs()),
         "sent_count": 7,
         "all_final_token_count": 1,
         "stream_key": f"{id(accumulated):x}",
@@ -213,7 +220,7 @@ def test_relay_http_402_broadcasts_billing_exhausted_disconnect(monkeypatch):
     monkeypatch.setattr(module, "AudioSendRouter", MagicMock())
 
     session = module.SonioxSession(MagicMock(), broadcast)
-    session._open_soniox_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
+    session._open_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
         402,
         '{"detail":"Insufficient credits"}',
     ))
@@ -247,7 +254,7 @@ def test_relay_http_402_concurrency_code_broadcasts_concurrency_disconnect(monke
     monkeypatch.setattr(module, "AudioSendRouter", MagicMock())
 
     session = module.SonioxSession(MagicMock(), broadcast)
-    session._open_soniox_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
+    session._open_stream_state = MagicMock(side_effect=RelayConnectionRequestError(
         402,
         '{"detail":"Concurrent session limit reached","relay_close_code":4005}',
     ))
@@ -265,7 +272,7 @@ def test_relay_http_402_concurrency_code_broadcasts_concurrency_disconnect(monke
 
 
 def _feed_original(session, text, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -323,7 +330,7 @@ def test_standalone_translation_punctuation_segments_in_punctuation_mode(monkeyp
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -348,7 +355,7 @@ def test_standalone_translation_punctuation_segments_in_punctuation_mode(monkeyp
         0,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -372,7 +379,7 @@ def test_standalone_translation_punctuation_segments_in_punctuation_mode(monkeyp
 
 
 def _feed_original_batch(session, texts, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -422,6 +429,49 @@ def test_punctuation_separator_lands_at_period_within_batch(monkeypatch):
     assert kinds == ["foo.", "SEP", "and", "you"], kinds
 
 
+def _final_kinds_for_translation_off_batch(monkeypatch, texts):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "none"
+    session.translation_target_lang = "zh"  # source en != target zh
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    _feed_original_batch(session, texts, "en")
+    return [
+        "SEP" if t.get("is_separator") else t.get("text")
+        for u in updates
+        for t in u.get("final_tokens", [])
+    ]
+
+
+def test_translation_off_breaks_line_at_source_period(monkeypatch):
+    """Regression: with translation off (翻译关闭) no translation token ever
+    arrives, so a cross-language source period must break the line right
+    away. It used to defer the break waiting for translation text, gluing the
+    next finalized sentence onto the previous line."""
+    kinds = _final_kinds_for_translation_off_batch(
+        monkeypatch, [" hearing.", " You", " just"]
+    )
+    assert kinds == [" hearing.", "SEP", " You", " just"], kinds
+
+
+def test_translation_off_splits_two_sentences_in_one_batch(monkeypatch):
+    kinds = _final_kinds_for_translation_off_batch(
+        monkeypatch, [" hearing.", " You", " lied."]
+    )
+    assert kinds == [" hearing.", "SEP", " You", " lied.", "SEP"], kinds
+
+
 def test_punctuation_does_not_split_unspaced_decimal_point(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
@@ -448,6 +498,57 @@ def test_punctuation_does_not_split_unspaced_decimal_point(monkeypatch):
     assert kinds == ["version 3.", "10", " is out.", "SEP"], kinds
 
 
+def test_punctuation_does_not_split_spaced_decimal_inside_one_chinese_token(monkeypatch):
+    """Soniox can finalize one token containing ``5. 3%``. The space is token
+    formatting inside the decimal, not a sentence boundary."""
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    text = "每月营收增长了5. 3%。"
+    _feed_original_batch(session, [text], "zh")
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
+    assert kinds == [text, "SEP"], kinds
+
+
+def test_punctuation_does_not_split_chinese_decimal_with_standalone_period_token(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+
+    _feed_original_batch(session, ["每月营收增长了5", ".", "3%。"], "zh")
+
+    final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
+    kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
+    assert kinds == ["每月营收增长了5", ".", "3%。", "SEP"], kinds
+
+
 def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
@@ -465,7 +566,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -481,11 +582,13 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
         0,
         object(),
     )
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
-                    "text": "5.",
+                    # Soniox can prefix a streamed fractional token with a
+                    # cosmetic space even though it continues ``1.5``.
+                    "text": " 5.",
                     "is_final": True,
                     "speaker": "1",
                     "translation_status": "original",
@@ -497,7 +600,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
         sent_count,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -521,7 +624,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
     ]
     assert kinds == [
         "Back during the CS 1.",
-        "5.",
+        " 5.",
         "SEP",
         " But the game is actually about",
     ], kinds
@@ -544,7 +647,7 @@ def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeyp
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -560,7 +663,7 @@ def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeyp
         0,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -585,7 +688,15 @@ def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeyp
     assert kinds == ["It's 21.", "SEP", " Next sentence"], kinds
 
 
-def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatch):
+@pytest.mark.parametrize("first, second", [
+    ("Meet at 9 a.", "m."),
+    ("Meet at 9 A.", "M."),
+    ("Meet at 3 P.", "M."),
+    ("Meet Mr", "."),
+    ("Meet M", "r."),
+    ("Meet Mr.", " Smith"),
+])
+def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatch, first, second):
     _install_soniox_session_import_mocks(monkeypatch)
     import soniox_session as module
 
@@ -602,11 +713,11 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
-                    "text": "Meet at 9 a.",
+                    "text": first,
                     "is_final": True,
                     "speaker": "1",
                     "translation_status": "original",
@@ -618,11 +729,11 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         0,
         object(),
     )
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
-                    "text": "m.",
+                    "text": second,
                     "is_final": True,
                     "speaker": "1",
                     "translation_status": "original",
@@ -634,7 +745,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         sent_count,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -656,7 +767,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
         "SEP" if t.get("is_separator") else t.get("text")
         for t in final_tokens
     ]
-    assert kinds == ["Meet at 9 a.", "m.", " tomorrow.", "SEP"], kinds
+    assert kinds == [first, second, " tomorrow.", "SEP"], kinds
 
 
 def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch):
@@ -676,7 +787,7 @@ def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch)
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -692,7 +803,7 @@ def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch)
         0,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -760,7 +871,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(m
     session._segment_mode = "punctuation"
 
     all_final_tokens = []
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -783,7 +894,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(m
         0,
         object(),
     )
-    sent_count, *_ = session._process_soniox_response(
+    sent_count, *_ = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -799,7 +910,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(m
         sent_count,
         object(),
     )
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -850,8 +961,257 @@ def test_punctuation_quoted_sentence_in_one_token_splits_after_quote(monkeypatch
     assert kinds == ["He said hello.\"", "SEP", " Next sentence"], kinds
 
 
+def _translation_off_session(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately)
+
+    session = module.SonioxSession(MagicMock(), broadcast)
+    session.translation = "none"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session._segment_mode = "punctuation"
+    return session, updates
+
+
+def _feed_final_and_non_final(session, all_final_tokens, sent_count, finals, non_finals):
+    sent_count, *_ = session._process_stream_response(
+        {
+            "tokens": [
+                {
+                    "text": text,
+                    "is_final": is_final,
+                    "speaker": "1",
+                    "translation_status": "original",
+                    "language": "en",
+                }
+                for texts, is_final in ((finals, True), (non_finals, False))
+                for text in texts
+            ]
+        },
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    return sent_count
+
+
+def _final_kinds(updates):
+    return [
+        "SEP" if t.get("is_separator") else t.get("text")
+        for u in updates
+        for t in u.get("final_tokens", [])
+    ]
+
+
+def test_translation_off_waits_for_closing_quote_shown_in_non_final_tail(monkeypatch):
+    """Regression (live 2026-10-12): ``" gallon."`` ended a final batch while
+    the closing ``"`` was still non-final. Cutting at the period pushed the
+    quote onto the next line; the non-final tail already showed it coming."""
+    session, updates = _translation_off_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_final_and_non_final(
+        session, all_final_tokens, 0, [" by the", " gallon."], ["\"", " Many"]
+    )
+    assert _final_kinds(updates) == [" by the", " gallon."]
+    _feed_final_and_non_final(
+        session, all_final_tokens, sent_count, ["\"", " Many"], [" printer"]
+    )
+    assert _final_kinds(updates) == [" by the", " gallon.", "\"", "SEP", " Many"]
+
+
+def test_translation_off_batch_final_period_splits_now_without_quote_in_tail(monkeypatch):
+    """The quote wait must not delay ordinary sentence ends."""
+    session, updates = _translation_off_session(monkeypatch)
+    _feed_final_and_non_final(
+        session, [], 0, [" by the", " gallon."], [" Many", " printer"]
+    )
+    assert _final_kinds(updates) == [" by the", " gallon.", "SEP"]
+
+
+def test_translation_off_quote_wait_flushes_when_final_quote_never_comes(monkeypatch):
+    session, updates = _translation_off_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_final_and_non_final(
+        session, all_final_tokens, 0, [" gallon."], ["\"", " Many"]
+    )
+    _feed_final_and_non_final(session, all_final_tokens, sent_count, [" Many"], [])
+    assert _final_kinds(updates) == [" gallon.", "SEP", " Many"]
+
+
+def _translation_stream_session(monkeypatch):
+    """Cross-language one_way: source punctuation defers the line break until
+    the translation streams in."""
+    session, updates = _translation_off_session(monkeypatch)
+    session.translation = "one_way"
+    return session, updates
+
+
+def _feed_stream(session, all_final_tokens, sent_count, finals, non_finals=()):
+    """`finals` / `non_finals`: texts; a ("zh", text) tuple is a translation."""
+
+    def token(item, is_final):
+        if isinstance(item, tuple):
+            return {
+                "text": item[1],
+                "is_final": is_final,
+                "speaker": "1",
+                "translation_status": "translation",
+                "language": item[0],
+                "source_language": "en",
+            }
+        return {
+            "text": item,
+            "is_final": is_final,
+            "speaker": "1",
+            "translation_status": "original",
+            "language": "en",
+        }
+
+    sent_count, *_ = session._process_stream_response(
+        {
+            "tokens": [token(item, True) for item in finals]
+            + [token(item, False) for item in non_finals]
+        },
+        all_final_tokens,
+        sent_count,
+        object(),
+    )
+    return sent_count
+
+
+def _non_final_awaits(updates):
+    return [bool(t.get("awaits_translation")) for t in updates[-1]["non_final_tokens"]]
+
+
+def test_non_final_source_awaits_translation_only_when_break_waits_for_it(monkeypatch):
+    """The frontend predicts no line break after a source token flagged
+    ``awaits_translation``: the backend breaks there only once translation
+    arrives, and keeps sentences finalized together on one line."""
+    session, updates = _translation_stream_session(monkeypatch)
+    _feed_stream(session, [], 0, [], [" Done.", ("zh", "好"), " Next"])
+    assert _non_final_awaits(updates) == [True, False, True]
+
+    session.translation_target_lang = "en"  # speech already in the target language
+    _feed_stream(session, [], 0, [], [" Done.", " Next"])
+    assert _non_final_awaits(updates) == [False, False]
+
+    session.translation_target_lang = "zh"
+    session._segment_mode = "translation"
+    _feed_stream(session, [], 0, [], [" Done.", " Next"])
+    assert _non_final_awaits(updates) == [False, False]
+
+    session, updates = _translation_off_session(monkeypatch)
+    _feed_final_and_non_final(session, [], 0, [], [" Done.", " Next"])
+    assert _non_final_awaits(updates) == [False, False]
+
+
+def _final_sentence_ids(updates):
+    return {
+        t.get("text"): t.get("llm_sentence_id")
+        for u in updates
+        for t in u.get("final_tokens", [])
+        if not t.get("is_separator") and t.get("translation_status") != "translation"
+    }
+
+
+def test_translation_stream_keeps_late_closing_quote_with_its_sentence(monkeypatch):
+    """`` gallon.`` ended a batch and deferred its break (translation still
+    expected). The ``"`` that closes the quotation was finalized only in the
+    next batch, after some translation had arrived: the deferred break must
+    land after the quote, not before it, and the quote belongs to the same
+    paired sentence."""
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(session, all_final_tokens, 0, [" by the", " gallon."])
+    assert _final_kinds(updates) == [" by the", " gallon."]
+    _feed_stream(
+        session, all_final_tokens, sent_count, [("zh", "按加仑"), "\"", " Many"]
+    )
+
+    assert _final_kinds(updates) == [" by the", " gallon.", "按加仑", "\"", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids["\""] == ids[" gallon."]
+    assert ids[" Many"] != ids[" gallon."]
+    head = session._pairer.entries("1")[0]
+    assert head.source_text() == " by the gallon.\""
+    assert head.translation_text() == "按加仑"
+
+
+def test_translation_stream_quote_without_translation_keeps_break_pending(monkeypatch):
+    """No translation yet when the quote arrives: the break stays deferred
+    (it used to be dropped) and lands before the next sentence once the
+    translation has shown up."""
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(session, all_final_tokens, 0, [" gallon."])
+    sent_count = _feed_stream(session, all_final_tokens, sent_count, ["\""])
+    _feed_stream(session, all_final_tokens, sent_count, [("zh", "加仑"), " Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "\"", "加仑", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids["\""] == ids[" gallon."] != ids[" Many"]
+
+
+def test_translation_stream_holds_break_while_tail_shows_closing_quote(monkeypatch):
+    """The translation completed in the same batch as `` gallon.`` while the
+    closing quote was still non-final: hold the break for the quote."""
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(
+        session, all_final_tokens, 0, [" gallon.", ("zh", "按加仑计算。")], ["\""]
+    )
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。"]
+    sent_count = _feed_stream(session, all_final_tokens, sent_count, ["\""], [" Many"])
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "\"", "SEP"]
+    _feed_stream(session, all_final_tokens, sent_count, [" Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "\"", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids["\""] == ids[" gallon."] != ids[" Many"]
+
+
+def test_translation_stream_batch_end_flush_waits_for_quote_in_tail(monkeypatch):
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(
+        session, all_final_tokens, 0, [" gallon.", ("zh", "按加仑")], ["\"", " Many"]
+    )
+    assert _final_kinds(updates) == [" gallon.", "按加仑"]
+    _feed_stream(session, all_final_tokens, sent_count, ["\"", " Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑", "\"", "SEP", " Many"]
+
+
+def test_translation_stream_quote_hold_breaks_when_final_quote_never_comes(monkeypatch):
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_stream(
+        session, all_final_tokens, 0, [" gallon.", ("zh", "按加仑计算。")], ["\"", " Many"]
+    )
+    _feed_stream(session, all_final_tokens, sent_count, [" Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "SEP", " Many"]
+    ids = _final_sentence_ids(updates)
+    assert ids[" gallon."] != ids[" Many"]
+
+
+def test_translation_stream_ordinary_sentence_end_breaks_without_quote_in_tail(monkeypatch):
+    """The quote hold must not delay ordinary sentence ends."""
+    session, updates = _translation_stream_session(monkeypatch)
+    _feed_stream(session, [], 0, [" gallon.", ("zh", "按加仑计算。")], [" Many"])
+
+    assert _final_kinds(updates) == [" gallon.", "按加仑计算。", "SEP"]
+
+
 def _feed_tokens(session, tokens):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {"is_final": True, "speaker": "1", **token}
@@ -981,7 +1341,7 @@ def test_accurate_mode_segments_period_on_fragmented_word_suffix(monkeypatch):
     session._suppress_soniox_translation = True
     session._llm_refine_mode = "translate"
 
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1103,7 +1463,7 @@ def test_outgoing_final_tokens_carry_llm_sentence_id_in_punctuation_mode(monkeyp
 
 
 def _feed_non_final(session, text, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1122,7 +1482,7 @@ def _feed_non_final(session, text, language):
 
 
 def _feed_non_final_translation(session, text, language):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1141,7 +1501,7 @@ def _feed_non_final_translation(session, text, language):
 
 
 def _feed_original_and_translation(session, source, translation, source_language="en", translation_language="zh"):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1169,7 +1529,7 @@ def _feed_original_and_translation(session, source, translation, source_language
 
 
 def _feed_original_and_translation_pair(session, source, translation, source_language="en", translation_language="zh"):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "tokens": [
                 {
@@ -1205,11 +1565,11 @@ def _settle_pairing(monkeypatch, module, session, seconds=2.0):
 
     base = _time.monotonic()
     monkeypatch.setattr(module.time, "monotonic", lambda: base + seconds)
-    session._process_soniox_response({"tokens": []}, [], 0, object())
+    session._process_stream_response({"tokens": []}, [], 0, object())
 
 
 def _feed_original_and_translation_pair_with_endpoint(session, source, translation, source_language="en", translation_language="zh"):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {
             "endpoint_detected": True,
             "tokens": [
@@ -1825,6 +2185,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     relay_calls = []
     sent_payloads = []
     config_translations = []
+    config_audio_formats = []
     close_calls = []
 
     class FakeWs:
@@ -1848,6 +2209,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
 
     def get_config(api_key, audio_format, translation, **kwargs):
         config_translations.append(translation)
+        config_audio_formats.append(audio_format)
         return {
             "api_key": api_key,
             "model": "stt-rt-v5",
@@ -1862,7 +2224,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     session = module.SonioxSession(MagicMock(), MagicMock())
     session.relay_run_id = "abc123def456"
 
-    stream = session._open_soniox_stream_state(
+    stream = session._open_stream_state(
         "relay-placeholder",
         1,
         "pcm_s16le",
@@ -1871,6 +2233,8 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     )
 
     assert config_translations == ["none"]
+    assert config_audio_formats == ["ogg"]
+    assert isinstance(stream.ws, module.SonioxOpusWebSocket)
     assert relay_calls[-1]["translation"] == "none"
     # The run id ties this stream to the run that opened it, so silence-sleep
     # and rollover reconnects do not read as separate sessions.
@@ -1882,10 +2246,10 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
     assert sent_payloads
     assert '"api_key": ""' in sent_payloads[-1]
 
-    session._close_soniox_stream_state(stream, "silence_sleep")
-    session._close_soniox_stream_state(stream, "rollover")
-    session._close_soniox_stream_state(stream, "user_stop")
-    session._close_soniox_stream_state(stream)
+    session._close_stream_state(stream, "silence_sleep")
+    session._close_stream_state(stream, "rollover")
+    session._close_stream_state(stream, "user_stop")
+    session._close_stream_state(stream)
     assert close_calls == [
         (1000, "silence_sleep"),
         (1000, "rollover"),
@@ -1925,7 +2289,7 @@ def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
     session.thread.is_alive.return_value = True
     session._start_audio_streamer = MagicMock()
     session._stop_audio_streamer = MagicMock()
-    session._open_soniox_stream_state = MagicMock(return_value=module._SonioxStreamState(
+    session._open_stream_state = MagicMock(return_value=module._StreamState(
         ws=FakeWs(),
         index=1,
         api_key="key",
@@ -1938,6 +2302,54 @@ def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
 
     assert close_calls
     assert {reason for _code, reason in close_calls} == {"user_stop"}
+
+
+def test_run_session_wakes_at_sentence_pairing_deadline(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    recv_timeouts = []
+
+    class FakeRouter:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def set_target(self, _ws):
+            return True
+
+        def close(self):
+            return None
+
+    class FakeWs:
+        def recv(self, timeout=None):
+            recv_timeouts.append(timeout)
+            session.stop_event.set()
+            raise TimeoutError()
+
+    monkeypatch.setattr(module, "AudioSendRouter", FakeRouter)
+
+    session = module.SonioxSession(MagicMock(), MagicMock())
+    session._start_audio_streamer = MagicMock()
+    session._stop_audio_streamer = MagicMock()
+    session._close_stream_state = MagicMock()
+    session._stream_rollover_seconds = MagicMock(return_value=None)
+    session._sleep_idle_seconds = MagicMock(return_value=None)
+    session._pairer.seconds_until_next_deadline = MagicMock(return_value=0.02)
+    session._dispatch_paired_sentences = MagicMock()
+    session._open_stream_state = MagicMock(return_value=module._StreamState(
+        ws=FakeWs(),
+        index=1,
+        api_key="key",
+        started_at=module.time.monotonic(),
+        ready_at=module.time.monotonic(),
+        all_final_tokens=[],
+    ))
+
+    session._run_session("key", "pcm_s16le", "one_way", "zh", object())
+
+    assert len(recv_timeouts) == 1
+    assert abs(recv_timeouts[0] - 0.02) < 1e-9
+    session._dispatch_paired_sentences.assert_called_once_with()
 
 
 def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):
@@ -1979,7 +2391,7 @@ def test_manual_finalize_fin_token_is_consumed_but_not_displayed(monkeypatch):
     logger = MagicMock()
     session = module.SonioxSession(logger, broadcast)
 
-    sent_count, should_end, reason = session._process_soniox_response(
+    sent_count, should_end, reason = session._process_stream_response(
         {
             "tokens": [
                 {
@@ -2072,7 +2484,7 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
 
     def open_stream(api_key, stream_index, audio_format, translation, translation_target_lang, *, warming=False):
         opened_warming_flags.append(warming)
-        return module._SonioxStreamState(
+        return module._StreamState(
             ws=FakeWs(),
             index=stream_index,
             api_key=api_key,
@@ -2085,7 +2497,7 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
         session.stop_event.set()
         return True
 
-    session._open_soniox_stream_state = MagicMock(side_effect=open_stream)
+    session._open_stream_state = MagicMock(side_effect=open_stream)
     session._drain_warmup_stream = MagicMock(side_effect=drain_warmup)
 
     session._run_session("key", "pcm_s16le", "two_way", "zh", object())
@@ -2131,7 +2543,7 @@ def test_punctuation_speaker_change_finalizes_previous_speaker(monkeypatch):
     # Speaker 1 speaks with no sentence-ending punctuation and no endpoint yet:
     # the sentence stays open (nothing to finalize).
     monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
-    sent_count, _, _ = session._process_soniox_response(
+    sent_count, _, _ = session._process_stream_response(
         {
             "tokens": [
                 {"text": "Hello there", "is_final": True, "speaker": "1",
@@ -2151,7 +2563,7 @@ def test_punctuation_speaker_change_finalizes_previous_speaker(monkeypatch):
     # punctuation, so the pairer needs the quiet-close window to have
     # elapsed before it treats the translation as complete.
     monkeypatch.setattr(module.time, "monotonic", lambda: 100.0 + 1.0)
-    session._process_soniox_response(
+    session._process_stream_response(
         {
             "tokens": [
                 {"text": "Goodbye", "is_final": True, "speaker": "2",
@@ -2184,7 +2596,7 @@ def _timed_token(text, speaker, start_ms, end_ms, status="original", language="e
 
 
 def _feed_timed_tokens(session, all_final_tokens, sent_count, tokens):
-    return session._process_soniox_response(
+    return session._process_stream_response(
         {"tokens": tokens},
         all_final_tokens,
         sent_count,
@@ -2559,3 +2971,249 @@ def test_short_interrupt_resume_gap_too_long_does_not_merge(monkeypatch):
     _feed_timed_tokens(session, all_final_tokens, sent_count, [_timed_token("A two.", "1", 3200, 4000)])
 
     assert not [u for u in updates if u.get("type") == "subtitle_retract"]
+
+
+def test_two_way_translation_can_use_source_as_translation_is_always_false(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+
+    # In two-way mode, neither English nor Chinese nor any other language should ever
+    # be treated as "source can be used as translation"
+    en_tokens = [{"text": "Hello.", "language": "en"}]
+    zh_tokens = [{"text": "你好。", "language": "zh"}]
+    ja_tokens = [{"text": "こんにちは。", "language": "ja"}]
+
+    assert session._can_use_source_as_translation(en_tokens) is False
+    assert session._can_use_source_as_translation(zh_tokens) is False
+    assert session._can_use_source_as_translation(ja_tokens) is False
+
+    # Even if translation_target_lang is swapped to "en"
+    session.translation_target_lang = "en"
+    assert session._can_use_source_as_translation(en_tokens) is False
+    assert session._can_use_source_as_translation(zh_tokens) is False
+
+
+def test_two_way_translation_select_osc_text_always_returns_translation(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+
+    en_tokens = [{"text": "Hello.", "language": "en"}]
+    zh_tokens = [{"text": "你好。", "language": "zh"}]
+
+    # When translation text is available, OSC selects the translation
+    assert session._select_osc_text("你好。", "Hello.", en_tokens) == "你好。"
+    assert session._select_osc_text("Hello.", "你好。", zh_tokens) == "Hello."
+
+    # When translation text is empty, OSC does NOT fall back to source in two-way mode
+    assert session._select_osc_text("", "Hello.", en_tokens) == ""
+    assert session._select_osc_text("", "你好。", zh_tokens) == ""
+
+
+def test_two_way_translation_fast_mode_sends_partner_translations_to_osc(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    osc_messages = []
+    module.osc_manager.add_message_and_send = MagicMock(
+        side_effect=lambda text, **kw: osc_messages.append(text)
+    )
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("fast")
+    session.set_osc_translation_enabled(True)
+
+    # 1. User speaks English -> translation is Chinese -> OSC sends Chinese
+    en_tokens = [{"text": "Good morning.", "language": "en", "is_final": True, "speaker": "1"}]
+    zh_trans_tokens = [{"text": "早上好。", "translation_status": "translation", "language": "zh", "is_final": True, "speaker": "1"}]
+
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, zh_trans_tokens, "s-1"))
+    assert osc_messages[-1] == "早上好。"
+
+    # 2. User speaks Chinese -> translation is English -> OSC sends English (NOT Chinese!)
+    zh_tokens = [{"text": "晚安。", "language": "zh", "is_final": True, "speaker": "1"}]
+    en_trans_tokens = [{"text": "Good night.", "translation_status": "translation", "language": "en", "is_final": True, "speaker": "1"}]
+
+    asyncio.run(session._finalize_sentence_async("1", zh_tokens, en_trans_tokens, "s-2"))
+    assert osc_messages[-1] == "Good night."
+
+
+def test_two_way_translation_hybrid_mode_refines_with_partner_target_lang(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    osc_messages = []
+    module.osc_manager.add_message_and_send = MagicMock(
+        side_effect=lambda text, **kw: (osc_messages.append(("draft", text)), 1)[1]
+    )
+    module.osc_manager.update_message_and_send = MagicMock(
+        side_effect=lambda handle, text, **kw: osc_messages.append(("final", text))
+    )
+
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("hybrid")
+    session.set_osc_translation_enabled(True)
+
+    refine_calls = []
+
+    async def fake_refine(source, translation, context_items, target_lang=None):
+        refine_calls.append((source, translation, target_lang))
+        return {"status": "ok", "no_change": False, "refined_translation": f"Refined({target_lang}): {translation}"}
+
+    session._perform_refine = fake_refine
+
+    # English speech: target should be 'zh'
+    en_tokens = [{"text": "Hello.", "language": "en", "is_final": True, "speaker": "1"}]
+    zh_trans_tokens = [{"text": "你好。", "translation_status": "translation", "language": "zh", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, zh_trans_tokens, "s-1"))
+
+    assert refine_calls[-1] == ("Hello.", "你好。", "zh")
+    assert osc_messages[-1] == ("final", "Refined(zh): 你好。")
+
+    # Chinese speech: target should be 'en' (NOT 'zh'!)
+    zh_tokens = [{"text": "再见。", "language": "zh", "is_final": True, "speaker": "1"}]
+    en_trans_tokens = [{"text": "Bye.", "translation_status": "translation", "language": "en", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", zh_tokens, en_trans_tokens, "s-2"))
+
+    assert refine_calls[-1] == ("再见。", "Bye.", "en")
+    assert osc_messages[-1] == ("final", "Refined(en): Bye.")
+
+
+def test_two_way_translation_accurate_mode_translates_with_partner_target_lang(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    osc_messages = []
+    module.osc_manager.add_message_and_send = MagicMock(
+        side_effect=lambda text, **kw: osc_messages.append(text)
+    )
+
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("accurate")
+    session.set_osc_translation_enabled(True)
+
+    translate_calls = []
+
+    async def fake_translate(source, context_items, target_lang=None):
+        translate_calls.append((source, target_lang))
+        if target_lang == "zh":
+            return {"status": "ok", "translation": "这是中文译文。"}
+        else:
+            return {"status": "ok", "translation": "This is English translation."}
+
+    session._perform_translate = fake_translate
+
+    # 1. English speech -> LLM translates to zh -> OSC sends Chinese
+    en_tokens = [{"text": "This is an English sentence.", "language": "en", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, [], "s-1"))
+
+    assert translate_calls[-1] == ("This is an English sentence.", "zh")
+    assert osc_messages[-1] == "这是中文译文。"
+
+    # 2. Chinese speech -> LLM translates to en -> OSC sends English
+    zh_tokens = [{"text": "这是一个中文句子。", "language": "zh", "is_final": True, "speaker": "1"}]
+    asyncio.run(session._finalize_sentence_async("1", zh_tokens, [], "s-2"))
+
+    assert translate_calls[-1] == ("这是一个中文句子。", "en")
+    assert osc_messages[-1] == "This is English translation."
+
+
+def test_accurate_mode_does_not_llm_translate_when_translation_is_off(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "none"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_translation_mode("accurate")
+
+    session._perform_translate = AsyncMock(
+        return_value={"status": "ok", "translation": "你听得到我吗？"}
+    )
+    session._spec_translate = MagicMock()
+
+    en_tokens = [{"text": "You hear me?", "language": "en", "is_final": True, "speaker": "1"}]
+    session._maybe_speculative_translate(en_tokens)
+    asyncio.run(session._finalize_sentence_async("1", en_tokens, [], "s-1"))
+
+    session._spec_translate.assert_not_called()
+    session._perform_translate.assert_not_called()
+
+
+def test_two_way_translation_live_preview_sends_partner_translation_and_not_source(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    preview_messages = []
+    module.osc_manager.send_preview_messages_with_history = MagicMock(
+        side_effect=lambda lines, ongoing=True, speaker=None: preview_messages.append((lines, speaker))
+    )
+
+    session = module.SonioxSession(MagicMock(), AsyncMock())
+    session.translation = "two_way"
+    session.target_lang_1 = "en"
+    session.target_lang_2 = "zh"
+    session.translation_target_lang = "zh"
+    session.loop = object()
+    session.set_osc_translation_enabled(True)
+
+    # 1. Non-final tokens with only source text (Chinese): should NOT send Chinese source to OSC
+    zh_only_source = [
+        {"text": "你好", "translation_status": "original", "language": "zh", "speaker": "1", "is_final": False}
+    ]
+    session._maybe_send_live_osc_translation(zh_only_source)
+    assert len(preview_messages) == 0
+
+    # 2. Non-final tokens with English translation stream arriving: sends English translation
+    zh_with_trans = [
+        {"text": "你好", "translation_status": "original", "language": "zh", "speaker": "1", "is_final": False},
+        {"text": "Hello", "translation_status": "translation", "language": "en", "speaker": "1", "is_final": False}
+    ]
+    session._maybe_send_live_osc_translation(zh_with_trans)
+    assert len(preview_messages) == 1
+    assert preview_messages[-1][0] == ["Hello"]
+
+    # 3. English speech with Chinese translation stream arriving: sends Chinese translation
+    preview_messages.clear()
+    session._reset_osc_live_state()
+
+    en_with_trans = [
+        {"text": "Good morning", "translation_status": "original", "language": "en", "speaker": "1", "is_final": False},
+        {"text": "早上好", "translation_status": "translation", "language": "zh", "speaker": "1", "is_final": False}
+    ]
+    session._maybe_send_live_osc_translation(en_with_trans)
+    assert len(preview_messages) == 1
+    assert preview_messages[-1][0] == ["早上好"]
+

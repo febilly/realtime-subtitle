@@ -62,7 +62,14 @@
         const following = String(nextText || '');
         const context = String(contextText || '');
 
-        if (!Segmentation.hasSentenceEndingPunctuation(value)) return false;
+        // A closing quote streamed as its own token ("here." + "\"" + " They")
+        // has no punctuation of its own; the backend cuts after it because the
+        // accumulated sentence ends in punctuation + quote.
+        const trimmed = value.trim();
+        const closesQuotedSentence = !!trimmed
+            && Segmentation.CLOSING_QUOTE_CHARS.has(trimmed.at(-1))
+            && Segmentation.textEndsWithClosingQuoteAfterSentencePunctuation(context);
+        if (!closesQuotedSentence && !Segmentation.hasSentenceEndingPunctuation(value)) return false;
 
         // The backend makes these decisions against the accumulated sentence,
         // not only the latest token. This matters when an opener or the first
@@ -76,9 +83,19 @@
         // "。" + "…" are trailing-off runs rather than sentence boundaries.
         if (startsPunctuationRun(following)) return false;
         if (Segmentation.tokenTextStartsWithClosingQuote(value, following)) return false;
-        if (Segmentation.tokenTextContinuesDecimal(value, following)) return false;
+        // The period itself can be a standalone token ("5" + "." + "3%").
+        // Use accumulated context so the digit before that token is visible.
+        if (Segmentation.tokenTextContinuesDecimal(context, following)) return false;
         if (Segmentation.textContinuesAbbreviation(context, following)) return false;
         return true;
+    }
+
+    function shouldSpeculativelySplitAfter(token, nextText, contextText) {
+        // The backend waits for the translation before breaking after this
+        // source token, and keeps two sentences finalized together on one
+        // line; a predicted break would split and then rejoin.
+        if (token.awaits_translation) return false;
+        return shouldSpeculativelySplitAfterToken(token.text, nextText, contextText);
     }
 
     /**
@@ -111,7 +128,7 @@
                 !isLast
                 && token
                 && !token.is_separator
-                && shouldSpeculativelySplitAfterToken(token.text, nextText, contextText)
+                && shouldSpeculativelySplitAfter(token, nextText, contextText)
             ) {
                 tokens.push({
                     is_separator: true,
@@ -352,6 +369,7 @@
         ensureSpeakerValue,
         shouldSpeculativelySplitAfterToken,
         buildRenderTokens,
+        shouldSpeculativelySplitAfter,
         resolveLlmSentenceId,
         getSentenceRenderKey,
         buildSentences,

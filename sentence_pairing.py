@@ -193,6 +193,19 @@ class SentencePairer:
         token["llm_sentence_id"] = entry.sentence_id
         return entry
 
+    def continue_closed_source(
+        self, token: dict, speaker: str, sentence_id: str
+    ) -> Optional[PairedSentence]:
+        """Append a token that finishes an already source-closed sentence (a
+        closing quote finalized after the sentence ender) to that entry and
+        stamp its id. None once the entry has completed and left the queue."""
+        for entry in self._queues.get(str(speaker)) or []:
+            if entry.sentence_id == sentence_id and entry.source_closed:
+                entry.source_tokens.append(token)
+                token["llm_sentence_id"] = entry.sentence_id
+                return entry
+        return None
+
     def route_translation_token(
         self,
         token: dict,

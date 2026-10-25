@@ -45,6 +45,8 @@
         'llmRefineMode': true,
         'llmRefineEnabled': true,
         'sleepOnSilenceEnabled': true,
+        'oscSensitiveFilterEnabled': true,
+        'oscSensitiveFilterNoticeDisabled': true,
         'inviteRewardReminderLastShown': true,
         'useBundledCjkFont': true,
     };

@@ -172,6 +172,10 @@ describe('settings-store typed preferences', () => {
         expect(store.loadAutoRestartEnabled()).toBe(true);
         expect(store.readInterruptRepairEnabled()).toBeNull();
         expect(store.loadInterruptRepairEnabled()).toBe(true);
+        expect(store.readOscSensitiveFilterEnabled()).toBeNull();
+        expect(store.loadOscSensitiveFilterEnabled()).toBe(true);
+        expect(store.readOscSensitiveFilterNoticeDisabled()).toBeNull();
+        expect(store.loadOscSensitiveFilterNoticeDisabled()).toBe(false);
         expect(store.loadBottomSafeAreaEnabled()).toBe(false);
         expect(store.loadBundledCjkFontEnabled()).toBe(false);
         expect(store.loadAudioSource()).toBe('system');
@@ -186,6 +190,8 @@ describe('settings-store typed preferences', () => {
         expect(store.saveAutoRestartEnabled(false)).toBe(true);
         expect(store.saveSleepOnSilenceEnabled(false)).toBe(true);
         expect(store.saveInterruptRepairEnabled(false)).toBe(true);
+        expect(store.saveOscSensitiveFilterEnabled(false)).toBe(true);
+        expect(store.saveOscSensitiveFilterNoticeDisabled(true)).toBe(true);
         expect(store.saveBottomSafeAreaEnabled(true)).toBe(true);
         expect(store.saveBundledCjkFontEnabled(true)).toBe(true);
         expect(store.saveAudioSource('mix')).toBe(true);
@@ -202,6 +208,10 @@ describe('settings-store typed preferences', () => {
         expect(store.loadSleepOnSilenceEnabled()).toBe(false);
         expect(store.readInterruptRepairEnabled()).toBe(false);
         expect(store.loadInterruptRepairEnabled()).toBe(false);
+        expect(store.readOscSensitiveFilterEnabled()).toBe(false);
+        expect(store.loadOscSensitiveFilterEnabled()).toBe(false);
+        expect(store.readOscSensitiveFilterNoticeDisabled()).toBe(true);
+        expect(store.loadOscSensitiveFilterNoticeDisabled()).toBe(true);
         expect(store.loadBottomSafeAreaEnabled()).toBe(true);
         expect(store.loadBundledCjkFontEnabled()).toBe(true);
         expect(store.loadAudioSource()).toBe('mix');

@@ -5,6 +5,7 @@ import json
 import asyncio
 import os
 import secrets
+import logging
 import time
 import aiohttp
 from aiohttp import web
@@ -16,14 +17,13 @@ from config import (
     LOCK_MANUAL_CONTROLS,
     ENABLE_CHROMA_THEME,
     LLM_REFINE_DEFAULT_MODE,
+    LLM_REFINE_DIFF_MODE,
     TRANSLATION_MODE,
     get_capabilities,
     get_language_codes_ordered,
 )
 from config import (
     is_llm_refine_available,
-    LLM_REFINE_CONTEXT_MIN_COUNT,
-    LLM_REFINE_CONTEXT_MAX_COUNT,
 )
 
 from audio_capture import (
@@ -35,6 +35,9 @@ from audio_capture import (
 from llm_client import close_llm_http_session
 import local_store
 import desktop_shortcut
+from osc_manager import osc_manager
+
+logger = logging.getLogger("web_server")
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -68,16 +71,34 @@ class WebServer:
         # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
         self.overlay_manager = None
         self.overlay_ws = None
+        # SteamVR 字幕悬浮窗进程管理器；仅在 openvr 可用时由 server.py 注入。
+        self.vr_overlay_manager = None
+        self.vr_overlay_ws = None
         self.ipc_server = None
         # Provider-specific API key getter; injected by server.py.
         self.get_api_key = None
         # Runtime provider/key manager (hot-switch); injected by server.py.
         self.provider_manager = None
+        # Fallback session-lifecycle lock when no provider manager is wired.
+        self._fallback_lifecycle_lock = asyncio.Lock()
         self._ipc_polling_task = None
         # Lazy aiohttp client for proxying REST calls to the subtitle-server.
         self._http = None
         self._ticket_notifications_task = None
         self._ticket_notifications_connected = False
+        self._event_loop = None
+        self._osc_sensitive_filter_notice_triggered = False
+        self._osc_sensitive_filter_notice_delivered = False
+        self._osc_sensitive_filter_notice_callback = self._on_osc_sensitive_filter_triggered
+        stored_settings = local_store.load()
+        osc_manager.set_sensitive_filter_enabled(
+            str(stored_settings.get("oscSensitiveFilterEnabled", "true")).lower() == "true"
+        )
+        notice_disabled = (
+            str(stored_settings.get("oscSensitiveFilterNoticeDisabled", "false")).lower()
+            == "true"
+        )
+        osc_manager.set_sensitive_filter_notice_enabled(not notice_disabled)
         # A client process reports its version only on its first successful
         # startup account-validation GET /me request.
         self._client_version_reported = False
@@ -114,6 +135,54 @@ class WebServer:
                 await self._ipc_polling_task
             except asyncio.CancelledError:
                 pass
+
+    async def _start_osc_sensitive_filter_notifications(self, app):
+        self._event_loop = asyncio.get_running_loop()
+        osc_manager.set_sensitive_filter_notice_callback(
+            self._osc_sensitive_filter_notice_callback
+        )
+
+    async def _stop_osc_sensitive_filter_notifications(self, app):
+        osc_manager.clear_sensitive_filter_notice_callback(
+            self._osc_sensitive_filter_notice_callback
+        )
+        self._event_loop = None
+
+    def _on_osc_sensitive_filter_triggered(self):
+        """Thread-safe bridge from the synchronous OSC sender to aiohttp."""
+        self._osc_sensitive_filter_notice_triggered = True
+        loop = self._event_loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(self._deliver_osc_sensitive_filter_notice())
+        )
+
+    async def _deliver_osc_sensitive_filter_notice(self):
+        if (
+            not self._osc_sensitive_filter_notice_triggered
+            or self._osc_sensitive_filter_notice_delivered
+        ):
+            return False
+        regular_clients = [
+            client for client in self.websocket_clients
+            if client is not self.overlay_ws and client is not self.vr_overlay_ws
+        ]
+        if not regular_clients:
+            return False
+
+        # Reserve delivery before awaiting so a simultaneous connection/trigger
+        # cannot enqueue the startup-only notice twice.
+        self._osc_sensitive_filter_notice_delivered = True
+        message = json.dumps({"type": "osc_sensitive_filter_triggered"})
+        results = await asyncio.gather(
+            *[client.send_str(message) for client in regular_clients],
+            return_exceptions=True,
+        )
+        delivered = any(not isinstance(result, BaseException) for result in results)
+        if not delivered:
+            self._osc_sensitive_filter_notice_delivered = False
+        return delivered
                 
     async def _poll_ipc_status(self):
         last_status = None
@@ -131,9 +200,37 @@ class WebServer:
                     })
             except Exception as e:
                 self.logger.error(f"Error polling IPC status: {e}")
+            try:
+                await self._check_vr_overlay_process()
+            except Exception as e:
+                self.logger.error(f"Error checking VR overlay process: {e}")
             await asyncio.sleep(2)
 
+    VR_OVERLAY_RESPAWN_INTERVAL = 5.0
+
+    async def _check_vr_overlay_process(self):
+        """VR 字幕开着但子进程没了（SteamVR 退出时把它杀掉、或 SteamVR 崩溃连带）：
+        重新拉起，让它继续静默等待 SteamVR 下次启动。"""
+        manager = self.vr_overlay_manager
+        if manager is None or not manager.is_visible or manager.is_open():
+            return False
+        now = time.monotonic()
+        last = getattr(self, "_vr_overlay_last_respawn", None)
+        if last is not None and now - last < self.VR_OVERLAY_RESPAWN_INTERVAL:
+            return False
+        self._vr_overlay_last_respawn = now
+        manager.connected = False
+        manager.open(hidden=True)
+        await self.broadcast_to_clients(self._vr_overlay_state_frame())
+        return True
+
     async def ipc_status_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         connected = False
         if self.ipc_server is not None:
             connected = len(self.ipc_server._clients) > 0
@@ -141,6 +238,12 @@ class WebServer:
 
     async def api_key_status_handler(self, request):
         """返回API Key状态"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         status = "ok" if self.api_key_error_message is None else "error"
         return web.json_response({"status": status, "message": self.api_key_error_message})
     
@@ -175,10 +278,16 @@ class WebServer:
         if client_type == "overlay":
             self.overlay_ws = ws
             print("Overlay window client connected via WebSocket.")
+        elif client_type == "vr_overlay":
+            self.vr_overlay_ws = ws
+            print("VR overlay client connected via WebSocket.")
 
         # 添加到客户端列表
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
+
+        if client_type not in ("overlay", "vr_overlay"):
+            await self._deliver_osc_sensitive_filter_notice()
         
         try:
             connected = False
@@ -191,6 +300,9 @@ class WebServer:
             if self.overlay_manager is not None:
                 is_visible = getattr(self.overlay_manager, "is_visible", False)
             await ws.send_str(json.dumps({"type": "overlay_visibility", "visible": is_visible}))
+            if self.vr_overlay_manager is not None:
+                await ws.send_str(json.dumps(self._vr_overlay_state_frame()))
+                await ws.send_str(json.dumps(self._vr_overlay_config_frame()))
 
             # 发送当前识别暂停状态给新连入的客户端
             is_paused = getattr(self.session, "is_paused", False)
@@ -231,6 +343,10 @@ class WebServer:
                 if getattr(self, "overlay_ws", None) == ws:
                     self.overlay_ws = None
                     print("Overlay window client disconnected.")
+            elif client_type == "vr_overlay":
+                if getattr(self, "vr_overlay_ws", None) == ws:
+                    self.vr_overlay_ws = None
+                    print("VR overlay client disconnected.")
             # 从客户端列表移除
             self.websocket_clients.discard(ws)
             print(f"Client disconnected. Total clients: {len(self.websocket_clients)}")
@@ -249,7 +365,11 @@ class WebServer:
         """
         if not self._is_loopback_request(request):
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
-        return web.json_response({"store": local_store.load()})
+        try:
+            return web.json_response({"store": local_store.load()})
+        except Exception as e:
+            logger.warning(f"Failed to read local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     async def local_store_post_handler(self, request):
         """写入共享设置：{set:{k:v}, remove:[k], clear:bool}。"""
@@ -262,18 +382,22 @@ class WebServer:
         if not isinstance(payload, dict):
             return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
 
-        if payload.get("clear"):
-            store = local_store.clear()
-            return web.json_response({"status": "ok", "store": store})
+        try:
+            if payload.get("clear"):
+                store = local_store.clear()
+                return web.json_response({"status": "ok", "store": store})
 
-        updates = payload.get("set")
-        removals = payload.get("remove")
-        if updates is not None and not isinstance(updates, dict):
-            return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
-        if removals is not None and not isinstance(removals, list):
-            return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
-        store = local_store.merge(updates=updates, removals=removals)
-        return web.json_response({"status": "ok", "store": store})
+            updates = payload.get("set")
+            removals = payload.get("remove")
+            if updates is not None and not isinstance(updates, dict):
+                return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
+            if removals is not None and not isinstance(removals, list):
+                return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
+            store = local_store.merge(updates=updates, removals=removals)
+            return web.json_response({"status": "ok", "store": store})
+        except Exception as e:
+            logger.warning(f"Failed to update local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     def _supports_segment_mode(self) -> bool:
         return hasattr(self.session, "get_segment_mode")
@@ -300,6 +424,9 @@ class WebServer:
             "llm_refine_available": bool(provider != "local" and is_llm_refine_available()),
             "llm_refine_mode": self.session.get_llm_refine_mode(),
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
+            # How refine edits are visualized on the frontend:
+            # off | additions | additions_deletions | two_lines
+            "llm_refine_diff_mode": str(LLM_REFINE_DIFF_MODE or "off"),
             "llm_refine_context_min_count": int(config.llm_context_bounds()[0]),
             "llm_refine_context_max_count": int(config.llm_context_bounds()[1]),
             # Unified 翻译模式: 快速(fast) / 准确(accurate) / 混合(hybrid). 混合 shows
@@ -315,6 +442,10 @@ class WebServer:
             ),
             "interrupt_repair_enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
             "sleep_on_silence_enabled": config.get_sleep_on_silence_enabled(provider),
+            "osc_sensitive_filter_enabled": osc_manager.get_sensitive_filter_enabled(),
+            "osc_sensitive_filter_notice_disabled": (
+                not osc_manager.get_sensitive_filter_notice_enabled()
+            ),
             "soniox_region": config.SONIOX_REGION,
             "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
             # Subtitle-server relay (hosted mode) availability. The server URL is
@@ -394,6 +525,16 @@ class WebServer:
             payload["segment_mode"] = self.session.get_segment_mode()
         return web.json_response(payload)
 
+    # 未知来源值只告警一次，避免每次请求刷屏。
+    _warned_unknown_remotes: set = set()
+
+    def _session_lifecycle_lock(self) -> asyncio.Lock:
+        """The one lock serializing session stop/start across /restart,
+        pause/resume and the provider manager's hot-switch."""
+        manager = self.provider_manager
+        lock = getattr(manager, "lifecycle_lock", None) if manager is not None else None
+        return lock if isinstance(lock, asyncio.Lock) else self._fallback_lifecycle_lock
+
     @staticmethod
     def _is_loopback_request(request) -> bool:
         """Whether the request originates from localhost (loopback)."""
@@ -401,7 +542,13 @@ class WebServer:
         if remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
             return True
         # aiohttp may report None for in-process/test transports.
-        return remote == "" or remote == "None"
+        if remote in ("", "None"):
+            cls = WebServer
+            if remote not in cls._warned_unknown_remotes:
+                cls._warned_unknown_remotes.add(remote)
+                print(f"⚠️  Request with unknown remote address treated as loopback ({remote!r})")
+            return True
+        return False
 
     async def setup_handler(self, request):
         """配置/切换 provider + API key（前端设置面板），在进程内热切换。"""
@@ -754,7 +901,7 @@ class WebServer:
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                self.logger.warning(f"Ticket notification WebSocket disconnected: {error}")
+                logger.warning(f"Ticket notification WebSocket disconnected: {error}")
             finally:
                 self._ticket_notifications_connected = False
 
@@ -965,13 +1112,31 @@ class WebServer:
             f"<p style=\"opacity:.75;margin:0\">{body}</p>{button}</div></body></html>"
         )
 
+    async def account_announcements_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"detail": "localhost only"}, status=403)
+        status, data = await self._server_request("GET", "/public/announcements")
+        return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
+
     async def account_registration_info_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         status, data = await self._server_request("GET", "/auth/registration-info")
         return web.json_response(data, status=status)
 
     async def account_status_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         manager = self.provider_manager
         token = self._relay_token()
         payload = {
@@ -1011,6 +1176,12 @@ class WebServer:
         )
 
     async def account_balance_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         token = self._relay_token()
@@ -1055,6 +1226,7 @@ class WebServer:
             "model": model,
             "prepaid_balance": prepaid,
             "subscriptions": subscriptions,
+            "llm_subscription": summary.get("llm_subscription") or {"pools": []},
             "price_per_second": float(price_per_second),
             "free": free,
             "first_redeem_bonus_credits": summary.get("first_redeem_bonus_credits") or 0,
@@ -1067,6 +1239,12 @@ class WebServer:
         Uses the public /billing/policies endpoint (no token needed) so the
         Settings panel can show each provider's price before a session starts.
         """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         status, pol = await self._server_request("GET", "/billing/policies")
@@ -1090,6 +1268,12 @@ class WebServer:
         return web.json_response({"pricing": pricing})
 
     async def account_usage_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         token = self._relay_token()
@@ -1100,6 +1284,12 @@ class WebServer:
         return web.json_response(data, status=status)
 
     async def account_invite_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not config.RELAY_AVAILABLE:
             return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
         token = self._relay_token()
@@ -1204,6 +1394,12 @@ class WebServer:
 
     async def segment_mode_set_handler(self, request):
         """设置断句模式（会广播给所有前端）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not self._supports_segment_mode():
             return web.json_response({"status": "error", "message": "Segment mode not supported"}, status=404)
         if LOCK_MANUAL_CONTROLS:
@@ -1239,6 +1435,12 @@ class WebServer:
 
     async def speaker_labels_set_handler(self, request):
         """设置字幕说话人标签显示状态（会广播给所有前端）。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not self._supports_speaker_labels():
             return web.json_response({"status": "error", "message": "Speaker labels not supported"}, status=404)
         if LOCK_MANUAL_CONTROLS:
@@ -1374,6 +1576,12 @@ class WebServer:
 
     async def llm_refine_set_handler(self, request):
         """设置 LLM 改进开关"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "LLM refine toggle is disabled by server config"},
@@ -1454,6 +1662,12 @@ class WebServer:
 
     async def restart_handler(self, request):
         """重启识别端点（也用于运行时切换翻译模式 / 双向语言对）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         is_auto = False
         requested_target_lang = None
         requested_mode = None
@@ -1494,103 +1708,108 @@ class WebServer:
                 status=400,
             )
 
-        get_api_key = self.get_api_key
+        # Serialized with the provider hot-switch and pause/resume, so two
+        # overlapping lifecycles can never leave two live streams.
+        async with self._session_lifecycle_lock():
+            get_api_key = self.get_api_key
 
-        print(f"\n[Server] Received {'auto ' if is_auto else ''}restart request...")
+            print(f"\n[Server] Received {'auto ' if is_auto else ''}restart request...")
 
-        if requested_target_lang is not None:
-            ok, message = self.session.set_translation_target_lang(requested_target_lang)
-            if not ok:
-                return web.json_response({"status": "error", "message": message}, status=400)
-
-        if requested_mode == "two_way":
-            lang_a = requested_lang_1 if requested_lang_1 is not None else self.session.get_target_langs()[0]
-            lang_b = requested_lang_2 if requested_lang_2 is not None else self.session.get_target_langs()[1]
-            if hasattr(self.session, "set_target_langs"):
-                ok, message = self.session.set_target_langs(lang_a, lang_b)
+            if requested_target_lang is not None:
+                ok, message = self.session.set_translation_target_lang(requested_target_lang)
                 if not ok:
                     return web.json_response({"status": "error", "message": message}, status=400)
 
-        # Determine the translation mode to (re)start with.
-        if requested_mode is not None:
-            translation_mode = requested_mode
-        elif self.provider_manager is not None:
-            translation_mode = self.provider_manager.translation_mode
-        else:
-            translation_mode = str(getattr(self.session, "translation", None) or TRANSLATION_MODE)
+            if requested_mode == "two_way":
+                lang_a = requested_lang_1 if requested_lang_1 is not None else self.session.get_target_langs()[0]
+                lang_b = requested_lang_2 if requested_lang_2 is not None else self.session.get_target_langs()[1]
+                if hasattr(self.session, "set_target_langs"):
+                    ok, message = self.session.set_target_langs(lang_a, lang_b)
+                    if not ok:
+                        return web.json_response({"status": "error", "message": message}, status=400)
 
-        # Keep the manager state in sync so subsequent hot-switches preserve it.
-        if self.provider_manager is not None:
-            self.provider_manager.translation_mode = translation_mode
-            self.provider_manager.target_lang = self.session.get_translation_target_lang()
-            if hasattr(self.session, "get_target_langs"):
-                l1, l2 = self.session.get_target_langs()
-                self.provider_manager.target_lang_1 = l1
-                self.provider_manager.target_lang_2 = l2
+            # Determine the translation mode to (re)start with.
+            if requested_mode is not None:
+                translation_mode = requested_mode
+            elif self.provider_manager is not None:
+                translation_mode = self.provider_manager.translation_mode
+            else:
+                translation_mode = str(getattr(self.session, "translation", None) or TRANSLATION_MODE)
 
-        # 先停止当前的Soniox会话
-        self.session.stop()
-        
-        # 关闭当前日志文件
-        self.logger.close_log_file()
-        
-        if is_auto:
-            await self.broadcast_to_clients({
-                "type": "clear",
-                "message": "Recognition reconnecting...",
-                "preserve_existing": True,
-            })
-        else:
-            # 向所有客户端发送清空指令
-            await self.broadcast_to_clients({
-                "type": "clear",
-                "message": "Recognition restarting..."
-            })
-
-            # 给客户端一点时间处理clear消息
-            await asyncio.sleep(0.3)
-
-            # 关闭所有现有的WebSocket连接
-            print(f"[Server] Closing {len(self.websocket_clients)} WebSocket connections...")
-            clients_to_close = list(self.websocket_clients)
-            for client in clients_to_close:
-                try:
-                    await client.close()
-                except Exception as e:
-                    print(f"[Server] Error closing client connection: {e}")
-            self.websocket_clients.clear()
-        
-        # 启动新的Soniox会话
-        try:
-            print("[Server] Starting new recognition session...")
-            api_key = get_api_key()
-            audio_format = "pcm_s16le"
-
-            loop = asyncio.get_event_loop()
-            started = self.session.start(
-                api_key,
-                audio_format,
-                translation_mode,
-                loop,
-                translation_target_lang=self.session.get_translation_target_lang(),
-            )
-            if started is False:
-                message = "Recognition session is still stopping; start request was ignored"
-                print(f"[Server] Failed to restart: {message}")
-                return web.json_response({"status": "error", "message": message}, status=409)
-
-            # Translation may have been toggled on/off; keep IPC in sync.
+            # Keep the manager state in sync so subsequent hot-switches preserve it.
             if self.provider_manager is not None:
-                try:
-                    await self.provider_manager._sync_ipc(True)
-                except Exception:
-                    pass
+                self.provider_manager.translation_mode = translation_mode
+                self.provider_manager.target_lang = self.session.get_translation_target_lang()
+                if hasattr(self.session, "get_target_langs"):
+                    l1, l2 = self.session.get_target_langs()
+                    self.provider_manager.target_lang_1 = l1
+                    self.provider_manager.target_lang_2 = l2
 
-            print("[Server] New session started successfully")
-            return web.json_response({"status": "ok", "message": "Recognition restarted", "paused": False})
-        except Exception as e:
-            print(f"[Server] Failed to restart: {e}")
-            return web.json_response({"status": "error", "message": str(e)}, status=500)
+            # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
+            # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求
+            # 停滞），因此放到线程池里等待。
+            await asyncio.to_thread(self.session.stop)
+
+            # 关闭当前日志文件（同步文件 IO，同样移出事件循环）
+            await asyncio.to_thread(self.logger.close_log_file)
+        
+            if is_auto:
+                await self.broadcast_to_clients({
+                    "type": "clear",
+                    "message": "Recognition reconnecting...",
+                    "preserve_existing": True,
+                })
+            else:
+                # 向所有客户端发送清空指令
+                await self.broadcast_to_clients({
+                    "type": "clear",
+                    "message": "Recognition restarting..."
+                })
+
+                # 给客户端一点时间处理clear消息
+                await asyncio.sleep(0.3)
+
+                # 关闭所有现有的WebSocket连接
+                print(f"[Server] Closing {len(self.websocket_clients)} WebSocket connections...")
+                clients_to_close = list(self.websocket_clients)
+                for client in clients_to_close:
+                    try:
+                        await client.close()
+                    except Exception as e:
+                        print(f"[Server] Error closing client connection: {e}")
+                self.websocket_clients.clear()
+        
+            # 启动新的Soniox会话
+            try:
+                print("[Server] Starting new recognition session...")
+                api_key = get_api_key()
+                audio_format = "pcm_s16le"
+
+                loop = asyncio.get_event_loop()
+                started = self.session.start(
+                    api_key,
+                    audio_format,
+                    translation_mode,
+                    loop,
+                    translation_target_lang=self.session.get_translation_target_lang(),
+                )
+                if started is False:
+                    message = "Recognition session is still stopping; start request was ignored"
+                    print(f"[Server] Failed to restart: {message}")
+                    return web.json_response({"status": "error", "message": message}, status=409)
+
+                # Translation may have been toggled on/off; keep IPC in sync.
+                if self.provider_manager is not None:
+                    try:
+                        await self.provider_manager._sync_ipc(True)
+                    except Exception:
+                        pass
+
+                print("[Server] New session started successfully")
+                return web.json_response({"status": "ok", "message": "Recognition restarted", "paused": False})
+            except Exception as e:
+                print(f"[Server] Failed to restart: {e}")
+                return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     async def osc_translation_get_handler(self, request):
         """查询翻译结果 OSC 发送开关状态"""
@@ -1599,6 +1818,12 @@ class WebServer:
 
     async def osc_translation_set_handler(self, request):
         """设置翻译结果 OSC 发送开关"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "OSC translation toggle is disabled by server config"},
@@ -1614,8 +1839,68 @@ class WebServer:
         self.session.set_osc_translation_enabled(enabled)
         return web.json_response({"enabled": self.session.get_osc_translation_enabled()})
 
+    async def osc_sensitive_filter_get_handler(self, request):
+        """Return whether outbound OSC sensitive-phrase filtering is enabled."""
+        return web.json_response({"enabled": osc_manager.get_sensitive_filter_enabled()})
+
+    async def osc_sensitive_filter_set_handler(self, request):
+        """Toggle filtering at the OSC-only output boundary."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC sensitive word filter is locked by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or "enabled" not in payload:
+            return web.json_response({"status": "error", "message": "Missing enabled field"}, status=400)
+        if not isinstance(payload["enabled"], bool):
+            return web.json_response({"status": "error", "message": "enabled must be a boolean"}, status=400)
+
+        osc_manager.set_sensitive_filter_enabled(payload["enabled"])
+        return web.json_response({
+            "status": "ok",
+            "enabled": osc_manager.get_sensitive_filter_enabled(),
+        })
+
+    async def osc_sensitive_filter_notice_get_handler(self, request):
+        """Return whether the first-match OSC filter notice is suppressed."""
+        return web.json_response({
+            "disabled": not osc_manager.get_sensitive_filter_notice_enabled(),
+        })
+
+    async def osc_sensitive_filter_notice_set_handler(self, request):
+        """Enable or suppress the startup-only OSC filter notice."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC sensitive word filter notice is locked by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or "disabled" not in payload:
+            return web.json_response({"status": "error", "message": "Missing disabled field"}, status=400)
+        if not isinstance(payload["disabled"], bool):
+            return web.json_response({"status": "error", "message": "disabled must be a boolean"}, status=400)
+
+        disabled = payload["disabled"]
+        osc_manager.set_sensitive_filter_notice_enabled(not disabled)
+        if disabled and not self._osc_sensitive_filter_notice_delivered:
+            self._osc_sensitive_filter_notice_triggered = False
+        return web.json_response({"status": "ok", "disabled": disabled})
+
     async def pause_handler(self, request):
         """暂停识别端点"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Pause is disabled by server config"},
@@ -1623,7 +1908,10 @@ class WebServer:
             )
 
         print("\n[Server] Received pause request...")
-        paused = self.session.pause()
+        # pause() -> stop() 会同步 join 会话/音频线程（最长约 4.5s），
+        # 移出事件循环避免阻塞其他请求。
+        async with self._session_lifecycle_lock():
+            paused = await asyncio.to_thread(self.session.pause)
 
         # 广播暂停状态给所有 WebSocket 客户端
         await self.broadcast_to_clients({
@@ -1640,6 +1928,12 @@ class WebServer:
     
     async def resume_handler(self, request):
         """恢复识别端点"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Resume is disabled by server config"},
@@ -1647,41 +1941,42 @@ class WebServer:
             )
 
         print("\n[Server] Received resume request...")
-        get_api_key = self.get_api_key
+        async with self._session_lifecycle_lock():
+            get_api_key = self.get_api_key
 
-        if not self.session.is_paused:
-            # 即使已经运行，也确保状态同步
+            if not self.session.is_paused:
+                # 即使已经运行，也确保状态同步
+                await self.broadcast_to_clients({
+                    "type": "recognition_paused",
+                    "paused": False
+                })
+                return web.json_response({"status": "ok", "message": "Recognition already running"})
+
+            try:
+                api_key = get_api_key()
+            except RuntimeError as error:
+                print(f"[Server] Resume failed: {error}")
+                return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+            loop = asyncio.get_event_loop()
+            resumed = self.session.resume(
+                api_key=api_key,
+                audio_format="pcm_s16le",
+                translation=TRANSLATION_MODE,
+                loop=loop
+            )
+
+            # 广播恢复状态给所有 WebSocket 客户端
             await self.broadcast_to_clients({
                 "type": "recognition_paused",
                 "paused": False
             })
-            return web.json_response({"status": "ok", "message": "Recognition already running"})
 
-        try:
-            api_key = get_api_key()
-        except RuntimeError as error:
-            print(f"[Server] Resume failed: {error}")
-            return web.json_response({"status": "error", "message": str(error)}, status=500)
+            if resumed:
+                return web.json_response({"status": "ok", "message": "Recognition resumed"})
 
-        loop = asyncio.get_event_loop()
-        resumed = self.session.resume(
-            api_key=api_key,
-            audio_format="pcm_s16le",
-            translation=TRANSLATION_MODE,
-            loop=loop
-        )
-
-        # 广播恢复状态给所有 WebSocket 客户端
-        await self.broadcast_to_clients({
-            "type": "recognition_paused",
-            "paused": False
-        })
-
-        if resumed:
-            return web.json_response({"status": "ok", "message": "Recognition resumed"})
-
-        # resume 请求失败但仍处于暂停状态，返回错误
-        return web.json_response({"status": "error", "message": "Failed to resume recognition"}, status=500)
+            # resume 请求失败但仍处于暂停状态，返回错误
+            return web.json_response({"status": "error", "message": "Failed to resume recognition"}, status=500)
 
     async def get_audio_source_handler(self, request):
         """获取当前音频源"""
@@ -1690,6 +1985,12 @@ class WebServer:
 
     async def set_audio_source_handler(self, request):
         """切换音频源"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Audio source switching is disabled by server config"},
@@ -1768,6 +2069,12 @@ class WebServer:
         return web.json_response(payload)
 
     async def output_device_set_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Output device switching is disabled by server config"}, status=403
@@ -1801,6 +2108,12 @@ class WebServer:
 
     async def microphone_device_set_handler(self, request):
         """Set the selected microphone device."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Microphone device switching is disabled by server config"},
@@ -1845,6 +2158,12 @@ class WebServer:
 
     async def window_on_top_handler(self, request):
         """切换窗口始终置顶状态（仅 WebView 模式有效）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         try:
             payload = await request.json()
         except Exception:
@@ -1921,6 +2240,12 @@ class WebServer:
 
     async def subtitle_font_post_handler(self, request):
         """Update subtitle font preference and broadcast it to connected windows."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         try:
             payload = await request.json()
         except Exception:
@@ -1951,6 +2276,12 @@ class WebServer:
 
     async def furigana_handler(self, request):
         """原生悬浮窗的假名分词代理：转交主窗口 kuromoji，返回 [[surface, reading|null], ...]。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         evaluator = getattr(self, "furigana_evaluator", None)
         if evaluator is None:
             return web.json_response({"ready": False, "pairs": []})
@@ -1990,6 +2321,12 @@ class WebServer:
 
         请求体：{"action": "toggle" | "open" | "close"}（缺省为 toggle）。
         """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Overlay control is disabled by server config"},
@@ -2030,8 +2367,131 @@ class WebServer:
             self.logger.error(f"Failed to handle overlay request: {error}")
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
+    VR_ATTACH_MODES = ("world", "head", "body")
+
+    def _vr_overlay_state_frame(self) -> dict:
+        manager = self.vr_overlay_manager
+        visible = bool(manager is not None and manager.is_visible)
+        alive = bool(manager is not None and manager.is_open())
+        return {
+            "type": "vr_overlay_visibility",
+            "visible": visible,
+            # 已连上 SteamVR 并在显示；开着但 SteamVR 未运行时为 False（悬浮窗在静默等待）
+            "connected": bool(visible and alive and manager.connected),
+        }
+
+    def _vr_overlay_config_frame(self) -> dict:
+        manager = self.vr_overlay_manager
+        return {
+            "type": "vr_overlay_config",
+            "attach_mode": getattr(manager, "attach_mode", "body"),
+        }
+
+    async def vr_overlay_get_handler(self, request):
+        """查询 SteamVR 字幕悬浮窗状态。"""
+        manager = self.vr_overlay_manager
+        if manager is None:
+            return web.json_response({"status": "ok", "available": False, "open": False})
+        frame = self._vr_overlay_state_frame()
+        return web.json_response({
+            "status": "ok",
+            "available": True,
+            "open": frame["visible"],
+            "connected": frame["connected"],
+            "attach_mode": manager.attach_mode,
+        })
+
+    async def vr_overlay_post_handler(self, request):
+        """控制 SteamVR 字幕悬浮窗。
+
+        请求体 {"action": ...}：
+          * "toggle" | "open" | "close"：开关（缺省为 toggle）
+          * "config"：{"attach_mode": "world" | "head" | "body"} 位置模式
+          * "reset_position"：把悬浮窗放回视线正前方
+          * "report"：VR 子进程回报 {"connected": bool}
+        """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        manager = self.vr_overlay_manager
+        if manager is None:
+            return web.json_response(
+                {"status": "ignored", "available": False, "message": "VR overlay unavailable"}
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        action = payload.get("action") or "toggle"
+
+        if action == "report":
+            manager.connected = bool(payload.get("connected"))
+            await self.broadcast_to_clients(self._vr_overlay_state_frame())
+            return web.json_response({"status": "ok"})
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Overlay control is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            if action == "config":
+                mode = str(payload.get("attach_mode") or "").strip().lower()
+                if mode not in self.VR_ATTACH_MODES:
+                    return web.json_response(
+                        {"status": "error", "message": "Invalid attach_mode"}, status=400)
+                manager.attach_mode = mode
+                await self.broadcast_to_clients(self._vr_overlay_config_frame())
+                return web.json_response({"status": "ok", "attach_mode": mode})
+
+            if action == "reset_position":
+                await self.broadcast_to_clients({"type": "vr_overlay_reset_position"})
+                return web.json_response({"status": "ok"})
+
+            if action == "open":
+                is_visible = True
+            elif action == "close":
+                is_visible = False
+            else:  # toggle
+                is_visible = not (manager.is_visible and manager.is_open())
+
+            manager.is_visible = is_visible
+            if not is_visible:
+                manager.connected = False
+            elif not manager.is_open():
+                # 子进程连上 WebSocket 后会收到当前显隐与位置模式
+                manager.connected = False
+                manager.open(hidden=True)
+
+            frame = self._vr_overlay_state_frame()
+            if action == "close" and payload.get("source") == "vr_overlay":
+                frame["closed_from_overlay"] = True
+            await self.broadcast_to_clients(frame)
+            return web.json_response({
+                "status": "ok",
+                "available": True,
+                "open": frame["visible"],
+                "connected": frame["connected"],
+            })
+        except Exception as error:
+            self.logger.error(f"Failed to handle VR overlay request: {error}")
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
     async def shutdown_handler(self, request):
         """请求退出应用（前端“重置所有设置并退出”调用）。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
         if not callable(self.shutdown_callback):
             return web.json_response({"status": "ignored", "message": "Shutdown unavailable"})
         # 先返回响应，再延迟退出，避免连接被强制中断导致前端报错。
@@ -2072,6 +2532,8 @@ class WebServer:
 
         app.on_startup.append(self._start_ipc_status_polling)
         app.on_cleanup.append(self._stop_ipc_status_polling)
+        app.on_startup.append(self._start_osc_sensitive_filter_notifications)
+        app.on_cleanup.append(self._stop_osc_sensitive_filter_notifications)
         app.on_startup.append(self._start_ticket_notifications)
         app.on_cleanup.append(self._stop_ticket_notifications)
 
@@ -2123,6 +2585,7 @@ class WebServer:
         app.router.add_post('/account/login-begin', self.account_login_begin_handler)
         app.router.add_get('/account/login-callback', self.account_login_callback_handler)
         app.router.add_get('/account/login-poll', self.account_login_poll_handler)
+        app.router.add_get('/account/announcements', self.account_announcements_handler)
         app.router.add_get('/account/registration-info', self.account_registration_info_handler)
         app.router.add_get('/account/status', self.account_status_handler)
         app.router.add_get('/account/balance', self.account_balance_handler)
@@ -2140,6 +2603,10 @@ class WebServer:
         app.router.add_post('/resume', self.resume_handler)
         app.router.add_get('/osc-translation', self.osc_translation_get_handler)
         app.router.add_post('/osc-translation', self.osc_translation_set_handler)
+        app.router.add_get('/osc-sensitive-filter', self.osc_sensitive_filter_get_handler)
+        app.router.add_post('/osc-sensitive-filter', self.osc_sensitive_filter_set_handler)
+        app.router.add_get('/osc-sensitive-filter-notice', self.osc_sensitive_filter_notice_get_handler)
+        app.router.add_post('/osc-sensitive-filter-notice', self.osc_sensitive_filter_notice_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
         app.router.add_get('/microphones', self.microphones_handler)
@@ -2154,6 +2621,8 @@ class WebServer:
         app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)
         app.router.add_get('/overlay', self.overlay_get_handler)
         app.router.add_post('/overlay', self.overlay_post_handler)
+        app.router.add_get('/vr-overlay', self.vr_overlay_get_handler)
+        app.router.add_post('/vr-overlay', self.vr_overlay_post_handler)
         app.router.add_post('/furigana', self.furigana_handler)
         app.router.add_post('/shutdown', self.shutdown_handler)
         app.router.add_get('/fonts/NotoSansCJK-Regular.ttc', self.custom_font_file_handler)

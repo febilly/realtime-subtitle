@@ -54,6 +54,7 @@ coverage/
 
 # Local scratch directory
 scratch/
+scratch-eval/
 
 # Local provider evaluation datasets and benchmark scripts
 scratch-eval/
@@ -64,6 +65,9 @@ scratch-eval/
 .claude/
 
 .agents/
+
+# ZCode helper directories
+.zcode/
 
 # pytest temporary sandboxes
 .pytest-tmp*/

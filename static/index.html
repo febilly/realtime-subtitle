@@ -6,7 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Real-time Subtitles</title>
+    <title>Realtime Subtitle</title>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -19,6 +19,7 @@
                 </span>
                 <span class="balance-free-pools" id="freePools"></span>
                 <span class="balance-free-pools" id="subscriptionPools"></span>
+                <span class="balance-free-pools" id="llmSubscriptionPools"></span>
                 <span class="balance-item" id="sessionItem">
                     <span class="balance-label" id="sessionLabel">This session</span>
                     <span class="balance-value" id="sessionValue">0</span>
@@ -26,6 +27,7 @@
                 <span class="balance-item" id="balanceActionItem" hidden>
                     <button class="balance-action-button" id="balanceOpenSettingsButton" type="button">Open settings</button>
                 </span>
+                <button class="balance-toggle" id="balanceToggle" type="button" aria-expanded="true" title="Collapse balance details" aria-label="Collapse balance details" hidden></button>
             </div>
             <div class="subtitle-region">
                 <div class="subtitle-container" id="subtitleContainer">
@@ -66,15 +68,26 @@
                 </svg>
             </button>
 
-            <button class="control-button" id="displayModeButton" title="Toggle display mode">
-                <svg class="control-icon" id="displayModeText" aria-hidden="true">
-                    <use href="icons/lucide-sprite.svg#eye"></use>
+            <!-- Shown by runtime-controls.js once the backend reports SteamVR support. -->
+            <button class="control-button" id="vrOverlayButton" title="Toggle VR subtitle overlay" style="display: none;">
+                <svg class="control-icon vr-overlay-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <defs>
+                        <mask id="vrOverlayIconMask" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
+                            <rect width="24" height="24" fill="#fff"></rect>
+                            <rect x="9.5" y="12.5" width="15" height="12.5" rx="2" fill="#000"></rect>
+                        </mask>
+                    </defs>
+                    <g mask="url(#vrOverlayIconMask)">
+                        <rect width="18" height="14" x="3" y="5" rx="2" ry="2"></rect>
+                        <path d="M7 15h4M15 15h2M7 11h2M13 11h4"></path>
+                    </g>
+                    <text class="vr-overlay-icon-badge" x="24.5" y="24" text-anchor="end">VR</text>
                 </svg>
             </button>
 
-            <button class="control-button" id="subtitleFlowButton" title="Subtitles flow upward">
-                <svg class="control-icon" id="subtitleFlowIcon" aria-hidden="true">
-                    <use href="icons/lucide-sprite.svg#arrow-up-from-line"></use>
+            <button class="control-button" id="displayModeButton" title="Toggle display mode">
+                <svg class="control-icon" id="displayModeText" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#eye"></use>
                 </svg>
             </button>
 
@@ -100,6 +113,11 @@
                 </svg>
             </button>
 
+            <!-- Shown by announcements.js only once there is at least one announcement. -->
+            <button class="control-button" id="announcementsButton" type="button" title="Announcements" aria-label="Announcements" hidden>
+                <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+
             <button class="control-button" id="settingsButton" title="Settings">
                 <svg class="control-icon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#settings"></use>
@@ -122,205 +140,268 @@
                 <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
             </div>
 
-            <div class="settings-section-label" id="providerLabel">API selection</div>
-            <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
-                <label class="segmented-option">
-                    <input type="radio" name="provider" value="soniox" id="providerSoniox">
-                    <span id="providerSonioxLabel">Soniox</span>
-                </label>
-                <label class="segmented-option">
-                    <input type="radio" name="provider" value="gemini" id="providerGemini">
-                    <span id="providerGeminiLabel">Gemini</span>
-                </label>
-                <label class="segmented-option">
-                    <input type="radio" name="provider" value="local" id="providerLocal">
-                    <span id="providerLocalLabel">Local</span>
-                </label>
-            </fieldset>
-            <p class="field-hint" id="providerDescription"></p>
+            <section class="settings-group">
+                <h2 class="settings-group-title" id="serviceGroupLabel">Service</h2>
+                <div class="settings-card">
+                    <section class="auth-section settings-item">
+                        <div class="settings-item-label" id="providerLabel">API selection</div>
+                        <fieldset class="segmented-control" id="providerFieldset" aria-label="Translation provider">
+                            <label class="segmented-option">
+                                <input type="radio" name="provider" value="soniox" id="providerSoniox">
+                                <span id="providerSonioxLabel">Soniox</span>
+                            </label>
+                            <label class="segmented-option">
+                                <input type="radio" name="provider" value="gemini" id="providerGemini">
+                                <span id="providerGeminiLabel">Gemini</span>
+                            </label>
+                            <label class="segmented-option">
+                                <input type="radio" name="provider" value="local" id="providerLocal">
+                                <span id="providerLocalLabel">Local</span>
+                            </label>
+                        </fieldset>
+                        <p class="field-hint" id="providerDescription"></p>
+                    </section>
 
-            <section class="auth-section" id="translationModeSection" hidden>
-                <div class="form-field" id="translationModeSettingField" hidden>
-                    <span id="translationModeSettingLabel">Translation mode</span>
-                    <div id="translationModePicker"></div>
-                </div>
-                <p class="field-hint" id="translationModeHint" hidden></p>
-            </section>
-
-            <section class="auth-section" id="accountSection" hidden>
-                <label class="form-field" for="redeemInput">
-                    <span id="redeemLabel">Redeem code</span>
-                    <div class="redeem-row">
-                        <div class="embedded-paste-control redeem-code-control">
-                            <input id="redeemInput" type="text" autocomplete="off" spellcheck="false">
-                            <button class="embedded-paste-button redeem-paste-button" id="redeemPasteButton" type="button" aria-label="Paste" title="Paste">
-                                <svg class="embedded-paste-icon redeem-paste-icon" aria-hidden="true">
-                                    <use href="icons/lucide-sprite.svg#clipboard-paste"></use>
-                                </svg>
-                            </button>
+                    <section class="auth-section settings-item" id="translationModeSection" hidden>
+                        <div class="form-field" id="translationModeSettingField" hidden>
+                            <span id="translationModeSettingLabel">Translation mode</span>
+                            <div id="translationModePicker"></div>
                         </div>
-                        <button class="secondary-button" id="redeemButton" type="button">Redeem</button>
-                    </div>
-                </label>
-                <p class="field-hint" id="purchaseCreditsHint" hidden>
-                    <a id="purchaseCreditsLink" href="#" target="_blank" rel="noopener noreferrer">Click here to get more Credits</a>
-                </p>
-                <p class="field-hint" id="firstRedeemBonusHint" hidden></p>
-                <div class="settings-section-label" id="accountLabel">Account</div>
-                <p class="field-hint" id="accountServerHint"></p>
-                <p class="field-hint" id="accountIdentityHint"></p>
-                <p class="field-hint" id="accountBalanceHint"></p>
-                <div class="account-free-pools" id="accountFreePools"></div>
-                <div class="account-free-pools" id="accountSubscriptionPools"></div>
-                <div class="account-actions">
-                    <button class="secondary-button" id="copyInviteButton" type="button">Copy invite link</button>
-                    <button class="secondary-button" id="openUserWebButton" type="button">Open user web</button>
-                    <button class="secondary-button" id="reLoginButton" type="button">Re-verify</button>
-                    <button class="danger-button" id="logoutButton" type="button">Log out</button>
-                </div>
-            </section>
+                        <p class="field-hint" id="translationModeHint" hidden></p>
+                    </section>
 
-            <section class="auth-section" id="sonioxRegionSection" hidden>
-                <div class="form-field">
-                    <span id="sonioxRegionLabel">API region</span>
-                    <div id="sonioxRegionPicker"></div>
-                </div>
-            </section>
-
-            <section class="auth-section" id="localInferenceSection" hidden>
-                <div class="settings-section-label" id="localInferenceLabel">Local models</div>
-                <label class="form-field" for="localInferenceBackend">
-                    <span id="localInferenceBackendLabel">Run location</span>
-                    <select id="localInferenceBackend">
-                        <option id="localInferenceBackendLocalOption" value="local">This computer</option>
-                        <option id="localInferenceBackendRemoteOption" value="remote">Remote inference server</option>
-                    </select>
-                </label>
-                <div id="localRemoteControls" hidden>
-                    <label class="form-field" for="localRemoteServerUrl">
-                        <span id="localRemoteServerUrlLabel">Remote server address</span>
-                        <input id="localRemoteServerUrl" type="url" inputmode="url" spellcheck="false"
-                               value="ws://127.0.0.1:18775">
-                    </label>
-                    <label class="form-field" for="localRemoteTimeoutSeconds">
-                        <span id="localRemoteTimeoutLabel">Connection timeout (seconds)</span>
-                        <input id="localRemoteTimeoutSeconds" type="number" min="1" max="600" step="1" placeholder="60">
-                    </label>
-                    <div class="local-model-header">
-                        <span class="local-model-status" id="localRemoteStatus">Not tested</span>
-                        <button class="secondary-button" id="localRemoteProbeButton" type="button">Test connection</button>
-                    </div>
-                </div>
-                <div id="localNativeControls">
-                    <div class="local-model-card">
-                        <div class="local-model-header">
-                            <strong>Qwen3-ASR 1.7B</strong>
-                            <span class="local-model-status" id="localAsrStatus">Checking…</span>
+                    <section class="auth-section settings-item" id="sonioxRegionSection" hidden>
+                        <div class="form-field">
+                            <span id="sonioxRegionLabel">API region</span>
+                            <div id="sonioxRegionPicker"></div>
                         </div>
-                        <p class="field-hint" id="localAsrPath"></p>
-                        <button class="secondary-button" id="localAsrDownloadButton" type="button">Download Qwen3-ASR</button>
-                    </div>
-                    <div class="local-model-card">
-                        <div class="local-model-header">
-                            <strong>Hy-MT2 1.8B GGUF</strong>
-                            <span class="local-model-status" id="localTranslationStatus">Checking…</span>
+                    </section>
+
+                    <section class="auth-section settings-item" id="apiKeySection">
+                        <label class="form-field" for="apiKeyInput">
+                            <span id="apiKeyLabel">API Key</span>
+                            <input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" spellcheck="false">
+                        </label>
+                        <p class="field-hint" id="apiKeyGetHint">
+                            <a id="apiKeyGetLink" href="#" target="_blank" rel="noopener noreferrer"></a>
+                        </p>
+                        <p class="field-hint" id="apiKeySourceHint"></p>
+                    </section>
+
+                    <section class="auth-section settings-item" id="localInferenceSection" hidden>
+                        <div class="settings-section-label" id="localInferenceLabel">Local models</div>
+                        <label class="form-field" for="localInferenceBackend">
+                            <span id="localInferenceBackendLabel">Run location</span>
+                            <select id="localInferenceBackend">
+                                <option id="localInferenceBackendLocalOption" value="local">This computer</option>
+                                <option id="localInferenceBackendRemoteOption" value="remote">Remote inference server</option>
+                            </select>
+                        </label>
+                        <div id="localRemoteControls" hidden>
+                            <label class="form-field" for="localRemoteServerUrl">
+                                <span id="localRemoteServerUrlLabel">Remote server address</span>
+                                <input id="localRemoteServerUrl" type="url" inputmode="url" spellcheck="false"
+                                       value="ws://127.0.0.1:18775">
+                            </label>
+                            <label class="form-field" for="localRemoteTimeoutSeconds">
+                                <span id="localRemoteTimeoutLabel">Connection timeout (seconds)</span>
+                                <input id="localRemoteTimeoutSeconds" type="number" min="1" max="600" step="1" placeholder="60">
+                            </label>
+                            <div class="local-model-header">
+                                <span class="local-model-status" id="localRemoteStatus">Not tested</span>
+                                <button class="secondary-button" id="localRemoteProbeButton" type="button">Test connection</button>
+                            </div>
                         </div>
-                        <p class="field-hint" id="localTranslationPath"></p>
-                    </div>
-                    <label class="form-field" for="localAsrDevice">
-                        <span id="localAsrDeviceLabel">Qwen decoder device</span>
-                        <select id="localAsrDevice"></select>
-                    </label>
-                    <label class="form-field" for="localEncoderDevice">
-                        <span id="localEncoderDeviceLabel">Qwen audio encoder device</span>
-                        <select id="localEncoderDevice">
-                            <option value="auto">Auto</option>
-                            <option value="gpu">GPU (DirectML)</option>
-                            <option value="cpu">CPU</option>
-                        </select>
-                    </label>
-                    <label class="form-field" for="localTranslationDevice">
-                        <span id="localTranslationDeviceLabel">Hy-MT2 device</span>
-                        <select id="localTranslationDevice"></select>
-                    </label>
+                        <div id="localNativeControls">
+                            <div class="local-model-card">
+                                <div class="local-model-header">
+                                    <strong>Qwen3-ASR 1.7B</strong>
+                                    <span class="local-model-status" id="localAsrStatus">Checking…</span>
+                                </div>
+                                <p class="field-hint" id="localAsrPath"></p>
+                                <button class="secondary-button" id="localAsrDownloadButton" type="button">Download Qwen3-ASR</button>
+                            </div>
+                            <div class="local-model-card">
+                                <div class="local-model-header">
+                                    <strong>Hy-MT2 1.8B GGUF</strong>
+                                    <span class="local-model-status" id="localTranslationStatus">Checking…</span>
+                                </div>
+                                <p class="field-hint" id="localTranslationPath"></p>
+                            </div>
+                            <label class="form-field" for="localAsrDevice">
+                                <span id="localAsrDeviceLabel">Qwen decoder device</span>
+                                <select id="localAsrDevice"></select>
+                            </label>
+                            <label class="form-field" for="localEncoderDevice">
+                                <span id="localEncoderDeviceLabel">Qwen audio encoder device</span>
+                                <select id="localEncoderDevice">
+                                    <option value="auto">Auto</option>
+                                    <option value="gpu">GPU (DirectML)</option>
+                                    <option value="cpu">CPU</option>
+                                </select>
+                            </label>
+                            <label class="form-field" for="localTranslationDevice">
+                                <span id="localTranslationDeviceLabel">Hy-MT2 device</span>
+                                <select id="localTranslationDevice"></select>
+                            </label>
+                        </div>
+                    </section>
                 </div>
-            </section>
-
-            <section class="auth-section" id="outputDeviceSection">
-                <div class="form-field">
-                    <span id="outputDeviceLabel">Captured output device</span>
-                    <div id="outputDevicePicker"></div>
-                </div>
-                <p class="field-hint" id="outputDeviceHint"></p>
-            </section>
-
-            <section class="auth-section" id="microphoneDeviceSection">
-                <div class="form-field">
-                    <span id="microphoneDeviceLabel">Microphone device</span>
-                    <div id="microphoneDevicePicker"></div>
-                </div>
-                <p class="field-hint" id="microphoneDeviceHint"></p>
-            </section>
-
-            <section class="auth-section" id="apiKeySection">
-                <label class="form-field" for="apiKeyInput">
-                    <span id="apiKeyLabel">API Key</span>
-                    <input id="apiKeyInput" name="apiKey" type="password" autocomplete="off" spellcheck="false">
-                </label>
-                <p class="field-hint" id="apiKeyGetHint">
-                    <a id="apiKeyGetLink" href="#" target="_blank" rel="noopener noreferrer"></a>
-                </p>
-                <p class="field-hint" id="apiKeySourceHint"></p>
             </section>
 
             <p class="settings-error" id="settingsError" role="alert"></p>
 
-            <section class="auth-section" id="runtimeControlsSection">
-                <div class="settings-section-label" id="runtimeControlsLabel">Recognition controls</div>
-                <div class="form-field" id="autoRestartSettingField">
-                    <span id="autoRestartSettingLabel">Auto restart on disconnect</span>
-                    <div id="autoRestartPicker"></div>
-                </div>
-                <div class="form-field" id="sleepOnSilenceSettingField">
-                    <span id="sleepOnSilenceSettingLabel">Automatic sleep</span>
-                    <div id="sleepOnSilencePicker"></div>
-                </div>
-                <div class="form-field" id="speakerLabelsSettingField">
-                    <span id="speakerLabelsSettingLabel">Speaker labels</span>
-                    <div id="speakerLabelsPicker"></div>
-                </div>
-                <div class="form-field" id="interruptRepairSettingField">
-                    <span id="interruptRepairSettingLabel">Rejoin interrupted sentences</span>
-                    <div id="interruptRepairPicker"></div>
-                </div>
-                <div class="form-field" id="segmentModeSettingField">
-                    <span id="segmentModeSettingLabel">Segmentation mode</span>
-                    <div id="segmentModePicker"></div>
+            <section class="settings-group" id="accountSection" hidden>
+                <h2 class="settings-group-title" id="accountLabel">Account</h2>
+                <div class="settings-card">
+                    <div class="auth-section settings-item account-info">
+                        <p class="field-hint" id="accountServerHint"></p>
+                        <p class="field-hint" id="accountIdentityHint"></p>
+                        <p class="field-hint" id="accountBalanceHint"></p>
+                        <div class="account-free-pools" id="accountFreePools"></div>
+                        <div class="account-free-pools" id="accountSubscriptionPools"></div>
+                        <div class="account-free-pools" id="accountLlmSubscriptionPools"></div>
+                    </div>
+                    <div class="auth-section settings-item">
+                        <label class="form-field" for="redeemInput">
+                            <span id="redeemLabel">Redeem code</span>
+                            <div class="redeem-row">
+                                <div class="embedded-paste-control redeem-code-control">
+                                    <input id="redeemInput" type="text" autocomplete="off" spellcheck="false">
+                                    <button class="embedded-paste-button redeem-paste-button" id="redeemPasteButton" type="button" aria-label="Paste" title="Paste">
+                                        <svg class="embedded-paste-icon redeem-paste-icon" aria-hidden="true">
+                                            <use href="icons/lucide-sprite.svg#clipboard-paste"></use>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <button class="secondary-button" id="redeemButton" type="button">Redeem</button>
+                            </div>
+                        </label>
+                        <p class="field-hint" id="purchaseCreditsHint" hidden>
+                            <a id="purchaseCreditsLink" href="#" target="_blank" rel="noopener noreferrer">Click here to get more Credits</a>
+                        </p>
+                        <p class="field-hint" id="firstRedeemBonusHint" hidden></p>
+                    </div>
+                    <div class="settings-item">
+                        <div class="account-actions">
+                            <button class="secondary-button" id="copyInviteButton" type="button">Copy invite link</button>
+                            <button class="secondary-button" id="openUserWebButton" type="button">Open user web</button>
+                            <button class="secondary-button" id="reLoginButton" type="button">Re-verify</button>
+                            <button class="danger-button" id="logoutButton" type="button">Log out</button>
+                        </div>
+                    </div>
                 </div>
             </section>
 
-            <section class="auth-section" id="appearanceSection">
-                <div class="settings-section-label" id="appearanceLabel">Appearance</div>
-                <div class="form-field" id="bundledCjkFontField">
-                    <span id="bundledCjkFontLabel">Use bundled CJK font</span>
-                    <div id="bundledCjkFontPicker"></div>
+            <section class="settings-group">
+                <h2 class="settings-group-title" id="audioGroupLabel">Audio devices</h2>
+                <div class="settings-card">
+                    <section class="auth-section settings-item" id="outputDeviceSection">
+                        <div class="form-field">
+                            <span id="outputDeviceLabel">Captured output device</span>
+                            <div id="outputDevicePicker"></div>
+                        </div>
+                        <p class="field-hint" id="outputDeviceHint"></p>
+                    </section>
+
+                    <section class="auth-section settings-item" id="microphoneDeviceSection">
+                        <div class="form-field">
+                            <span id="microphoneDeviceLabel">Microphone device</span>
+                            <div id="microphoneDevicePicker"></div>
+                        </div>
+                        <p class="field-hint" id="microphoneDeviceHint"></p>
+                    </section>
                 </div>
-                <p class="field-hint" id="bundledCjkFontHint">Prefer Noto Sans CJK for Chinese, Japanese, and Korean subtitles.</p>
             </section>
 
-            <section class="auth-section" id="modeSection" hidden>
-                <div class="settings-section-label" id="modeLabel">Connection</div>
-                <fieldset class="segmented-control" id="modeFieldset" aria-label="Connection mode">
-                    <label class="segmented-option">
-                        <input type="radio" name="connmode" value="relay" id="modeRelay">
-                        <span id="modeRelayLabel">Hosted</span>
+            <section class="settings-group" id="runtimeControlsSection">
+                <h2 class="settings-group-title" id="runtimeControlsLabel">Recognition controls</h2>
+                <div class="settings-card">
+                    <label class="settings-item settings-row" id="autoRestartSettingField">
+                        <span class="settings-row-text" id="autoRestartSettingLabel">Auto restart on disconnect</span>
+                        <span id="autoRestartPicker"></span>
                     </label>
-                    <label class="segmented-option">
-                        <input type="radio" name="connmode" value="direct" id="modeDirect">
-                        <span id="modeDirectLabel">Own key</span>
+                    <label class="settings-item settings-row" id="sleepOnSilenceSettingField">
+                        <span class="settings-row-text" id="sleepOnSilenceSettingLabel">Sleep when no speech</span>
+                        <span id="sleepOnSilencePicker"></span>
                     </label>
-                </fieldset>
-                <p class="field-hint" id="modeDescription"></p>
+                    <label class="settings-item settings-row" id="speakerLabelsSettingField">
+                        <span class="settings-row-text" id="speakerLabelsSettingLabel">Speaker labels</span>
+                        <span id="speakerLabelsPicker"></span>
+                    </label>
+                    <label class="settings-item settings-row" id="interruptRepairSettingField">
+                        <span class="settings-row-text" id="interruptRepairSettingLabel">Rejoin interrupted sentences</span>
+                        <span id="interruptRepairPicker"></span>
+                    </label>
+                    <div class="settings-item form-field" id="segmentModeSettingField">
+                        <span id="segmentModeSettingLabel">Segmentation mode</span>
+                        <div id="segmentModePicker"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-group" id="oscSettingsSection">
+                <h2 class="settings-group-title" id="oscSettingsLabel">OSC settings</h2>
+                <div class="settings-card">
+                    <label class="settings-item settings-row" id="oscSensitiveFilterSettingField">
+                        <span class="settings-row-text" id="oscSensitiveFilterSettingLabel">Filter sensitive words</span>
+                        <span id="oscSensitiveFilterPicker"></span>
+                    </label>
+                    <label class="settings-item settings-row" id="oscSensitiveFilterNoticeSettingField">
+                        <span class="settings-row-text" id="oscSensitiveFilterNoticeSettingLabel">Do not show sensitive-word filter notice</span>
+                        <span id="oscSensitiveFilterNoticePicker"></span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="settings-group" id="appearanceSection">
+                <h2 class="settings-group-title" id="appearanceLabel">Appearance</h2>
+                <div class="settings-card">
+                    <div class="settings-item form-field" id="subtitleFlowSettingField">
+                        <span id="subtitleFlowSettingLabel">Subtitle flow direction</span>
+                        <div id="subtitleFlowPicker"></div>
+                    </div>
+                    <label class="settings-item settings-row" id="bundledCjkFontField">
+                        <span class="settings-row-text">
+                            <span id="bundledCjkFontLabel">Use bundled CJK font</span>
+                            <span class="field-hint" id="bundledCjkFontHint">Prefer Noto Sans CJK for Chinese, Japanese, and Korean subtitles.</span>
+                        </span>
+                        <span id="bundledCjkFontPicker"></span>
+                    </label>
+                </div>
+            </section>
+
+            <section class="settings-group" id="vrOverlaySection" hidden>
+                <h2 class="settings-group-title" id="vrOverlaySectionLabel">VR subtitle overlay</h2>
+                <div class="settings-card">
+                    <div class="settings-item form-field" id="vrAttachModeSettingField">
+                        <span id="vrAttachModeSettingLabel">Position mode</span>
+                        <div class="input-with-button">
+                            <div class="vr-attach-mode-picker" id="vrAttachModePicker"></div>
+                            <button class="secondary-button" id="vrResetPositionButton" type="button">Reset position</button>
+                        </div>
+                        <p class="field-hint" id="vrOverlayHint"></p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="settings-group" id="modeSection" hidden>
+                <h2 class="settings-group-title" id="modeLabel">Connection</h2>
+                <div class="settings-card">
+                    <div class="auth-section settings-item">
+                        <fieldset class="segmented-control" id="modeFieldset" aria-label="Connection mode">
+                            <label class="segmented-option">
+                                <input type="radio" name="connmode" value="relay" id="modeRelay">
+                                <span id="modeRelayLabel">Hosted</span>
+                            </label>
+                            <label class="segmented-option">
+                                <input type="radio" name="connmode" value="direct" id="modeDirect">
+                                <span id="modeDirectLabel">Own key</span>
+                            </label>
+                        </fieldset>
+                        <p class="field-hint" id="modeDescription"></p>
+                    </div>
+                </div>
             </section>
 
             <div class="settings-footer-scroll">
@@ -474,6 +555,7 @@
     <script src="js/render-html.js"></script>
     <script src="js/subtitle-scroll.js"></script>
     <script src="js/subtitle-renderer.js"></script>
+    <script src="js/translation-diff.js"></script>
     <script src="js/subtitle-runtime-controller.js"></script>
     <script src="js/subtitle-frame-controller.js"></script>
     <script src="js/session-frame-controller.js"></script>
@@ -497,6 +579,7 @@
     <script src="js/hosted-mode.js"></script>
     <script src="js/desktop-shortcut.js"></script>
     <script src="js/hosted-login.js"></script>
+    <script src="js/announcements.js"></script>
     <script src="js/hosted-update.js"></script>
     <script src="js/hosted-balance.js"></script>
     <script src="js/hosted-account.js"></script>

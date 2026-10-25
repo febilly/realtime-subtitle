@@ -13,6 +13,7 @@
         let flowDirection = options.flowDirection === 'down' ? 'down' : 'up';
         let autoStickToEdge = true;
         let initialized = false;
+        let resizeObserver = null;
 
         function isCloseToBottom() {
             return (container.scrollTop + container.clientHeight)
@@ -120,6 +121,11 @@
             initialized = true;
             container.addEventListener('scroll', handleScroll);
             windowRef.addEventListener('resize', handleResize);
+            // The notification dock resizes the container without a window resize.
+            if (typeof windowRef.ResizeObserver === 'function') {
+                resizeObserver = new windowRef.ResizeObserver(handleResize);
+                resizeObserver.observe(container);
+            }
             return true;
         }
 
@@ -127,6 +133,10 @@
             if (!initialized) return false;
             container.removeEventListener('scroll', handleScroll);
             windowRef.removeEventListener('resize', handleResize);
+            if (resizeObserver) {
+                resizeObserver.disconnect();
+                resizeObserver = null;
+            }
             initialized = false;
             return true;
         }

@@ -8,7 +8,10 @@
     const QUOTE_PAIRS = new Map([
         ['「', '」'], ['『', '』'], ['“', '”'], ['（', '）'], ['【', '】'], ['《', '》'],
     ]);
-    const SENTENCE_END_ABBREVIATION_EXCEPTIONS = ['a.m.', 'p.m.', 'e.g.', 'i.e.', 'u.s.', 'u.k.'];
+    const SENTENCE_END_ABBREVIATION_EXCEPTIONS = [
+        'mr.', 'mrs.', 'ms.', 'dr.', 'prof.', 'sr.', 'jr.',
+        'a.m.', 'p.m.', 'e.g.', 'i.e.', 'u.s.', 'u.k.',
+    ];
     const SENTENCE_END_ABBREVIATION_PREFIXES = SENTENCE_END_ABBREVIATION_EXCEPTIONS.flatMap((abbr) => {
         const prefixes = [];
         for (let index = 0; index < abbr.length - 1; index += 1) {
@@ -25,14 +28,21 @@
         return !!value && /\p{L}/u.test(value);
     }
 
+    function textEndsWithNumericPeriod(text) {
+        const value = String(text || '').trimEnd();
+        return value.length >= 2 && value.endsWith('.') && isDigit(value.at(-2));
+    }
+
     function isSentenceEnderAt(value, index) {
         const ch = value[index];
         if (ch === '…') return false;
         if (ch === '.') {
             const previous = index > 0 ? value[index - 1] : '';
-            const next = index + 1 < value.length ? value[index + 1] : '';
+            let nextIndex = index + 1;
+            while (nextIndex < value.length && /\s/u.test(value[nextIndex])) nextIndex += 1;
+            const next = nextIndex < value.length ? value[nextIndex] : '';
             if (previous === '.' || next === '.') return false;
-            if (isDigit(previous) && isDigit(next)) return false;
+            if (textEndsWithNumericPeriod(value.slice(0, index + 1)) && isDigit(next)) return false;
         }
         return SENTENCE_END_CHARS.has(ch);
     }
@@ -79,7 +89,15 @@
 
     function tokenTextContinuesDecimal(previousText, nextText) {
         if (!previousText || !nextText) return false;
-        return !/\s$/u.test(previousText) && !/^\s/u.test(nextText) && isDigit(nextText[0]);
+        // Streaming tokens may carry cosmetic leading whitespace even when
+        // they continue a decimal (for example "7." + " 2%,"). Whitespace
+        // after the period remains a real break; ignore only token-leading
+        // whitespace before checking the fractional digit.
+        const nextValue = String(nextText).trimStart();
+        return !/\s$/u.test(previousText)
+            && textEndsWithNumericPeriod(previousText)
+            && !!nextValue
+            && isDigit(nextValue[0]);
     }
 
     function tokenTextStartsWithClosingQuote(previousText, nextText) {
@@ -180,6 +198,7 @@
         QUOTE_PAIRS,
         SENTENCE_END_ABBREVIATION_EXCEPTIONS,
         SENTENCE_END_ABBREVIATION_PREFIXES,
+        textEndsWithNumericPeriod,
         isSentenceEnderAt,
         textEndsWithEllipsis,
         textHasUnclosedQuote,

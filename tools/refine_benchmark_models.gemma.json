@@ -1,0 +1,21 @@
+{
+  "models": [
+    {"name": "deepseek_selected", "env_model": "deepseek-flash", "prompt": "new"},
+    {
+      "name": "gemma_cn_guard",
+      "env_model": "google/gemma-4-31b-it",
+      "prompt": "gemma_cn_guard",
+      "extra_json": {
+        "reasoning": {"effort": "none"},
+        "provider": {
+          "order": ["coreweave/fp4", "deepinfra/turbo"],
+          "only": ["coreweave/fp4", "deepinfra/turbo"]
+        }
+      }
+    }
+  ],
+  "comparison_models": ["deepseek_selected", "gemma_cn_guard"],
+  "judge": {"name": "independent_judge", "env_model": "openai/gpt-6-luna"},
+  "temperature": 0.2,
+  "max_tokens": 1024
+}

@@ -3,6 +3,7 @@ const RuntimeFrameController = require('../../static/js/runtime-frame-controller
 const ACTION_NAMES = [
     'applyBundledCjkFontPreference',
     'syncOverlayState',
+    'syncVrOverlayState',
     'syncIpcStatus',
     'displayErrorMessage',
     'openSettings',
@@ -37,10 +38,14 @@ describe('RuntimeFrameController frame boundary', () => {
         expect(RuntimeFrameController.FRAME_TYPES).toEqual([
             'subtitle_font_preference',
             'overlay_visibility',
+            'vr_overlay_visibility',
+            'vr_overlay_config',
+            'vr_overlay_reset_position',
             'ipc_status',
             'error',
             'llm_cost',
             'translation_mode_fallback',
+            'osc_sensitive_filter_triggered',
             'segment_mode_changed',
             'speaker_labels_changed',
         ]);
@@ -56,6 +61,17 @@ describe('RuntimeFrameController frame boundary', () => {
 });
 
 describe('RuntimeFrameController direct runtime delegation', () => {
+    it('delegates VR overlay state and swallows commands meant for the VR process', () => {
+        const page = createHarness();
+        const frame = { type: 'vr_overlay_visibility', visible: true, connected: false };
+
+        expect(page.controller.handle(frame)).toBe(true);
+        expect(page.actions.syncVrOverlayState).toHaveBeenCalledWith(frame);
+        expect(page.controller.handle({ type: 'vr_overlay_config', attach_mode: 'head' })).toBe(true);
+        expect(page.controller.handle({ type: 'vr_overlay_reset_position' })).toBe(true);
+        expect(page.events).toHaveLength(1);
+    });
+
     it.each([
         [true, true],
         [0, false],
@@ -115,6 +131,28 @@ describe('RuntimeFrameController direct runtime delegation', () => {
 
         expect(page.controller.handle({ type: 'llm_cost', credits: 1.25 })).toBe(true);
         expect(page.actions.addLlmCost).toHaveBeenCalledWith(1.25);
+    });
+
+    it('shows the OSC filter notice with a Settings action unless suppressed', () => {
+        const page = createHarness();
+
+        expect(page.controller.handle({ type: 'osc_sensitive_filter_triggered' })).toBe(true);
+        expect(page.actions.showToast).toHaveBeenCalledOnce();
+        const [message, isError, options] = page.actions.showToast.mock.calls[0];
+        expect(message).toBe('label:osc_sensitive_filter_triggered');
+        expect(isError).toBe(false);
+        expect(options.actionLabel).toBe('label:settings');
+        expect(options.onAction).toEqual(expect.any(Function));
+        options.onAction();
+        expect(page.actions.openSettings).toHaveBeenCalledWith();
+
+        const suppressed = createHarness({
+            state: { oscSensitiveFilterNoticeDisabled: true },
+        });
+        expect(suppressed.controller.handle({
+            type: 'osc_sensitive_filter_triggered',
+        })).toBe(true);
+        expect(suppressed.actions.showToast).not.toHaveBeenCalled();
     });
 
     it('applies translation fallback in persistence, UI, toast, then optional restart order', () => {

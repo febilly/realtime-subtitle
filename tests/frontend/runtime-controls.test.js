@@ -15,6 +15,7 @@ function setup(overrides = {}) {
         <button id="pause"><svg id="pauseIcon"></svg></button>
         <button id="audio"><svg id="audioIcon"></svg></button>
         <button id="overlay"></button>
+        <button id="vr" style="display: none;"></button>
     </body>`, { url: 'http://localhost/' });
     const document = dom.window.document;
     const state = {
@@ -38,6 +39,7 @@ function setup(overrides = {}) {
             audioSourceButton: document.getElementById('audio'),
             audioSourceIcon: document.getElementById('audioIcon'),
             overlayButton: document.getElementById('overlay'),
+            vrOverlayButton: document.getElementById('vr'),
         },
         getState: () => state,
         updateState: (patch) => Object.assign(state, patch),
@@ -159,6 +161,64 @@ describe('RuntimeControls', () => {
         page.controller.syncOverlayState(false);
         expect(button.classList.contains('active')).toBe(false);
         expect(button.title).toBe('overlay_open');
+        page.dom.window.close();
+    });
+
+    it('restores the remembered VR overlay switch and position mode on load', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(jsonResponse({ available: true, open: false, attach_mode: 'world' }))
+            .mockResolvedValueOnce(jsonResponse({ status: 'ok', attach_mode: 'body' }))
+            .mockResolvedValueOnce(jsonResponse({ status: 'ok', open: true, connected: false }));
+        const page = setup({ fetch });
+        page.dom.window.localStorage.setItem('vrOverlayEnabled', 'true');
+        page.dom.window.localStorage.setItem('vrOverlayAttachMode', 'body');
+
+        expect(await page.controller.restoreVrOverlayState()).toBe(true);
+        expect(fetch.mock.calls.map((c) => c[1] && JSON.parse(c[1].body))).toEqual([
+            undefined,
+            { action: 'config', attach_mode: 'body' },
+            { action: 'open' },
+        ]);
+        const button = page.document.getElementById('vr');
+        expect(button.style.display).toBe('');
+        expect(button.classList.contains('active')).toBe(true);
+        // SteamVR not running yet: no error, just a waiting hint
+        expect(button.title).toBe('vr_overlay_waiting');
+
+        page.controller.syncVrOverlayState({ visible: true, connected: true });
+        expect(button.title).toBe('vr_overlay_close');
+        page.dom.window.close();
+    });
+
+    it('remembers VR overlay toggles, including closes from inside VR', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(jsonResponse({ available: true, open: false, attach_mode: 'body' }))
+            .mockResolvedValueOnce(jsonResponse({ status: 'ok', available: true, open: true }));
+        const page = setup({ fetch });
+        const storage = page.dom.window.localStorage;
+        await page.controller.restoreVrOverlayState();
+        expect(fetch).toHaveBeenCalledTimes(1);
+
+        expect(await page.controller.toggleVrOverlay()).toBe(true);
+        expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ action: 'open' });
+        expect(storage.getItem('vrOverlayEnabled')).toBe('true');
+
+        // the initial state frame on connect must not clear the remembered switch
+        page.controller.syncVrOverlayState({ visible: false, connected: false });
+        expect(storage.getItem('vrOverlayEnabled')).toBe('true');
+        page.controller.syncVrOverlayState({ visible: false, connected: false, closed_from_overlay: true });
+        expect(storage.getItem('vrOverlayEnabled')).toBe('false');
+        page.dom.window.close();
+    });
+
+    it('keeps the VR button hidden when SteamVR support is unavailable', async () => {
+        const fetch = vi.fn().mockResolvedValueOnce(jsonResponse({ available: false }));
+        const page = setup({ fetch });
+        page.dom.window.localStorage.setItem('vrOverlayEnabled', 'true');
+        expect(await page.controller.restoreVrOverlayState()).toBe(false);
+        expect(page.document.getElementById('vr').style.display).toBe('none');
+        expect(fetch).toHaveBeenCalledTimes(1);
+        expect(RuntimeControls.normalizeVrAttachMode('nope')).toBe('body');
         page.dom.window.close();
     });
 

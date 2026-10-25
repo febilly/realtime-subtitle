@@ -1,9 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
+import os
+import re
 
-datas = [
-    ('static', 'static'),
-    ('ACKNOWLEDGMENTS.md', '.'),
+from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.win32.versioninfo import (
+    FixedFileInfo,
+    StringFileInfo,
+    StringStruct,
+    StringTable,
+    VarFileInfo,
+    VarStruct,
+    VSVersionInfo,
+)
+
+datas = [('static', 'static'), ('resources', 'resources'), ('ACKNOWLEDGMENTS.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.'),
     # Dynamic qwen_asr_gguf import: keep the vendored Python package as files so
     # ensure_vendor_sources() can validate it in the one-file extraction dir.
     ('local_inference/vendor/qwen_asr_gguf', 'local_inference/vendor/qwen_asr_gguf'),
@@ -21,13 +31,33 @@ hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dot
                  'streaming_translation.api.hymt2',
                  'onnxruntime', 'gguf', 'gguf.constants',
                  'soniox_key_setup', 'gemini_key_setup',
-                 'overlay_window']
+                 'overlay_window', 'win_overlay_native', 'vr_overlay', 'openvr']
 tmp_ret = collect_all('soundcard')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('aiohttp')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('websockets')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+
+# Opus 编码只依赖独立的 libopus（libopus/win64/opus.dll），由 opus_native.py
+# 在运行时按 frozen 路径加载；不再打包 PyAV 整套 FFmpeg DLL。
+binaries += [('libopus/win64/opus.dll', '.')]
+
+# SteamVR 字幕悬浮窗：pyopenvr 用 importlib.resources 在 openvr 包目录里找
+# libopenvr_api_64.dll，所以要放进 openvr/ 子目录。只带 64 位 Windows 版，包里
+# 其余平台的库（32 位/.so/.dylib）以及 OpenGL 示例代码都用不到。
+# 构建环境缺 openvr 时直接报错：否则产物会悄悄丢掉 VR 字幕（主界面不显示 VR 按钮）。
+import importlib.util as _ilu
+_openvr_spec = _ilu.find_spec('openvr')
+if _openvr_spec is None:
+    raise SystemExit('openvr is not installed; run "pip install -r requirements.txt" '
+                     'so the build includes the SteamVR subtitle overlay')
+_openvr_dll = os.path.join(os.path.dirname(_openvr_spec.origin), 'libopenvr_api_64.dll')
+if not os.path.isfile(_openvr_dll):
+    raise SystemExit(f'OpenVR runtime not found: {_openvr_dll}')
+binaries += [(_openvr_dll, 'openvr')]
+excludes_openvr = ['openvr.glframework', 'openvr.gl_renderer',
+                   'openvr.color_cube_actor', 'openvr.tracked_devices_actor']
 tmp_ret = collect_all('pythonosc')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ten_vad')
@@ -75,7 +105,13 @@ excludes = [
     'PySide6.QtPrintSupport', 'PySide6.QtConcurrent', 'PySide6.QtRemoteObjects',
     'PySide6.QtScxml', 'PySide6.QtStateMachine', 'PySide6.QtTextToSpeech',
     'PySide6.QtSvgWidgets', 'PySide6.QtXml', 'PySide6.QtDBus',
-]
+    # 构建期工具链，运行时用不到，此前被打进产物白占 240 个模块。
+    # PyInstaller 自己是被 soundcard/__pyinstaller/conftest.py 拖进来的
+    # （那文件 import PyInstaller.utils.conftest），PyInstaller 又依赖 setuptools。
+    # 注意 'distutils' 不能排除：PyInstaller 会把它别名到 setuptools 内置的那份，
+    # 排除后模块图会报 "Target module distutils already imported as ExcludedModule"。
+    'setuptools', 'pkg_resources', 'PyInstaller',
+] + excludes_openvr
 
 
 a = Analysis(
@@ -100,8 +136,16 @@ _drop_substr = (
     'plugins/platforminputcontexts',  # 虚拟键盘输入法插件
     'qtvirtualkeyboard',
     'imageformats/qpdf',              # PDF imageformat 插件
+    # collect_all() 会把包里的 __pyinstaller/ 一并收走，那是给 PyInstaller 用的
+    # 打包钩子和测试辅助，运行时毫无用处。soundcard 那份的 conftest.py 还
+    # `import PyInstaller.utils.conftest`，正是整条构建工具链被拖进产物的源头。
+    '__pyinstaller/',
 )
 _drop_basename = (
+    # Qt on Windows uses the OS ICU API (unversioned ucnv_* exports).
+    # PATH may contain Poppler/Conda's incompatible ICU with the same filename;
+    # bundling it shadows System32 and makes PySide6.QtCore fail to import.
+    'icuuc.dll',
     'qt6quick.dll', 'qt6qml.dll', 'qt6qmlmodels.dll', 'qt6qmlworkerscript.dll',
     'qt6qmlmeta.dll', 'qt6virtualkeyboard.dll', 'qt6pdf.dll',
     # Qt 的软件 OpenGL 回退渲染器（~20MB）。字幕悬浮窗是纯 QWidget + QPainter
@@ -124,17 +168,88 @@ a.datas = [e for e in a.datas if _keep_qt(e)]
 
 pyz = PYZ(a.pure)
 
+
+# 未签名 + 无版本资源的 exe 会被杀软的信誉/启发式引擎当成高危样本。签名是根治
+# 手段，但至少先把 VERSIONINFO 补上——版本号直接从 config.py 读，避免两处手工同步。
+def _client_version():
+    source = os.path.join(SPECPATH, 'config.py')
+    with open(source, encoding='utf-8') as fh:
+        match = re.search(r'^CLIENT_VERSION\s*=\s*["\']([^"\']+)["\']', fh.read(), re.M)
+    if not match:
+        raise SystemExit(f'CLIENT_VERSION not found in {source}')
+    return match.group(1)
+
+
+_version = _client_version()
+# FixedFileInfo 只接受 4 个整数；"4.7.1" -> (4, 7, 1, 0)，预发布后缀（如 "-rc1"）
+# 只保留数字部分，字符串表里仍然写完整版本号。
+_numeric = [int(part) for part in re.findall(r'\d+', _version)][:4]
+_numeric += [0] * (4 - len(_numeric))
+_version_tuple = tuple(_numeric)
+
+version_info = VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=_version_tuple,
+        prodvers=_version_tuple,
+        mask=0x3F,
+        flags=0x0,
+        OS=0x40004,      # VOS_NT_WINDOWS32
+        fileType=0x1,    # VFT_APP
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo([
+            StringTable(
+                '040904B0',  # US English, Unicode
+                [
+                    StringStruct('CompanyName', 'febilly'),
+                    StringStruct('FileDescription', 'Realtime Subtitle'),
+                    StringStruct('FileVersion', _version),
+                    StringStruct('InternalName', 'RealtimeSubtitle'),
+                    StringStruct(
+                        'LegalCopyright',
+                        'Copyright (C) febilly. Licensed under AGPL-3.0.',
+                    ),
+                    StringStruct('OriginalFilename', 'RealtimeSubtitle.exe'),
+                    StringStruct('ProductName', 'Realtime Subtitle'),
+                    StringStruct('ProductVersion', _version),
+                    StringStruct(
+                        'Comments',
+                        'https://github.com/febilly/realtime-subtitle',
+                    ),
+                ],
+            )
+        ]),
+        VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
+    ],
+)
+
+# 单文件 vs 目录版。默认单文件（CI 走这条），设 RTS_ONEDIR=1 则产出目录版，
+# 由调用方压成 zip 分发。
+#
+# 目录版对杀软友好得多：单文件 exe 每次启动都要把上百个 DLL 释放到
+# %TEMP%\_MEIxxxxx 再加载，这正是 dropper 的标准行为，行为启发式引擎对它很敏感。
+# 目录版没有这一步，DLL 直接从自己的 _internal 目录加载。
+ONEDIR = os.environ.get('RTS_ONEDIR') == '1'
+
+# 产物名。目录版由调用方传入 hosted-v<版本> 这样的最终名字，让 PyInstaller 直接
+# 写到位——构建完再去 ren/move 会撞上杀软实时扫描占用文件，报 "Access is denied"。
+DIST_NAME = os.environ.get('RTS_DIST_NAME') or 'RealtimeSubtitle'
+
+# EXE 的位置参数是若干 TOC；目录版把二进制和数据留给 COLLECT 收集。
+_exe_toc = [pyz, a.scripts] + ([] if ONEDIR else [a.binaries, a.datas]) + [[]]
+
 exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name='RealtimeSubtitle',
+    *_exe_toc,
+    exclude_binaries=ONEDIR,
+    name=DIST_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # 不要开 UPX：加壳是杀软最经典的静态特征之一，会显著抬高误报率。
+    # （CI runner 上本来就没装 UPX，此前的 upx=True 一直是空操作。）
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,
@@ -143,5 +258,17 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='NONE',
+    icon=os.path.join(SPECPATH, 'static', 'app.ico'),
+    version=version_info,
 )
+
+if ONEDIR:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.datas,
+        strip=False,
+        upx=False,
+        upx_exclude=[],
+        name=DIST_NAME,
+    )

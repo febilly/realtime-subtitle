@@ -8,6 +8,8 @@ import pytest
 
 def _install_gemini_session_import_mocks(monkeypatch):
     monkeypatch.delitem(sys.modules, "gemini_session", raising=False)
+    # The shared base binds osc_manager/config at import: reload it with the stubs.
+    monkeypatch.delitem(sys.modules, "realtime_session_base", raising=False)
     # Re-import the shared LLM helper fresh so it binds to this test's mocked
     # config / llm_client rather than a version cached by an earlier test.
     monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
@@ -756,7 +758,7 @@ def test_same_language_decimal_does_not_segment_across_gemini_batches(monkeypatc
         object(),
     )
     sent_count, *_ = session._process_stream_response(
-        {"serverContent": {"inputTranscription": {"text": "5.", "languageCode": "en"}}},
+        {"serverContent": {"inputTranscription": {"text": " 5.", "languageCode": "en"}}},
         all_final_tokens,
         sent_count,
         object(),
@@ -770,7 +772,7 @@ def test_same_language_decimal_does_not_segment_across_gemini_batches(monkeypatc
 
     final_tokens = [t for u in updates for t in u.get("final_tokens", [])]
     kinds = ["SEP" if t.get("is_separator") else t.get("text") for t in final_tokens]
-    assert kinds == ["Back during the CS 1.", "5.", "SEP", " Next sentence"], kinds
+    assert kinds == ["Back during the CS 1.", " 5.", "SEP", " Next sentence"], kinds
 
 
 def test_same_language_am_pm_does_not_segment_across_gemini_batches(monkeypatch):

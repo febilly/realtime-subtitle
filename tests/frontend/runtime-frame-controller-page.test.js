@@ -38,4 +38,22 @@ describe('full-page runtime frame controller wiring', () => {
             page.close();
         }
     });
+
+    it('opens Settings from the first OSC filter notice action', async () => {
+        const page = await createPageHarness();
+        try {
+            await page.emitFrame({ type: 'osc_sensitive_filter_triggered' });
+            const toast = page.document.getElementById('toast');
+            expect(toast.textContent).toContain('A sensitive word was hidden from OSC output.');
+            const action = toast.querySelector('.toast-action');
+            expect(action).not.toBeNull();
+            expect(action.textContent).toBe('Settings');
+
+            action.click();
+            await page.flush(2);
+            expect(page.document.getElementById('settingsPanel').hidden).toBe(false);
+        } finally {
+            page.close();
+        }
+    });
 });

@@ -20,6 +20,11 @@ mock_config.OSC_SEND_TARGET_PORT = 9000
 mock_config.OSC_CLIENT_IP = "127.0.0.1"
 mock_config.OSC_SERVER_IP = "127.0.0.1"
 mock_config.OSC_COMPAT_LISTEN_PORT = 9001
+mock_config.LOCAL_SETTINGS_FILE = os.environ.get(
+    "LOCAL_SETTINGS_FILE",
+    os.path.join(os.path.dirname(__file__), "..", "build", "test-local-settings.json"),
+)
+_previous_config = sys.modules.get("config")
 sys.modules["config"] = mock_config
 
 # Mock vrchat_oscquery before importing osc_manager
@@ -43,6 +48,18 @@ from shared.vrchat_bridge import (
     ForeignSpeech,
     OscState,
 )
+
+# Imports above bound the stub; put the real config back so later test
+# modules (e.g. llm_refine users) do not inherit it.
+if _previous_config is None:
+    sys.modules.pop("config", None)
+else:
+    sys.modules["config"] = _previous_config
+
+
+@pytest.fixture(autouse=True)
+def _stub_config(monkeypatch):
+    monkeypatch.setitem(sys.modules, "config", mock_config)
 
 
 @pytest.fixture(autouse=True)

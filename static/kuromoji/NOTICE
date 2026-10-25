@@ -1,0 +1,43 @@
+kuromoji.js 0.1.2 (browser build, unmodified)
+https://github.com/takuyaa/kuromoji.js
+
+Copyright 2014 Takuya Asano
+Copyright 2010-2014 Atilika Inc. and contributors
+
+Licensed under the Apache License, Version 2.0; see LICENSE in this
+directory. The notice file shipped with kuromoji.js (NOTICE.md, covering the
+mecab-ipadic dictionary data) is reproduced in dict/LICENSE.
+
+
+Components embedded in kuromoji.js
+==================================
+
+kuromoji.js is a Browserify bundle. Besides kuromoji itself it contains the
+following MIT-licensed code, whose notices are reproduced below.
+
+- zlib.js (https://github.com/imaya/zlib.js) - Copyright (c) 2012 imaya
+- async 2.x (https://github.com/caolan/async) - Copyright (c) 2010-2018 Caolan McMahon
+- doublearray (https://github.com/takuyaa/doublearray) - Copyright (c) 2014 Takuya Asano
+- Browserify's Node.js "path" shim - Copyright Joyent, Inc. and other Node contributors
+- Browserify's "process" shim (https://github.com/defunctzombie/node-process) - Copyright (c) 2013 Roman Shtylman
+
+MIT License (applies to each component listed above, with its own copyright
+line):
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

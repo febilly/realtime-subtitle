@@ -6,6 +6,7 @@ Reference: https://ai.google.dev/gemini-api/docs/live-api/live-translate
 import os
 import json
 import base64
+import threading
 import requests
 from websockets.sync.client import connect as sync_connect
 
@@ -64,7 +65,7 @@ def get_api_key() -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
 
     if api_key:
-        print(f"✅ Using API Key from environment variable")
+        print("✅ Using API Key from environment variable")
         return api_key
 
     if not GEMINI_TEMP_KEY_URL:
@@ -83,7 +84,7 @@ def get_api_key() -> str:
         temp_key = response.text.strip()
 
         if temp_key:
-            print(f"✅ Successfully obtained temporary API Key")
+            print("✅ Successfully obtained temporary API Key")
             return temp_key
         else:
             raise RuntimeError("Temporary key response is empty")
@@ -182,34 +183,54 @@ class GeminiLiveStream:
 
     暴露与旧Soniox流相同的接口（send/recv/close），以便音频路由、
     静音填充等组件无需修改即可复用：
-    - send(bytes)  -> 包装为 realtimeInput PCM 音频消息
+    - send(bytes)  -> 托管模式发送100 ms Opus二进制批次；自带key模式发送PCM JSON
     - send(str)    -> 原样发送（JSON控制消息）
     - finalize()   -> 发送 audioStreamEnd，让服务端尽快吐出剩余转写
     - recv/close   -> 透传
     """
 
-    def __init__(self, ws, sample_rate: int = 16000):
+    def __init__(self, ws, sample_rate: int = 16000, *, opus: bool = False, opus_batch: bool = True):
         self._ws = ws
         self._sample_rate = int(sample_rate)
-        self._mime_type = f"audio/pcm;rate={self._sample_rate}"
+        self._lock = threading.Lock()
+        self._encoder = None
+        self._binary_opus = bool(opus and opus_batch)
+        if opus:
+            from opus_audio import GeminiOpusBatchEncoder, RawOpusEncoder
+            encoder_type = GeminiOpusBatchEncoder if opus_batch else RawOpusEncoder
+            self._encoder = encoder_type(self._sample_rate)
+        self._mime_type = ("audio/opus;rate=16000;channels=1" if opus
+                           else f"audio/pcm;rate={self._sample_rate}")
+
+    def _send_audio(self, data):
+        if self._binary_opus:
+            # One 100 ms OPB1 batch per binary message. Upgrade the decoder
+            # relay first; it also accepts old JSON/Base64 and raw Opus packets.
+            self._ws.send(data)
+            return
+        self._ws.send(json.dumps({"realtimeInput": {"audio": {
+            "data": base64.b64encode(data).decode("ascii"), "mimeType": self._mime_type,
+        }}}))
 
     def send(self, payload) -> None:
-        if isinstance(payload, (bytes, bytearray, memoryview)):
-            message = {
-                "realtimeInput": {
-                    "audio": {
-                        "data": base64.b64encode(bytes(payload)).decode("ascii"),
-                        "mimeType": self._mime_type,
-                    }
-                }
-            }
-            self._ws.send(json.dumps(message))
-            return
-        self._ws.send(payload)
+        with self._lock:
+            if isinstance(payload, (bytes, bytearray, memoryview)):
+                data = bytes(payload)
+                if self._encoder is not None:
+                    for packet in self._encoder.encode(data):
+                        self._send_audio(packet)
+                elif data:
+                    self._send_audio(data)
+                return
+            self._ws.send(payload)
 
     def finalize(self) -> None:
-        """通知服务端音频流暂告一段落，催促其输出剩余转写。"""
-        self._ws.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
+        """Drain audio before finalizing an old stream (sleep/stop/rollover)."""
+        with self._lock:
+            if self._encoder is not None:
+                for packet in self._encoder.finish():
+                    self._send_audio(packet)
+            self._ws.send(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
 
     def recv(self, timeout: float | None = None):
         return self._ws.recv(timeout=timeout)
@@ -221,7 +242,12 @@ class GeminiLiveStream:
         (`^[a-z0-9][a-z0-9_-]{0,39}$`), so it can tell a deliberate stop from a
         dropped connection.
         """
-        self._ws.close(1000, reason)
+        with self._lock:
+            try:
+                if self._encoder is not None:
+                    self._encoder.close()
+            finally:
+                self._ws.close(1000, reason)
 
 
 def connect_live(
@@ -241,10 +267,11 @@ def connect_live(
     # Hosted mode: connect through the subtitle-server relay. The server mints a
     # short-lived backend ticket URL and injects its own upstream key.
     import config as _config
-    if _config.RELAY_MODE:
+    hosted = bool(_config.RELAY_MODE)
+    if hosted:
         # Mirror the model the setup frame carries (models/<GEMINI_MODEL>) so the
         # relay can authorize/meter the stream before the first setup frame.
-        relay_info = _config.relay_connect_info("gemini", model=f"models/{GEMINI_MODEL}", run_id=run_id)
+        relay_info = _config.relay_connect_info("gemini", model=f"models/{GEMINI_MODEL}", run_id=run_id, audio_codec="opus")
         url = relay_info["url"]
         connect_kwargs = {"max_size": None}
         relay_headers = relay_info.get("headers") or {}
@@ -274,7 +301,11 @@ def connect_live(
             if isinstance(res, dict) and "setupComplete" in res:
                 if _working_setup_layout != layout:
                     _working_setup_layout = layout
-                return GeminiLiveStream(ws, sample_rate=sample_rate)
+                # Old decoder releases do not advertise batch support. Keep
+                # their JSON/Base64 path usable throughout a rolling upgrade.
+                formats = res.get("relayAudioFormats")
+                opus_batch = isinstance(formats, list) and "opus-batch-v1" in formats
+                return GeminiLiveStream(ws, sample_rate=sample_rate, opus=hosted, opus_batch=opus_batch)
 
             if isinstance(res, dict) and res.get("error"):
                 error = res["error"]

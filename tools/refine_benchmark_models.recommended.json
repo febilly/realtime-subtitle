@@ -1,0 +1,10 @@
+{
+  "models": [
+    {"name": "deepseek_old", "env_model": "deepseek-flash", "prompt": "old"},
+    {"name": "deepseek_candidate", "env_model": "deepseek-flash", "prompt": "new"}
+  ],
+  "comparison_models": ["deepseek_old", "deepseek_candidate"],
+  "judge": {"name": "independent_judge", "env_model": "openai/gpt-6-luna"},
+  "temperature": 0.2,
+  "max_tokens": 1024
+}

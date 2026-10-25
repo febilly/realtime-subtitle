@@ -407,16 +407,30 @@
             refreshSections();
         }
 
+        // The backend session may run a different mode than the UI shows (it
+        // boots with its env default while the UI mode is restored from
+        // localStorage), so "unchanged" must also compare against the backend.
+        function backendDiffers(state, mode) {
+            return !!state.backendTranslationMode && state.backendTranslationMode !== mode;
+        }
+
+        function restartWithMode(restartOptions) {
+            updateState({ backendTranslationMode: restartOptions.translationMode });
+            return options.restartRecognition(restartOptions);
+        }
+
         function applyDraft() {
             const value = currentDraft();
             const state = getState();
             const nextMode = value.mode === 'two_way' && !state.twoWaySupported ? 'one_way' : value.mode;
             if (nextMode === 'none') {
-                const changed = state.uiTranslationMode !== 'none' || state.suppressTranslationDisplay;
+                const changed = state.uiTranslationMode !== 'none'
+                    || state.suppressTranslationDisplay
+                    || backendDiffers(state, 'none');
                 options.setUiTranslationMode('none');
                 hide();
                 if (state.translationProvider === 'gemini') options.renderSubtitles();
-                else if (changed) void options.restartRecognition({ translationMode: 'none' });
+                else if (changed) void restartWithMode({ translationMode: 'none' });
                 return true;
             }
             if (nextMode === 'two_way') {
@@ -425,12 +439,13 @@
                 if (!first || !second || first === second) return false;
                 const changed = state.uiTranslationMode !== 'two_way'
                     || state.suppressTranslationDisplay
+                    || backendDiffers(state, 'two_way')
                     || first !== state.backendTargetLang1
                     || second !== state.backendTargetLang2;
                 updateState({ backendTargetLang1: first, backendTargetLang2: second });
                 options.setUiTranslationMode('two_way');
                 hide();
-                if (changed) void options.restartRecognition({
+                if (changed) void restartWithMode({
                     translationMode: 'two_way', targetLang1: first, targetLang2: second,
                 });
                 return true;
@@ -438,11 +453,37 @@
             const selected = coerceSupportedLanguageCode(value.targetLang, state.defaultTranslationTargetLang);
             const changed = state.uiTranslationMode !== 'one_way'
                 || state.suppressTranslationDisplay
+                || backendDiffers(state, 'one_way')
                 || selected !== state.currentTranslationTargetLang;
             updateState({ currentTranslationTargetLang: selected });
             options.setUiTranslationMode('one_way');
             hide();
-            if (changed) void options.restartRecognition({ translationMode: 'one_way', targetLang: selected });
+            if (changed) void restartWithMode({ translationMode: 'one_way', targetLang: selected });
+            return true;
+        }
+
+        // Push the UI's saved translation mode to a backend that booted with a
+        // different one (e.g. UI says 关闭 but the session still translates).
+        // Soniox only: Gemini's 关闭 is display-only and never reaches the backend.
+        let lastBackendSyncKey = '';
+        function syncBackendMode() {
+            const state = getState();
+            if (state.translationProvider !== 'soniox') return false;
+            if (state.lockManualControls || state.setupRequired) return false;
+            const mode = state.uiTranslationMode;
+            if (!['none', 'one_way', 'two_way'].includes(mode)) return false;
+            if (mode === 'two_way' && !state.twoWaySupported) return false;
+            if (!backendDiffers(state, mode)) return false;
+            // One attempt per boot + mode, so a refused restart cannot loop.
+            const key = `${state.backendBootId || ''}|${mode}`;
+            if (key === lastBackendSyncKey) return false;
+            lastBackendSyncKey = key;
+            const restartOptions = { auto: true, translationMode: mode };
+            if (mode === 'two_way') {
+                restartOptions.targetLang1 = state.backendTargetLang1;
+                restartOptions.targetLang2 = state.backendTargetLang2;
+            }
+            void restartWithMode(restartOptions);
             return true;
         }
 
@@ -543,6 +584,7 @@
             getDraft: currentDraft,
             setDraft,
             applyDraft,
+            syncBackendMode,
         };
     }
 

@@ -29,6 +29,29 @@ def stable_prompt_config(monkeypatch):
     )
 
 
+@pytest.mark.parametrize("answer", [
+    "The draft is acceptable.\n__NO_CHANGE__",
+    "Source: source\nDraft: 草稿\nIssues:\n- note\nCorrected: 修正版",
+    "しっかり。在这里是认真点的意思。应改为：好好做。",
+    "草稿 → 修正版",
+])
+def test_refine_explanation_keeps_draft_without_leaking_notes(answer):
+    parsed = llm_refine.parse_refine_response(answer, "草稿", "source")
+    assert parsed == {"has_answer": True, "no_change": True, "refined": "", "category": ""}
+
+
+@pytest.mark.parametrize(("answer", "draft", "source"), [
+    ("Draft: 你好", "Draft: 您好", "Draft: Hello"),
+    ("a → b", "a → c", "a -> b"),
+    ("老师说应改为：你好", "老师说应改为：您好", "The teacher says: revise to hello"),
+    ("请使用 __NO_CHANGE__ 这个标记", "请用这个标记", "Use the __NO_CHANGE__ marker"),
+])
+def test_refine_literal_labels_arrows_and_marker_in_sentence_are_allowed(answer, draft, source):
+    parsed = llm_refine.parse_refine_response(answer, draft, source)
+    assert parsed['has_answer']
+    assert parsed['refined'] == answer
+
+
 @pytest.mark.parametrize(
     ("raw", "draft", "source", "expected"),
     [
@@ -154,7 +177,7 @@ def test_build_translate_messages_contains_source_only_context():
 
 def test_zero_context_omits_context_from_both_prompts(monkeypatch):
     monkeypatch.setattr(llm_refine.config, "LLM_REFINE_CONTEXT_MAX_COUNT", 0)
-    supplied_context = [{"source": "before", "translation": "之前"}]
+    supplied_context = [{"source": "context_fixture_source_must_be_omitted", "translation": "之前"}]
 
     refine_messages = llm_refine.build_refine_messages(
         "source", "draft", supplied_context, target_lang="zh"
@@ -166,7 +189,7 @@ def test_zero_context_omits_context_from_both_prompts(monkeypatch):
     for messages in (refine_messages, translate_messages):
         rendered = "\n".join(message["content"] for message in messages)
         assert "Context" not in rendered
-        assert "before" not in rendered
+        assert "context_fixture_source_must_be_omitted" not in rendered
         assert "之前" not in rendered
 
 
