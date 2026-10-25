@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import unicodedata
 
 import sentence_segmentation
@@ -39,6 +40,16 @@ class BoundaryCommit:
 
 def _nonspace_length(text: str) -> int:
     return sum(1 for char in text if not char.isspace())
+
+
+def _lexical(text: str) -> str:
+    """Words only: NFKC, case-folded, without whitespace or punctuation."""
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    return "".join(
+        char
+        for char in normalized
+        if not char.isspace() and not unicodedata.category(char).startswith("P")
+    )
 
 
 def _sentence_boundary_indices(text: str) -> tuple[int, ...]:
@@ -73,6 +84,12 @@ class LocalAgreementBoundaryDetector:
 
     ``prefer_latest`` selects the furthest stable sentence boundary so an audio
     window can discard several completed sentences in one location operation.
+
+    ``lexical_agreement`` compares the prefixes by their words only, so a
+    comma/period or capitalization revision *inside* an otherwise stable
+    prefix no longer resets agreement.  The boundary itself must still be a
+    sentence end in every hypothesis, and the committed text is always the
+    newest hypothesis' exact prefix.
     """
 
     def __init__(
@@ -83,6 +100,7 @@ class LocalAgreementBoundaryDetector:
         min_right_context_nonspace_chars: int = 1,
         require_safe_replay_evidence: bool = False,
         prefer_latest: bool = False,
+        lexical_agreement: bool = False,
     ) -> None:
         if agreement_count < 2:
             raise ValueError("agreement_count must be at least 2")
@@ -96,6 +114,7 @@ class LocalAgreementBoundaryDetector:
         self.min_right_context_nonspace_chars = int(min_right_context_nonspace_chars)
         self.require_safe_replay_evidence = bool(require_safe_replay_evidence)
         self.prefer_latest = bool(prefer_latest)
+        self.lexical_agreement = bool(lexical_agreement)
         self._hypotheses: deque[str] = deque(maxlen=self.agreement_count)
         self._latched = False
         self._has_provisional_boundary = False
@@ -151,6 +170,18 @@ class LocalAgreementBoundaryDetector:
         boundaries_by_hypothesis = {
             value: frozenset(_sentence_boundary_indices(value)) for value in hypotheses
         }
+        # Lexical prefix at each sentence boundary -> that boundary's index.
+        lexical_boundaries = (
+            {
+                value: {
+                    _lexical(value[:index]): index
+                    for index in boundaries_by_hypothesis[value]
+                }
+                for value in hypotheses
+            }
+            if self.lexical_agreement
+            else {}
+        )
 
         candidates = _sentence_boundary_indices(newest)
         if self.prefer_latest:
@@ -166,15 +197,23 @@ class LocalAgreementBoundaryDetector:
                 continue
 
             stable = True
+            lexical_prefix = _lexical(prefix) if self.lexical_agreement else ""
             for value in hypotheses:
-                if boundary_index not in boundaries_by_hypothesis[value]:
-                    stable = False
-                    break
-                if value[:boundary_index] != prefix:
-                    stable = False
-                    break
+                if self.lexical_agreement:
+                    index = lexical_boundaries[value].get(lexical_prefix)
+                    if index is None:
+                        stable = False
+                        break
+                else:
+                    index = boundary_index
+                    if index not in boundaries_by_hypothesis[value]:
+                        stable = False
+                        break
+                    if value[:index] != prefix:
+                        stable = False
+                        break
                 if (
-                    _nonspace_length(value[boundary_index:])
+                    _nonspace_length(value[index:])
                     < self.min_right_context_nonspace_chars
                 ):
                     stable = False
@@ -357,6 +396,133 @@ def deduplicate_replayed_overlap(
     return replayed
 
 
+def _lexical_with_offsets(value: str) -> tuple[str, list[int]]:
+    """Lexical characters plus, for each, the original end offset (exclusive)."""
+    lexical: list[str] = []
+    offsets: list[int] = []
+    for index, original in enumerate(value):
+        normalized = unicodedata.normalize("NFKC", original).casefold()
+        for char in normalized:
+            if char.isspace() or unicodedata.category(char).startswith("P"):
+                continue
+            lexical.append(char)
+            offsets.append(index + 1)
+    return "".join(lexical), offsets
+
+
+def strip_committed_prefix(
+    committed_text: str | None,
+    hypothesis: str | None,
+    *,
+    min_match_ratio: float = 0.6,
+    min_block_chars: int = 3,
+    sentence_end_fallback: bool = False,
+) -> str | None:
+    """Return what ``hypothesis`` says after an already committed prefix.
+
+    A text-level commit finalizes sentences while their audio is still in the
+    recognizer window, so every later hypothesis re-recognizes them first,
+    sometimes with revisions, and after an audio trim it may also lose the
+    first words that the cut ran through.  Matching is lexical (words only).
+    Only solid runs of ``min_block_chars`` or more count, and only near the
+    start of the hypothesis, so scattered single letters of a long new
+    sentence can never pose as the committed text.
+
+    The committed *end* must be found: the last solid run has to reach within
+    a few characters of it.  Its head may be missing or revised, as long as
+    half of the committed text, and ``min_match_ratio`` of it from the first
+    run onwards, is matched.  A cut that lands inside a spaced-language word moves to that
+    word's end, and separators after the cut are dropped.
+
+    ``sentence_end_fallback`` covers a committed sentence the recognizer has
+    since rewritten (homophones, a respelled name): committed text always ends
+    at a sentence end, so a sentence end in the hypothesis at nearly the same
+    lexical length is taken as its counterpart.
+
+    Returns ``None`` when the hypothesis does not plausibly contain the end of
+    the committed text, and ``""`` when it has said nothing beyond it yet.
+    """
+    committed = str(committed_text or "")
+    text = str(hypothesis or "")
+    left, _left_offsets = _lexical_with_offsets(committed)
+    if not left:
+        return text
+    right, right_offsets = _lexical_with_offsets(text)
+    if not right:
+        return ""
+
+    if right.startswith(left):
+        end = len(left)
+    elif left.startswith(right):
+        return ""
+    else:
+        region = right[: len(left) + max(12, len(left) // 2)]
+        minimum = min(min_block_chars, len(left))
+        blocks = [
+            block
+            for block in SequenceMatcher(
+                None, left, region, autojunk=False
+            ).get_matching_blocks()
+            if block.size >= minimum
+        ]
+        end = _aligned_committed_end(left, region, right, blocks, min_match_ratio)
+        if end is None and sentence_end_fallback:
+            end = _matching_sentence_end(text, right_offsets, len(left))
+        if end is None:
+            return None
+
+    if end >= len(right):
+        return ""
+    cut = right_offsets[end - 1]
+    while (
+        cut < len(text)
+        and _is_spaced_word_char(text[cut - 1])
+        and _is_spaced_word_char(text[cut])
+    ):
+        cut += 1
+    while cut < len(text) and (
+        text[cut].isspace() or unicodedata.category(text[cut]).startswith("P")
+    ):
+        cut += 1
+    return text[cut:]
+
+
+def _aligned_committed_end(left, region, right, blocks, min_match_ratio) -> int | None:
+    if not blocks:
+        return None
+    last = blocks[-1]
+    tail_gap = len(left) - (last.a + last.size)
+    if last.b + last.size >= len(right) and tail_gap > 0:
+        # The hypothesis stops inside the committed text: nothing new yet.
+        return len(right)
+    # The committed end needs a solid anchor of its own (three CJK characters
+    # carry about as much evidence as a five-letter run)...
+    anchor = 3 if any(_is_cjk_like(char) for char in left[last.a:last.a + last.size]) else 5
+    if tail_gap > max(3, len(left) // 5) or last.size < min(anchor, len(left)):
+        return None
+    # ...and enough of the committed text must be there overall.
+    covered = len(left) - blocks[0].a
+    matched = sum(block.size for block in blocks)
+    if matched < max(min(len(left), 6), 0.5 * len(left), min_match_ratio * covered):
+        return None
+    # Unmatched committed tail characters were revised in place.
+    return min(len(right), last.b + last.size + tail_gap)
+
+
+def _matching_sentence_end(text: str, offsets: list[int], length: int) -> int | None:
+    """Lexical index of the hypothesis sentence end closest to ``length``."""
+    tolerance = max(2, round(length * 0.3))
+    best: tuple[int, int] | None = None
+    position = 0
+    for piece in sentence_segmentation.split_text_at_sentence_boundaries(text)[:-1]:
+        position += len(piece)
+        index = sum(1 for offset in offsets if offset <= position)
+        distance = abs(index - length)
+        if 0 < index and distance <= tolerance and (best is None or distance < best[0]):
+            best = (distance, index)
+    return None if best is None else best[1]
+
+
 def deduplicate_normalized_replay(
     committed_text: str | None,
     replayed_text: str | None,
@@ -382,18 +548,7 @@ def deduplicate_normalized_replay(
     if not committed or not replayed:
         return replayed
 
-    def lexical_with_offsets(value: str) -> tuple[str, list[int]]:
-        lexical: list[str] = []
-        offsets: list[int] = []
-        for index, original in enumerate(value):
-            normalized = unicodedata.normalize("NFKC", original).casefold()
-            for char in normalized:
-                if char.isspace() or unicodedata.category(char).startswith("P"):
-                    continue
-                lexical.append(char)
-                offsets.append(index + 1)
-        return "".join(lexical), offsets
-
+    lexical_with_offsets = _lexical_with_offsets
     left, left_offsets = lexical_with_offsets(committed)
     right, right_offsets = lexical_with_offsets(replayed)
     if not left or not right:
@@ -470,4 +625,5 @@ __all__ = [
     "deduplicate_normalized_replay",
     "deduplicate_replayed_overlap",
     "has_safe_replay_evidence",
+    "strip_committed_prefix",
 ]

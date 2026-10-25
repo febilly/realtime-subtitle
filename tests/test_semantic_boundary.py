@@ -5,6 +5,7 @@ from local_inference.semantic_boundary import (
     deduplicate_normalized_replay,
     deduplicate_replayed_overlap,
     has_safe_replay_evidence,
+    strip_committed_prefix,
 )
 
 
@@ -88,6 +89,46 @@ def test_latest_policy_falls_back_when_later_sentence_is_still_changing():
     assert detector.observe("First sentence. Second draft. Next words") is None
     decision = detector.observe("First sentence. Second revision. Next words")
     assert decision.prefix == "First sentence."
+
+
+def test_exact_agreement_resets_on_a_punctuation_revision_inside_the_prefix():
+    detector = LocalAgreementBoundaryDetector(prefer_latest=True)
+    assert detector.observe("Well, it works. Then") is None
+    assert detector.observe("Well. It works. Then more") is None
+
+
+def test_lexical_agreement_ignores_punctuation_revisions_inside_the_prefix():
+    detector = LocalAgreementBoundaryDetector(prefer_latest=True, lexical_agreement=True)
+    assert detector.observe("Well, it works. Then") is None
+    decision = detector.observe("Well. It works. Then more")
+
+    # The newest hypothesis' exact text is committed, at its own index.
+    assert decision.prefix == "Well. It works."
+    assert decision.suffix == " Then more"
+
+
+def test_lexical_agreement_still_needs_the_boundary_in_every_hypothesis():
+    detector = LocalAgreementBoundaryDetector(lexical_agreement=True)
+    assert detector.observe("It works, then it stops") is None
+    assert detector.observe("It works. Then it stops") is None
+    decision = detector.observe("It works. Then it stops again")
+    assert decision.prefix == "It works."
+
+
+def test_lexical_agreement_rejects_changed_words():
+    detector = LocalAgreementBoundaryDetector(lexical_agreement=True)
+    assert detector.observe("It walks. Then") is None
+    assert detector.observe("It works. Then more") is None
+
+
+def test_lexical_agreement_keeps_right_context_rule():
+    detector = LocalAgreementBoundaryDetector(
+        lexical_agreement=True, min_right_context_nonspace_chars=2
+    )
+    assert detector.observe("Still final.") is None
+    assert detector.observe("Still, final. A") is None
+    assert detector.observe("Still final. Ab") is None
+    assert detector.observe("Still final. Abc").prefix == "Still final."
 
 
 @pytest.mark.parametrize(
@@ -358,3 +399,60 @@ def test_known_replay_dedup_does_not_match_inside_spaced_words(committed, replay
 def test_deduplicate_rejects_unsafe_configuration(kwargs):
     with pytest.raises(ValueError):
         deduplicate_replayed_overlap("alpha beta", "alpha beta", **kwargs)
+
+
+@pytest.mark.parametrize(
+    "committed,hypothesis,expected",
+    [
+        ("Hello world.", "Hello world. Next part", "Next part"),
+        ("Hello world.", "hello, world! Next part", "Next part"),
+        ("It was the worst experience.", "It was the worst experiences because I had", "because I had"),
+        (
+            "I mean, RTX implementation required Windows Store.",
+            "I mean RTX implementation require Windows Store, I think originally",
+            "I think originally",
+        ),
+        ("今天天气很好，我们一起出去散步。", "今天天气真好，我们一起出去散布，昨天我买了", "昨天我买了"),
+        ("Awful. Yeah, it's the worst experience.", "Awful.", ""),
+        ("", "Anything at all", "Anything at all"),
+        ("Hello world.", "", ""),
+    ],
+)
+def test_strip_committed_prefix_tolerates_revisions(committed, hypothesis, expected):
+    assert strip_committed_prefix(committed, hypothesis) == expected
+
+
+def test_strip_committed_prefix_keeps_speech_inserted_at_the_seam():
+    assert strip_committed_prefix("It works.", "It works fine. Then") == "fine. Then"
+
+
+def test_strip_committed_prefix_rejects_an_unrelated_hypothesis():
+    assert strip_committed_prefix("Awful. Yeah, it's the worst experience.",
+                                  "Completely different words entirely here") is None
+
+
+def test_strip_committed_prefix_accepts_a_short_cjk_anchor():
+    assert strip_committed_prefix(
+        "准备 VS Code 启动了。", "VSCO的启动了，我们去那边看看。"
+    ) == "我们去那边看看。"
+
+
+def test_strip_committed_prefix_never_aligns_on_scattered_letters():
+    long = (
+        "Like recently, there've been problems where a game on the Game Pass, "
+        "the Game Pass version of the game wasn't being updated."
+    )
+    assert strip_committed_prefix("or something.", long) is None
+    assert strip_committed_prefix("Committed words here.", "Totally different speech") is None
+
+
+def test_sentence_end_fallback_matches_a_rewritten_committed_sentence():
+    hypothesis = "八万度啥？我不知道啊，那所以你是在说什么？"
+    assert strip_committed_prefix("把我录啥？", hypothesis) is None
+    assert strip_committed_prefix(
+        "把我录啥？", hypothesis, sentence_end_fallback=True
+    ) == "我不知道啊，那所以你是在说什么？"
+    # A sentence end far from the committed length is no counterpart.
+    assert strip_committed_prefix(
+        "把我录啥？", "我不知道啊，那所以你是在说什么？", sentence_end_fallback=True
+    ) is None

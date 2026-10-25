@@ -280,6 +280,24 @@ class VADProcessor:
             self._silence_counter = 0
         return removed
 
+    def quietest_offset(self, start_sample: int, end_sample: int) -> int:
+        """Chunk boundary in [start, end] that follows the least speech-like chunk.
+
+        Used to place a trim cut in a gap between words.  Returns ``end``
+        when the range holds no complete chunk.
+        """
+        best_offset = int(end_sample)
+        best_confidence = float("inf")
+        offset = 0
+        for chunk, confidence in zip(self._speech_buffer, self._confidence_history):
+            offset += len(chunk)
+            if offset > end_sample:
+                break
+            if offset >= start_sample and confidence < best_confidence:
+                best_confidence = confidence
+                best_offset = offset
+        return best_offset
+
     def _flush_segment(self) -> np.ndarray | None:
         if not self._speech_buffer:
             return None

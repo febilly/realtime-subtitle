@@ -20,6 +20,7 @@ import unicodedata
 import numpy as np
 
 import config
+import sentence_segmentation
 from . import get_engine_runtime_issues
 from .asr_qwen3 import Qwen3ASREngine
 from .boundary_scout import (
@@ -36,6 +37,7 @@ from .semantic_boundary import (
     BoundaryCommit,
     LocalAgreementBoundaryDetector,
     deduplicate_normalized_replay,
+    strip_committed_prefix,
 )
 from .vad_processor import VADProcessor
 
@@ -53,6 +55,11 @@ class _TranscriptionRequest:
     present: bool
     voiced_seq: int
     stream_id: int
+    # Text-level commits: text already finalized from this final's audio, and
+    # the partial shown last, used if the final pass no longer lines up.
+    committed: str = ""
+    committed_trimmed: bool = False
+    fallback: str = ""
 
 
 class LocalQwenRecognizer:
@@ -109,6 +116,17 @@ class LocalQwenRecognizer:
         self._replayed_committed_text = ""
         self._replay_expected_suffix = ""
         self._replay_max_lexical_chars = 0
+        # "text": a stable sentence is finalized at once while its audio stays
+        # in the window; later hypotheses have it stripped, and the audio is
+        # trimmed separately once enough of it has piled up.  "audio": the
+        # original locate-then-cut commit.
+        self._commit_mode = self._configured_commit_mode()
+        self._window_committed_text = ""
+        self._window_committed_seconds = 0.0
+        # Whether the window start was cut into committed speech, so its
+        # hypotheses may have lost the head of the committed text.
+        self._window_trimmed = False
+        self._unaligned_partials = 0
         self._boundary_detector = LocalAgreementBoundaryDetector(
             agreement_count=int(
                 getattr(config, "LOCAL_SEMANTIC_BOUNDARY_STABLE_UPDATES", 2)
@@ -119,6 +137,9 @@ class LocalQwenRecognizer:
             ),
             require_safe_replay_evidence=True,
             prefer_latest=True,
+            lexical_agreement=bool(
+                getattr(config, "LOCAL_SEMANTIC_BOUNDARY_LEXICAL_AGREEMENT", True)
+            ),
         )
         self._boundary_scout: NemotronBoundaryScout | None = None
         self._boundary_scout_disabled = False
@@ -130,7 +151,16 @@ class LocalQwenRecognizer:
             "scout_cuts": 0,
             "qwen_locator_cuts": 0,
             "locator_failures": 0,
+            "text_commits": 0,
+            "text_trims": 0,
+            "trim_rejections": 0,
+            "unaligned_hypotheses": 0,
         }
+
+    @staticmethod
+    def _configured_commit_mode() -> str:
+        mode = str(getattr(config, "LOCAL_SEMANTIC_COMMIT_MODE", "text")).strip().lower()
+        return "audio" if mode == "audio" else "text"
 
     @staticmethod
     def _create_vad() -> VADProcessor:
@@ -560,6 +590,249 @@ class LocalQwenRecognizer:
                 self._enqueue_transcribe(tail_audio, is_final=False, present=True)
         return True
 
+    def _strip_committed(
+        self, text: str, raw: dict | None, committed: str, *, trimmed: bool
+    ) -> tuple[str | None, dict | None]:
+        """Drop the already finalized start of a full-window hypothesis."""
+        if not committed:
+            return text, raw
+        # Matching a rewritten sentence by where it ends is only sound while
+        # the window still begins where the committed text begins.
+        remainder = strip_committed_prefix(
+            committed, text, sentence_end_fallback=not trimmed
+        )
+        if remainder is None:
+            # A trim can cost the hypothesis its first committed words; the
+            # later committed sentences must then still be there in full.
+            pieces = sentence_segmentation.split_text_at_sentence_boundaries(committed)
+            for start in range(1, len(pieces)):
+                remainder = strip_committed_prefix("".join(pieces[start:]), text)
+                if remainder is not None:
+                    break
+        if remainder is None or remainder == text:
+            return remainder, raw
+        updated_raw = dict(raw or {})
+        updated_raw["text"] = remainder
+        updated_raw["semantic_overlap_removed"] = True
+        return remainder, updated_raw
+
+    def _commit_text_boundary(
+        self,
+        commit: BoundaryCommit,
+        *,
+        audio: np.ndarray,
+        hypothesis: str,
+        raw: dict | None,
+    ) -> None:
+        """Finalize a stable sentence prefix without touching the audio.
+
+        The audio window keeps the committed speech; later hypotheses of the
+        same window are aligned against it and only their remainder is shown.
+        No probe runs here, so a commit never waits on extra ASR passes and a
+        failed locate can no longer hold sentences back or cut real speech.
+        """
+        self._boundary_detector.reset()
+        committed = self._window_committed_text
+        self._window_committed_text = (
+            f"{committed} {commit.prefix}" if committed else commit.prefix
+        )
+        # Where the committed speech ends, by its share of the hypothesis' words.
+        total = len(self._lexical_text(hypothesis))
+        if total:
+            share = len(self._lexical_text(self._window_committed_text)) / total
+            self._window_committed_seconds = audio.size / SAMPLE_RATE * min(1.0, share)
+        self._semantic_stats["commits"] += 1
+        self._semantic_stats["text_commits"] += 1
+
+        final_raw = dict(raw or {})
+        final_raw["text"] = commit.prefix
+        final_raw["semantic_suffix_text"] = commit.suffix
+        final_raw["semantic_boundary"] = {
+            "method": "text_agreement",
+            "agreement_count": commit.agreement_count,
+            "decision_window_seconds": round(audio.size / SAMPLE_RATE, 4),
+            "committed_seconds": round(self._window_committed_seconds, 4),
+        }
+        logger.info(
+            "[semantic-boundary] text commit window=%.2fs committed~%.2fs prefix=%r",
+            audio.size / SAMPLE_RATE,
+            self._window_committed_seconds,
+            commit.prefix,
+        )
+        # Not _emit_final: the window and its decoding draft stay alive.
+        self._on_result(commit.prefix, True, final_raw)
+        suffix_raw = dict(raw or {})
+        suffix_raw["text"] = commit.suffix
+        self._last_partial_text = commit.suffix
+        self._last_partial_raw = suffix_raw
+        self._last_emitted_partial_text = commit.suffix
+        if commit.suffix.strip():
+            self._on_result(commit.suffix, False, suffix_raw)
+        self._maybe_trim_committed_audio()
+
+    def _maybe_trim_committed_audio(self) -> None:
+        """Drop audio of committed speech once enough of it has piled up.
+
+        The cut goes shortly before the estimated start of the newest
+        committed sentence (and at least ``margin`` before the committed end),
+        at the quietest VAD chunk nearby.  That sentence then keeps its audio
+        and some left context, so later hypotheses still reproduce it well
+        enough to be aligned, even when the words the cut ran through come
+        out garbled.  One probe transcribes the audio up to the cut; the cut
+        is applied only if that probe is fully contained in the committed
+        text and some committed text is still left after it, i.e. by that
+        probe the removed audio held only committed speech.
+        """
+        if not self._timeline_contiguous:
+            return
+        min_seconds = float(getattr(config, "LOCAL_SEMANTIC_TRIM_MIN_SECONDS", 6.0))
+        if self._window_committed_seconds < min_seconds:
+            return
+        peek = self._vad.peek_buffer()
+        if peek is None:
+            return
+        current_audio, _duration = peek
+        margin = float(getattr(config, "LOCAL_SEMANTIC_TRIM_MARGIN_SECONDS", 2.0))
+        committed = self._window_committed_text
+        newest = sentence_segmentation.split_text_at_sentence_boundaries(committed)[-1]
+        total = max(1, len(self._lexical_text(committed)))
+        newest_start = self._window_committed_seconds * (
+            1.0 - len(self._lexical_text(newest)) / total
+        )
+        first_target = min(newest_start - 0.5, self._window_committed_seconds - margin)
+        engine = self._ensure_engine()
+        for attempt in range(2):
+            target = first_target - 1.5 * attempt
+            if target < 2.0:
+                break
+            cut = self._vad.quietest_offset(
+                int((target - 0.4) * SAMPLE_RATE), int(target * SAMPLE_RATE)
+            )
+            if cut <= SAMPLE_RATE or cut >= current_audio.size:
+                break
+            try:
+                probe = engine.probe_transcribe(current_audio[:cut])
+            except Exception:
+                logger.warning("[semantic-boundary] trim probe failed", exc_info=True)
+                return
+            probe_text = str((probe or {}).get("text") or "")
+            remainder = strip_committed_prefix(probe_text, self._window_committed_text)
+            if (
+                not self._lexical_text(probe_text)
+                or remainder is None
+                or len(self._lexical_text(remainder)) < 4
+            ):
+                self._semantic_stats["trim_rejections"] += 1
+                continue
+            removed = self._vad.trim_prefix(cut)
+            if removed <= 0:
+                return
+            # The queued partial and the decoding draft describe the pre-trim
+            # window.
+            self._waiting_partial = None
+            self._stream_id += 1
+            self._reset_engine_draft()
+            self._window_committed_text = remainder
+            self._window_committed_seconds = max(
+                0.0, self._window_committed_seconds - removed / SAMPLE_RATE
+            )
+            self._last_boundary_scan_samples = max(
+                0, self._last_boundary_scan_samples - removed
+            )
+            self._window_trimmed = True
+            self._semantic_stats["text_trims"] += 1
+            self._semantic_stats["trimmed_samples"] += removed
+            logger.info(
+                "[semantic-boundary] trim %.2fs; committed audio left ~%.2fs, text left=%r",
+                removed / SAMPLE_RATE,
+                self._window_committed_seconds,
+                remainder,
+            )
+            return
+
+    def _final_text_after_commits(
+        self, text: str, raw: dict | None, request: _TranscriptionRequest
+    ) -> tuple[str, dict | None]:
+        stripped, raw = self._strip_committed(
+            text, raw, request.committed, trimmed=request.committed_trimmed
+        )
+        if not stripped and request.fallback.strip():
+            # The full-window pass no longer lines up with, or adds nothing
+            # to, the finalized text.  Finalize what is on screen instead of
+            # leaving it pending or dropping it.
+            if stripped is None:
+                self._semantic_stats["unaligned_hypotheses"] += 1
+            return request.fallback, dict(raw or {}, text=request.fallback)
+        return stripped or "", raw
+
+    def _partial_text_after_commits(
+        self, text: str, raw: dict | None
+    ) -> tuple[str | None, dict | None]:
+        stripped, stripped_raw = self._strip_committed(
+            text, raw, self._window_committed_text, trimmed=self._window_trimmed
+        )
+        if stripped is not None:
+            self._unaligned_partials = 0
+            return stripped, stripped_raw
+        self._semantic_stats["unaligned_hypotheses"] += 1
+        self._unaligned_partials += 1
+        if self._unaligned_partials < 3:
+            # Keep the current display; the next pass usually realigns.
+            logger.info(
+                "[semantic-boundary] hypothesis does not continue committed text "
+                "%r; holding display: %r",
+                self._window_committed_text[-80:],
+                text[:120],
+            )
+            return None, raw
+        # Persistently unaligned: stop hiding text rather than freeze the
+        # live caption.  Worst case the committed sentence shows twice.
+        logger.warning(
+            "[semantic-boundary] hypotheses stopped matching committed text %r; "
+            "showing them in full",
+            self._window_committed_text,
+        )
+        self._window_committed_text = ""
+        self._window_committed_seconds = 0.0
+        self._window_trimmed = False
+        self._unaligned_partials = 0
+        return text, raw
+
+    def _apply_partial(
+        self,
+        request: _TranscriptionRequest,
+        text: str,
+        raw: dict | None,
+        full_text: str,
+    ) -> None:
+        self._last_partial_voiced_seq = request.voiced_seq
+        self._last_partial_raw = raw
+        self._last_partial_text = text
+        decision: BoundaryCommit | None = None
+        if (
+            text
+            and self._semantic_boundary_enabled()
+            and self._vad.is_speaking
+            and request.audio.size >= self._semantic_cut_min_samples()
+        ):
+            decision = self._boundary_detector.observe(text)
+
+        # Present the complete current hypothesis before any physical
+        # boundary lookup. The Qwen-prefix locator can run several
+        # independent probes, so it must never delay source text we already
+        # know.
+        if request.present and text and text != self._last_emitted_partial_text:
+            self._last_emitted_partial_text = text
+            self._on_result(text, False, raw)
+        if decision is None:
+            return
+        if self._commit_mode == "text":
+            self._commit_text_boundary(
+                decision, audio=request.audio, hypothesis=full_text, raw=raw
+            )
+        else:
+            self._commit_semantic_boundary(decision, audio=request.audio, raw=raw)
+
     def _on_transcription_done(
         self, future: Future, *, request: _TranscriptionRequest
     ) -> None:
@@ -573,41 +846,27 @@ class LocalQwenRecognizer:
 
         with self._lock:
             try:
+                if payload is None and request.is_final and request.fallback.strip():
+                    # A text-mode final pass that came back empty must still
+                    # finalize the rows already on screen.
+                    payload = ("", None)
                 if payload is not None:
                     text, raw = payload
                     if request.is_final:
-                        text, raw = self._deduplicate_replay(text, raw)
+                        if self._commit_mode == "text":
+                            text, raw = self._final_text_after_commits(text, raw, request)
+                        else:
+                            text, raw = self._deduplicate_replay(text, raw)
                         if text:
                             self._emit_final(text, raw)
                     elif request.stream_id == self._stream_id:
-                        text, raw = self._deduplicate_replay(text, raw)
-                        self._last_partial_voiced_seq = request.voiced_seq
-                        self._last_partial_raw = raw
-                        self._last_partial_text = text
-                        decision: BoundaryCommit | None = None
-                        if (
-                            text
-                            and self._semantic_boundary_enabled()
-                            and self._vad.is_speaking
-                            and request.audio.size >= self._semantic_cut_min_samples()
-                        ):
-                            decision = self._boundary_detector.observe(text)
-
-                        # Present the complete current hypothesis before any
-                        # physical boundary lookup. The Qwen-prefix locator can
-                        # run several independent probes, so it must never
-                        # delay source text we already know.
-                        if (
-                            request.present
-                            and text
-                            and text != self._last_emitted_partial_text
-                        ):
-                            self._last_emitted_partial_text = text
-                            self._on_result(text, False, raw)
-                        if decision is not None:
-                            self._commit_semantic_boundary(
-                                decision, audio=request.audio, raw=raw
-                            )
+                        full_text = text
+                        if self._commit_mode == "text":
+                            text, raw = self._partial_text_after_commits(text, raw)
+                        else:
+                            text, raw = self._deduplicate_replay(text, raw)
+                        if text is not None:
+                            self._apply_partial(request, text, raw, full_text)
                 elif request.is_final or request.stream_id == self._stream_id:
                     self._last_partial_voiced_seq = -1
             except Exception as error:
@@ -672,6 +931,9 @@ class LocalQwenRecognizer:
         is_final: bool,
         present: bool = True,
         stream_id: int | None = None,
+        committed: str = "",
+        committed_trimmed: bool = False,
+        fallback: str = "",
     ) -> None:
         if audio.size == 0:
             return
@@ -685,6 +947,9 @@ class LocalQwenRecognizer:
                 present=bool(present),
                 voiced_seq=self._voiced_chunk_seq,
                 stream_id=request_stream_id,
+                committed=committed,
+                committed_trimmed=committed_trimmed,
+                fallback=fallback,
             )
             if is_final:
                 self._waiting_finals.append(request)
@@ -710,7 +975,11 @@ class LocalQwenRecognizer:
         # Prefix location runs extra ASR probes. Amortize that work over a
         # useful audio span, then cut at the latest confirmed sentence end.
         # A shorter user-configured hard cap should still leave time to cut.
-        seconds = max(1.0, float(getattr(config, "LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS", 8.0)))
+        # A text-level commit runs no probe, so it only needs real speech.
+        if self._commit_mode == "text":
+            seconds = max(0.5, float(getattr(config, "LOCAL_SEMANTIC_TEXT_COMMIT_MIN_AUDIO_SECONDS", 1.5)))
+        else:
+            seconds = max(1.0, float(getattr(config, "LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS", 8.0)))
         return min(int(seconds * SAMPLE_RATE), max(SAMPLE_RATE, self._input_cap_samples() // 2))
 
     def _maybe_emit_partial(self) -> None:
@@ -806,6 +1075,12 @@ class LocalQwenRecognizer:
         self._last_partial_time = time.monotonic()
         self._silence_trigger_armed = True
         self._timeline_contiguous = True
+        committed = self._window_committed_text
+        committed_trimmed = self._window_trimmed
+        self._window_committed_text = ""
+        self._window_committed_seconds = 0.0
+        self._window_trimmed = False
+        self._unaligned_partials = 0
 
         reused = self._try_reuse_partial_as_final()
         if reused is not None:
@@ -816,6 +1091,9 @@ class LocalQwenRecognizer:
                 is_final=True,
                 present=True,
                 stream_id=old_stream_id,
+                committed=committed,
+                committed_trimmed=committed_trimmed,
+                fallback=self._last_partial_text if committed else "",
             )
 
     def _process_chunk(self, chunk: np.ndarray) -> None:
@@ -930,6 +1208,11 @@ class LocalQwenRecognizer:
             self._replayed_committed_text = ""
             self._replay_expected_suffix = ""
             self._replay_max_lexical_chars = 0
+            self._commit_mode = self._configured_commit_mode()
+            self._window_committed_text = ""
+            self._window_committed_seconds = 0.0
+            self._window_trimmed = False
+            self._unaligned_partials = 0
             self._reset_boundary_state()
             self._waiting_partial = None
             self._waiting_finals.clear()

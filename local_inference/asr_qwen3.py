@@ -261,7 +261,12 @@ class Qwen3ASREngine:
         draft = self._draft_tokens if use_draft else None
 
         n_prefill = int(full_embd.shape[0])
-        temperature = 0.4
+        # 首次解码默认贪心：同一段音频每次都随机采样，近似并列的词和逗号/句号会在
+        # 相邻两次中间结果之间来回翻，待确认的旧句子也跟着反复改写。随机温度只留给
+        # 复读熔断后的重试。
+        temperature = max(0.0, float(getattr(config, "LOCAL_QWEN_ASR_TEMPERATURE", 0.0)))
+        draft_bias = max(0.0, float(getattr(config, "LOCAL_QWEN_ASR_DRAFT_BIAS", 2.0)))
+        bias_tail = max(0, int(getattr(config, "LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS", 6)))
         gen = None
         t_prefill = 0.0
         t_generate = 0.0
@@ -285,6 +290,9 @@ class Qwen3ASREngine:
                     draft=draft,
                     planes=4,
                     on_token=lambda toks: self._is_repeating(toks),
+                    # 倾向沿用上一次中间结果：草稿词只要不比模型首选差太多就保留。
+                    draft_bias=draft_bias if (draft and temperature <= 0) else 0.0,
+                    bias_tail=bias_tail,
                 )
                 t_generate = time.perf_counter() - t0
             finally:
@@ -292,7 +300,7 @@ class Qwen3ASREngine:
 
             if not gen.aborted:
                 break
-            temperature += 0.3
+            temperature = max(0.4, temperature + 0.3)
             draft = None  # 草稿跟着跑飞了就别再用它
             logger.warning("Decode aborted, retry with temp=%.1f", temperature)
 
@@ -306,6 +314,7 @@ class Qwen3ASREngine:
             "n_passes": gen.n_passes if gen else 0,
             "n_drafted": gen.n_drafted if gen else 0,
             "n_accepted": gen.n_accepted if gen else 0,
+            "n_biased": gen.n_biased if gen else 0,
             "t_decode": gen.t_decode if gen else 0.0,
             "t_wait": gen.t_wait if gen else 0.0,
             "t_verify": gen.t_verify if gen else 0.0,
@@ -356,7 +365,7 @@ class Qwen3ASREngine:
             logger.info(
                 "[qwen3-asr] timing audio=%.2fs onnx_encode=%.0fms llm_prefill=%.0fms "
                 "llm_generate=%.0fms sum=%.0fms prefill_positions=%s gen_tokens=%s "
-                "passes=%s ms_per_pass=%s draft=%s/%s | submit=%.0fms(%s次) "
+                "passes=%s ms_per_pass=%s draft=%s/%s biased=%s | submit=%.0fms(%s次) "
                 "gpuwait=%.0fms(%s次,每次%sms) verify=%.0fms(%s次) rest=%.0fms",
                 audio_sec,
                 enc_s * 1000,
@@ -369,6 +378,7 @@ class Qwen3ASREngine:
                 per_pass,
                 result["n_accepted"],
                 result["n_drafted"],
+                result["n_biased"],
                 dec_s * 1000,
                 n_passes,
                 wait_s * 1000,

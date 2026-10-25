@@ -444,6 +444,26 @@ LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL = max(
 # are scanned; only a punctuation boundary that is internal, has right context
 # and remains stable across revisions is committed.
 LOCAL_SEMANTIC_BOUNDARY_ENABLED = _env_bool("LOCAL_SEMANTIC_BOUNDARY_ENABLED", True)
+# "text": finalize a stable sentence immediately and keep its audio in the
+# window (later hypotheses have it stripped); trim that audio separately with
+# one verifying probe. "audio": locate the boundary with several probes and
+# cut before finalizing (the original behaviour).
+LOCAL_SEMANTIC_COMMIT_MODE = (
+    "audio"
+    if _env_str("LOCAL_SEMANTIC_COMMIT_MODE", "text").strip().lower() == "audio"
+    else "text"
+)
+LOCAL_SEMANTIC_TEXT_COMMIT_MIN_AUDIO_SECONDS = max(
+    0.5, _env_float("LOCAL_SEMANTIC_TEXT_COMMIT_MIN_AUDIO_SECONDS", 1.5)
+)
+# Text mode: trim once this much committed speech sits in the window, cutting
+# this far before its estimated end.
+LOCAL_SEMANTIC_TRIM_MIN_SECONDS = max(
+    2.0, _env_float("LOCAL_SEMANTIC_TRIM_MIN_SECONDS", 6.0)
+)
+LOCAL_SEMANTIC_TRIM_MARGIN_SECONDS = max(
+    0.3, _env_float("LOCAL_SEMANTIC_TRIM_MARGIN_SECONDS", 2.0)
+)
 LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS = max(
     1.0, _env_float("LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS", 8.0)
 )
@@ -458,6 +478,11 @@ LOCAL_SEMANTIC_BOUNDARY_STABLE_UPDATES = max(
 )
 LOCAL_SEMANTIC_BOUNDARY_MIN_RIGHT_CHARS = max(
     1, _env_int("LOCAL_SEMANTIC_BOUNDARY_MIN_RIGHT_CHARS", 2)
+)
+# Agree on a stable prefix by its words, so a comma/period revision inside it
+# does not restart agreement. The boundary itself must still agree.
+LOCAL_SEMANTIC_BOUNDARY_LEXICAL_AGREEMENT = _env_bool(
+    "LOCAL_SEMANTIC_BOUNDARY_LEXICAL_AGREEMENT", True
 )
 LOCAL_SEMANTIC_BOUNDARY_REPLAY_MS = max(
     160, _env_int("LOCAL_SEMANTIC_BOUNDARY_REPLAY_MS", 800)
@@ -482,6 +507,17 @@ LOCAL_QWEN_ASR_N_CTX = max(512, _env_int("LOCAL_QWEN_ASR_N_CTX", 2048))
 LOCAL_QWEN_CONTEXT_MAX_TOKENS = max(0, _env_int("LOCAL_QWEN_CONTEXT_MAX_TOKENS", 1024))
 LOCAL_QWEN_LOG_PIPELINE_TIMING = _env_bool("LOCAL_QWEN_LOG_PIPELINE_TIMING", True)
 LOCAL_SPECULATIVE_DECODE = _env_bool("LOCAL_SPECULATIVE_DECODE", True)
+# 0 = greedy. Sampling the same growing audio at a temperature re-rolls every
+# near-tie (comma vs period, homophones) on each partial.
+LOCAL_QWEN_ASR_TEMPERATURE = max(0.0, _env_float("LOCAL_QWEN_ASR_TEMPERATURE", 0.0))
+# Keep a token from the previous partial when its logit is within this margin
+# of the model's pick (2.0 = still kept while the model rates it >= 13.5% as
+# likely). 0 disables. Needs LOCAL_SPECULATIVE_DECODE and greedy decoding.
+LOCAL_QWEN_ASR_DRAFT_BIAS = max(0.0, _env_float("LOCAL_QWEN_ASR_DRAFT_BIAS", 2.0))
+# The newest previous-partial tokens were heard mid-word; leave them free.
+LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS = max(
+    0, _env_int("LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS", 6)
+)
 LOCAL_MT_PROMPT_CACHE = _env_bool("LOCAL_MT_PROMPT_CACHE", True)
 
 # Conservative estimates used only for GPU auto-selection.
