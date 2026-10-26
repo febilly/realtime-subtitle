@@ -5,7 +5,7 @@ class _FakeLocalEngine:
     def __init__(self):
         self.prompts = []
 
-    def generate(self, prompt, *, draft=None):
+    def generate(self, prompt, *, draft=None, **_kwargs):
         self.prompts.append((prompt, draft))
         return f"translated-{len(self.prompts)}", [len(self.prompts)]
 
@@ -138,3 +138,27 @@ def test_local_final_reuse_requires_matching_row_context():
         is_partial=False,
     )
     assert len(api._local_engine.prompts) == 4
+
+
+def test_local_row_cut_short_drops_the_longer_previous_version():
+    api = _local_api()
+    long_source = "那皮卡就是要别人去for two的God，你看我真真紧张我真不是"
+
+    api.translate(long_source, source_language="zh", target_language="en", is_partial=True)
+    api.translate("那皮卡就是要别人去for two的。", source_language="zh", target_language="en", is_partial=False)
+
+    prompt, draft = api._local_engine.prompts[1]
+    # The next row's text must not come back through the revision chain.
+    assert "Previous version" not in prompt
+    assert "你看我" not in prompt
+    assert draft is None
+
+
+def test_local_small_asr_revision_keeps_the_previous_version():
+    api = _local_api()
+
+    api.translate("到时候我还要得去手动打标", source_language="zh", target_language="en", is_partial=True)
+    api.translate("到时候我还得去手动打标", source_language="zh", target_language="en", is_partial=True)
+
+    prompt, _draft = api._local_engine.prompts[1]
+    assert "Previous version of the current source:\n到时候我还要得去手动打标" in prompt

@@ -28,6 +28,12 @@ import threading
 import time
 from typing import Dict, List, Optional
 
+from local_inference.repetition_guard import (
+    RETRY_REPEAT_PENALTY,
+    is_runaway,
+    source_is_repetitive,
+)
+
 from .base import BaseTranslationAPI
 
 try:
@@ -89,6 +95,16 @@ STABILITY_RULE = (
     "of the previous translation whenever possible. When content is added or "
     "corrected, accuracy and completeness take priority."
 )
+
+
+def source_was_cut(previous_source: Optional[str], source: str) -> bool:
+    """本地分行把一行切短（后半句分给了下一行）时，旧版本里装着下一行的内容。
+
+    训练数据里的"上一版原文"都是同一句更早、更短的中间结果；拿更长的旧版本当参考，
+    模型会按稳定性规则把下一行的译文留在这一行里。短到旧版本的 80% 以下就当新句子翻。
+    """
+    previous = (previous_source or "").strip()
+    return bool(previous) and len(source.strip()) < 0.8 * len(previous)
 
 
 def trained_history(pairs) -> List[List[str]]:
@@ -239,13 +255,23 @@ class HyMT2LocalEngine:
         prompt: str,
         max_tokens: int = 128,
         draft: Optional[List[int]] = None,
+        repeat_penalty: float = 1.0,
+        stop_on_runaway: bool = False,
     ) -> tuple[str, List[int]]:
         """生成译文；返回 (清洗后的文本, 原始 token)。
 
         ``draft`` 是上一次中间结果的 token：流式修订里新旧译文大段重合，一次前向就能
         验证掉模型认同的部分。验证是精确比对，输出与逐 token 解码一致。
+
+        ``stop_on_runaway``：末尾复读到 RUNAWAY_REPEATS 次就停（先按 token 粗筛，命中再按文本确认）。
         """
         import config as _config
+        from local_inference.repetition_guard import RUNAWAY_REPEATS, tail_repeats, text_units
+
+        def runaway(toks: List[int]) -> bool:
+            if not tail_repeats(toks, RUNAWAY_REPEATS):
+                return False
+            return bool(tail_repeats(text_units(self.model.detokenize(toks)), RUNAWAY_REPEATS))
 
         with self._engine_lock:
             tokens = self.model.tokenize(prompt, add_special=False, parse_special=True)
@@ -253,7 +279,7 @@ class HyMT2LocalEngine:
             cached, self._cached_tokens = self._cached_tokens, []
             n_new = self._prefill(tokens, cached)
 
-            sampler = self._LlamaSampler(temperature=0.0)
+            sampler = self._LlamaSampler(temperature=0.0, repeat_penalty=repeat_penalty)
             try:
                 use_draft = bool(getattr(_config, "LOCAL_SPECULATIVE_DECODE", True))
                 gen = self._spec.generate(
@@ -262,6 +288,7 @@ class HyMT2LocalEngine:
                     stop_ids=self.stop_ids,
                     max_tokens=max_tokens,
                     draft=draft if use_draft else None,
+                    on_token=runaway if stop_on_runaway else None,
                 )
             finally:
                 del sampler
@@ -826,6 +853,10 @@ class HyMT2API(BaseTranslationAPI):
                 self._prev_tokens = []
                 self._prev_local_context_signature = None
 
+            if source_was_cut(self._prev_source, text):
+                self._prev_source = None
+                self._prev_translation = None
+                self._prev_tokens = []
             prev_src = self._prev_source
             prev_trans = self._prev_translation
             recent_history = trained_history(self._history + history)
@@ -847,9 +878,16 @@ class HyMT2API(BaseTranslationAPI):
                 display = ""
             else:
                 inference_started = time.monotonic()
+                guard = not source_is_repetitive(text)
                 display, out_tokens = self._local_engine.generate(
-                    prompt, draft=self._prev_tokens or None
+                    prompt, draft=self._prev_tokens or None, stop_on_runaway=guard
                 )
+                if guard and is_runaway(display):
+                    # 复读跑飞：加一点重复惩罚重跑一次；还复读就照用，不再重试。
+                    print("[Hy-MT2 本地] 译文末尾复读，加重复惩罚重跑一次")
+                    display, out_tokens = self._local_engine.generate(
+                        prompt, repeat_penalty=RETRY_REPEAT_PENALTY, stop_on_runaway=True
+                    )
                 # 同一句的下一次修订拿这次的结果当草稿；整句定稿后这一句就翻篇了。
                 self._prev_tokens = [] if not is_partial else out_tokens
                 # 临时：本地模型每次推理后输出一行日志，记录本次耗时（毫秒）
@@ -890,6 +928,10 @@ class HyMT2API(BaseTranslationAPI):
                 )
             )
             new_utterance = (not self._sent_any) or self._last_final or direction_changed
+            if not new_utterance and self.backend == "remote" and source_was_cut(self._prev_source, text):
+                self._prev_source = None
+                self._prev_translation = None
+                self._prev_tokens = []
             if new_utterance:
                 self._utterance_id += 1
                 self._prev_source = None

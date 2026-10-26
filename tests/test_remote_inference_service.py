@@ -36,7 +36,7 @@ class FakeHyMT2Backend:
     def __init__(self) -> None:
         self.prompts: list[str] = []
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str, repeat_penalty: float = 1.0) -> str:
         self.prompts.append(prompt)
         return "翻译结果"
 
