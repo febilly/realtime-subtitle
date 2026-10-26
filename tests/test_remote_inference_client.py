@@ -110,12 +110,14 @@ def test_remote_hymt_keeps_revision_history_and_context_sensitive_final(endpoint
     translator = HyMT2API(backend="remote", websocket_url=endpoint.url, max_retries=0)
     try:
         assert translator.load_local_engine() is False
-        assert translator.translate("Hello.", "en", "zh", is_partial=True, following_source="Next.") == "你好。"
-        translator.translate("Hello.", "en", "zh", is_partial=False, following_source="Next revised.")
+        context = [{"source": "Before.", "target": "之前。"}]
+        assert translator.translate("Hello.", "en", "zh", is_partial=True, context_pairs=context) == "你好。"
+        translator.translate("Hello.", "en", "zh", is_partial=False, context_pairs=[{"source": "Before!", "target": "之前！"}])
         assert len(endpoint.calls) == 2
         assert endpoint.calls[1][1]["previous_source"] == "Hello."
         assert endpoint.calls[1][1]["previous_translation"] == "你好。"
-        assert endpoint.calls[1][1]["following_source"] == "Next revised."
+        assert endpoint.calls[1][1]["history"][-1] == ["Before!", "之前！"]
+        assert "following_source" not in endpoint.calls[1][1]
     finally:
         translator.close()
 

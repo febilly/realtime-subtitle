@@ -96,7 +96,7 @@ def test_asr_init_and_transcribe_round_trip_over_loopback_websocket():
     asyncio.run(_with_server(scenario))
 
 
-def test_hymt_default_init_accepts_yakutan_payload_and_protects_following_context():
+def test_hymt_default_init_accepts_yakutan_payload_with_training_template():
     async def scenario(url, _manager, backend):
         async with connect(url) as ws:
             # Deliberately omit service: old Yakutan/Realtime Subtitle Hy-MT2
@@ -125,9 +125,18 @@ def test_hymt_default_init_accepts_yakutan_payload_and_protects_following_contex
         assert backend.prompts
         prompt = backend.prompts[0]
         assert "[Source Text]\nHello world!" in prompt
-        assert "Completed source\n=> 完成译文" in prompt
-        assert "Legacy source" in prompt
-        assert "Upcoming source context (reference only; do not translate this text):" in prompt
-        assert "The following row is context only." in prompt
+        assert prompt == (
+            "[Background Information]\n"
+            "Recent utterances and their translations:\nCompleted source → 完成译文\n\n"
+            "Previous version of the current source:\nOlder revision\n\n"
+            "Previous translation of the current source:\n旧译文\n\n"
+            "When the source meaning has not changed, preserve the still-correct prefix of the "
+            "previous translation whenever possible. When content is added or corrected, accuracy "
+            "and completeness take priority.\n\n"
+            "Please translate the following text from English into Chinese, taking the provided "
+            "background information into consideration.\n\n[Source Text]\nHello world!"
+        )
+        assert "Legacy source" not in prompt
+        assert "following row" not in prompt
 
     asyncio.run(_with_server(scenario))

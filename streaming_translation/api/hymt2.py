@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 PROTOCOL_VERSION = 1
 MAX_HISTORY = 8        # 服务端接受 <=10 条，取 8 与本应用上下文窗口一致
 HISTORY_KEEP = 20      # 本地保留的完成句对上限（截断后再取最新一条发送）
+TRAINED_HISTORY_PAIRS = 5  # 微调数据（v4 build_traj.HISTORY_WINDOW）里历史最多 5 对
 
 LANGUAGE_NAMES: Dict[str, str] = {
     "zh": "Chinese",
@@ -77,6 +78,61 @@ def _sanitize_local_device(value) -> str:
     if normalized.startswith("vulkan:") and normalized[len("vulkan:"):].isdigit():
         return normalized
     return "auto"
+
+
+
+# 本地模型的提示词必须逐字对齐 LoRA 微调时的模板
+# （D:/hy-mt-2-lora/v4/pipeline/prompt_v4.py:render_v4，explicit_source_language=True,
+# include_stability_rule=True）。模型没见过的段落（例如后文原文）不要加。
+STABILITY_RULE = (
+    "When the source meaning has not changed, preserve the still-correct prefix "
+    "of the previous translation whenever possible. When content is added or "
+    "corrected, accuracy and completeness take priority."
+)
+
+
+def trained_history(pairs) -> List[List[str]]:
+    """训练数据只收有译文的历史句，最多 TRAINED_HISTORY_PAIRS 对。"""
+    kept = [
+        [str(source).strip(), str(target).strip()]
+        for source, target in pairs
+        if str(source or "").strip() and str(target or "").strip()
+    ]
+    return kept[-TRAINED_HISTORY_PAIRS:]
+
+
+def render_trained_prompt(
+    *,
+    source_name: str,
+    target_name: str,
+    history: List[List[str]],
+    previous_source: str,
+    previous_translation: str,
+    current_source: str,
+) -> str:
+    if not history and not previous_source and not previous_translation:
+        return (
+            f"Translate the following text from {source_name} into {target_name}. Note that you "
+            "should only output the translated result without any additional "
+            f"explanation:\n\n{current_source}"
+        )
+    background: List[str] = []
+    if history:
+        background.append(
+            "Recent utterances and their translations:\n"
+            + "\n".join(f"{source} → {target}" for source, target in history)
+        )
+    if previous_source:
+        background.append("Previous version of the current source:\n" + previous_source)
+    if previous_translation:
+        background.append("Previous translation of the current source:\n" + previous_translation)
+    background.append(STABILITY_RULE)
+    return (
+        "[Background Information]\n" + "\n\n".join(background)
+        + f"\n\nPlease translate the following text from {source_name} into {target_name}, "
+        "taking the provided background information into consideration.\n\n[Source Text]\n"
+        + current_source
+    )
 
 
 class HyMT2LocalEngine:
@@ -623,13 +679,10 @@ class HyMT2API(BaseTranslationAPI):
 
     @staticmethod
     def _local_context_signature(
-        history: List[List[str]], following_source: str
-    ) -> tuple[tuple[tuple[str, str], ...], str]:
+        history: List[List[str]],
+    ) -> tuple[tuple[str, str], ...]:
         """Return the local prompt inputs that must match for final reuse."""
-        return (
-            tuple((str(source), str(target)) for source, target in history),
-            following_source,
-        )
+        return tuple((str(source), str(target)) for source, target in history)
 
     def _try_reuse_final(
         self,
@@ -685,13 +738,9 @@ class HyMT2API(BaseTranslationAPI):
             self._last_target_lang or self.DEFAULT_TARGET_LANG
         )
         history = self._history_from_context_pairs(context_pairs)
-        following_source = ""
         local_context_signature = None
         if self.backend in {"local", "remote"}:
-            following_source = str(kwargs.get("following_source") or "").strip()
-            local_context_signature = self._local_context_signature(
-                history, following_source
-            )
+            local_context_signature = self._local_context_signature(history)
 
         if not is_partial:
             reused = self._try_reuse_final(
@@ -716,7 +765,6 @@ class HyMT2API(BaseTranslationAPI):
                     target_lang=target_lang,
                     is_partial=is_partial,
                     history=history,
-                    following_source=following_source,
                     context_signature=local_context_signature,
                 )
             except Exception as e:
@@ -737,10 +785,6 @@ class HyMT2API(BaseTranslationAPI):
                 is_partial=is_partial,
                 history=history,
             )
-            if self.backend == "remote":
-                # Optional v1 extension. Older Yakutan servers ignore it and
-                # still accept the same source/history/revision payload.
-                payload["following_source"] = following_source
             reply = self._request(payload)
 
             committed = str(reply.get("committed_text") or "")
@@ -773,7 +817,6 @@ class HyMT2API(BaseTranslationAPI):
         target_lang: str,
         is_partial: bool,
         history: List[List[str]],
-        following_source: str,
         context_signature,
     ) -> str:
         with self._lock:
@@ -785,60 +828,19 @@ class HyMT2API(BaseTranslationAPI):
 
             prev_src = self._prev_source
             prev_trans = self._prev_translation
-            recent_history = (self._history + history)[-MAX_HISTORY:]
+            recent_history = trained_history(self._history + history)
 
             source_name = LANGUAGE_NAMES.get(source_lang, source_lang)
             target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
 
-            if not recent_history and not prev_src and not prev_trans and not following_source:
-                direction = f"from {source_name} into {target_name}"
-                content = (
-                    f"Translate the following text {direction}. Note that you should "
-                    "only output the translated result without any additional explanation:\n\n"
-                    f"{text}"
-                )
-            else:
-                background = []
-                if recent_history:
-                    rendered_history = []
-                    for source, translation in recent_history:
-                        rendered_history.append(f"Source: {source}")
-                        if translation:
-                            rendered_history.append(f"Translation: {translation}")
-                    background.append(
-                        "Previous source/translation context:\n"
-                        + "\n".join(rendered_history)
-                    )
-                if following_source:
-                    background.append(
-                        "Following source context (reference only; do not translate or output):\n"
-                        + following_source
-                    )
-                if prev_src:
-                    background.append(
-                        "Previous version of the current source:\n" + prev_src
-                    )
-                if prev_trans:
-                    background.append(
-                        "Previous translation of the current source:\n" + prev_trans
-                    )
-                background.append(
-                    "When the source meaning has not changed, preserve the still-correct prefix "
-                    "of the previous translation whenever possible. When content is added or "
-                    "corrected, accuracy and completeness take priority."
-                )
-                background.append(
-                    "Translate only the [Source Text] below. Do not translate or output "
-                    "background information."
-                )
-                direction = f"from {source_name} into {target_name}"
-                content = (
-                    "[Background Information]\n"
-                    + "\n\n".join(background)
-                    + f"\n\nPlease translate the following text {direction}, taking the provided "
-                    "background information into consideration.\n\n[Source Text]\n"
-                    + text
-                )
+            content = render_trained_prompt(
+                source_name=source_name,
+                target_name=target_name,
+                history=recent_history,
+                previous_source=prev_src or "",
+                previous_translation=prev_trans or "",
+                current_source=text,
+            )
 
             prompt = f"<｜hy_User｜>{content}<｜hy_Assistant｜>"
             if self._local_engine is None:

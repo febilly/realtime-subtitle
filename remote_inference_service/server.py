@@ -23,6 +23,7 @@ ASR_ENGINES = ("sensevoice", "qwen3-asr")
 CHAT_PREFIX = "<｜hy_begin▁of▁sentence｜><｜hy_User｜>"
 CHAT_SUFFIX = "<｜hy_Assistant｜>"
 
+TRAINED_HISTORY_PAIRS = 5
 LANGUAGE_NAMES = {
     "ar": "Arabic", "de": "German", "en": "English", "es": "Spanish",
     "fr": "French", "it": "Italian", "ja": "Japanese", "ko": "Korean",
@@ -52,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-message-bytes", type=int, default=16 * 1024 * 1024)
     parser.add_argument("--hymt2-max-new-tokens", type=int, default=160)
-    parser.add_argument("--history-limit", type=int, default=10)
+    parser.add_argument("--history-limit", type=int, default=TRAINED_HISTORY_PAIRS)
     parser.add_argument(
         "--qwen-workers", type=int,
         default=int(os.getenv("REMOTE_INFERENCE_QWEN_WORKERS", os.getenv("YAKUTAN_QWEN_WORKERS", "16"))),
@@ -267,15 +268,23 @@ def _source_history(items: Any, limit: int) -> list[tuple[str, str]]:
 
 
 def _translation_prompt(payload: dict[str, Any], source: str, history_limit: int) -> str:
+    # Must match the Hy-MT2 LoRA training template word for word
+    # (hy-mt-2-lora v4/pipeline/prompt_v4.py:render_v4); the model has never
+    # seen any other section, e.g. following-source context.
     source_lang = str(payload.get("source_lang") or "en").lower()
     target_lang = str(payload.get("target_lang") or "zh").lower()
     source_name = LANGUAGE_NAMES.get(source_lang, source_lang)
     target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
     previous_source = str(payload.get("previous_source") or "")
     previous_translation = str(payload.get("previous_translation") or "")
-    history = _source_history(payload.get("history"), history_limit)
-    following_source = str(payload.get("following_source") or "").strip()
-    if not history and not previous_source and not previous_translation and not following_source:
+    # Training only had pairs with a translation, at most TRAINED_HISTORY_PAIRS of them.
+    limit = max(0, min(history_limit, TRAINED_HISTORY_PAIRS))
+    history = [
+        (item_source, target)
+        for item_source, target in _source_history(payload.get("history"), 10_000)
+        if target
+    ][-limit:] if limit else []
+    if not history and not previous_source and not previous_translation:
         return (
             f"Translate the following text from {source_name} into {target_name}. Note that you "
             "should only output the translated result without any additional explanation:\n\n"
@@ -283,20 +292,14 @@ def _translation_prompt(payload: dict[str, Any], source: str, history_limit: int
         )
     background: list[str] = []
     if history:
-        history_lines = [
-            source if not target else f"{source}\n=> {target}"
-            for source, target in history
-        ]
-        background.append("Recent completed source/translation pairs:\n" + "\n".join(history_lines))
+        background.append(
+            "Recent utterances and their translations:\n"
+            + "\n".join(f"{item_source} → {target}" for item_source, target in history)
+        )
     if previous_source:
         background.append("Previous version of the current source:\n" + previous_source)
     if previous_translation:
         background.append("Previous translation of the current source:\n" + previous_translation)
-    if following_source:
-        background.append(
-            "Upcoming source context (reference only; do not translate this text):\n"
-            + following_source
-        )
     background.append(
         "When the source meaning has not changed, preserve the still-correct prefix of the "
         "previous translation whenever possible. When content is added or corrected, accuracy "

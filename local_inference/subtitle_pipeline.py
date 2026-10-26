@@ -188,15 +188,12 @@ class LocalSubtitlePipeline:
             self._working = True
             self._executor.submit(self._drain)
 
-    def _context(self, row: _Row) -> tuple[list[dict], str]:
+    def _context(self, row: _Row) -> list[dict]:
         before = list(self._history)
-        after = []
         for other in sorted(self._rows.values(), key=lambda value: value.order):
             if other.order < row.order:
                 before.append({"source": other.source, "target": other.translation})
-            elif other.order > row.order:
-                after.append(other.source)
-        return before[-8:], "".join(after)[:256]
+        return before[-8:]
 
     def _drain(self) -> None:
         while True:
@@ -212,7 +209,7 @@ class LocalSubtitlePipeline:
                 source_revision, epoch = row.source_revision, row.epoch
                 source, source_lang, target_lang = row.source, row.source_language, row.target_language
                 final, requires = row.is_final, row.requires_translation
-                context, following = self._context(row)
+                context = self._context(row)
             translated = ""
             error = None
             try:
@@ -223,7 +220,7 @@ class LocalSubtitlePipeline:
                         self._translators[row_id] = translator
                     translated = translator.translate(
                         source, source_language=source_lang, target_language=target_lang,
-                        is_partial=not final, context_pairs=context, following_source=following,
+                        is_partial=not final, context_pairs=context,
                     ).strip()
                     if translated.startswith("[ERROR]"):
                         error, translated = translated, ""
