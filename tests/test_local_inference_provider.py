@@ -452,3 +452,189 @@ def test_session_stop_keeps_final_gate_when_run_thread_is_still_draining(monkeyp
     assert session._local_stop_event is stop_event
     assert session.ws is not None
     pipeline.update.assert_called_once()
+
+
+def test_pipeline_without_machine_translation_finalizes_rows_for_the_llm():
+    translator = Mock()
+    finals = []
+    pipeline = LocalSubtitlePipeline(lambda: translator, lambda frame: None, finals.append, Mock())
+    pipeline.set_machine_translation(False)
+    pipeline.update("Hello there.", True, "en", "zh")
+    pipeline.close()
+
+    translator.translate.assert_not_called()
+    assert finals[0]["source"] == "Hello there."
+    assert finals[0]["requires_translation"] is True
+    assert finals[0]["translation"] == ""
+
+
+def test_disabling_machine_translation_releases_row_translators():
+    translators = []
+
+    def make():
+        translator = Mock()
+        translator.translate.return_value = "你好"
+        translators.append(translator)
+        return translator
+
+    pipeline = LocalSubtitlePipeline(make, lambda frame: None, lambda row: None, Mock())
+    try:
+        pipeline.update("Hello", False, "en", "zh")
+        pipeline._executor.submit(lambda: None).result(5)
+        assert len(translators) == 1
+        pipeline.set_machine_translation(False)
+        pipeline._executor.submit(lambda: None).result(5)
+        translators[0].close.assert_called_once()
+        assert pipeline._translators == {}
+    finally:
+        pipeline.close()
+
+
+def _running_local_session(translation_mode="hybrid"):
+    session = _session()
+    session.translation = "one_way"
+    session._local_stop_event = threading.Event()
+    session._subtitle_pipeline = Mock()
+    session.set_translation_mode(translation_mode)
+    return session
+
+
+def test_switching_to_accurate_unloads_hymt2_immediately():
+    session = _running_local_session("hybrid")
+    translator = Mock()
+    session._translator = translator
+
+    assert session.set_translation_mode("accurate") == (True, "accurate", False)
+
+    assert session.get_translation_mode() == "accurate"
+    assert session.get_llm_refine_mode() == "translate"
+    session._subtitle_pipeline.set_machine_translation.assert_called_with(False)
+    translator.close.assert_called_once()
+    assert session._translator is None
+
+
+def test_switching_back_to_fast_loads_hymt2_in_the_background(monkeypatch):
+    session = _running_local_session("accurate")
+    loaded = Mock()
+    made = threading.Event()
+    monkeypatch.setattr(session, "_check_models", Mock())
+
+    def make():
+        made.set()
+        return loaded
+
+    monkeypatch.setattr(session, "_make_row_translator", make)
+
+    assert session.set_translation_mode("fast") == (True, "fast", False)
+
+    assert made.wait(5)
+    for _ in range(100):
+        if session._translator is loaded:
+            break
+        threading.Event().wait(0.01)
+    assert session._translator is loaded
+    session._check_models.assert_called_once_with(True)
+    session._subtitle_pipeline.set_machine_translation.assert_called_with(True)
+    # 快速 <-> 混合 keeps the loaded model.
+    session.set_translation_mode("hybrid")
+    loaded.close.assert_not_called()
+
+
+def test_load_finishing_after_a_newer_switch_is_discarded(monkeypatch):
+    session = _running_local_session("accurate")
+    release = threading.Event()
+    loaded = Mock()
+    monkeypatch.setattr(session, "_check_models", Mock())
+    monkeypatch.setattr(session, "_make_row_translator", lambda: (release.wait(5), loaded)[1])
+
+    session.set_translation_mode("fast")
+    session.set_translation_mode("accurate")
+    release.set()
+    for _ in range(100):
+        if loaded.close.called:
+            break
+        threading.Event().wait(0.01)
+
+    loaded.close.assert_called_once()
+    assert session._translator is None
+
+
+def test_missing_hymt2_reports_an_error_instead_of_loading(monkeypatch):
+    session = _running_local_session("accurate")
+    errors = []
+    monkeypatch.setattr(session, "_broadcast_local_error", errors.append)
+    monkeypatch.setattr(session, "_check_models", Mock(side_effect=RuntimeError("Hy-MT2 翻译模型未下载")))
+    monkeypatch.setattr(session, "_make_row_translator", Mock())
+
+    session.set_translation_mode("fast")
+    for _ in range(100):
+        if errors:
+            break
+        threading.Event().wait(0.01)
+
+    assert "未下载" in str(errors[0])
+    session._make_row_translator.assert_not_called()
+
+
+def test_mode_switch_while_stopped_only_records_the_mode():
+    session = _session()
+    session._make_row_translator = Mock()
+
+    assert session.set_translation_mode("accurate") == (True, "accurate", False)
+    assert session._machine_translation_wanted() is False
+    assert session.set_translation_mode("fast") == (True, "fast", False)
+    assert session._machine_translation_wanted() is True
+    session.translation = "none"
+    assert session._machine_translation_wanted() is False
+    session._make_row_translator.assert_not_called()
+
+
+def test_hosted_mode_opens_the_relay_link_and_routes_llm_frames_through_it(monkeypatch):
+    import local_session
+    session = _session()
+    links = []
+
+    class FakeLink:
+        def __init__(self, on_frame, on_state, run_id):
+            self.on_frame, self.on_state, self.run_id = on_frame, on_state, run_id
+            self.sent, self.stopped = [], False
+            links.append(self)
+
+        def start(self):
+            pass
+
+        def send(self, text):
+            self.sent.append(text)
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr(local_session, "LocalRelayLink", FakeLink)
+    monkeypatch.setattr(config, "RELAY_MODE", False)
+    session._start_relay_link()
+    assert links == []
+
+    monkeypatch.setattr(config, "RELAY_MODE", True)
+    monkeypatch.setattr(config, "RELAY_TOKEN", "ss_test")
+    session._start_relay_link()
+    session._start_relay_link()
+    assert len(links) == 1 and links[0].run_id == session.relay_run_id
+    assert links[0].on_frame == session._hosted_llm.handle_frame
+
+    session._hosted_llm_send("frame")
+    assert links[0].sent == ["frame"]
+    session._stop_relay_link()
+    assert links[0].stopped
+    with pytest.raises(RuntimeError):
+        session._hosted_llm_send("frame")
+
+
+def test_prepaid_exhaustion_falls_back_to_hymt2_without_a_restart(monkeypatch):
+    session = _running_local_session("accurate")
+    monkeypatch.setattr(session, "_load_machine_translation", Mock())
+    session.loop = Mock()
+    session._on_hosted_llm_disabled("insufficient_prepaid")
+    assert session.get_translation_mode() == "fast"
+    session._subtitle_pipeline.set_machine_translation.assert_called_with(True)
+    frame = session.broadcast_callback.call_args[0][0]
+    assert frame == {"type": "translation_mode_fallback", "reason": "insufficient_prepaid", "needs_restart": False}

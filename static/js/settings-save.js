@@ -75,7 +75,7 @@
             }
 
             if (mode === 'relay') {
-                return saveRelay({ provider, region, settings, server });
+                return saveRelay({ provider, region, settings, server, localConfig: draft.localConfig || null });
             }
             return saveDirect({
                 provider,
@@ -87,7 +87,7 @@
             });
         }
 
-        async function saveRelay({ provider, region, settings, server }) {
+        async function saveRelay({ provider, region, settings, server, localConfig = null }) {
             if (!server.token) {
                 saveProviderSettings(settings);
                 call('hideSettingsPanel');
@@ -105,7 +105,8 @@
             }
 
             saveProviderSettings(settings);
-            if (!setup.relayNeedsSetup({ provider, token: server.token })) {
+            // Local settings (backend, devices) apply only through a setup push.
+            if (provider !== 'local' && !setup.relayNeedsSetup({ provider, token: server.token })) {
                 setSaving(false);
                 call('finishHotSettingsSave');
                 return { status: 'hot_saved', mode: 'relay', provider };
@@ -116,6 +117,7 @@
                 mode: 'relay',
                 token: server.token,
                 region,
+                ...(provider === 'local' && localConfig ? { localConfig } : {}),
             });
             setSaving(false);
             if (!result.ok) {

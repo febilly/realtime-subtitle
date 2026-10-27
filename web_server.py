@@ -421,7 +421,7 @@ class WebServer:
             "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
             "enable_chroma_theme": bool(ENABLE_CHROMA_THEME),
             "translation_target_lang": self.session.get_translation_target_lang(),
-            "llm_refine_available": bool(provider != "local" and is_llm_refine_available()),
+            "llm_refine_available": bool(is_llm_refine_available()),
             "llm_refine_mode": self.session.get_llm_refine_mode(),
             "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
             # How refine edits are visualized on the frontend:
@@ -609,7 +609,7 @@ class WebServer:
         mode = str(payload.get("mode") or "").strip().lower()
         if mode not in ("direct", "relay"):
             mode = "direct"
-        if provider == "local":
+        if provider == "local" and not config.RELAY_AVAILABLE:
             mode = "direct"
 
         # Soniox regional endpoint (us | eu | jp); ignored for other providers.
@@ -821,19 +821,40 @@ class WebServer:
         except Exception:
             payload = {}
         component = str((payload or {}).get("component") or "qwen3-asr").strip().lower()
-        if component != "qwen3-asr":
+        if component not in ("qwen3-asr", "hymt2"):
             return web.json_response(
-                {"status": "error", "message": "Hy-MT2 must be installed as a local GGUF file"},
-                status=400,
+                {"status": "error", "message": f"Unknown component: {component}"}, status=400,
             )
+        from local_inference.model_manager import (
+            DownloadBusy, DownloadCancelled, get_all_local_models_status, run_download,
+        )
         try:
-            from local_inference.model_manager import get_all_local_models_status, prepare_engine
-            await asyncio.to_thread(prepare_engine, "qwen3-asr")
+            await asyncio.to_thread(run_download, component)
             return web.json_response({"status": "ok", "models": get_all_local_models_status()})
+        except DownloadBusy:
+            return web.json_response(
+                {"status": "error", "code": "download_busy", "message": "Another model download is running"},
+                status=409,
+            )
+        except DownloadCancelled:
+            return web.json_response(
+                {"status": "error", "code": "download_cancelled", "message": "Download cancelled"},
+                status=409,
+            )
         except Exception as error:
             return web.json_response(
                 {"status": "error", "message": str(error)}, status=500
             )
+
+    async def local_inference_download_progress_handler(self, request):
+        from local_inference.model_manager import get_download_progress
+        return web.json_response({"status": "ok", "download": get_download_progress()})
+
+    async def local_inference_download_cancel_handler(self, request):
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        from local_inference.model_manager import cancel_download
+        return web.json_response({"status": "ok", "cancelled": cancel_download()})
 
     # ===================== Subtitle-server relay (hosted) =====================
 
@@ -1170,6 +1191,8 @@ class WebServer:
 
     @staticmethod
     def _active_relay_model(provider):
+        if provider == "local":
+            return "local"
         return (
             f"models/{config.GEMINI_MODEL}"
             if provider == "gemini" else "stt-rt-v5"
@@ -1189,7 +1212,7 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
 
         provider = request.query.get("provider", config.TRANSLATION_PROVIDER)
-        if provider not in ("soniox", "gemini"):
+        if provider not in ("soniox", "gemini", "local"):
             provider = config.TRANSLATION_PROVIDER
         model = self._active_relay_model(provider)
 
@@ -1201,7 +1224,9 @@ class WebServer:
 
         prepaid = summary.get("prepaid_balance")
         subscriptions = []
-        price_per_second = 1.0
+        # Local recognition never bills per second, even against a server that
+        # does not list the local provider.
+        price_per_second = 0.0 if provider == "local" else 1.0
         free = None
         for api in summary.get("apis", []):
             if api.get("name") == provider or api.get("provider") == provider:
@@ -2580,6 +2605,8 @@ class WebServer:
         app.router.add_get('/local-inference/status', self.local_inference_status_handler)
         app.router.add_post('/local-inference/probe', self.local_inference_probe_handler)
         app.router.add_post('/local-inference/download', self.local_inference_download_handler)
+        app.router.add_get('/local-inference/download/progress', self.local_inference_download_progress_handler)
+        app.router.add_post('/local-inference/download/cancel', self.local_inference_download_cancel_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
         app.router.add_post('/account/login-code', self.account_login_code_handler)
         app.router.add_post('/account/login-begin', self.account_login_begin_handler)

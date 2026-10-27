@@ -312,6 +312,56 @@ describe('SettingsPanel provider and mode drafts', () => {
     });
 });
 
+describe('SettingsPanel local model confirmation', () => {
+    function switchToLocal(page) {
+        const local = page.document.querySelector('input[name="provider"][value="local"]');
+        local.checked = true;
+        local.dispatchEvent(new page.dom.window.Event('change', { bubbles: true }));
+    }
+
+    function checkedProvider(page) {
+        return page.document.querySelector('input[name="provider"]:checked').value;
+    }
+
+    it('switches the radio back when the local download is declined', async () => {
+        const confirmLocalProvider = vi.fn().mockResolvedValue({ ok: false });
+        const page = setup({ actions: { confirmLocalProvider } });
+        page.controller.init();
+        page.controller.populate();
+        switchToLocal(page);
+        await vi.waitFor(() => expect(checkedProvider(page)).toBe('soniox'));
+        expect(confirmLocalProvider).toHaveBeenCalledWith({ previousProvider: 'provider_soniox' });
+        expect(page.document.getElementById('localInferenceSection').hidden).toBe(true);
+        page.dom.window.close();
+    });
+
+    it('keeps local selected once the models are there', async () => {
+        const confirmLocalProvider = vi.fn().mockResolvedValue({ ok: true, skippedTranslation: false });
+        const page = setup({ actions: { confirmLocalProvider } });
+        page.controller.init();
+        page.controller.populate();
+        switchToLocal(page);
+        await vi.waitFor(() => expect(confirmLocalProvider).toHaveBeenCalledOnce());
+        await Promise.resolve();
+        expect(checkedProvider(page)).toBe('local');
+        expect(page.document.getElementById('localInferenceSection').hidden).toBe(false);
+        page.dom.window.close();
+    });
+
+    it('does not ask when the models run on a remote inference server', async () => {
+        const confirmLocalProvider = vi.fn().mockResolvedValue({ ok: false });
+        const page = setup({ actions: { confirmLocalProvider } });
+        page.controller.init();
+        page.controller.populate();
+        page.document.getElementById('localInferenceBackend').value = 'remote';
+        switchToLocal(page);
+        await Promise.resolve();
+        expect(confirmLocalProvider).not.toHaveBeenCalled();
+        expect(checkedProvider(page)).toBe('local');
+        page.dom.window.close();
+    });
+});
+
 describe('SettingsPanel pricing and lifecycle', () => {
     it('owns save progress, error text, and provider-field refresh rendering', () => {
         const page = setup();

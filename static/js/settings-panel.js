@@ -37,6 +37,10 @@
         let localStatusLoaded = false;
         let localDraftDirty = false;
         let lastLocalConfig = {};
+        // Provider the panel showed before the current radio change; a
+        // declined local-model download switches the radio back to it.
+        let lastProvider = null;
+        let providerChangeSeq = 0;
 
         function state() {
             const value = getState();
@@ -321,6 +325,9 @@
                 if (elements.localAsrDownloadButton) {
                     elements.localAsrDownloadButton.hidden = !!asr.ready;
                 }
+                if (elements.localTranslationDownloadButton) {
+                    elements.localTranslationDownloadButton.hidden = !!translation.model_ready;
+                }
                 const options = localDeviceOptions(data.devices);
                 lastLocalConfig = data.config || {};
                 const localConfig = { ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) };
@@ -374,8 +381,7 @@
             }
         }
 
-        async function downloadLocalAsr() {
-            const button = elements.localAsrDownloadButton;
+        async function downloadLocalComponent(component, button, labelKey) {
             if (button) {
                 button.disabled = true;
                 button.textContent = t('local_model_downloading');
@@ -385,7 +391,7 @@
                 const response = await fetchRef('/local-inference/download', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ component: 'qwen3-asr' }),
+                    body: JSON.stringify({ component }),
                 });
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(data.message || 'download failed');
@@ -395,9 +401,17 @@
             } finally {
                 if (button) {
                     button.disabled = false;
-                    button.textContent = t('local_asr_download');
+                    button.textContent = t(labelKey);
                 }
             }
+        }
+
+        function downloadLocalAsr() {
+            return downloadLocalComponent('qwen3-asr', elements.localAsrDownloadButton, 'local_asr_download');
+        }
+
+        function downloadLocalTranslation() {
+            return downloadLocalComponent('hymt2', elements.localTranslationDownloadButton, 'local_hymt_download');
         }
 
         function setMode(mode) {
@@ -408,7 +422,6 @@
         }
 
         function getMode() {
-            if (getSelectedProvider() === 'local') return 'direct';
             const current = state();
             if (!current.relayAvailable) return 'direct';
             if (elements.form) {
@@ -453,14 +466,16 @@
         function applyModeVisibility(mode) {
             const current = state();
             const local = getSelectedProvider() === 'local';
-            if (elements.modeSection) elements.modeSection.hidden = local || !current.relayAvailable;
-            const relay = !local && mode === 'relay';
+            // Local recognition runs in both modes; hosted mode adds the hosted
+            // LLM and the account, so the switch stays visible for it too.
+            if (elements.modeSection) elements.modeSection.hidden = !current.relayAvailable;
+            const relay = mode === 'relay';
             if (elements.accountSection) elements.accountSection.hidden = !relay;
             if (elements.apiKeySection) elements.apiKeySection.hidden = relay || local;
             if (elements.localInferenceSection) elements.localInferenceSection.hidden = !local;
             if (local) updateLocalBackendVisibility();
             if (elements.modeDescription) {
-                elements.modeDescription.textContent = local ? '' : t(
+                elements.modeDescription.textContent = t(
                     relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc'
                 );
             }
@@ -473,6 +488,7 @@
             applyLocalInferenceConfig({ ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) });
             const provider = getDesiredProvider();
             setProvider(provider);
+            lastProvider = provider;
             const mode = current.relayAvailable && current.connectionMode === 'relay'
                 ? 'relay'
                 : 'direct';
@@ -524,6 +540,7 @@
             setText('localRemoteTimeoutLabel', 'local_remote_timeout');
             setText('localRemoteProbeButton', 'local_remote_probe');
             setText('localAsrDownloadButton', 'local_asr_download');
+            setText('localTranslationDownloadButton', 'local_hymt_download');
             setText('localAsrDeviceLabel', 'local_asr_device');
             setText('localEncoderDeviceLabel', 'local_encoder_device');
             setText('localTranslationDeviceLabel', 'local_translation_device');
@@ -615,9 +632,27 @@
             updateSonioxRegion(provider);
         }
 
-        function handleProviderChange() {
+        async function handleProviderChange() {
             const provider = getSelectedProvider();
+            const previous = lastProvider;
+            const seq = ++providerChangeSeq;
             updateProviderFields(provider);
+            if (provider === 'local' && previous && previous !== 'local'
+                && getLocalBackend() === 'local'
+                && typeof actions.confirmLocalProvider === 'function') {
+                const result = await actions.confirmLocalProvider({
+                    previousProvider: getProviderDisplayName(previous),
+                });
+                if (seq !== providerChangeSeq) return;
+                if (!result || !result.ok) {
+                    setProvider(previous);
+                    updateProviderFields(previous);
+                    return;
+                }
+                localStatusLoaded = false;
+                void refreshLocalInferenceStatus();
+            }
+            lastProvider = provider;
             if (state().canRefreshBalance) {
                 void call('fetchBalance', { provider, force: true });
             }
@@ -656,6 +691,7 @@
                 });
             }
             bind(elements.localAsrDownloadButton, 'click', downloadLocalAsr);
+            bind(elements.localTranslationDownloadButton, 'click', downloadLocalTranslation);
             bind(elements.localRemoteProbeButton, 'click', probeRemoteInference);
             bind(elements.localInferenceBackend, 'change', () => {
                 localDraftDirty = true;

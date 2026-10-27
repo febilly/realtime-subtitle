@@ -6,10 +6,14 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.request import Request, urlopen, urlretrieve
+from urllib.error import HTTPError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from . import LOCAL_INFERENCE_DISPLAY_NAMES, get_common_runtime_issues, get_engine_runtime_issues
 
@@ -51,6 +55,16 @@ SILERO_VAD_ONNX_URL = (
     f"src/silero_vad/data/{SILERO_VAD_ONNX_NAME}"
 )
 _MODEL_SIZE_BYTES = {"silero-vad": 1_300_000, "qwen3-asr": 1_500_000_000, "hymt2": 1_100_000_000}
+# Rough VRAM while loaded (weights + KV cache + runtime), shown before download.
+_MODEL_VRAM_BYTES = {"qwen3-asr": 2_000_000_000, "hymt2": 1_500_000_000}
+
+HYMT2_REPO_ID = "febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF"
+# The repo also carries an .imatrix.gguf (quantization calibration data);
+# inference needs only this weight file.
+HYMT2_MODEL_FILE = "Hy-MT2-1.8B-StreamRevise-v4-Q4_K_M.gguf"
+HF_ENDPOINT_OFFICIAL = "https://huggingface.co"
+# Tried in order when huggingface.co is unreachable; same resolve/ layout.
+HF_ENDPOINT_MIRRORS = ("https://hf-mirror.com",)
 
 
 def _default_models_dir() -> Path:
@@ -177,6 +191,12 @@ def prepare_qwen_llama_runtime_env() -> None:
     os.environ["YAKUTAN_QWEN_LLAMA_BIN"] = str(qwen_llama_bin_dir().resolve())
     os.environ["GGML_VK_ENABLE_MEMORY_PRIORITY"] = "1"
     os.environ.pop("GGML_VK_ALLOW_SYSMEM_FALLBACK", None)
+    # ggml-vulkan puts weights in host-visible VRAM (the ReBAR window) when it
+    # can. With ASR and Hy-MT2 in one process the second model then lands in
+    # shared GPU memory, even with VRAM free and memory priority on: measured
+    # 3080, second-loaded model 107ms -> 365ms (ASR) / 46ms -> 285ms (Hy-MT2).
+    # Plain device-local memory keeps both resident.
+    os.environ["GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM"] = "1"
 
 
 def ensure_vendor_sources(engine: str) -> Path | None:
@@ -288,7 +308,9 @@ def get_hymt2_model_path() -> Path | None:
     for root in model_roots():
         model_dir = root / HYMT2_DIR_NAME
         if model_dir.is_dir():
-            files = sorted(model_dir.glob("*.gguf"))
+            if (model_dir / HYMT2_MODEL_FILE).is_file():
+                return model_dir / HYMT2_MODEL_FILE
+            files = sorted(path for path in model_dir.glob("*.gguf") if ".imatrix." not in path.name)
             if files:
                 return files[0]
     return None
@@ -298,23 +320,213 @@ def is_hymt2_cached() -> bool:
     return get_hymt2_model_path() is not None and _runtime_ready(qwen_llama_bin_dir())
 
 
-def _download_file(url: str, dest: Path, description: str) -> None:
+class DownloadCancelled(RuntimeError):
+    """The user cancelled a model download; partial files are kept for resume."""
+
+
+class DownloadBusy(RuntimeError):
+    """Another model download is already running."""
+
+
+_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+_PROGRESS_INTERVAL_SEC = 0.5
+# Check the file header after download: an error page or a truncated file must
+# fail here, not later when llama.cpp tries to load it.
+_FILE_MAGIC = {".gguf": b"GGUF", ".zip": b"PK"}
+
+_download_lock = threading.Lock()
+_download_cancel = threading.Event()
+_download_state_lock = threading.Lock()
+_download_state: dict = {
+    "active": False, "component": None, "stage": None,
+    "done": 0, "total": None, "error": None, "cancelled": False,
+}
+
+
+def get_download_progress() -> dict:
+    with _download_state_lock:
+        return dict(_download_state)
+
+
+def _set_download_state(**values) -> None:
+    with _download_state_lock:
+        _download_state.update(values)
+
+
+def cancel_download() -> bool:
+    """Ask the running download to stop at its next chunk."""
+    if not _download_lock.locked():
+        return False
+    _download_cancel.set()
+    return True
+
+
+def _report(progress_callback, stage: str, done: int, total: int | None) -> None:
+    """progress_callback(stage, done_bytes, total_bytes_or_None)."""
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(stage, done, total)
+    except Exception:
+        # Progress is display only; it must never break the download.
+        logger.debug("Download progress callback failed", exc_info=True)
+
+
+def _hf_endpoints() -> list[str]:
+    """HuggingFace endpoints in try order: env override > official > mirrors."""
+    endpoints: list[str] = []
+    for value in (
+        os.environ.get("REALTIME_SUBTITLE_HF_ENDPOINT"),
+        os.environ.get("HF_ENDPOINT"),
+        HF_ENDPOINT_OFFICIAL,
+        *HF_ENDPOINT_MIRRORS,
+    ):
+        endpoint = (value or "").strip().rstrip("/")
+        if endpoint and endpoint not in endpoints:
+            endpoints.append(endpoint)
+    return endpoints
+
+
+def _hf_file_url(endpoint: str, repo_id: str, filename: str, revision: str = "main") -> str:
+    return f"{endpoint}/{repo_id}/resolve/{revision}/{filename}"
+
+
+def _hf_endpoint_reachable(url: str, timeout: float = 8.0) -> bool:
+    """Fetch one byte: proves both the site and the CDN it redirects to
+    (in mainland China often only the latter is blocked)."""
+    try:
+        request = Request(url, headers={"User-Agent": "RealtimeSubtitle", "Range": "bytes=0-0"})
+        with urlopen(request, timeout=timeout) as response:
+            response.read(1)
+        return True
+    except Exception as exc:
+        logger.info("HuggingFace endpoint probe failed %s: %s", url, exc)
+        return False
+
+
+def _ordered_hf_endpoints(repo_id: str, filename: str) -> list[str]:
+    """Move the first reachable endpoint to the front; unreachable ones stay
+    at the end as a last resort (the probe itself can misjudge)."""
+    endpoints = _hf_endpoints()
+    unreachable: list[str] = []
+    for index, endpoint in enumerate(endpoints):
+        remaining = endpoints[index + 1:]
+        if not remaining:
+            # Last candidate: no point spending another probe timeout on it.
+            return [endpoint, *unreachable]
+        if _hf_endpoint_reachable(_hf_file_url(endpoint, repo_id, filename)):
+            return [endpoint, *remaining, *unreachable]
+        logger.warning("%s unreachable, falling back", endpoint)
+        unreachable.append(endpoint)
+    return unreachable
+
+
+def _parse_content_range_total(headers) -> int | None:
+    """Total length from Content-Range ("bytes 0-3/1069288640" / "bytes */1069288640")."""
+    value = headers.get("Content-Range") if headers else None
+    if not value or "/" not in value:
+        return None
+    total = value.rsplit("/", 1)[1].strip()
+    return int(total) if total.isdigit() else None
+
+
+def _verify_download(path: Path, expected_bytes: int | None, magic: bytes | None) -> None:
+    actual = path.stat().st_size
+    if expected_bytes is not None and actual != expected_bytes:
+        raise OSError(f"size mismatch: expected {expected_bytes} bytes, got {actual}")
+    if magic:
+        with open(path, "rb") as handle:
+            if handle.read(len(magic)) != magic:
+                raise OSError("unexpected file header (error page or blocked by a gateway?)")
+
+
+def _verify_or_discard(part: Path, expected_bytes: int | None, magic: bytes | None) -> None:
+    try:
+        _verify_download(part, expected_bytes, magic)
+    except OSError:
+        # Corrupt content cannot be resumed; delete so the next try starts over.
+        part.unlink(missing_ok=True)
+        raise
+
+
+def _stream_download(url: str, dest: Path, stage: str, progress_callback=None,
+                     timeout: float = 30.0) -> None:
+    """Download to dest.part (resumable), verify, then rename to dest.
+
+    A cancelled or interrupted download leaves dest.part behind; the next call
+    (also from a different mirror) resumes it. Only a failed check deletes it.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    logger.info("Downloading %s", description)
-    urlretrieve(url, str(dest))
+    part = dest.with_name(dest.name + ".part")
+    done = part.stat().st_size if part.is_file() else 0
+    magic = _FILE_MAGIC.get(dest.suffix.lower())
+
+    headers = {"User-Agent": "RealtimeSubtitle"}
+    if done:
+        headers["Range"] = f"bytes={done}-"
+        logger.info("Resuming %s at %.1f MB", stage, done / (1024 * 1024))
+
+    try:
+        response = urlopen(Request(url, headers=headers), timeout=timeout)
+    except HTTPError as exc:
+        if exc.code == 416 and done:
+            # Range past the end: .part is either complete or longer than the
+            # remote (corrupt). The 416 Content-Range "bytes */<total>" tells which.
+            _verify_or_discard(part, _parse_content_range_total(exc.headers), magic)
+            os.replace(part, dest)
+            _report(progress_callback, stage, done, done)
+            return
+        raise
+
+    with response:
+        status = getattr(response, "status", None) or response.getcode()
+        if done and status != 206:
+            logger.info("%s: server ignored the range request, restarting", stage)
+            done = 0
+        if (response.headers.get_content_type() or "") == "text/html":
+            # Binary weights are never served as HTML: this is a portal/gateway page.
+            raise OSError(f"{stage}: got an HTML page (blocked by a network gateway?)")
+        length = response.headers.get("Content-Length")
+        total = done + int(length) if length and length.isdigit() else None
+
+        _report(progress_callback, stage, done, total)
+        last_report = time.monotonic()
+        with open(part, "ab" if done else "wb") as handle:
+            while True:
+                if _download_cancel.is_set():
+                    raise DownloadCancelled(stage)
+                chunk = response.read(_DOWNLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                handle.write(chunk)
+                done += len(chunk)
+                now = time.monotonic()
+                if now - last_report >= _PROGRESS_INTERVAL_SEC:
+                    last_report = now
+                    _report(progress_callback, stage, done, total)
+
+    _report(progress_callback, stage, done, total)
+    _verify_or_discard(part, total, magic)
+    os.replace(part, dest)
 
 
-def download_silero() -> None:
+def _download_file(url: str, dest: Path, stage: str, progress_callback=None) -> None:
+    logger.info("Downloading %s", stage)
+    _stream_download(url, dest, stage, progress_callback)
+
+
+def download_silero(progress_callback=None) -> None:
     if is_silero_cached():
         return
     _download_file(
         SILERO_VAD_ONNX_URL,
         MODELS_DIR / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME,
-        "Silero VAD",
+        "silero",
+        progress_callback,
     )
 
 
-def _download_llama_runtime(destination: Path) -> None:
+def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
     if _runtime_ready(destination):
         return
     if sys.platform != "win32":
@@ -326,8 +538,10 @@ def _download_llama_runtime(destination: Path) -> None:
             tag = json.loads(response.read())["tag_name"]
     except Exception:
         tag = "b8391"
-    archive_path = MODELS_DIR / "llama-cpp-vulkan.zip"
-    _download_file(LLAMA_CPP_DLL_URL_TEMPLATE.format(tag=tag), archive_path, f"llama.cpp Vulkan {tag}")
+    archive_path = MODELS_DIR / f"llama-cpp-vulkan-{tag}.zip"
+    _download_file(
+        LLAMA_CPP_DLL_URL_TEMPLATE.format(tag=tag), archive_path, "llama-runtime", progress_callback,
+    )
     with zipfile.ZipFile(archive_path, "r") as archive:
         for member in archive.namelist():
             name = os.path.basename(member)
@@ -339,13 +553,14 @@ def _download_llama_runtime(destination: Path) -> None:
     archive_path.unlink(missing_ok=True)
 
 
-def download_qwen3_asr() -> None:
+def download_qwen3_asr(progress_callback=None) -> None:
     ensure_vendor_sources("qwen3-asr")
     model_dir = MODELS_DIR / QWEN3_ASR_DIR_NAME
     model_dir.mkdir(parents=True, exist_ok=True)
     if not _qwen_model_ready(model_dir):
         archive_path = MODELS_DIR / "qwen3-asr-1.7b-gguf.zip"
-        _download_file(QWEN3_ASR_MODEL_URL, archive_path, "Qwen3-ASR 1.7B")
+        _download_file(QWEN3_ASR_MODEL_URL, archive_path, "qwen3-asr", progress_callback)
+        _report(progress_callback, "qwen3-asr-extract", 0, None)
         with zipfile.ZipFile(archive_path, "r") as archive:
             for member in archive.namelist():
                 name = os.path.basename(member)
@@ -353,15 +568,86 @@ def download_qwen3_asr() -> None:
                     with archive.open(member) as source, open(model_dir / name, "wb") as target:
                         shutil.copyfileobj(source, target)
         archive_path.unlink(missing_ok=True)
-    _download_llama_runtime(MODELS_DIR / QWEN_LLAMA_VULKAN_BIN_DIR_NAME)
+    _ensure_llama_runtime(progress_callback)
 
 
-def prepare_engine(engine: str) -> None:
+def _ensure_llama_runtime(progress_callback=None) -> None:
+    # Qwen3-ASR and Hy-MT2 share one llama.cpp runtime; whichever is
+    # downloaded first brings it along.
+    if not _runtime_ready(qwen_llama_bin_dir()):
+        _download_llama_runtime(MODELS_DIR / QWEN_LLAMA_VULKAN_BIN_DIR_NAME, progress_callback)
+
+
+def prepare_engine(engine: str, progress_callback=None) -> None:
     if engine != "qwen3-asr":
         raise ValueError(f"Unknown local ASR engine: {engine}")
-    download_silero()
+    download_silero(progress_callback)
     if not is_qwen3_asr_ready():
-        download_qwen3_asr()
+        download_qwen3_asr(progress_callback)
+
+
+def download_hymt2(progress_callback=None) -> None:
+    """Download the Hy-MT2 GGUF; falls back to mirrors when huggingface.co is unreachable."""
+    if get_hymt2_model_path() is None:
+        dest = MODELS_DIR / HYMT2_DIR_NAME / HYMT2_MODEL_FILE
+        failures: list[str] = []
+        for endpoint in _ordered_hf_endpoints(HYMT2_REPO_ID, HYMT2_MODEL_FILE):
+            host = urlparse(endpoint).netloc or endpoint
+            try:
+                logger.info("Downloading Hy-MT2 (%s) from %s", HYMT2_MODEL_FILE, host)
+                _stream_download(
+                    _hf_file_url(endpoint, HYMT2_REPO_ID, HYMT2_MODEL_FILE),
+                    dest, "hymt2", progress_callback,
+                )
+                break
+            except DownloadCancelled:
+                raise
+            except Exception as exc:
+                logger.warning("Hy-MT2 download from %s failed: %s", host, exc)
+                failures.append(f"{host}: {exc}")
+        else:
+            raise RuntimeError("Hy-MT2 download failed (" + "; ".join(failures) + ")")
+    _ensure_llama_runtime(progress_callback)
+
+
+_DOWNLOADERS = {
+    "qwen3-asr": lambda progress: prepare_engine("qwen3-asr", progress),
+    "hymt2": download_hymt2,
+}
+
+
+def run_download(component: str) -> None:
+    """Run one component download, publishing progress for the UI.
+
+    Only one download runs at a time; raises DownloadBusy otherwise.
+    """
+    downloader = _DOWNLOADERS.get(component)
+    if downloader is None:
+        raise ValueError(f"Unknown local model component: {component}")
+    if not _download_lock.acquire(blocking=False):
+        raise DownloadBusy(get_download_progress().get("component") or "")
+    try:
+        _download_cancel.clear()
+        _set_download_state(
+            active=True, component=component, stage=None, done=0, total=None,
+            error=None, cancelled=False,
+        )
+
+        def progress(stage, done, total):
+            _set_download_state(stage=stage, done=int(done), total=total)
+
+        try:
+            downloader(progress)
+        except DownloadCancelled:
+            _set_download_state(cancelled=True)
+            raise
+        except Exception as exc:
+            _set_download_state(error=str(exc))
+            raise
+    finally:
+        _set_download_state(active=False)
+        _download_cancel.clear()
+        _download_lock.release()
 
 
 def get_engine_status(engine: str) -> dict:
@@ -381,6 +667,7 @@ def get_engine_status(engine: str) -> dict:
         "vad_path": str(silero_onnx_path()),
         "runtime_issues": get_engine_runtime_issues(engine),
         "estimated_bytes": _MODEL_SIZE_BYTES[engine],
+        "estimated_vram_bytes": _MODEL_VRAM_BYTES[engine],
     }
 
 
@@ -397,6 +684,7 @@ def get_hymt2_status() -> dict:
         "runtime_issues": get_common_runtime_issues(),
         "install_dir": str((MODELS_DIR / HYMT2_DIR_NAME).resolve()),
         "estimated_bytes": _MODEL_SIZE_BYTES["hymt2"],
+        "estimated_vram_bytes": _MODEL_VRAM_BYTES["hymt2"],
     }
 
 

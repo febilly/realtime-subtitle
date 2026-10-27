@@ -1,3 +1,4 @@
 # Optional A/B timestamp sidecar. The production default uses Qwen prefix
 # search and does not need this package or the 600M Nemotron model.
+# Dev-only: the packaged exe does not bundle it (see RealtimeSubtitle.spec).
 sherpa-onnx>=1.13.3,<2

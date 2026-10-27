@@ -948,6 +948,17 @@ body.dark-theme .form-field select {
     color: #e5e7eb;
 }
 
+/* Native <select> popups are drawn by the browser: without a dark color
+   scheme they open white, and the light option text above becomes unreadable. */
+body.dark-theme .form-field select {
+    color-scheme: dark;
+}
+
+body.dark-theme .form-field select option {
+    background: #2b2b3a;
+    color: #e5e7eb;
+}
+
 .form-field input::placeholder {
     color: #9ca3af;
     opacity: 1;
@@ -1021,6 +1032,7 @@ body.dark-theme .checkbox-field {
     display: flex;
     flex-direction: column;
     gap: 7px;
+    min-width: 0;
     padding: 10px;
     border: 1px solid rgba(0, 0, 0, 0.10);
     border-radius: 10px;
@@ -1055,6 +1067,12 @@ body.dark-theme .local-model-card {
 
 .local-model-card .secondary-button {
     align-self: flex-start;
+}
+
+/* Model paths have no spaces, so let them break anywhere instead of overflowing the card. */
+.local-model-card .field-hint {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 #loginPanel .settings-form {
@@ -1259,6 +1277,69 @@ body.dark-theme .confirm-dialog {
     display: flex;
     justify-content: flex-end;
     gap: 10px;
+}
+
+.local-model-dialog {
+    width: min(460px, calc(100vw - 32px));
+}
+
+.local-model-dialog-title {
+    margin: 0 0 10px;
+    font-size: 16px;
+}
+
+.local-model-dialog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 18px;
+}
+
+.local-model-dialog-body .confirm-message,
+.local-model-dialog-body .field-hint {
+    margin: 0;
+}
+
+.local-model-dialog-row {
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.04);
+}
+
+body.dark-theme .local-model-dialog-row {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.local-model-dialog-row-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 14px;
+}
+
+.local-model-dialog-badge {
+    font-size: 12px;
+    opacity: 0.7;
+}
+
+.local-model-dialog-actions {
+    flex-wrap: wrap;
+}
+
+.local-model-dialog-progress {
+    margin: 0;
+    font-size: 14px;
+}
+
+.local-model-dialog-bar {
+    width: 100%;
+}
+
+.local-model-dialog-error {
+    margin: 0;
+    font-size: 14px;
+    color: #dc2626;
+    word-break: break-word;
 }
 
 /*

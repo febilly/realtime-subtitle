@@ -151,7 +151,8 @@
             }
             const modeMismatch = backendMode !== 'relay';
             const needTokenPush = token && !backendLoggedIn;
-            if (!providerMismatch && !modeMismatch && !needTokenPush) {
+            const needLocalPush = desiredProvider === 'local' && settings.localConfig;
+            if (!providerMismatch && !modeMismatch && !needTokenPush && !needLocalPush) {
                 return null;
             }
             if (pushedOverrideBootId === backendBootId) {
@@ -165,6 +166,7 @@
                     mode: 'relay',
                     token,
                     region: desiredRegion,
+                    ...(needLocalPush ? { localConfig: settings.localConfig } : {}),
                 },
             };
         }

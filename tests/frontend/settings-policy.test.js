@@ -144,6 +144,19 @@ describe('settings policy provider synchronization', () => {
         expect(buildProviderSyncPlan(state)).toMatchObject({ provider: 'local', options: { localConfig } });
         expect(buildProviderSyncPlan({ ...state, pushedOverrideBootId: 'new-boot' })).toBeNull();
     });
+
+    it('restores local recognition in hosted mode with its config and the account token', () => {
+        const localConfig = { backend: 'local', asr_device: 'auto' };
+        const state = { translationProvider: 'local', connectionMode: 'relay', backendMode: 'relay',
+            backendLoggedIn: true, serverSettings: { token: 'ss_saved' },
+            providerSettings: { providerOverride: 'local', keys: {}, localConfig },
+            backendBootId: 'new-boot', pushedOverrideBootId: 'old-boot' };
+        expect(buildProviderSyncPlan(state)).toMatchObject({
+            provider: 'local',
+            options: { mode: 'relay', token: 'ss_saved', localConfig },
+        });
+        expect(buildProviderSyncPlan({ ...state, pushedOverrideBootId: 'new-boot' })).toBeNull();
+    });
     const directBaseline = {
         lockManualControls: false,
         providerSettings: { providerOverride: null, keys: {} },

@@ -64,6 +64,9 @@ class LocalSubtitlePipeline:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-translation")
         self._working = False
         self._closed = False
+        # False in 准确 mode: rows still await a (cloud LLM) translation, but
+        # no local Hy-MT2 runs and per-row translators are released.
+        self._machine_translation = True
         self._base_order = 0
         self._order_origin = time.time()
 
@@ -180,6 +183,17 @@ class LocalSubtitlePipeline:
                 })
             self._start_worker()
 
+    def set_machine_translation(self, enabled: bool) -> None:
+        """Toggle local Hy-MT2 for later revisions; disabling also releases
+        every per-row translator once the in-flight one returns."""
+        with self._lock:
+            self._machine_translation = bool(enabled)
+            if self._closed or enabled or self._working:
+                # A running worker cleans up at its next loop iteration.
+                return
+            self._working = True
+            self._executor.submit(self._drain)
+
     def _queue(self, row: _Row) -> None:
         self._pending[row.id] = None
 
@@ -209,11 +223,12 @@ class LocalSubtitlePipeline:
                 source_revision, epoch = row.source_revision, row.epoch
                 source, source_lang, target_lang = row.source, row.source_language, row.target_language
                 final, requires = row.is_final, row.requires_translation
+                machine_translation = self._machine_translation
                 context = self._context(row)
             translated = ""
             error = None
             try:
-                if requires:
+                if requires and machine_translation:
                     translator = self._translators.get(row_id)
                     if translator is None:
                         translator = self._make_translator()
@@ -262,7 +277,7 @@ class LocalSubtitlePipeline:
 
     def _cleanup_translators(self) -> None:
         for row_id in list(self._translators):
-            if row_id not in self._rows:
+            if row_id not in self._rows or not self._machine_translation:
                 translator = self._translators.pop(row_id)
                 try:
                     translator.close()

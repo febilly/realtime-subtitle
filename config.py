@@ -1341,7 +1341,7 @@ def set_relay_token(token) -> str:
 def _relay_provider(provider: str | None = None) -> str:
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
     p = str(p).strip().lower()
-    if p not in ("soniox", "gemini"):
+    if p not in ("soniox", "gemini", "local"):
         p = "soniox"
     return p
 

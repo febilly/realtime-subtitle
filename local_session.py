@@ -5,6 +5,7 @@ import asyncio
 import logging
 import threading
 import time
+import uuid
 from typing import Optional
 
 import config
@@ -13,6 +14,7 @@ import soniox_session
 from local_inference.model_manager import get_all_local_models_status
 from local_inference.recognizer import LocalQwenRecognizer
 from local_inference.subtitle_pipeline import LocalSubtitlePipeline
+from local_relay import LocalRelayLink
 from soniox_session import SonioxSession
 from streaming_translation import HyMT2API
 
@@ -46,21 +48,107 @@ class LocalInferenceSession(SonioxSession):
         self._server_url = getattr(config, "LOCAL_INFERENCE_SERVER_URL", "")
         self._remote_timeout = getattr(config, "LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS", 60)
         self._translation_device = config.LOCAL_TRANSLATION_DEVICE
+        # Hy-MT2 is this provider's built-in translation: 快速 shows it, 混合
+        # refines it with the LLM at sentence end, 准确 skips it entirely and
+        # translates with the LLM only (_suppress_soniox_translation).
         self._llm_refine_mode = "off"
         self._suppress_soniox_translation = False
         self._segment_mode = "punctuation"
+        self._mt_lock = threading.Lock()
+        self._mt_generation = 0
+        # Hosted mode only: LLM-only relay session for the whole run (see
+        # local_relay). Carries hosted LLM frames and session telemetry.
+        self._relay_link: LocalRelayLink | None = None
 
-    def get_translation_mode(self) -> str:
-        return "fast"
+    def _machine_translation_wanted(self) -> bool:
+        mode = str(self.translation or "one_way").strip().lower()
+        return mode != "none" and not self._suppress_soniox_translation
 
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
-        # Hy-MT2 is the provider's built-in fast path; cloud LLM modes do not
-        # apply to an offline provider.
-        return True, "fast", False
+        # Same mapping as soniox; the local switch never needs a restart because
+        # Hy-MT2 is loaded or released in place below.
+        ok, normalized, _needs_restart = super().set_translation_mode(mode)
+        if ok:
+            self._apply_machine_translation()
+        return ok, normalized, False
 
-    def set_llm_refine_mode(self, mode: str) -> tuple[bool, str]:
-        self._llm_refine_mode = "off"
-        return True, "off"
+    def _apply_machine_translation(self) -> None:
+        """Load or release Hy-MT2 to match the current mode while running.
+
+        Leaving 快速/混合 releases it at once: users pick 准确 to free VRAM, so
+        a delayed unload would look like the switch did nothing.
+        """
+        pipeline = self._subtitle_pipeline
+        if pipeline is None or self._local_stop_event is None:
+            return
+        wanted = self._machine_translation_wanted()
+        pipeline.set_machine_translation(wanted)
+        with self._mt_lock:
+            self._mt_generation += 1
+            generation = self._mt_generation
+            translator = self._translator
+            if not wanted:
+                self._translator = None
+        if not wanted:
+            if translator is not None:
+                translator.close()
+            return
+        if translator is not None:
+            return
+        threading.Thread(
+            target=self._load_machine_translation, args=(generation,),
+            name="LocalTranslationLoad", daemon=True,
+        ).start()
+
+    def _load_machine_translation(self, generation: int) -> None:
+        try:
+            self._check_models(True)
+            translator = self._make_row_translator()
+        except Exception as error:
+            self._broadcast_local_error(error)
+            return
+        with self._mt_lock:
+            current = generation == self._mt_generation and self._local_stop_event is not None
+            if current:
+                self._translator = translator
+        if not current:
+            # The mode changed again (or the run stopped) while loading.
+            translator.close()
+
+    def _start_relay_link(self) -> None:
+        if not config.RELAY_MODE or not config.RELAY_TOKEN or self._relay_link is not None:
+            return
+        self.relay_run_id = uuid.uuid4().hex
+        link = LocalRelayLink(self._hosted_llm.handle_frame, self._on_relay_link_state, self.relay_run_id)
+        self._relay_link = link
+        link.start()
+
+    def _stop_relay_link(self) -> None:
+        link, self._relay_link = self._relay_link, None
+        if link is not None:
+            link.stop()
+
+    def _on_relay_link_state(self, connected: bool, terminal_tag: str | None) -> None:
+        loop = self.loop
+        if loop is None or loop.is_closed():
+            return
+        self._notify_relay_session(loop, "session_connected" if connected else "session_disconnected")
+        if terminal_tag:
+            # Recognition keeps running; only hosted LLM translation is lost.
+            self._broadcast_local_error(f"托管服务器连接已断开（{terminal_tag}），LLM 翻译不可用")
+
+    def _hosted_llm_send(self, text: str) -> None:
+        link = self._relay_link
+        if link is None:
+            raise RuntimeError("hosted relay is not connected")
+        link.send(text)
+
+    def _on_hosted_llm_disabled(self, reason: str) -> None:
+        # Falling back to 快速 means Hy-MT2 again; it loads in place, so the
+        # UI must not be told to restart (that would reload the ASR model).
+        self._suppress_soniox_translation = False
+        super()._on_hosted_llm_disabled(reason)
+        self._apply_machine_translation()
 
     def _broadcast_local_error(self, error: Exception | str) -> None:
         message = str(error)
@@ -152,9 +240,9 @@ class LocalInferenceSession(SonioxSession):
         if translation_enabled and not status["translation"]["hymt2"]["ready"]:
             hymt = status["translation"]["hymt2"]
             issues = ", ".join(hymt.get("runtime_issues") or [])
-            raise RuntimeError("Hy-MT2 未就绪；请把 GGUF 放入 "
-                               + str(hymt.get("install_dir") or "local_models/hymt2")
-                               + (f"（缺少: {issues}）" if issues else ""))
+            if not hymt.get("model_ready"):
+                raise RuntimeError("Hy-MT2 翻译模型未下载；请在设置里下载，或改用准确模式")
+            raise RuntimeError("Hy-MT2 未就绪" + (f"（缺少: {issues}）" if issues else ""))
 
     def _local_row_tokens(self, row: dict) -> list[dict]:
         source = self._token(
@@ -219,20 +307,23 @@ class LocalInferenceSession(SonioxSession):
 
     def _run_local_session(self) -> None:
         run_stop_event = self._local_stop_event
-        translator: HyMT2API | None = None
         recognizer: LocalQwenRecognizer | None = None
         try:
-            translation_enabled = str(self.translation or "one_way").strip().lower() != "none"
-            self._check_models(translation_enabled, prepare_remote=True)
+            machine_translation = self._machine_translation_wanted()
+            self._check_models(machine_translation, prepare_remote=True)
 
-            if translation_enabled:
-                translator = self._make_row_translator()
-                self._translator = translator
+            if machine_translation:
+                # Held for the whole run so per-row translators share one
+                # loaded engine; released early when switching to 准确.
+                self._translator = self._make_row_translator()
 
-            self._subtitle_pipeline = LocalSubtitlePipeline(
+            pipeline = LocalSubtitlePipeline(
                 self._make_row_translator, self._publish_local_frame,
                 self._finalize_local_row, self._broadcast_local_error,
             )
+            self._subtitle_pipeline = pipeline
+            # Also catches a mode switch that landed while the models loaded.
+            self._apply_machine_translation()
             recognizer = LocalQwenRecognizer(
                 self._on_recognition_result,
                 self._broadcast_local_error,
@@ -268,9 +359,14 @@ class LocalInferenceSession(SonioxSession):
                 pipeline.close()
             self._subtitle_pipeline = None
 
+            with self._mt_lock:
+                # Abandon any in-flight background load; it closes its own result.
+                self._mt_generation += 1
+                translator, self._translator = self._translator, None
             if translator is not None:
                 translator.close()
-            self._translator = None
+            if self._local_stop_event is run_stop_event:
+                self._stop_relay_link()
             self._clear_stopped_local_state(run_stop_event)
             logger.info("Local inference session stopped")
 
@@ -306,7 +402,7 @@ class LocalInferenceSession(SonioxSession):
         self._remote_timeout = getattr(config, "LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS", 60)
         self._translation_device = config.LOCAL_TRANSLATION_DEVICE
         requested_translation = str(translation or "one_way").strip().lower()
-        self._check_models(requested_translation != "none")
+        self._check_models(requested_translation != "none" and not self._suppress_soniox_translation)
         if translation_target_lang is not None:
             ok, message = self.set_translation_target_lang(translation_target_lang)
             if not ok:
@@ -330,6 +426,7 @@ class LocalInferenceSession(SonioxSession):
             self.logger.init_log_file()
         self._local_stop_event = threading.Event()
         self.stop_event = self._local_stop_event
+        self._start_relay_link()
         self.thread = threading.Thread(
             target=self._run_local_session,
             name="LocalInferenceSession",
@@ -342,6 +439,7 @@ class LocalInferenceSession(SonioxSession):
         stop_event = self._local_stop_event
         if stop_event is not None:
             stop_event.set()
+        self._stop_relay_link()
         self._stop_audio_streamer()
         thread = self.thread
         if thread and thread.is_alive() and thread is not threading.current_thread():

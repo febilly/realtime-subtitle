@@ -559,11 +559,24 @@
             elements.translationModeHint.hidden = !hint;
         }
 
+        // 快速 / 混合 on the local provider run Hy-MT2: ask to download it when
+        // missing, and fall back to the previous mode if the user declines.
+        async function confirmLocalTranslationMode(value, previous) {
+            if (selectedProvider() !== 'local' || value === 'accurate' || value === previous) return;
+            if (typeof actions.confirmLocalTranslationModel !== 'function') return;
+            const ok = await actions.confirmLocalTranslationModel({
+                modeLabel: translationModeLabel(value),
+                previousModeLabel: translationModeLabel(previous),
+            });
+            if (ok || getDraft().translationUiMode !== value) return;
+            setDraft({ translationUiMode: previous });
+            if (pickers.translationMode) pickers.translationMode.value = previous;
+            updateTranslationModeHint();
+        }
+
         function renderTranslationModePicker() {
             const current = state();
-            const shown = selectedProvider() !== 'local'
-                && !!current.llmRefineAvailable
-                && !current.lockManualControls;
+            const shown = !!current.llmRefineAvailable && !current.lockManualControls;
             if (elements.translationModeSection) elements.translationModeSection.hidden = !shown;
             if (elements.translationModeSettingField) elements.translationModeSettingField.hidden = !shown;
             if (!shown) {
@@ -585,8 +598,10 @@
                 {
                     value: selected,
                     onChange: (value) => {
+                        const previous = draft.translationUiMode; // picker already holds value
                         setDraft({ translationUiMode: value });
                         updateTranslationModeHint();
+                        void confirmLocalTranslationMode(value, previous);
                     },
                 },
             );

@@ -457,7 +457,9 @@ class ProviderManager:
         self.provider = provider
 
         # Connection mode: "direct" (own provider key) or "relay" (hosted).
-        if provider == "local":
+        # The local provider recognizes on-device in both; in relay mode it
+        # also keeps an LLM-only relay session (hosted LLM + telemetry).
+        if provider == "local" and not self.config.RELAY_AVAILABLE:
             self.mode = "direct"
         elif mode is not None:
             m = str(mode).strip().lower()
