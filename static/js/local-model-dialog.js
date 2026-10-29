@@ -7,10 +7,22 @@
     // cancel or failure keeps the previous provider / mode.
 
     const PROGRESS_POLL_MS = 500;
+    // VRAM thresholds in GiB (what drivers report), each a little under the
+    // round number so a nominal 8 / 16 GB card still passes.
+    const GIB = 1024 ** 3;
+    const VRAM_MIN_TOTAL = 7.8 * GIB;
+    const VRAM_MIN_FREE = 3.8 * GIB;
+    const VRAM_GAME_TOTAL = 15.8 * GIB;
 
     function formatGb(bytes) {
         const value = Number(bytes) || 0;
         return `${(value / 1e9).toFixed(1)} GB`;
+    }
+
+    // VRAM in GiB, labelled GB like Task Manager does.
+    function formatVram(bytes) {
+        const value = Number(bytes) || 0;
+        return `${(value / GIB).toFixed(1)} GB`;
     }
 
     // Whether the local provider runs Hy-MT2 with this UI state: 准确 needs no
@@ -98,14 +110,55 @@
             return row;
         }
 
-        function gpuLine(status) {
+        // The card the models will load on; older servers send no
+        // selected_device, so fall back to the first card with free memory.
+        function selectedGpu(status) {
+            if (status && status.selected_device !== undefined) return status.selected_device;
             const devices = Array.isArray(status && status.devices) ? status.devices : [];
-            const gpu = devices.find((device) => Number(device && device.free_bytes) > 0);
-            if (!gpu) return null;
+            return devices.find((device) => Number(device && device.free_bytes) > 0) || null;
+        }
+
+        function gpuName(gpu) {
+            return String(gpu.description || gpu.name || 'GPU');
+        }
+
+        function gpuLine(status) {
+            const gpu = selectedGpu(status);
+            if (!gpu || !(Number(gpu.free_bytes) > 0)) return null;
             return element('p', 'field-hint', t('local_dialog_gpu_free', {
-                gpu: String(gpu.description || gpu.name || 'GPU'),
-                free: formatGb(gpu.free_bytes),
+                gpu: gpuName(gpu),
+                free: formatVram(gpu.free_bytes),
             }));
+        }
+
+        // Warnings shown only when something falls short: free disk space for
+        // downloadBytes, and the selected card's total / free VRAM.
+        function resourceWarnings(status, downloadBytes) {
+            const warnings = [];
+            const models = (status && status.models) || {};
+            const diskFree = models.disk_free_bytes;
+            if (typeof diskFree === 'number' && diskFree < downloadBytes) {
+                warnings.push(element('p', 'local-model-dialog-warning', t('local_dialog_disk_low', {
+                    need: formatGb(downloadBytes),
+                    free: formatGb(diskFree),
+                    dir: String(models.models_dir || ''),
+                })));
+            }
+            const gpu = selectedGpu(status);
+            const total = Number(gpu && gpu.total_bytes) || 0;
+            if (total > 0) {
+                const free = Number(gpu.free_bytes) || 0;
+                if (total < VRAM_MIN_TOTAL || (free > 0 && free < VRAM_MIN_FREE)) {
+                    warnings.push(element('p', 'local-model-dialog-warning', t('local_dialog_vram_low', {
+                        gpu: gpuName(gpu), total: formatVram(total), free: formatVram(free),
+                    })));
+                } else if (total < VRAM_GAME_TOTAL) {
+                    warnings.push(element('p', 'local-model-dialog-warning', t('local_dialog_vram_no_game', {
+                        gpu: gpuName(gpu), total: formatVram(total),
+                    })));
+                }
+            }
+            return warnings;
         }
 
         function stageLabel(stage) {
@@ -221,6 +274,9 @@
             if (mtMissing) intro.push(modelRow(t('local_dialog_mt_name'), mt, t('local_dialog_mt_usage')));
             const gpu = gpuLine(status);
             if (gpu) intro.push(gpu);
+            intro.push(...resourceWarnings(status,
+                (asrMissing ? Number(asr.estimated_bytes) || 0 : 0)
+                + (mtMissing ? Number(mt.estimated_bytes) || 0 : 0)));
             if (mtMissing) {
                 intro.push(element('p', 'field-hint', t(
                     llmAvailable ? 'local_dialog_asr_only_llm' : 'local_dialog_asr_only_no_llm',
@@ -283,6 +339,7 @@
             ];
             const gpu = gpuLine(status);
             if (gpu) intro.push(gpu);
+            intro.push(...resourceWarnings(status, Number(mt.estimated_bytes) || 0));
             view.body.replaceChildren(...intro);
             const confirmed = await new Promise((resolve) => {
                 view.actions.replaceChildren(

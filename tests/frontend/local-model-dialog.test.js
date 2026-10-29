@@ -5,15 +5,35 @@ function response(data, { ok = true } = {}) {
     return { ok, json: vi.fn().mockResolvedValue(data) };
 }
 
-function status({ asrReady = false, mtReady = false } = {}) {
+const GIB = 1024 ** 3;
+
+function status({
+    asrReady = false, mtReady = false, diskFree = 500e9, totalGib = 24, freeGib = 6.4,
+} = {}) {
+    const gpu = { index: 0, description: 'RTX 3080', total_bytes: totalGib * GIB, free_bytes: freeGib * GIB };
     return {
         status: 'ok',
         models: {
+            models_dir: 'D:/models',
+            disk_free_bytes: diskFree,
             asr: { 'qwen3-asr': { ready: asrReady, estimated_bytes: 1.5e9, estimated_vram_bytes: 2e9 } },
             translation: { hymt2: { model_ready: mtReady, estimated_bytes: 1.1e9, estimated_vram_bytes: 1.5e9 } },
         },
-        devices: [{ index: 0, description: 'RTX 3080', free_bytes: 6.4e9 }],
+        devices: [gpu],
+        selected_device: gpu,
     };
+}
+
+async function openedText(page, start) {
+    const pending = start();
+    await vi.waitFor(() => expect(page.dialog.isOpen()).toBe(true));
+    const text = page.document.querySelector('.local-model-dialog').textContent;
+    const warnings = [...page.document.querySelectorAll('.local-model-dialog-warning')]
+        .map((node) => node.textContent.split('|')[0]);
+    buttons(page.document)[0].click();
+    await pending;
+    page.dom.window.close();
+    return { text, warnings };
 }
 
 function setup(routes) {
@@ -145,6 +165,50 @@ describe('LocalModelDialog', () => {
         await clickButton(page.document, 'local_dialog_close');
         await expect(pending).resolves.toBe(false);
         page.dom.window.close();
+    });
+
+    it('shows no resource warning when disk and VRAM are enough', async () => {
+        const page = setup({ '/local-inference/status': response(status()) });
+        const { warnings } = await openedText(page, () => page.dialog.confirmLocalProvider({ previousProvider: 'Soniox' }));
+        expect(warnings).toEqual([]);
+    });
+
+    it('warns when the download drive lacks space for what is missing', async () => {
+        const page = setup({ '/local-inference/status': response(status({ diskFree: 2e9 })) });
+        const { text, warnings } = await openedText(
+            page, () => page.dialog.confirmLocalProvider({ previousProvider: 'Soniox' }),
+        );
+        expect(warnings).toEqual(['local_dialog_disk_low']);
+        expect(text).toContain('local_dialog_disk_low|need=2.6 GB|free=2.0 GB|dir=D:/models');
+        // Hy-MT2 alone (1.1 GB) fits in 2 GB.
+        const mtOnly = setup({ '/local-inference/status': response(status({ asrReady: true, diskFree: 2e9 })) });
+        const second = await openedText(mtOnly, () => mtOnly.dialog.confirmTranslationModel({ modeLabel: 'Fast' }));
+        expect(second.warnings).toEqual([]);
+    });
+
+    it('warns about low VRAM below 7.8 GB total or 3.8 GB free', async () => {
+        for (const [gpu, expected] of [
+            [{ totalGib: 6, freeGib: 5 }, ['local_dialog_vram_low']],
+            [{ totalGib: 24, freeGib: 3.5 }, ['local_dialog_vram_low']],
+            // A nominal 8 GB card that reports a little under 8 GiB.
+            [{ totalGib: 7.9, freeGib: 6 }, ['local_dialog_vram_no_game']],
+            [{ totalGib: 12, freeGib: 10 }, ['local_dialog_vram_no_game']],
+            [{ totalGib: 15.9, freeGib: 12 }, []],
+        ]) {
+            const page = setup({ '/local-inference/status': response(status({ asrReady: true, ...gpu })) });
+            const { warnings } = await openedText(page, () => page.dialog.confirmTranslationModel({ modeLabel: 'Fast' }));
+            expect(warnings).toEqual(expected);
+        }
+    });
+
+    it('skips the VRAM check when the models run on the CPU', async () => {
+        const cpu = { ...status({ totalGib: 4, freeGib: 1 }), selected_device: null };
+        const page = setup({ '/local-inference/status': response(cpu) });
+        const { text, warnings } = await openedText(
+            page, () => page.dialog.confirmLocalProvider({ previousProvider: 'Soniox' }),
+        );
+        expect(warnings).toEqual([]);
+        expect(text).not.toContain('local_dialog_gpu_free');
     });
 
     it('skips the translation-model prompt when Hy-MT2 is already there', async () => {

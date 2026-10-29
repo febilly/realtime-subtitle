@@ -1342,6 +1342,13 @@ body.dark-theme .local-model-dialog-row {
     word-break: break-word;
 }
 
+.local-model-dialog-warning {
+    margin: 0;
+    font-size: 14px;
+    color: #d97706;
+    word-break: break-word;
+}
+
 /*
  * Notifications dock at the end of the subtitle flow that holds the OLDEST lines
  * (top for upward flow, bottom for downward flow). The dock is in normal layout,

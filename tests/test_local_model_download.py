@@ -1,6 +1,8 @@
 import io
+import shutil
 import threading
 from email.message import Message
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
@@ -172,3 +174,17 @@ def test_status_reports_download_and_vram_estimates(models_dir):
     assert status["translation"]["hymt2"]["estimated_bytes"] == 1_100_000_000
     assert status["translation"]["hymt2"]["estimated_vram_bytes"] == 1_500_000_000
     assert status["asr"]["qwen3-asr"]["estimated_vram_bytes"] == 2_000_000_000
+
+
+def test_status_reports_free_space_on_the_download_drive(models_dir, monkeypatch):
+    # MODELS_DIR does not exist before the first download: measure its drive.
+    monkeypatch.setattr(model_manager, "MODELS_DIR", models_dir / "not" / "yet")
+    seen = []
+
+    def fake_usage(path):
+        seen.append(Path(path))
+        return shutil._ntuple_diskusage(100, 40, 60)
+
+    monkeypatch.setattr(model_manager.shutil, "disk_usage", fake_usage)
+    assert model_manager.get_all_local_models_status()["disk_free_bytes"] == 60
+    assert seen == [models_dir.resolve()]

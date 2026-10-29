@@ -29,3 +29,20 @@ def test_relay_mode_prefers_server_context_bounds(monkeypatch):
     monkeypatch.setattr(config, "HOSTED_LLM_CONTEXT_MAX", 30)
 
     assert config.llm_context_bounds() == (10, 30)
+
+
+def test_logged_out_relay_mode_reports_no_hosted_llm(monkeypatch):
+    import asyncio
+    import types
+
+    import web_server
+
+    monkeypatch.setattr(config, "RELAY_AVAILABLE", True)
+    monkeypatch.setattr(config, "RELAY_MODE", True)
+    monkeypatch.setattr(config, "HOSTED_LLM_AVAILABLE", True)
+    server = web_server.WebServer.__new__(web_server.WebServer)
+    server.provider_manager = types.SimpleNamespace(relay_token="")
+
+    asyncio.run(server._refresh_hosted_llm_config(force=True))
+
+    assert config.is_llm_refine_available() is False

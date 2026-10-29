@@ -757,12 +757,18 @@ class WebServer:
 
     async def local_inference_status_handler(self, request):
         """Return model/runtime/device state without loading either model."""
-        from local_inference.gpu_devices import probe_gpu_devices
+        from local_inference.gpu_devices import probe_gpu_devices, resolve_device
         from local_inference.model_manager import get_all_local_models_status
         from streaming_translation import get_local_engine_runtime_status
 
         refresh = str(request.query.get("refresh_devices") or "").lower() in ("1", "true", "yes")
         devices = await asyncio.to_thread(probe_gpu_devices, refresh=refresh)
+        # The GPU the ASR setting resolves to (None for CPU / no enumeration),
+        # so the download dialog checks the card the models will load on.
+        n_gpu_layers, main_gpu, _ = resolve_device(config.LOCAL_INFERENCE_DEVICE, devices=devices)
+        selected_device = None
+        if n_gpu_layers:
+            selected_device = next((d for d in devices if int(d["index"]) == main_gpu), None)
         return web.json_response({
             "status": "ok",
             "models": get_all_local_models_status(),
@@ -775,6 +781,7 @@ class WebServer:
                 ),
             },
             "devices": devices,
+            "selected_device": selected_device,
             "remote_status": None,
             "config": {
                 "backend": config.LOCAL_INFERENCE_BACKEND,
@@ -1647,6 +1654,9 @@ class WebServer:
             return
         token = self._relay_token()
         if not token:
+            # Logged out: the hosted LLM is gone too, don't keep the last answer.
+            config.HOSTED_LLM_AVAILABLE = False
+            self._hosted_llm_cfg_token = None
             return
         if (not force
                 and getattr(self, "_hosted_llm_cfg_token", None) == token

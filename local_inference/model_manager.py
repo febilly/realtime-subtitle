@@ -688,9 +688,21 @@ def get_hymt2_status() -> dict:
     }
 
 
+def models_dir_free_bytes() -> int | None:
+    """Free space on the drive downloads land on; MODELS_DIR may not exist yet."""
+    path = MODELS_DIR.resolve()
+    while not path.exists() and path.parent != path:
+        path = path.parent
+    try:
+        return int(shutil.disk_usage(path).free)
+    except OSError:
+        return None
+
+
 def get_all_local_models_status() -> dict:
     return {
         "models_dir": str(MODELS_DIR.resolve()),
+        "disk_free_bytes": models_dir_free_bytes(),
         "search_roots": [str(path) for path in model_roots()],
         "asr": {"qwen3-asr": get_engine_status("qwen3-asr")},
         "translation": {"hymt2": get_hymt2_status()},
