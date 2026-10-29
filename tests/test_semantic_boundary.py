@@ -426,6 +426,15 @@ def test_strip_committed_prefix_keeps_speech_inserted_at_the_seam():
     assert strip_committed_prefix("It works.", "It works fine. Then") == "fine. Then"
 
 
+def test_strip_committed_prefix_keeps_the_next_words_after_a_shorter_rewritten_tail():
+    # "でしょ" came back as "しょ": the tail is one character shorter than
+    # committed, and the "こ" of the new sentence must not be eaten.
+    assert strip_committed_prefix(
+        "おこれとかもこうよ。ほらほらほらほら、全然。全然拮抗してるでしょ。",
+        "から、おこれとかもこうよ。ほらほらほらほら、全然全然拮抗してるしょ、これ力の差が",
+    ) == "これ力の差が"
+
+
 def test_strip_committed_prefix_rejects_an_unrelated_hypothesis():
     assert strip_committed_prefix("Awful. Yeah, it's the worst experience.",
                                   "Completely different words entirely here") is None

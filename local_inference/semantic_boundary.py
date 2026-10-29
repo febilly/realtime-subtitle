@@ -466,6 +466,8 @@ def strip_committed_prefix(
             if block.size >= minimum
         ]
         end = _aligned_committed_end(left, region, right, blocks, min_match_ratio)
+        if end is not None and blocks:
+            end = _revised_tail_end(text, right_offsets, blocks[-1].b + blocks[-1].size, end)
         if end is None and sentence_end_fallback:
             end = _matching_sentence_end(text, right_offsets, len(left))
         if end is None:
@@ -485,6 +487,25 @@ def strip_committed_prefix(
     ):
         cut += 1
     return text[cut:]
+
+
+def _revised_tail_end(text: str, offsets: list[int], matched_end: int, end: int) -> int:
+    """Move a revised committed tail's estimated end back to a separator.
+
+    The unmatched committed tail is assumed to have been rewritten at the
+    same length, but a rewrite is often shorter ("でしょ" heard as "しょ"), and
+    then the estimate runs into the next words.  A separator the hypothesis
+    puts inside that span marks where the rewritten tail really ends.
+    """
+    for index in range(min(end, len(offsets)), matched_end - 1, -1):
+        if index <= 0:
+            break
+        cut = offsets[index - 1]
+        if cut < len(text) and (
+            text[cut].isspace() or unicodedata.category(text[cut]).startswith("P")
+        ):
+            return index
+    return end
 
 
 def _aligned_committed_end(left, region, right, blocks, min_match_ratio) -> int | None:
