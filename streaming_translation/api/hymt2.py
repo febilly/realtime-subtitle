@@ -46,6 +46,7 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = 1
+GGML_TYPE_Q8_0 = 8
 MAX_HISTORY = 8        # 服务端接受 <=10 条，取 8 与本应用上下文窗口一致
 HISTORY_KEEP = 20      # 本地保留的完成句对上限（截断后再取最新一条发送）
 TRAINED_HISTORY_PAIRS = 5  # 微调数据（v4 build_traj.HISTORY_WINDOW）里历史最多 5 对
@@ -189,7 +190,16 @@ class HyMT2LocalEngine:
         self._LlamaSampler = LlamaSampler
         self.model = LlamaModel(str(path), n_gpu_layers=n_gpu_layers, main_gpu=main_gpu)
         self._n_ctx = 2048
-        self.ctx = LlamaContext(self.model, n_ctx=self._n_ctx)
+        import config as _config
+        from local_inference.spec_decode import MAX_DRAFT_CHUNK
+
+        self.ctx = LlamaContext(
+            self.model,
+            n_ctx=self._n_ctx,
+            type_kv=GGML_TYPE_Q8_0 if getattr(_config, "LOCAL_MT_KV_Q8", False) else None,
+            # 只有草稿验证需要逐 token 的 logits，上限就是一段草稿的长度
+            n_outputs_max=MAX_DRAFT_CHUNK + 1,
+        )
         self.eos_token = self.model.token_eos()
         self.stop_ids = {self.eos_token}
         for s in (

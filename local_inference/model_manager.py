@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 import os
 import shutil
@@ -39,41 +39,43 @@ NEMOTRON_BOUNDARY_FILES = (
     "joiner.int8.onnx",
     "tokens.txt",
 )
-# Official llama.cpp conversions (decoder GGUF + mmproj audio encoder). The repos
-# only carry Q8_0 and bf16; smaller decoders are made locally with llama-quantize,
-# which ships in the runtime zip. Measured 2026-10-30 (FLEURS + live clips, 3080):
-# Q6_K matched Q8_0 accuracy; Q4_K_M requantized from Q8_0 lost ~2 points WER on
-# casual English; a bf16 encoder was no better than Q8_0 and cost 270 MB VRAM.
+# Decoder GGUF + mmproj audio encoder, pinned to a commit and checked by sha256 because
+# the 1.7B repo is third party (ggml-org only has Q8_0 and bf16). Measured 2026-10-30
+# (FLEURS + live clips, 3080): Q6_K matched Q8_0 accuracy, and a bf16 encoder was no
+# better than Q8_0 and cost 270 MB VRAM.
 QWEN3_ASR_VARIANTS = {
     "1.7B": {
-        "repo": "ggml-org/Qwen3-ASR-1.7B-GGUF",
-        "source": "Qwen3-ASR-1.7B-Q8_0.gguf",
-        "decoder": "Qwen3-ASR-1.7B-Q6_K.gguf",
-        "quantize": "Q6_K",
-        "mmproj": "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+        "repo": "mradermacher/Qwen3-ASR-1.7B-GGUF",
+        "revision": "664b960e358348943aefcdc26b3cf09eff1fb0ac",
+        "decoder": "Qwen3-ASR-1.7B.Q6_K.gguf",
+        "mmproj": "Qwen3-ASR-1.7B.mmproj-Q8_0.gguf",
+        "sha256": {
+            "Qwen3-ASR-1.7B.Q6_K.gguf": "534b653ee0074264c80533df9637e9eb556c04457f30cd1ba08fe48dcb608263",
+            "Qwen3-ASR-1.7B.mmproj-Q8_0.gguf": "780b5b48dfbc23c219cc9d3da9fdaccc7da567fa661b3724d19bda50fbcfc8c3",
+        },
     },
     "0.6B": {
         "repo": "ggml-org/Qwen3-ASR-0.6B-GGUF",
-        "source": "Qwen3-ASR-0.6B-Q8_0.gguf",
+        "revision": "928ab958557df9aa2ef1c93e0e83c7ad0933fae2",
         "decoder": "Qwen3-ASR-0.6B-Q8_0.gguf",
-        "quantize": None,
         "mmproj": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+        "sha256": {
+            "Qwen3-ASR-0.6B-Q8_0.gguf": "bca259818b50ca7c4c05e9bdb35a5dc04fa039653a6d6f3f0f331f96f6aa1971",
+            "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf": "41a342b5e4c514e968cb756de6cd1b7be39eff43c44c57a2ef5fc6522e36603d",
+        },
     },
 }
 LLAMA_CPP_DLL_URL_TEMPLATE = (
     "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/"
     "llama-{tag}-bin-win-vulkan-x64.zip"
 )
-# llama-quantize and the libraries it loads; used once to shrink the decoder.
-_QUANTIZE_TOOL = ("llama-quantize.exe", "llama-quantize-impl.dll", "llama-common.dll")
 SILERO_VAD_ONNX_URL = (
     "https://raw.githubusercontent.com/snakers4/silero-vad/master/"
     f"src/silero_vad/data/{SILERO_VAD_ONNX_NAME}"
 )
-# qwen3-asr: the Q8_0 decoder + Q8_0 encoder downloaded (requantized to Q6_K afterwards).
-_MODEL_SIZE_BYTES = {"silero-vad": 1_300_000, "qwen3-asr": 2_520_000_000, "hymt2": 1_100_000_000}
+_MODEL_SIZE_BYTES = {"silero-vad": 1_300_000, "qwen3-asr": 2_030_000_000, "hymt2": 1_100_000_000}
 # Rough VRAM while loaded (weights + KV cache + runtime), shown before download.
-_MODEL_VRAM_BYTES = {"qwen3-asr": 2_150_000_000, "hymt2": 1_500_000_000}
+_MODEL_VRAM_BYTES = {"qwen3-asr": 2_100_000_000, "hymt2": 1_300_000_000}
 
 HYMT2_REPO_ID = "febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF"
 # The repo also carries an .imatrix.gguf (quantization calibration data);
@@ -555,7 +557,7 @@ def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
             name = os.path.basename(member)
             if not name:
                 continue
-            if name in _runtime_names() or name in _QUANTIZE_TOOL or (
+            if name in _runtime_names() or (
                 name.endswith(".dll") and name.startswith(("ggml-", "libomp"))
             ):
                 with archive.open(member) as source, open(destination / name, "wb") as target:
@@ -563,13 +565,25 @@ def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
     archive_path.unlink(missing_ok=True)
 
 
-def _download_hf_file(repo_id: str, filename: str, dest: Path, stage: str, progress_callback=None) -> None:
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(_DOWNLOAD_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_hf_file(repo_id: str, filename: str, dest: Path, stage: str, progress_callback=None,
+                      *, revision: str = "main", sha256: str | None = None) -> None:
     failures: list[str] = []
     for endpoint in _ordered_hf_endpoints(repo_id, filename):
         host = urlparse(endpoint).netloc or endpoint
         try:
             logger.info("Downloading %s from %s", filename, host)
-            _stream_download(_hf_file_url(endpoint, repo_id, filename), dest, stage, progress_callback)
+            _stream_download(_hf_file_url(endpoint, repo_id, filename, revision), dest, stage, progress_callback)
+            if sha256 and _sha256_file(dest) != sha256:
+                dest.unlink(missing_ok=True)
+                raise OSError("sha256 mismatch")
             return
         except DownloadCancelled:
             raise
@@ -579,44 +593,19 @@ def _download_hf_file(repo_id: str, filename: str, dest: Path, stage: str, progr
     raise RuntimeError(f"{filename} download failed (" + "; ".join(failures) + ")")
 
 
-def _quantize_gguf(source: Path, dest: Path, qtype: str, progress_callback=None) -> None:
-    tool = qwen_llama_bin_dir() / "llama-quantize.exe"
-    if not tool.is_file():
-        raise RuntimeError(f"llama-quantize not found in {tool.parent}")
-    _report(progress_callback, "qwen3-asr-quantize", 0, None)
-    part = dest.with_name(dest.name + ".part")
-    # Requantizing the official Q8_0 instead of downloading the 4 GB bf16.
-    result = subprocess.run(
-        [str(tool), "--allow-requantize", str(source), str(part), qtype],
-        cwd=str(tool.parent),
-        capture_output=True,
-        text=True,
-        errors="replace",
-        **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}),
-    )
-    if result.returncode != 0 or not part.is_file():
-        part.unlink(missing_ok=True)
-        tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
-        raise RuntimeError(f"llama-quantize failed ({result.returncode}): {' | '.join(tail)}")
-    os.replace(part, dest)
-
-
 def download_qwen3_asr(progress_callback=None) -> None:
     variant = qwen3_asr_variant()
     model_dir = MODELS_DIR / QWEN3_ASR_DIR_NAME
     model_dir.mkdir(parents=True, exist_ok=True)
     _ensure_llama_runtime(progress_callback)
-    mmproj = model_dir / variant["mmproj"]
-    if not mmproj.is_file():
-        _download_hf_file(variant["repo"], variant["mmproj"], mmproj, "qwen3-asr-encoder", progress_callback)
-    decoder = model_dir / variant["decoder"]
-    if not decoder.is_file():
-        source = model_dir / variant["source"]
-        if not source.is_file():
-            _download_hf_file(variant["repo"], variant["source"], source, "qwen3-asr", progress_callback)
-        if variant.get("quantize") and source != decoder:
-            _quantize_gguf(source, decoder, variant["quantize"], progress_callback)
-            source.unlink(missing_ok=True)
+    for key, stage in (("mmproj", "qwen3-asr-encoder"), ("decoder", "qwen3-asr")):
+        filename = variant[key]
+        dest = model_dir / filename
+        if not dest.is_file():
+            _download_hf_file(
+                variant["repo"], filename, dest, stage, progress_callback,
+                revision=variant["revision"], sha256=variant["sha256"].get(filename),
+            )
 
 
 def _ensure_llama_runtime(progress_callback=None) -> None:

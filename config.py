@@ -527,11 +527,13 @@ LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS = max(
     0, _env_int("LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS", 6)
 )
 LOCAL_MT_PROMPT_CACHE = _env_bool("LOCAL_MT_PROMPT_CACHE", True)
+# Q8_0 KV cache for Hy-MT2. Saves 60 MB but changed 16 of 180 translations, some for the worse.
+LOCAL_MT_KV_Q8 = _env_bool("LOCAL_MT_KV_Q8", False)
 
 # Conservative estimates used only for GPU auto-selection.
 QWEN3_ASR_VRAM_MB = max(0, _env_int("QWEN3_ASR_VRAM_MB", 1530))
 QWEN3_ASR_ENCODER_VRAM_MB = max(0, _env_int("QWEN3_ASR_ENCODER_VRAM_MB", 510))
-HYMT2_VRAM_MB = max(0, _env_int("HYMT2_VRAM_MB", 1402))
+HYMT2_VRAM_MB = max(0, _env_int("HYMT2_VRAM_MB", 1200))
 
 
 def sanitize_local_device(value: str) -> str:

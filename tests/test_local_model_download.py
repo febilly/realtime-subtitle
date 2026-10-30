@@ -1,3 +1,4 @@
+import hashlib
 import io
 import shutil
 import threading
@@ -170,39 +171,45 @@ def test_existing_hymt2_skips_the_network_and_ignores_the_imatrix_file(models_di
     assert model_manager.get_hymt2_model_path() == model_dir / "custom.gguf"
 
 
-def test_qwen3_asr_downloads_official_files_and_quantizes_the_decoder(models_dir, monkeypatch):
+def test_qwen3_asr_downloads_pinned_files_and_verifies_sha256(models_dir, monkeypatch):
     requested = []
+    body = b"GGUF" + b"\0" * 8
 
     def fake_urlopen(request, timeout=None):
-        requested.append(request.full_url.rsplit("/", 1)[-1])
-        return FakeResponse(b"GGUF" + b"\0" * 8)
+        requested.append(request.full_url)
+        return FakeResponse(body)
 
-    quantized = []
-
-    def fake_quantize(source, dest, qtype, progress_callback=None):
-        quantized.append((source.name, dest.name, qtype))
-        dest.write_bytes(source.read_bytes())
-
+    variant = dict(model_manager.QWEN3_ASR_VARIANTS["1.7B"])
+    digest = hashlib.sha256(body).hexdigest()
+    variant["sha256"] = {variant["decoder"]: digest, variant["mmproj"]: digest}
+    monkeypatch.setitem(model_manager.QWEN3_ASR_VARIANTS, "1.7B", variant)
     monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
-    monkeypatch.setattr(model_manager, "_ordered_hf_endpoints", lambda *a: ["https://huggingface.co"])
-    monkeypatch.setattr(model_manager, "_quantize_gguf", fake_quantize)
+    monkeypatch.setattr(model_manager, "_ordered_hf_endpoints", lambda *a: ["https://hf-mirror.com"])
     monkeypatch.setattr(config, "LOCAL_QWEN_ASR_MODEL", "1.7B")
 
     model_manager.download_qwen3_asr()
 
-    variant = model_manager.QWEN3_ASR_VARIANTS["1.7B"]
     model_dir = models_dir / model_manager.QWEN3_ASR_DIR_NAME
-    assert requested == [variant["mmproj"], variant["source"]]
-    assert quantized == [(variant["source"], variant["decoder"], "Q6_K")]
-    assert not (model_dir / variant["source"]).exists()
+    base = f"https://hf-mirror.com/{variant['repo']}/resolve/{variant['revision']}/"
+    assert requested == [base + variant["mmproj"], base + variant["decoder"]]
     assert model_manager.get_qwen3_asr_files() == (model_dir / variant["decoder"], model_dir / variant["mmproj"])
+
+
+def test_qwen3_asr_rejects_a_file_with_the_wrong_sha256(models_dir, monkeypatch):
+    monkeypatch.setattr(model_manager, "urlopen", lambda request, timeout=None: FakeResponse(b"GGUF tampered"))
+    monkeypatch.setattr(model_manager, "_ordered_hf_endpoints", lambda *a: ["https://huggingface.co"])
+    monkeypatch.setattr(config, "LOCAL_QWEN_ASR_MODEL", "1.7B")
+
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        model_manager.download_qwen3_asr()
+    assert not list((models_dir / model_manager.QWEN3_ASR_DIR_NAME).glob("*.gguf"))
 
 
 def test_status_reports_download_and_vram_estimates(models_dir):
     status = model_manager.get_all_local_models_status()
     assert status["translation"]["hymt2"]["estimated_bytes"] == 1_100_000_000
-    assert status["translation"]["hymt2"]["estimated_vram_bytes"] == 1_500_000_000
-    assert status["asr"]["qwen3-asr"]["estimated_vram_bytes"] == 2_150_000_000
+    assert status["translation"]["hymt2"]["estimated_vram_bytes"] == 1_300_000_000
+    assert status["asr"]["qwen3-asr"]["estimated_vram_bytes"] == 2_100_000_000
 
 
 def test_status_reports_free_space_on_the_download_drive(models_dir, monkeypatch):
