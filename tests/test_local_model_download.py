@@ -2,6 +2,7 @@ import hashlib
 import io
 import shutil
 import threading
+import zipfile
 from email.message import Message
 from pathlib import Path
 from urllib.error import HTTPError
@@ -203,6 +204,55 @@ def test_qwen3_asr_rejects_a_file_with_the_wrong_sha256(models_dir, monkeypatch)
     with pytest.raises(RuntimeError, match="sha256 mismatch"):
         model_manager.download_qwen3_asr()
     assert not list((models_dir / model_manager.QWEN3_ASR_DIR_NAME).glob("*.gguf"))
+
+
+def test_silero_and_runtime_come_from_the_pinned_hf_repo(models_dir, monkeypatch):
+    requested = []
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for name in ("llama.dll", "mtmd.dll", "libomp.dll", "llama-server.exe"):
+            bundle.writestr(name, b"x")
+
+    def fake_urlopen(request, timeout=None):
+        requested.append(request.full_url)
+        return FakeResponse(archive.getvalue() if request.full_url.endswith(".zip") else b"onnx")
+
+    monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
+    monkeypatch.setattr(model_manager, "_ordered_hf_endpoints", lambda *a: ["https://hf-mirror.com"])
+    monkeypatch.setattr(model_manager, "LLAMA_RUNTIME_ZIP_SHA256", hashlib.sha256(archive.getvalue()).hexdigest())
+    monkeypatch.setattr(model_manager, "SILERO_VAD_ONNX_SHA256", hashlib.sha256(b"onnx").hexdigest())
+    monkeypatch.setattr(model_manager, "is_silero_cached", lambda: False)
+    monkeypatch.setattr(model_manager.sys, "platform", "win32")
+
+    model_manager.download_silero()
+    model_manager._download_llama_runtime(models_dir / "runtime")
+
+    base = f"https://hf-mirror.com/{model_manager.LOCAL_RUNTIME_REPO}/resolve/{model_manager.LOCAL_RUNTIME_REVISION}/"
+    assert requested == [base + model_manager.SILERO_VAD_ONNX_NAME, base + model_manager.LLAMA_RUNTIME_ZIP]
+    assert sorted(path.name for path in (models_dir / "runtime").iterdir()) == ["libomp.dll", "llama.dll", "mtmd.dll"]
+    assert not (models_dir / model_manager.LLAMA_RUNTIME_ZIP).exists()
+
+
+def test_runtime_falls_back_to_github_when_hf_fails(models_dir, monkeypatch):
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("llama.dll", b"x")
+    requested = []
+
+    def fake_urlopen(request, timeout=None):
+        requested.append(request.full_url)
+        if "github.com" not in request.full_url:
+            raise OSError("blocked")
+        return FakeResponse(archive.getvalue())
+
+    monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
+    monkeypatch.setattr(model_manager, "_ordered_hf_endpoints", lambda *a: ["https://hf-mirror.com"])
+    monkeypatch.setattr(model_manager.sys, "platform", "win32")
+
+    model_manager._download_llama_runtime(models_dir / "runtime")
+
+    assert "github.com/ggml-org/llama.cpp" in requested[-1]
+    assert (models_dir / "runtime" / "llama.dll").is_file()
 
 
 def test_status_reports_download_and_vram_estimates(models_dir):

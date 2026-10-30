@@ -81,6 +81,13 @@ HYMT2_REPO_ID = "febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF"
 # The repo also carries an .imatrix.gguf (quantization calibration data);
 # inference needs only this weight file.
 HYMT2_MODEL_FILE = "Hy-MT2-1.8B-StreamRevise-v4-Q4_K_M.gguf"
+# Copies of the llama.cpp runtime and Silero VAD so they download through HF and its
+# mirrors too; the upstream GitHub URLs above stay as the last resort.
+LOCAL_RUNTIME_REPO = "febilly/realtime-subtitle-local-runtime"
+LOCAL_RUNTIME_REVISION = "dc80402dfe3d6be8d90c93c60bd67a77a4c36115"
+LLAMA_RUNTIME_ZIP = f"llama-{LLAMA_CPP_TAG}-bin-win-vulkan-x64-min.zip"
+LLAMA_RUNTIME_ZIP_SHA256 = "b007fea086a8a788cc9e266b236cb27b750fa76e20fc45453f995a10d3856f25"
+SILERO_VAD_ONNX_SHA256 = "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
 HF_ENDPOINT_OFFICIAL = "https://huggingface.co"
 # Tried in order when huggingface.co is unreachable; same resolve/ layout.
 HF_ENDPOINT_MIRRORS = ("https://hf-mirror.com",)
@@ -533,12 +540,17 @@ def _download_file(url: str, dest: Path, stage: str, progress_callback=None) -> 
 def download_silero(progress_callback=None) -> None:
     if is_silero_cached():
         return
-    _download_file(
-        SILERO_VAD_ONNX_URL,
-        MODELS_DIR / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME,
-        "silero",
-        progress_callback,
-    )
+    dest = MODELS_DIR / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
+    try:
+        _download_hf_file(
+            LOCAL_RUNTIME_REPO, SILERO_VAD_ONNX_NAME, dest, "silero", progress_callback,
+            revision=LOCAL_RUNTIME_REVISION, sha256=SILERO_VAD_ONNX_SHA256,
+        )
+    except DownloadCancelled:
+        raise
+    except Exception as exc:
+        logger.warning("Silero VAD download from HF failed, trying GitHub: %s", exc)
+        _download_file(SILERO_VAD_ONNX_URL, dest, "silero", progress_callback)
 
 
 def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
@@ -548,10 +560,20 @@ def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
         raise RuntimeError("Automatic llama.cpp runtime download is currently supported on Windows only")
     destination.mkdir(parents=True, exist_ok=True)
     tag = LLAMA_CPP_TAG
-    archive_path = MODELS_DIR / f"llama-cpp-vulkan-{tag}.zip"
-    _download_file(
-        LLAMA_CPP_DLL_URL_TEMPLATE.format(tag=tag), archive_path, "llama-runtime", progress_callback,
-    )
+    archive_path = MODELS_DIR / LLAMA_RUNTIME_ZIP
+    try:
+        _download_hf_file(
+            LOCAL_RUNTIME_REPO, LLAMA_RUNTIME_ZIP, archive_path, "llama-runtime", progress_callback,
+            revision=LOCAL_RUNTIME_REVISION, sha256=LLAMA_RUNTIME_ZIP_SHA256,
+        )
+    except DownloadCancelled:
+        raise
+    except Exception as exc:
+        logger.warning("llama.cpp runtime download from HF failed, trying GitHub: %s", exc)
+        archive_path = MODELS_DIR / f"llama-cpp-vulkan-{tag}.zip"
+        _download_file(
+            LLAMA_CPP_DLL_URL_TEMPLATE.format(tag=tag), archive_path, "llama-runtime", progress_callback,
+        )
     with zipfile.ZipFile(archive_path, "r") as archive:
         for member in archive.namelist():
             name = os.path.basename(member)
