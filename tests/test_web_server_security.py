@@ -37,11 +37,18 @@ class TestWebServerSecurity:
     @pytest.fixture(autouse=True)
     def restore_sys_modules(self):
         orig_config = sys.modules.get("config")
+        # These tests patch aiohttp in sys.modules and expect web_server to bind
+        # the mock, so a copy cached by an earlier test module must not be reused.
+        orig_web_server = sys.modules.pop("web_server", None)
         yield
         if orig_config is not None:
             sys.modules["config"] = orig_config
         else:
             sys.modules.pop("config", None)
+        if orig_web_server is not None:
+            sys.modules["web_server"] = orig_web_server
+        else:
+            sys.modules.pop("web_server", None)
 
     def mock_session(self):
         session = MagicMock()

@@ -5,6 +5,10 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+# Imported here so the web_module fixture's sys.modules restore cannot drop it
+# between tests, which would leave monkeypatch patching a stale module.
+import local_inference.remote_client
+
 
 @pytest.fixture
 def web_module():
