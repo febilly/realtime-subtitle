@@ -1236,6 +1236,7 @@ function handleMessageFrame(data) {
 // ===================== Settings panel (provider + API key) =====================
 
 const settingsPanelController = SettingsPanel.create({
+    showConfirm: confirmController.show,
     policy: SettingsPolicy,
     billing: Hosted.Billing,
     document,
@@ -1303,6 +1304,7 @@ const settingsPanelController = SettingsPanel.create({
         localTranslationStatus: document.getElementById('localTranslationStatus'),
         localTranslationPath: document.getElementById('localTranslationPath'),
         localTranslationDownloadButton: document.getElementById('localTranslationDownloadButton'),
+        localLegacyCleanupButton: document.getElementById('localLegacyCleanupButton'),
         localAsrDevice: document.getElementById('localAsrDevice'),
         localEncoderDevice: document.getElementById('localEncoderDevice'),
         localTranslationDevice: document.getElementById('localTranslationDevice'),

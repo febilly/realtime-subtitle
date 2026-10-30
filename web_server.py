@@ -863,6 +863,13 @@ class WebServer:
         from local_inference.model_manager import cancel_download
         return web.json_response({"status": "ok", "cancelled": cancel_download()})
 
+    async def local_inference_legacy_cleanup_handler(self, request):
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        from local_inference.model_manager import get_all_local_models_status, remove_legacy_files
+        result = await asyncio.to_thread(remove_legacy_files)
+        return web.json_response({"status": "ok", **result, "models": get_all_local_models_status()})
+
     # ===================== Subtitle-server relay (hosted) =====================
 
     async def _get_http_session(self):
@@ -2617,6 +2624,7 @@ class WebServer:
         app.router.add_post('/local-inference/download', self.local_inference_download_handler)
         app.router.add_get('/local-inference/download/progress', self.local_inference_download_progress_handler)
         app.router.add_post('/local-inference/download/cancel', self.local_inference_download_cancel_handler)
+        app.router.add_post('/local-inference/legacy-cleanup', self.local_inference_legacy_cleanup_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
         app.router.add_post('/account/login-code', self.account_login_code_handler)
         app.router.add_post('/account/login-begin', self.account_login_begin_handler)

@@ -255,6 +255,67 @@ def test_runtime_falls_back_to_github_when_hf_fails(models_dir, monkeypatch):
     assert (models_dir / "runtime" / "llama.dll").is_file()
 
 
+def _make_legacy_files(root):
+    model_dir = root / "qwen3-asr"
+    runtime_dir = root / "qwen_llama_vulkan_bin"
+    model_dir.mkdir(parents=True)
+    runtime_dir.mkdir()
+    for name in model_manager.LEGACY_QWEN3_ASR_FILES:
+        (model_dir / name).write_bytes(b"x" * 10)
+    (runtime_dir / "llama.dll").write_bytes(b"x" * 5)
+    (runtime_dir / "ggml-vulkan.dll").write_bytes(b"x" * 5)
+
+
+def test_legacy_cleanup_removes_old_files_and_keeps_everything_else(models_dir):
+    _make_legacy_files(models_dir)
+    (models_dir / "llama-cpp-vulkan-b8391.zip").write_bytes(b"x" * 3)
+    kept = [
+        models_dir / "qwen3-asr" / "notes.txt",
+        models_dir / "hymt2" / model_manager.HYMT2_MODEL_FILE,
+        models_dir / model_manager.QWEN3_ASR_DIR_NAME / "Qwen3-ASR-1.7B.Q6_K.gguf",
+        models_dir / model_manager.QWEN_LLAMA_VULKAN_BIN_DIR_NAME / "llama.dll",
+        models_dir / f"llama-cpp-vulkan-{model_manager.LLAMA_CPP_TAG}.zip.part",
+    ]
+    for path in kept:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    status = model_manager.get_all_local_models_status()["legacy"]
+    assert status["count"] == 6 and status["bytes"] == 43
+
+    assert model_manager.remove_legacy_files() == {"removed_bytes": 43, "failed": []}
+
+    assert all(path.is_file() for path in kept)
+    assert not (models_dir / "qwen_llama_vulkan_bin").exists()
+    assert (models_dir / "qwen3-asr").is_dir()  # still holds notes.txt
+    assert model_manager.get_legacy_files_status()["count"] == 0
+
+
+def test_legacy_cleanup_never_touches_the_yakutan_models_root(models_dir):
+    _make_legacy_files(models_dir / "legacy")
+
+    assert model_manager.get_legacy_files_status()["count"] == 0
+    assert model_manager.remove_legacy_files() == {"removed_bytes": 0, "failed": []}
+    assert (models_dir / "legacy" / "qwen3-asr" / model_manager.LEGACY_QWEN3_ASR_FILES[0]).is_file()
+
+
+def test_legacy_cleanup_reports_a_file_that_is_in_use(models_dir, monkeypatch):
+    _make_legacy_files(models_dir)
+    original = Path.unlink
+
+    def fake_unlink(path, *args, **kwargs):
+        if path.name == "llama.dll":
+            raise PermissionError("in use")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+
+    result = model_manager.remove_legacy_files()
+
+    assert result["failed"] == ["llama.dll"] and result["removed_bytes"] == 35
+    assert (models_dir / "qwen_llama_vulkan_bin" / "llama.dll").is_file()
+
+
 def test_status_reports_download_and_vram_estimates(models_dir):
     status = model_manager.get_all_local_models_status()
     assert status["translation"]["hymt2"]["estimated_bytes"] == 1_100_000_000

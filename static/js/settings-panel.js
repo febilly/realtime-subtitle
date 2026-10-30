@@ -28,6 +28,10 @@
         const getState = typeof options.getState === 'function' ? options.getState : () => ({});
         const providerKeyUrls = options.providerKeyUrls || DEFAULT_PROVIDER_KEY_URLS;
         const actions = options.actions || {};
+        const showConfirm = typeof options.showConfirm === 'function'
+            ? options.showConfirm
+            : () => Promise.resolve(false);
+        let legacyFiles = null;
         const elements = options.elements || {};
         const listeners = [];
         let initialized = false;
@@ -326,8 +330,9 @@
                     elements.localAsrDownloadButton.hidden = !!asr.ready;
                 }
                 if (elements.localTranslationDownloadButton) {
-                    elements.localTranslationDownloadButton.hidden = !!translation.model_ready;
+                    elements.localTranslationDownloadButton.hidden = !!translation.ready;
                 }
+                renderLegacyCleanup(models.legacy);
                 const options = localDeviceOptions(data.devices);
                 lastLocalConfig = data.config || {};
                 const localConfig = { ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) };
@@ -350,6 +355,46 @@
                     elements.localAsrStatus.classList.add('missing');
                 }
                 return false;
+            }
+        }
+
+        function formatFileSize(bytes) {
+            const mb = bytes / (1024 * 1024);
+            return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.max(1, Math.round(mb))} MB`;
+        }
+
+        function renderLegacyCleanup(legacy) {
+            const button = elements.localLegacyCleanupButton;
+            if (!button) return;
+            legacyFiles = legacy && legacy.count ? legacy : null;
+            button.hidden = !legacyFiles;
+            if (legacyFiles) {
+                button.textContent = t('local_legacy_cleanup', { size: formatFileSize(legacyFiles.bytes) });
+            }
+        }
+
+        async function cleanupLegacyFiles() {
+            if (!fetchRef || !legacyFiles) return;
+            const confirmed = await showConfirm(t('local_legacy_cleanup_confirm', {
+                size: formatFileSize(legacyFiles.bytes),
+                path: legacyFiles.models_dir,
+            }), { okLabel: t('local_legacy_cleanup_ok'), danger: true });
+            if (!confirmed) return;
+            const button = elements.localLegacyCleanupButton;
+            if (button) button.disabled = true;
+            setError('');
+            try {
+                const response = await fetchRef('/local-inference/legacy-cleanup', { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'cleanup failed');
+                if (data.failed && data.failed.length) {
+                    setError(t('local_legacy_cleanup_partial', { count: data.failed.length }));
+                }
+                await refreshLocalInferenceStatus();
+            } catch (error) {
+                setError(String(error));
+            } finally {
+                if (button) button.disabled = false;
             }
         }
 
@@ -690,6 +735,7 @@
                     bind(radio, 'change', handleModeChange);
                 });
             }
+            bind(elements.localLegacyCleanupButton, 'click', cleanupLegacyFiles);
             bind(elements.localAsrDownloadButton, 'click', downloadLocalAsr);
             bind(elements.localTranslationDownloadButton, 'click', downloadLocalTranslation);
             bind(elements.localRemoteProbeButton, 'click', probeRemoteInference);

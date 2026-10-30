@@ -27,6 +27,15 @@ QWEN3_ASR_DIR_NAME = "qwen3-asr-gguf"
 # mtmd_audio.py follow this build's headers, so an older runtime must not be picked up.
 LLAMA_CPP_TAG = "b11985"
 QWEN_LLAMA_VULKAN_BIN_DIR_NAME = f"llama_vulkan_{LLAMA_CPP_TAG}"
+# What versions before the llama.cpp mtmd migration downloaded; see _legacy_files().
+LEGACY_QWEN3_ASR_DIR_NAME = "qwen3-asr"
+LEGACY_QWEN3_ASR_FILES = (
+    "qwen3_asr_encoder_frontend.int4.onnx",
+    "qwen3_asr_encoder_backend.int4.onnx",
+    "qwen3_asr_llm.q4_k.gguf",
+)
+LEGACY_RUNTIME_DIR_NAME = "qwen_llama_vulkan_bin"
+LEGACY_ARCHIVE_PATTERNS = ("qwen3-asr-1.7b-gguf.zip*", "llama-cpp-vulkan-*.zip*")
 SILERO_VAD_DIR_NAME = "silero_vad"
 SILERO_VAD_ONNX_NAME = "silero_vad_16k_op15.onnx"
 HYMT2_DIR_NAME = "hymt2"
@@ -747,6 +756,59 @@ def get_hymt2_status() -> dict:
     }
 
 
+def _legacy_files() -> list[Path]:
+    """Files left in MODELS_DIR by versions before the llama.cpp mtmd migration.
+
+    Only MODELS_DIR, never the other model_roots(): the legacy root belongs to Yakutan,
+    which still uses these files. Matched by name, so anything else in the folders stays.
+    """
+    found: list[Path] = []
+    model_dir = MODELS_DIR / LEGACY_QWEN3_ASR_DIR_NAME
+    found.extend(model_dir / name for name in LEGACY_QWEN3_ASR_FILES)
+    runtime_dir = MODELS_DIR / LEGACY_RUNTIME_DIR_NAME
+    if runtime_dir.is_dir():
+        found.extend(
+            path for path in runtime_dir.iterdir()
+            if path.suffix.lower() in (".dll", ".so")
+            and path.name.startswith(("ggml", "llama", "libggml", "libllama", "libomp"))
+        )
+    if MODELS_DIR.is_dir():
+        found.extend(
+            path for pattern in LEGACY_ARCHIVE_PATTERNS for path in MODELS_DIR.glob(pattern)
+            if LLAMA_CPP_TAG not in path.name
+        )
+    return [path for path in found if path.is_file() and not path.is_symlink()]
+
+
+def get_legacy_files_status() -> dict:
+    files = _legacy_files()
+    return {
+        "bytes": sum(path.stat().st_size for path in files),
+        "count": len(files),
+        "models_dir": str(MODELS_DIR.resolve()),
+    }
+
+
+def remove_legacy_files() -> dict:
+    """Delete the old model and runtime; a file still in use (old version running) stays."""
+    removed_bytes = 0
+    failed: list[str] = []
+    for path in _legacy_files():
+        try:
+            size = path.stat().st_size
+            path.unlink()
+            removed_bytes += size
+        except OSError as exc:
+            logger.warning("Could not delete %s: %s", path, exc)
+            failed.append(path.name)
+    for name in (LEGACY_QWEN3_ASR_DIR_NAME, LEGACY_RUNTIME_DIR_NAME):
+        try:
+            (MODELS_DIR / name).rmdir()
+        except OSError:
+            pass  # missing, or holds files that are not ours
+    return {"removed_bytes": removed_bytes, "failed": failed}
+
+
 def models_dir_free_bytes() -> int | None:
     """Free space on the drive downloads land on; MODELS_DIR may not exist yet."""
     path = MODELS_DIR.resolve()
@@ -765,4 +827,5 @@ def get_all_local_models_status() -> dict:
         "search_roots": [str(path) for path in model_roots()],
         "asr": {"qwen3-asr": get_engine_status("qwen3-asr")},
         "translation": {"hymt2": get_hymt2_status()},
+        "legacy": get_legacy_files_status(),
     }
