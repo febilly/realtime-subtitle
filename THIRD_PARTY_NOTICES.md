@@ -15,6 +15,7 @@ executable by PyInstaller) are listed with their licenses in
 | mecab-ipadic dictionary (prebuilt for kuromoji.js) | `static/kuromoji/dict/*.dat.gz` | 2.7.0-20070801, unmodified | IPADIC license (NAIST / ICOT) — [static/kuromoji/dict/LICENSE](static/kuromoji/dict/LICENSE) |
 | [Lucide](https://lucide.dev/) icons (subset of `lucide-static`) | `static/icons/lucide-sprite.svg` | 1.21.0 | ISC; Feather-derived icons also MIT — see below |
 | [libopus](https://opus-codec.org/) | `libopus/win64/opus.dll` | prebuilt Windows x64 DLL | BSD-3-Clause — see below |
+| llama.cpp ctypes bindings, from [Qwen3-ASR-GGUF](https://github.com/HaujetZhao/Qwen3-ASR-GGUF) via [Yakutan](https://github.com/KKTIME2024/Yakutan) | `local_inference/vendor/qwen_asr_gguf/inference/llama.py` | modified | Yakutan: MIT. The Qwen3-ASR-GGUF repository declares no license. |
 
 The full texts of the licenses that are not stored next to the component are
 reproduced below.

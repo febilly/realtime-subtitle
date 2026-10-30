@@ -1,0 +1,8 @@
+# Tests and dev tools; not bundled into the packaged exe.
+-r requirements.txt
+pytest
+pytest-asyncio
+# Opus decoder for tests/ (the app itself encodes with libopus, see opus_native.py).
+av==16.1.0
+# Language filter in tools/refine_benchmark.py
+langid
