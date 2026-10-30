@@ -14,8 +14,7 @@ from PyInstaller.utils.win32.versioninfo import (
 )
 
 datas = [('static', 'static'), ('resources', 'resources'), ('ACKNOWLEDGMENTS.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.'),
-    # Dynamic qwen_asr_gguf import: keep the vendored Python package as files so
-    # ensure_vendor_sources() can validate it in the one-file extraction dir.
+    # Vendored llama.cpp ctypes bindings (qwen_asr_gguf/inference/llama.py), kept as files.
     ('local_inference/vendor/qwen_asr_gguf', 'local_inference/vendor/qwen_asr_gguf'),
 ]
 binaries = []
@@ -23,7 +22,8 @@ binaries = []
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',
                  'provider_setup', 'soniox_session', 'gemini_session', 'soniox_client', 'gemini_client',
                  'local_session', 'local_client', 'local_relay', 'local_inference.recognizer',
-                 'local_inference.asr_qwen3', 'local_inference.vad_processor',
+                 'local_inference.asr_qwen3', 'local_inference.qwen3_asr_mtmd',
+                 'local_inference.mtmd_audio', 'local_inference.vad_processor',
                  'local_inference.remote_client', 'local_inference.subtitle_pipeline',
                  'local_inference.subtitle_segments', 'local_inference.model_manager',
                  'local_inference.repetition_guard',

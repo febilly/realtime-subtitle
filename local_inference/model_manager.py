@@ -22,8 +22,11 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 VENDOR_DIR = PACKAGE_DIR / "vendor"
 
-QWEN3_ASR_DIR_NAME = "qwen3-asr"
-QWEN_LLAMA_VULKAN_BIN_DIR_NAME = "qwen_llama_vulkan_bin"
+QWEN3_ASR_DIR_NAME = "qwen3-asr-gguf"
+# The tag is part of the folder name: the ctypes bindings in vendor llama.py and
+# mtmd_audio.py follow this build's headers, so an older runtime must not be picked up.
+LLAMA_CPP_TAG = "b11985"
+QWEN_LLAMA_VULKAN_BIN_DIR_NAME = f"llama_vulkan_{LLAMA_CPP_TAG}"
 SILERO_VAD_DIR_NAME = "silero_vad"
 SILERO_VAD_ONNX_NAME = "silero_vad_16k_op15.onnx"
 HYMT2_DIR_NAME = "hymt2"
@@ -36,27 +39,41 @@ NEMOTRON_BOUNDARY_FILES = (
     "joiner.int8.onnx",
     "tokens.txt",
 )
-QWEN3_ASR_FILES = (
-    "qwen3_asr_encoder_frontend.int4.onnx",
-    "qwen3_asr_encoder_backend.int4.onnx",
-    "qwen3_asr_llm.q4_k.gguf",
-)
-QWEN3_ASR_MODEL_URL = (
-    "https://github.com/HaujetZhao/Qwen3-ASR-GGUF/releases/download/models/"
-    "Qwen3-ASR-1.7B-gguf.zip"
-)
+# Official llama.cpp conversions (decoder GGUF + mmproj audio encoder). The repos
+# only carry Q8_0 and bf16; smaller decoders are made locally with llama-quantize,
+# which ships in the runtime zip. Measured 2026-10-30 (FLEURS + live clips, 3080):
+# Q6_K matched Q8_0 accuracy; Q4_K_M requantized from Q8_0 lost ~2 points WER on
+# casual English; a bf16 encoder was no better than Q8_0 and cost 270 MB VRAM.
+QWEN3_ASR_VARIANTS = {
+    "1.7B": {
+        "repo": "ggml-org/Qwen3-ASR-1.7B-GGUF",
+        "source": "Qwen3-ASR-1.7B-Q8_0.gguf",
+        "decoder": "Qwen3-ASR-1.7B-Q6_K.gguf",
+        "quantize": "Q6_K",
+        "mmproj": "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
+    },
+    "0.6B": {
+        "repo": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+        "source": "Qwen3-ASR-0.6B-Q8_0.gguf",
+        "decoder": "Qwen3-ASR-0.6B-Q8_0.gguf",
+        "quantize": None,
+        "mmproj": "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
+    },
+}
 LLAMA_CPP_DLL_URL_TEMPLATE = (
     "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/"
     "llama-{tag}-bin-win-vulkan-x64.zip"
 )
-LLAMA_CPP_LATEST_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+# llama-quantize and the libraries it loads; used once to shrink the decoder.
+_QUANTIZE_TOOL = ("llama-quantize.exe", "llama-quantize-impl.dll", "llama-common.dll")
 SILERO_VAD_ONNX_URL = (
     "https://raw.githubusercontent.com/snakers4/silero-vad/master/"
     f"src/silero_vad/data/{SILERO_VAD_ONNX_NAME}"
 )
-_MODEL_SIZE_BYTES = {"silero-vad": 1_300_000, "qwen3-asr": 1_500_000_000, "hymt2": 1_100_000_000}
+# qwen3-asr: the Q8_0 decoder + Q8_0 encoder downloaded (requantized to Q6_K afterwards).
+_MODEL_SIZE_BYTES = {"silero-vad": 1_300_000, "qwen3-asr": 2_520_000_000, "hymt2": 1_100_000_000}
 # Rough VRAM while loaded (weights + KV cache + runtime), shown before download.
-_MODEL_VRAM_BYTES = {"qwen3-asr": 2_000_000_000, "hymt2": 1_500_000_000}
+_MODEL_VRAM_BYTES = {"qwen3-asr": 2_150_000_000, "hymt2": 1_500_000_000}
 
 HYMT2_REPO_ID = "febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF"
 # The repo also carries an .imatrix.gguf (quantization calibration data);
@@ -108,14 +125,28 @@ def _find_dir(name: str, ready) -> Path | None:
     return None
 
 
+def qwen3_asr_variant() -> dict:
+    import config
+
+    size = str(getattr(config, "LOCAL_QWEN_ASR_MODEL", "1.7B") or "1.7B")
+    variant = dict(QWEN3_ASR_VARIANTS.get(size) or QWEN3_ASR_VARIANTS["1.7B"])
+    # Experiments: other files in the same folder, without touching the table.
+    for key, name in (("decoder", "LOCAL_QWEN_ASR_DECODER_FILE"), ("mmproj", "LOCAL_QWEN_ASR_MMPROJ_FILE")):
+        override = str(getattr(config, name, "") or "").strip()
+        if override:
+            variant[key] = override
+    return variant
+
+
 def _qwen_model_ready(path: Path) -> bool:
-    return path.is_dir() and all((path / filename).is_file() for filename in QWEN3_ASR_FILES)
+    variant = qwen3_asr_variant()
+    return path.is_dir() and all((path / variant[key]).is_file() for key in ("decoder", "mmproj"))
 
 
 def _runtime_names() -> tuple[str, ...]:
     if sys.platform == "win32":
-        return ("llama.dll", "ggml.dll", "ggml-base.dll", "libomp140.x86_64.dll")
-    return ("libllama.so", "libggml.so", "libggml-base.so")
+        return ("llama.dll", "ggml.dll", "ggml-base.dll", "ggml-vulkan.dll", "mtmd.dll")
+    return ("libllama.so", "libggml.so", "libggml-base.so", "libmtmd.so")
 
 
 def _runtime_ready(path: Path) -> bool:
@@ -131,20 +162,6 @@ def qwen_llama_bin_dir() -> Path:
     found = _find_dir(QWEN_LLAMA_VULKAN_BIN_DIR_NAME, _runtime_ready)
     if found is not None:
         return found
-    bundled = VENDOR_DIR / "qwen_asr_gguf" / "inference" / "bin"
-    if _runtime_ready(bundled):
-        return bundled
-    legacy_bundle = (
-        PROJECT_ROOT.parent.parent
-        / "funasr"
-        / "local_inference"
-        / "vendor"
-        / "qwen_asr_gguf"
-        / "inference"
-        / "bin"
-    )
-    if _runtime_ready(legacy_bundle):
-        return legacy_bundle
     return MODELS_DIR / QWEN_LLAMA_VULKAN_BIN_DIR_NAME
 
 
@@ -199,28 +216,24 @@ def prepare_qwen_llama_runtime_env() -> None:
     os.environ["GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM"] = "1"
 
 
-def ensure_vendor_sources(engine: str) -> Path | None:
-    if engine != "qwen3-asr":
-        raise ValueError(f"Unknown local ASR engine: {engine}")
-    base = VENDOR_DIR / "qwen_asr_gguf"
-    required = (
-        "asr_engine.py",
-        "inference/asr.py",
-        "inference/schema.py",
-        "inference/encoder.py",
-        "inference/llama.py",
-        "inference/utils.py",
-    )
-    if not all((base / name).is_file() for name in required):
-        raise RuntimeError("Bundled Qwen3-ASR runtime sources are incomplete")
-    return base
-
-
 def get_local_model_path(engine: str) -> str | None:
     if engine != "qwen3-asr":
         return None
     found = _find_dir(QWEN3_ASR_DIR_NAME, _qwen_model_ready)
     return str(found) if found else None
+
+
+def get_qwen3_asr_files(model_dir: str | None = None) -> tuple[Path, Path] | None:
+    """(decoder GGUF, mmproj GGUF) of the configured variant, or None when not downloaded."""
+    base = Path(model_dir) if model_dir else None
+    if base is None:
+        found = get_local_model_path("qwen3-asr")
+        if not found:
+            return None
+        base = Path(found)
+    variant = qwen3_asr_variant()
+    decoder, mmproj = base / variant["decoder"], base / variant["mmproj"]
+    return (decoder, mmproj) if decoder.is_file() and mmproj.is_file() else None
 
 
 def _nemotron_boundary_ready(path: Path) -> bool:
@@ -532,12 +545,7 @@ def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
     if sys.platform != "win32":
         raise RuntimeError("Automatic llama.cpp runtime download is currently supported on Windows only")
     destination.mkdir(parents=True, exist_ok=True)
-    try:
-        request = Request(LLAMA_CPP_LATEST_API, headers={"User-Agent": "RealtimeSubtitle"})
-        with urlopen(request, timeout=15) as response:
-            tag = json.loads(response.read())["tag_name"]
-    except Exception:
-        tag = "b8391"
+    tag = LLAMA_CPP_TAG
     archive_path = MODELS_DIR / f"llama-cpp-vulkan-{tag}.zip"
     _download_file(
         LLAMA_CPP_DLL_URL_TEMPLATE.format(tag=tag), archive_path, "llama-runtime", progress_callback,
@@ -547,28 +555,68 @@ def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
             name = os.path.basename(member)
             if not name:
                 continue
-            if name in _runtime_names() or name.startswith("ggml-") and name.endswith(".dll"):
+            if name in _runtime_names() or name in _QUANTIZE_TOOL or (
+                name.endswith(".dll") and name.startswith(("ggml-", "libomp"))
+            ):
                 with archive.open(member) as source, open(destination / name, "wb") as target:
                     shutil.copyfileobj(source, target)
     archive_path.unlink(missing_ok=True)
 
 
+def _download_hf_file(repo_id: str, filename: str, dest: Path, stage: str, progress_callback=None) -> None:
+    failures: list[str] = []
+    for endpoint in _ordered_hf_endpoints(repo_id, filename):
+        host = urlparse(endpoint).netloc or endpoint
+        try:
+            logger.info("Downloading %s from %s", filename, host)
+            _stream_download(_hf_file_url(endpoint, repo_id, filename), dest, stage, progress_callback)
+            return
+        except DownloadCancelled:
+            raise
+        except Exception as exc:
+            logger.warning("%s download from %s failed: %s", filename, host, exc)
+            failures.append(f"{host}: {exc}")
+    raise RuntimeError(f"{filename} download failed (" + "; ".join(failures) + ")")
+
+
+def _quantize_gguf(source: Path, dest: Path, qtype: str, progress_callback=None) -> None:
+    tool = qwen_llama_bin_dir() / "llama-quantize.exe"
+    if not tool.is_file():
+        raise RuntimeError(f"llama-quantize not found in {tool.parent}")
+    _report(progress_callback, "qwen3-asr-quantize", 0, None)
+    part = dest.with_name(dest.name + ".part")
+    # Requantizing the official Q8_0 instead of downloading the 4 GB bf16.
+    result = subprocess.run(
+        [str(tool), "--allow-requantize", str(source), str(part), qtype],
+        cwd=str(tool.parent),
+        capture_output=True,
+        text=True,
+        errors="replace",
+        **({"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}),
+    )
+    if result.returncode != 0 or not part.is_file():
+        part.unlink(missing_ok=True)
+        tail = (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+        raise RuntimeError(f"llama-quantize failed ({result.returncode}): {' | '.join(tail)}")
+    os.replace(part, dest)
+
+
 def download_qwen3_asr(progress_callback=None) -> None:
-    ensure_vendor_sources("qwen3-asr")
+    variant = qwen3_asr_variant()
     model_dir = MODELS_DIR / QWEN3_ASR_DIR_NAME
     model_dir.mkdir(parents=True, exist_ok=True)
-    if not _qwen_model_ready(model_dir):
-        archive_path = MODELS_DIR / "qwen3-asr-1.7b-gguf.zip"
-        _download_file(QWEN3_ASR_MODEL_URL, archive_path, "qwen3-asr", progress_callback)
-        _report(progress_callback, "qwen3-asr-extract", 0, None)
-        with zipfile.ZipFile(archive_path, "r") as archive:
-            for member in archive.namelist():
-                name = os.path.basename(member)
-                if name in QWEN3_ASR_FILES:
-                    with archive.open(member) as source, open(model_dir / name, "wb") as target:
-                        shutil.copyfileobj(source, target)
-        archive_path.unlink(missing_ok=True)
     _ensure_llama_runtime(progress_callback)
+    mmproj = model_dir / variant["mmproj"]
+    if not mmproj.is_file():
+        _download_hf_file(variant["repo"], variant["mmproj"], mmproj, "qwen3-asr-encoder", progress_callback)
+    decoder = model_dir / variant["decoder"]
+    if not decoder.is_file():
+        source = model_dir / variant["source"]
+        if not source.is_file():
+            _download_hf_file(variant["repo"], variant["source"], source, "qwen3-asr", progress_callback)
+        if variant.get("quantize") and source != decoder:
+            _quantize_gguf(source, decoder, variant["quantize"], progress_callback)
+            source.unlink(missing_ok=True)
 
 
 def _ensure_llama_runtime(progress_callback=None) -> None:

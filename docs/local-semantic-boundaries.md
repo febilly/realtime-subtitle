@@ -178,8 +178,8 @@ LOCAL_SEMANTIC_BOUNDARY_SCOUT_THREADS=2
 - 切点误差与任何超过 150ms 的语音缺失；
 - reset 前后 CER/WER；
 - 翻译重复、漏词、revision；
-- `onnx_encode`、`prefill_positions`、`llm_generate`、wall compute/min；
+- `encode`、`prefill_positions`、`llm_generate`、wall compute/min；
 - CPU、RSS、GPU 与队列积压。
 
-Qwen DirectML encoder 当前固定 pad 到 30 秒，因此缩短输入会明显降低音频窗口和 LLM prefill，但 ONNX encoder 时间不一定同比下降。本次没有把“裁掉 38%--41% 历史音频”误报成“总算力下降同样比例”；真实长讲话的 wall compute/min 仍需单独验收。
+（写于 ONNX DirectML 编码器时期：当时编码器固定 pad 到 30 秒，缩短输入只降低 LLM prefill，编码时间不一定同比下降。现在编码器走 llama.cpp mtmd，按 8 秒窗口编码，不再 pad 到 30 秒。）本次没有把“裁掉 38%--41% 历史音频”误报成“总算力下降同样比例”；真实长讲话的 wall compute/min 仍需单独验收。
 另外，开启后会把边界扫描从原有约 4 秒 cadence 提高到 1 秒，且每个已确认边界还有两端 guard 与最多四次二分探针；在完成 semantic-off baseline 前，不能断言总 compute 已下降。

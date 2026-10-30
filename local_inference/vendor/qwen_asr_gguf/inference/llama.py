@@ -45,19 +45,19 @@ class llama_model_params(ctypes.Structure):
         ("tensor_buft_overrides", ctypes.POINTER(ctypes.c_void_p)),
         ("n_gpu_layers", ctypes.c_int32),
         ("split_mode", ctypes.c_int32),
+        ("load_mode", ctypes.c_int32),
+        ("lazy_mode", ctypes.c_int32),
         ("main_gpu", ctypes.c_int32),
         ("tensor_split", ctypes.POINTER(ctypes.c_float)),
         ("progress_callback", ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_float, ctypes.c_void_p)),
         ("progress_callback_user_data", ctypes.c_void_p),
         ("kv_overrides", ctypes.POINTER(ctypes.c_void_p)),
         ("vocab_only", ctypes.c_bool),
-        ("use_mmap", ctypes.c_bool),
-        ("use_direct_io", ctypes.c_bool),
-        ("use_mlock", ctypes.c_bool),
         ("check_tensors", ctypes.c_bool),
         ("use_extra_bufts", ctypes.c_bool),
         ("no_host", ctypes.c_bool),
         ("no_alloc", ctypes.c_bool),
+        ("load_mtp", ctypes.c_bool),
     ]
 
 class llama_context_params(ctypes.Structure):
@@ -66,8 +66,12 @@ class llama_context_params(ctypes.Structure):
         ("n_batch", ctypes.c_uint32),
         ("n_ubatch", ctypes.c_uint32),
         ("n_seq_max", ctypes.c_uint32),
+        ("n_rs_seq", ctypes.c_uint32),
+        ("n_outputs_max", ctypes.c_uint32),
+        ("n_outputs_max_per_seq", ctypes.c_uint32),
         ("n_threads", ctypes.c_int32),
         ("n_threads_batch", ctypes.c_int32),
+        ("ctx_type", ctypes.c_int32),
         ("rope_scaling_type", ctypes.c_int32),
         ("pooling_type", ctypes.c_int32),
         ("attention_type", ctypes.c_int32),
@@ -84,6 +88,7 @@ class llama_context_params(ctypes.Structure):
         ("cb_eval_user_data", ctypes.c_void_p),
         ("type_k", ctypes.c_int32),
         ("type_v", ctypes.c_int32),
+        ("moe_cache_size", ctypes.c_size_t),
         ("abort_callback", ctypes.c_void_p),
         ("abort_callback_data", ctypes.c_void_p),
         ("embeddings", ctypes.c_bool),
@@ -94,6 +99,7 @@ class llama_context_params(ctypes.Structure):
         ("kv_unified", ctypes.c_bool),
         ("samplers", ctypes.POINTER(ctypes.c_void_p)),
         ("n_samplers", ctypes.c_size_t),
+        ("ctx_other", ctypes.c_void_p),
     ]
 
 class llama_sampler_chain_params(ctypes.Structure):
@@ -408,7 +414,7 @@ def init_llama_lib():
     llama_sampler_init_min_p.restype = ctypes.c_void_p
 
     llama_sampler_init_penalties = llama.llama_sampler_init_penalties
-    llama_sampler_init_penalties.argtypes = [ctypes.c_int32, ctypes.c_float, ctypes.c_float, ctypes.c_float]
+    llama_sampler_init_penalties.argtypes = [ctypes.c_int32, ctypes.c_int32, ctypes.c_float, ctypes.c_float, ctypes.c_float]
     llama_sampler_init_penalties.restype = ctypes.c_void_p
 
     llama_sampler_accept = llama.llama_sampler_accept
@@ -497,6 +503,7 @@ class LlamaModel:
             
         self.vocab = llama_model_get_vocab(self.ptr)
         self.n_embd = llama_model_n_embd(self.ptr)
+        self.n_vocab = llama_vocab_n_tokens(self.vocab)
         self.eos_token = llama_vocab_eos(self.vocab)
 
     def tokenize(self, text: str, add_special: bool = False, parse_special: bool = True) -> List[int]:
@@ -538,9 +545,16 @@ class LlamaContext:
     """上下文的面向对象封装"""
     def __init__(self, model, n_ctx=2048, n_batch=2048, n_ubatch=512, n_seq_max=1, 
                  embeddings=False, pooling_type=0, flash_attn=True, 
-                 offload_kqv=True, no_perf=True, n_threads=None, n_threads_batch=None):
+                 offload_kqv=True, no_perf=True, n_threads=None, n_threads_batch=None,
+                 type_kv=None, n_outputs_max=0):
         self.model = model # 保持模型引用防止被释放
         params = llama_context_default_params()
+        # Rows of logits one ubatch may return (0 = n_batch). The logits buffer on the
+        # GPU is sized for this, ~0.6 MB per row with a 150k vocab.
+        params.n_outputs_max = n_outputs_max
+        if type_kv is not None:  # ggml_type, e.g. 8 = Q8_0 (needs flash attention for V)
+            params.type_k = type_kv
+            params.type_v = type_kv
         params.n_ctx = n_ctx
         params.n_batch = n_batch
         params.n_ubatch = n_ubatch
@@ -733,10 +747,10 @@ class LlamaSampler:
 
         # 2. Penalties (重复/频率/存在惩罚)
         has_penalty = (repeat_penalty != 1.0 or frequency_penalty != 0.0 or presence_penalty != 0.0)
-        if has_penalty:
-            # llama.cpp 会自动管理历史 rings
+        if has_penalty and n_vocab > 0:
+            # llama.cpp 会自动管理历史 rings；新版接口要求传入词表大小
             llama_sampler_chain_add(self.ptr, llama_sampler_init_penalties(
-                penalty_last_n, repeat_penalty, frequency_penalty, presence_penalty
+                n_vocab, penalty_last_n, repeat_penalty, frequency_penalty, presence_penalty
             ))
 
         # 3. 采样过滤器 (顺序很重要)

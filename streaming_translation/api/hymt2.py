@@ -279,7 +279,9 @@ class HyMT2LocalEngine:
             cached, self._cached_tokens = self._cached_tokens, []
             n_new = self._prefill(tokens, cached)
 
-            sampler = self._LlamaSampler(temperature=0.0, repeat_penalty=repeat_penalty)
+            sampler = self._LlamaSampler(
+                temperature=0.0, repeat_penalty=repeat_penalty, n_vocab=self.model.n_vocab
+            )
             try:
                 use_draft = bool(getattr(_config, "LOCAL_SPECULATIVE_DECODE", True))
                 gen = self._spec.generate(

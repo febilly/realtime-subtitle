@@ -503,7 +503,14 @@ LOCAL_SEMANTIC_BOUNDARY_QWEN_LOCATOR_RESOLUTION_MS = max(
     80, _env_int("LOCAL_SEMANTIC_BOUNDARY_QWEN_LOCATOR_RESOLUTION_MS", 160)
 )
 
+# Qwen3-ASR size ("1.7B" or "0.6B"); files per size are in model_manager.QWEN3_ASR_VARIANTS.
+LOCAL_QWEN_ASR_MODEL = _env_str("LOCAL_QWEN_ASR_MODEL", "1.7B").strip() or "1.7B"
+# Experiments only: other decoder / mmproj file names in the same model folder.
+LOCAL_QWEN_ASR_DECODER_FILE = _env_str("LOCAL_QWEN_ASR_DECODER_FILE", "").strip()
+LOCAL_QWEN_ASR_MMPROJ_FILE = _env_str("LOCAL_QWEN_ASR_MMPROJ_FILE", "").strip()
 LOCAL_QWEN_ASR_N_CTX = max(512, _env_int("LOCAL_QWEN_ASR_N_CTX", 2048))
+# Q8_0 KV cache for the ASR decoder (half the f16 size).
+LOCAL_QWEN_ASR_KV_Q8 = _env_bool("LOCAL_QWEN_ASR_KV_Q8", True)
 LOCAL_QWEN_CONTEXT_MAX_TOKENS = max(0, _env_int("LOCAL_QWEN_CONTEXT_MAX_TOKENS", 1024))
 LOCAL_QWEN_LOG_PIPELINE_TIMING = _env_bool("LOCAL_QWEN_LOG_PIPELINE_TIMING", True)
 LOCAL_SPECULATIVE_DECODE = _env_bool("LOCAL_SPECULATIVE_DECODE", True)
@@ -522,8 +529,8 @@ LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS = max(
 LOCAL_MT_PROMPT_CACHE = _env_bool("LOCAL_MT_PROMPT_CACHE", True)
 
 # Conservative estimates used only for GPU auto-selection.
-QWEN3_ASR_VRAM_MB = max(0, _env_int("QWEN3_ASR_VRAM_MB", 1612))
-QWEN3_ASR_ENCODER_VRAM_MB = max(0, _env_int("QWEN3_ASR_ENCODER_VRAM_MB", 465))
+QWEN3_ASR_VRAM_MB = max(0, _env_int("QWEN3_ASR_VRAM_MB", 1530))
+QWEN3_ASR_ENCODER_VRAM_MB = max(0, _env_int("QWEN3_ASR_ENCODER_VRAM_MB", 510))
 HYMT2_VRAM_MB = max(0, _env_int("HYMT2_VRAM_MB", 1402))
 
 

@@ -5,7 +5,8 @@ websockets
 soundcard
 numpy<2.0.0
 # On-device Qwen3-ASR + Hy-MT2 runtime (models are downloaded/installed separately).
-onnxruntime-directml>=1.19.0
+# Silero VAD only (CPU); Qwen3-ASR runs entirely on llama.cpp.
+onnxruntime>=1.19.0
 gguf>=0.18.0
 ten-vad
 # Optional alternative VAD backend (not bundled in the packaged exe).
