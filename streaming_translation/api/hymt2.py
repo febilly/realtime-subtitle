@@ -897,7 +897,7 @@ class HyMT2API(BaseTranslationAPI):
                 current_source=text,
             )
 
-            prompt = f"<｜hy_User｜>{content}<｜hy_Assistant｜>"
+            prompt = f"<｜hy_begin▁of▁sentence｜><｜hy_User｜>{content}<｜hy_Assistant｜>"
             if self._local_engine is None:
                 display = ""
             else:

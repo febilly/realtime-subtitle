@@ -38,7 +38,7 @@ def test_local_row_prompt_matches_training_template_and_ignores_following_source
     # Same text the LoRA was trained on (hy-mt-2-lora v4/pipeline/prompt_v4.py):
     # at most five translated history pairs, no following-source section.
     assert prompt == (
-        "<｜hy_User｜>[Background Information]\n"
+        "<｜hy_begin▁of▁sentence｜><｜hy_User｜>[Background Information]\n"
         "Recent utterances and their translations:\n"
         "S2 → T2\nS3 → T3\nS4 → T4\nS5 → T5\nS6 → T6\n\n"
         "When the source meaning has not changed, preserve the still-correct prefix "
@@ -75,7 +75,7 @@ def test_local_no_context_prompt_stays_on_the_existing_simple_path():
 
     prompt, _draft = api._local_engine.prompts[0]
     assert prompt == (
-        "<｜hy_User｜>Translate the following text from English into Chinese. Note that you should "
+        "<｜hy_begin▁of▁sentence｜><｜hy_User｜>Translate the following text from English into Chinese. Note that you should "
         "only output the translated result without any additional explanation:\n\n"
         "Hello<｜hy_Assistant｜>"
     )
