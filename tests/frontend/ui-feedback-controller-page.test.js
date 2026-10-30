@@ -77,7 +77,7 @@ describe('full-page UI feedback controller wiring', () => {
             const toastItem = toast.querySelector('.toast');
             expect(toast.hidden).toBe(false);
             expect(toastItem.classList.contains('error')).toBe(true);
-            expect(toast.textContent).toContain('Credits or free quota exhausted.');
+            expect(toast.textContent).toContain('Your credits and free quota are used up.');
             const action = toast.querySelector('.toast-action');
             expect(action.textContent).toBe('Open settings');
 

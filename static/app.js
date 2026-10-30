@@ -842,7 +842,7 @@ const appShellController = AppShellController.create({
     },
 });
 
-let checkingGeminiQuota = false;
+let checkingAlternativeQuota = false;
 let handlingTemporaryKeySessionExpiry = false;
 const TEMPORARY_KEY_SESSION_LIMIT_TEXT = 'temporary api key session duration limit exceeded';
 const MINIMUM_RECOVERY_CREDITS = 20;
@@ -906,23 +906,59 @@ function openInviteRewardsPage() {
     void hostedAccount.openUserWeb('/invite');
 }
 
-function showStandardBillingExhaustedToast() {
-    const canPurchaseCredits = !!creditsPurchaseUrl;
-    const toastOptions = {
-        timeoutMs: 8000,
-        actionLabel: t(canPurchaseCredits ? 'get_more_credits' : 'open_settings'),
-        onAction: canPurchaseCredits
-            ? openCreditsPurchasePage
-            : () => settingsFlowController.open({ forced: false }),
-    };
-    if (canPurchaseCredits) {
-        toastOptions.actions = [
-            { label: t('get_more_credits'), onAction: openCreditsPurchasePage },
-            { label: t('invite_friends_for_rewards'), onAction: openInviteRewardsPage },
-        ];
-        toastOptions.actionSeparator = t('billing_offer_or');
+const PROVIDER_LABELS = Object.freeze({ soniox: 'Soniox', gemini: 'Gemini' });
+
+function billingExhaustedActions(switchTo) {
+    const actions = [];
+    if (switchTo) {
+        actions.push({
+            label: t('billing_switch_to', { provider: PROVIDER_LABELS[switchTo] }),
+            onAction: () => { void switchHostedProvider(switchTo); },
+        });
     }
-    showToast(t('relay_err_billing_exhausted'), true, toastOptions);
+    if (creditsPurchaseUrl) {
+        actions.push({ label: t('get_more_credits'), onAction: openCreditsPurchasePage });
+        actions.push({ label: t('invite_friends_for_rewards'), onAction: openInviteRewardsPage });
+    } else if (!switchTo) {
+        actions.push({ label: t('open_settings'), onAction: () => settingsFlowController.open({ forced: false }) });
+    }
+    return actions;
+}
+
+function showStandardBillingExhaustedToast() {
+    showToast(t('billing_exhausted_body'), true, {
+        title: t('billing_exhausted_title'),
+        actions: billingExhaustedActions(null),
+    });
+}
+
+/**
+ * When an exhausted stream was living on a daily free pool, the useful thing
+ * to say is when it comes back: the next UTC midnight, in the user's own clock
+ * and named as today or tomorrow by the user's own calendar.
+ */
+function dailyFreeResetText(balance, nowDate = new Date()) {
+    const pools = balance && balance.free && Array.isArray(balance.free.pools) ? balance.free.pools : [];
+    const daily = pools.find((pool) => pool.period === 'daily' && !pool.unlimited);
+    if (!daily || Number(daily.remaining || 0) > 0) return null;
+    const reset = new Date(Date.UTC(nowDate.getUTCFullYear(), nowDate.getUTCMonth(), nowDate.getUTCDate() + 1));
+    const sameLocalDay = reset.getFullYear() === nowDate.getFullYear()
+        && reset.getMonth() === nowDate.getMonth()
+        && reset.getDate() === nowDate.getDate();
+    const time = reset.toLocaleTimeString(I18N.lang, { hour: '2-digit', minute: '2-digit' });
+    return t('billing_daily_reset', {
+        day: t(sameLocalDay ? 'billing_reset_today' : 'billing_reset_tomorrow'),
+        time,
+    });
+}
+
+function providerIsUsable(balance) {
+    // A subscription funds a provider just as well as its free pool does.
+    // Prepaid credits are deliberately left out: the offer only ever proposes
+    // quota the account has already paid for or been given.
+    return !!balance
+        && (Hosted.Billing.hasUsableFreePool(balance.free)
+            || Hosted.Billing.hasUsableSubscription(balance.subscriptions));
 }
 
 async function switchHostedProvider(provider) {
@@ -958,10 +994,6 @@ async function switchHostedProvider(provider) {
     return true;
 }
 
-function switchToGeminiAfterQuotaExhaustion() {
-    return switchHostedProvider('gemini');
-}
-
 // The server decides when to show these and what they say; we only render them.
 function showServerNotice(notice) {
     if (!notice || typeof notice.message !== 'string' || !notice.message.trim()) return;
@@ -982,44 +1014,39 @@ function showServerNotice(notice) {
 
 async function handleBillingExhausted() {
     hostedBalance.expand();
-    if (checkingGeminiQuota) return;
-    if (translationProvider !== 'soniox' || settingsPorts.getConnectionMode() !== 'relay') {
+    if (checkingAlternativeQuota) return;
+    const current = translationProvider;
+    if (!PROVIDER_LABELS[current] || settingsPorts.getConnectionMode() !== 'relay') {
         showStandardBillingExhaustedToast();
         return;
     }
-    checkingGeminiQuota = true;
-    const geminiBalance = await hostedBalance.fetchProviderBalance('gemini');
-    checkingGeminiQuota = false;
-    // A subscription funds Gemini just as well as its free pool does, and the
-    // balance endpoint already narrows the pools to the model this switch would
-    // use, so quota bought for Gemini must not be overlooked here. Prepaid
-    // credits are deliberately left out: the offer only ever proposes quota the
-    // account has already paid for or been given.
-    const geminiIsUsable = !!geminiBalance
-        && (Hosted.Billing.hasUsableFreePool(geminiBalance.free)
-            || Hosted.Billing.hasUsableSubscription(geminiBalance.subscriptions));
-    if (!geminiIsUsable) {
+    const alternative = current === 'soniox' ? 'gemini' : 'soniox';
+    checkingAlternativeQuota = true;
+    const [currentBalance, alternativeBalance] = await Promise.all([
+        hostedBalance.fetchProviderBalance(current),
+        hostedBalance.fetchProviderBalance(alternative),
+    ]);
+    checkingAlternativeQuota = false;
+    const resetText = dailyFreeResetText(currentBalance);
+    const switchTo = providerIsUsable(alternativeBalance) ? alternative : null;
+    if (!resetText && !switchTo) {
         showStandardBillingExhaustedToast();
         return;
     }
-    const toastOptions = {
-        timeoutMs: 12000,
-        actionLabel: t('billing_gemini_offer_action'),
-        actionSuffix: t('billing_gemini_offer_after'),
-        onAction: () => { void switchToGeminiAfterQuotaExhaustion(); },
-    };
-    if (creditsPurchaseUrl) {
-        toastOptions.actions = [
-            {
-                label: t('billing_gemini_offer_action'),
-                onAction: () => { void switchToGeminiAfterQuotaExhaustion(); },
-            },
-            { label: t('get_more_credits'), onAction: openCreditsPurchasePage },
-            { label: t('invite_friends_for_rewards'), onAction: openInviteRewardsPage },
-        ];
-        toastOptions.actionSeparator = t('billing_offer_or');
+    const lines = [];
+    if (resetText) lines.push(resetText);
+    if (switchTo) {
+        // Gemini only offers the fast translation mode, so say so up front.
+        lines.push(t(switchTo === 'gemini' ? 'billing_alternative_body_fast' : 'billing_alternative_body', {
+            provider: PROVIDER_LABELS[switchTo],
+        }));
     }
-    showToast(t('billing_gemini_offer_before'), true, toastOptions);
+    showToast(lines.join('\n'), true, {
+        title: t(resetText ? 'billing_daily_free_title' : 'billing_provider_exhausted_title', {
+            provider: PROVIDER_LABELS[current],
+        }),
+        actions: billingExhaustedActions(switchTo),
+    });
 }
 
 const sessionFrameController = SessionFrameController.create({

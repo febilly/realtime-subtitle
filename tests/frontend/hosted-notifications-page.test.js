@@ -194,9 +194,11 @@ describe('hosted notification flows', () => {
             await page.flush(6);
 
             const toast = page.document.getElementById('toast');
-            expect(toast.textContent).toContain('switch to Gemini');
-            const actions = toast.querySelectorAll('.toast-action');
+            expect(toast.querySelector('.toast-title').textContent).toBe('Soniox quota used up');
+            expect(toast.querySelector('.toast-body').textContent).toContain('Gemini still has quota');
+            const actions = toast.querySelectorAll('.toast-actions .toast-action');
             expect(actions).toHaveLength(1);
+            expect(actions[0].textContent).toBe('Switch to Gemini');
             actions[0].click();
             await page.flush(16);
 
@@ -262,8 +264,8 @@ describe('hosted notification flows', () => {
             await page.flush(6);
 
             const toast = page.document.getElementById('toast');
-            expect(toast.textContent).toContain('switch to Gemini');
-            expect(toast.textContent).not.toContain('Credits or free quota exhausted.');
+            expect(toast.textContent).toContain('Switch to Gemini');
+            expect(toast.textContent).not.toContain('Your credits and free quota are used up.');
         } finally {
             page.close();
         }
@@ -316,13 +318,12 @@ describe('hosted notification flows', () => {
             const toast = page.document.getElementById('toast');
             const actions = toast.querySelectorAll('.toast-action');
             expect([...actions].map((action) => action.textContent)).toEqual([
-                'switch to Gemini',
+                'Switch to Gemini',
                 'get more Credits',
                 'invite friends for rewards',
             ]);
-            expect(toast.textContent).toContain(
-                'switch to Gemini or get more Credits or invite friends for rewards',
-            );
+            expect(toast.querySelectorAll('.toast-actions .toast-action')).toHaveLength(3);
+            expect(toast.querySelector('.toast-action-separator')).toBeNull();
 
             actions[2].click();
             await page.flush(4);
@@ -339,6 +340,109 @@ describe('hosted notification flows', () => {
             expect(page.fetchCalls.some(([url]) => (
                 new URL(String(url), 'http://localhost/').pathname === '/setup'
             ))).toBe(false);
+        } finally {
+            page.close();
+        }
+    });
+
+    it('tells a Gemini user when the daily free pool resets and offers unused Soniox quota', async () => {
+        const config = { ...hostedConfig, provider: 'gemini', translation_ui_mode: 'fast' };
+        const fetch = async (url, request = {}) => {
+            const parsed = new URL(String(url), 'http://localhost/');
+            if (parsed.pathname === '/account/invite') {
+                return { ok: true, status: 200, json: async () => ({ invited_users_count: 1 }) };
+            }
+            if (parsed.pathname === '/account/balance') {
+                const free = parsed.searchParams.get('provider') === 'gemini'
+                    ? { pools: [{ period: 'daily', used: 450, remaining: 0, max_credits: 450 }] }
+                    : { pools: [{ period: 'weekly', used: 0, remaining: 600, max_credits: 600 }] };
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({ prepaid_balance: 0, subscriptions: [], free }),
+                };
+            }
+            return defaultFetchResponse(url, { ...request, uiConfig: config });
+        };
+        const page = await createPageHarness({
+            fetch,
+            initialUiConfig: config,
+            uiConfig: config,
+            localStorage: storedHostedLogin(),
+        });
+        try {
+            await page.emitFrame({
+                type: 'session_disconnected',
+                code: 'billing_exhausted',
+                relay_terminal: true,
+            });
+            await page.flush(6);
+
+            const toast = page.document.getElementById('toast');
+            expect(toast.querySelector('.toast-title').textContent)
+                .toBe("Gemini's free quota for today is used up");
+            const body = toast.querySelector('.toast-body').textContent;
+            expect(body).toMatch(/It resets (today|tomorrow) at .+\. Come back then\./);
+            expect(body).toContain('Soniox still has quota you can switch to.');
+            expect([...toast.querySelectorAll('.toast-action')].map((action) => action.textContent))
+                .toEqual(['Switch to Soniox']);
+        } finally {
+            page.close();
+        }
+    });
+
+    it('shows the server Soniox reminder as a toast whose action switches to Soniox', async () => {
+        const config = { ...hostedConfig, provider: 'gemini', translation_ui_mode: 'fast' };
+        const fetch = async (url, request = {}) => {
+            const parsed = new URL(String(url), 'http://localhost/');
+            if (parsed.pathname === '/account/invite') {
+                return { ok: true, status: 200, json: async () => ({ invited_users_count: 1 }) };
+            }
+            if (parsed.pathname === '/setup') {
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({
+                        provider: 'soniox', mode: 'relay', logged_in: true,
+                        setup_required: false, boot_id: 'soniox-boot',
+                    }),
+                };
+            }
+            return defaultFetchResponse(url, { ...request, uiConfig: config });
+        };
+        const page = await createPageHarness({
+            fetch,
+            initialUiConfig: config,
+            uiConfig: config,
+            localStorage: storedHostedLogin(),
+        });
+        try {
+            await page.emitFrame({
+                type: 'server_notice',
+                notice: {
+                    id: 'soniox_quota',
+                    message: 'Try Soniox this week.',
+                    action: { label: 'Switch to Soniox', type: 'switch_provider', provider: 'soniox' },
+                    timeout_ms: 15000,
+                },
+            });
+            await page.flush(2);
+
+            const toast = page.document.getElementById('toast');
+            const item = toast.querySelector('.toast');
+            expect(item.textContent).toContain('Try Soniox this week.');
+            expect(item.classList.contains('error')).toBe(false);
+            const action = toast.querySelector('.toast-action');
+            expect(action.textContent).toBe('Switch to Soniox');
+            action.click();
+            await page.flush(16);
+
+            const setupCall = page.fetchCalls.find(([url]) => (
+                new URL(String(url), 'http://localhost/').pathname === '/setup'
+            ));
+            expect(JSON.parse(setupCall[1].body)).toMatchObject({ provider: 'soniox', mode: 'relay' });
+            expect(JSON.parse(page.window.localStorage.getItem('providerSettings.v1')).providerOverride)
+                .toBe('soniox');
         } finally {
             page.close();
         }
@@ -383,15 +487,13 @@ describe('hosted notification flows', () => {
             await page.flush(6);
 
             const toast = page.document.getElementById('toast');
-            expect(toast.textContent).toContain('Credits or free quota exhausted.');
+            expect(toast.querySelector('.toast-title').textContent).toBe('Out of quota');
+            expect(toast.querySelector('.toast-body').textContent).toBe('Your credits and free quota are used up.');
             const actions = toast.querySelectorAll('.toast-action');
             expect([...actions].map((action) => action.textContent)).toEqual([
                 'get more Credits',
                 'invite friends for rewards',
             ]);
-            expect(toast.textContent).toContain(
-                'get more Credits or invite friends for rewards',
-            );
 
             actions[0].click();
             expect(page.window.open).toHaveBeenCalledWith(

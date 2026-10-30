@@ -47,7 +47,19 @@
             const toast = documentRef.createElement('div');
             toast.className = 'toast';
             toast.setAttribute('role', isError ? 'alert' : 'status');
-            const text = documentRef.createElement('span');
+            // With a title the toast is laid out as title / body / a row of
+            // buttons, instead of running the buttons on inline after the text.
+            const titleText = toastOptions.title ? String(toastOptions.title) : '';
+            let actionHost = toast;
+            if (titleText) {
+                toast.classList.add('toast--structured');
+                const title = documentRef.createElement('strong');
+                title.className = 'toast-title';
+                title.textContent = titleText;
+                toast.appendChild(title);
+            }
+            const text = documentRef.createElement(titleText ? 'div' : 'span');
+            if (titleText) text.className = 'toast-body';
             text.textContent = messageText;
             toast.appendChild(text);
             const configuredActions = Array.isArray(toastOptions.actions)
@@ -60,12 +72,17 @@
                 : (toastOptions.actionLabel && typeof toastOptions.onAction === 'function'
                     ? [{ label: toastOptions.actionLabel, onAction: toastOptions.onAction }]
                     : []);
+            if (titleText && toastActions.length) {
+                actionHost = documentRef.createElement('div');
+                actionHost.className = 'toast-actions';
+                toast.appendChild(actionHost);
+            }
             toastActions.forEach((item, index) => {
-                if (index > 0 && toastOptions.actionSeparator) {
+                if (index > 0 && toastOptions.actionSeparator && !titleText) {
                     const separator = documentRef.createElement('span');
                     separator.className = 'toast-action-separator';
                     separator.textContent = toastOptions.actionSeparator;
-                    toast.appendChild(separator);
+                    actionHost.appendChild(separator);
                 }
                 const action = documentRef.createElement('button');
                 action.type = 'button';
@@ -75,9 +92,9 @@
                     dismissToast(messageText);
                     item.onAction();
                 });
-                toast.appendChild(action);
+                actionHost.appendChild(action);
             });
-            if (toastActions.length && toastOptions.actionSuffix) {
+            if (toastActions.length && toastOptions.actionSuffix && !titleText) {
                 const suffix = documentRef.createElement('span');
                 suffix.textContent = toastOptions.actionSuffix;
                 toast.appendChild(suffix);

@@ -1371,6 +1371,26 @@ body.dark-theme .toast .toast-action {
     text-decoration: underline;
 }
 
+.toast--structured .toast-title {
+    display: block;
+    font-weight: 700;
+}
+
+.toast--structured .toast-body {
+    white-space: pre-line;
+}
+
+.toast--structured .toast-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    margin-top: 4px;
+}
+
+.toast--structured .toast-actions .toast-action {
+    margin-left: 0;
+}
+
 .toast .toast-close {
     position: absolute;
     top: 50%;
@@ -1387,6 +1407,11 @@ body.dark-theme .toast .toast-action {
     cursor: pointer;
     opacity: 0.55;
     transform: translateY(-50%);
+}
+
+.toast--structured .toast-close {
+    top: 6px;
+    transform: none;
 }
 
 .toast .toast-close:hover,
