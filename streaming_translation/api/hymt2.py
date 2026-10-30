@@ -31,6 +31,7 @@ from typing import Dict, List, Optional
 from local_inference.repetition_guard import (
     RETRY_REPEAT_PENALTY,
     is_runaway,
+    max_translation_tokens,
     source_is_repetitive,
 )
 
@@ -201,8 +202,9 @@ class HyMT2LocalEngine:
             n_outputs_max=MAX_DRAFT_CHUNK + 1,
         )
         self.eos_token = self.model.token_eos()
-        self.stop_ids = {self.eos_token}
+        self.stop_ids = set()
         for s in (
+            self.model.token_to_piece(self.eos_token),
             "<｜hy_place▁holder▁no▁2｜>",
             "<｜hy_User｜>",
             "<｜hy_Assistant｜>",
@@ -309,7 +311,8 @@ class HyMT2LocalEngine:
                     sampler,
                     len(tokens),
                     stop_ids=self.stop_ids,
-                    max_tokens=max_tokens,
+                    # 上下文写满后 llama_decode 会失败，译文同样被截断；留在上下文之内。
+                    max_tokens=min(max_tokens, self._n_ctx - len(tokens)),
                     draft=draft if use_draft else None,
                     on_token=runaway if stop_on_runaway else None,
                 )
@@ -903,14 +906,15 @@ class HyMT2API(BaseTranslationAPI):
             else:
                 inference_started = time.monotonic()
                 guard = not source_is_repetitive(text)
+                max_tokens = max_translation_tokens(text)
                 display, out_tokens = self._local_engine.generate(
-                    prompt, draft=self._prev_tokens or None, stop_on_runaway=guard
+                    prompt, max_tokens=max_tokens, draft=self._prev_tokens or None, stop_on_runaway=guard
                 )
                 if guard and is_runaway(display):
                     # 复读跑飞：加一点重复惩罚重跑一次；还复读就照用，不再重试。
                     print("[Hy-MT2 本地] 译文末尾复读，加重复惩罚重跑一次")
                     display, out_tokens = self._local_engine.generate(
-                        prompt, repeat_penalty=RETRY_REPEAT_PENALTY, stop_on_runaway=True
+                        prompt, max_tokens=max_tokens, repeat_penalty=RETRY_REPEAT_PENALTY, stop_on_runaway=True
                     )
                 # 同一句的下一次修订拿这次的结果当草稿；整句定稿后这一句就翻篇了。
                 self._prev_tokens = [] if not is_partial else out_tokens

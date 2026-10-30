@@ -63,7 +63,7 @@ class _LoopingEngine:
         self.outputs = list(outputs)
         self.calls = []
 
-    def generate(self, prompt, *, draft=None, repeat_penalty=1.0, stop_on_runaway=False):
+    def generate(self, prompt, *, max_tokens=160, draft=None, repeat_penalty=1.0, stop_on_runaway=False):
         self.calls.append({"draft": draft, "repeat_penalty": repeat_penalty, "stop": stop_on_runaway})
         return self.outputs.pop(0), [len(self.calls)]
 
@@ -109,7 +109,7 @@ class _RemoteBackend:
         self.outputs = list(outputs)
         self.penalties = []
 
-    async def complete(self, prompt, repeat_penalty=1.0):
+    async def complete(self, prompt, repeat_penalty=1.0, max_new_tokens=0):
         self.penalties.append(repeat_penalty)
         return self.outputs.pop(0)
 

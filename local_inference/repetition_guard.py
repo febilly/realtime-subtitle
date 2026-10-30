@@ -23,6 +23,12 @@ SOURCE_REPEATS = 5
 RETRY_REPEAT_PENALTY = 1.15
 
 
+def max_translation_tokens(source: str) -> int:
+    """Output cap for one translation. Chinese to English takes about 0.65 tokens per source character,
+    so 2 per character leaves any real sentence room; a loop is ended by the guard, not by this cap."""
+    return max(160, 2 * len(source))
+
+
 def _is_cjk(ch: str) -> bool:
     code = ord(ch)
     return (

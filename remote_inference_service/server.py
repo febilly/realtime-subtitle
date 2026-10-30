@@ -210,10 +210,10 @@ class HyMT2Backend:
         self.url = url
         self.max_new_tokens = max_new_tokens
 
-    async def complete(self, prompt: str, repeat_penalty: float = 1.0) -> str:
+    async def complete(self, prompt: str, repeat_penalty: float = 1.0, max_new_tokens: int = 0) -> str:
         request_body: dict[str, Any] = {
             "prompt": CHAT_PREFIX + prompt + CHAT_SUFFIX,
-            "n_predict": self.max_new_tokens,
+            "n_predict": max(self.max_new_tokens, max_new_tokens),
             "temperature": 0,
             "cache_prompt": True,
         }
@@ -346,12 +346,15 @@ async def handle_asr(websocket, init: dict[str, Any], manager: ASREngineManager)
 
 
 async def _translate(backend: HyMT2Backend, prompt: str, source: str) -> str:
-    from local_inference.repetition_guard import RETRY_REPEAT_PENALTY, is_runaway
+    from local_inference.repetition_guard import RETRY_REPEAT_PENALTY, is_runaway, max_translation_tokens
 
-    translation = await backend.complete(prompt)
+    max_new_tokens = max_translation_tokens(source)
+    translation = await backend.complete(prompt, max_new_tokens=max_new_tokens)
     if is_runaway(translation, source):
         # One retry with a mild penalty; a second runaway is returned as it is.
-        translation = await backend.complete(prompt, repeat_penalty=RETRY_REPEAT_PENALTY)
+        translation = await backend.complete(
+            prompt, repeat_penalty=RETRY_REPEAT_PENALTY, max_new_tokens=max_new_tokens
+        )
     return translation
 
 
