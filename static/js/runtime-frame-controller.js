@@ -15,6 +15,7 @@
         'osc_sensitive_filter_triggered',
         'segment_mode_changed',
         'speaker_labels_changed',
+        'server_notice',
     ]);
 
     function create(options = {}) {
@@ -69,6 +70,10 @@
                 call('renderTranslationModePicker');
                 call('showToast', t('translation_mode_fallback_toast'), false);
                 if (frame.needs_restart) call('restartRecognition', { auto: true });
+                return true;
+            }
+            if (frame.type === 'server_notice') {
+                call('showServerNotice', frame.notice);
                 return true;
             }
             if (frame.type === 'osc_sensitive_filter_triggered') {

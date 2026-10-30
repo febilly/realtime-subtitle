@@ -1144,6 +1144,32 @@ def _relay_provider(provider: str | None = None) -> str:
     return p
 
 
+# Server notices this client can show; the server decides when and what.
+RELAY_NOTICES_SUPPORTED = ("soniox_quota",)
+_relay_notices: list = []
+_relay_notices_lock = threading.Lock()
+
+
+def _queue_relay_notices(notices) -> None:
+    if not isinstance(notices, list):
+        return
+    clean = [
+        notice for notice in notices
+        if isinstance(notice, dict) and isinstance(notice.get("message"), str) and notice["message"].strip()
+    ]
+    if clean:
+        with _relay_notices_lock:
+            _relay_notices.extend(clean)
+
+
+def take_relay_notices() -> list:
+    """Notices from the latest relay connect responses, each handed out once."""
+    with _relay_notices_lock:
+        notices = list(_relay_notices)
+        _relay_notices.clear()
+    return notices
+
+
 def _relay_connect_url(
     provider: str | None = None,
     model: str | None = None,
@@ -1163,6 +1189,12 @@ def _relay_connect_url(
         params["run_id"] = str(run_id)
     if audio_codec:
         params["audio_codec"] = str(audio_codec)
+    if p != "soniox":
+        # Starting on another engine lets the server suggest trying Soniox.
+        params["notices"] = ",".join(RELAY_NOTICES_SUPPORTED)
+        lang = _system_default_locale()
+        if lang:
+            params["lang"] = lang
     if params:
         url += "?" + urlencode(params)
     return url
@@ -1238,6 +1270,7 @@ def relay_connect_info(
     result = dict(data)
     result["url"] = ws_url.strip()
     result["headers"] = clean_headers
+    _queue_relay_notices(data.get("notices"))
     return result
 
 

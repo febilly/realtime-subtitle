@@ -925,22 +925,25 @@ function showStandardBillingExhaustedToast() {
     showToast(t('relay_err_billing_exhausted'), true, toastOptions);
 }
 
-async function switchToGeminiAfterQuotaExhaustion() {
+async function switchHostedProvider(provider) {
     const server = settingsPorts.loadServerSettings();
     if (!server.token) {
         showStandardBillingExhaustedToast();
         return false;
     }
-    const fastModeApplied = await translationModeController.setTranslationUiMode('fast', {
-        restartIfNeeded: false,
-    });
-    settingsPorts.renderTranslationModePicker();
-    if (!fastModeApplied) {
-        showToast(t('connection_error_try_again'), true);
-        return false;
+    // Gemini only offers the fast translation mode.
+    if (provider === 'gemini') {
+        const fastModeApplied = await translationModeController.setTranslationUiMode('fast', {
+            restartIfNeeded: false,
+        });
+        settingsPorts.renderTranslationModePicker();
+        if (!fastModeApplied) {
+            showToast(t('connection_error_try_again'), true);
+            return false;
+        }
     }
     subtitleRuntimeController.clear();
-    const result = await settingsSetup.push('gemini', null, {
+    const result = await settingsSetup.push(provider, null, {
         silent: true,
         mode: 'relay',
         token: server.token,
@@ -950,9 +953,31 @@ async function switchToGeminiAfterQuotaExhaustion() {
         return false;
     }
     const providerSettings = settingsPorts.loadProviderSettings();
-    providerSettings.providerOverride = 'gemini';
+    providerSettings.providerOverride = provider;
     settingsPorts.saveProviderSettings(providerSettings);
     return true;
+}
+
+function switchToGeminiAfterQuotaExhaustion() {
+    return switchHostedProvider('gemini');
+}
+
+// The server decides when to show these and what they say; we only render them.
+function showServerNotice(notice) {
+    if (!notice || typeof notice.message !== 'string' || !notice.message.trim()) return;
+    if (settingsPorts.getConnectionMode() !== 'relay') return;
+    const toastOptions = {};
+    const timeoutMs = Number(notice.timeout_ms);
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) toastOptions.timeoutMs = timeoutMs;
+    const action = notice.action;
+    if (action && action.type === 'switch_provider'
+        && (action.provider === 'soniox' || action.provider === 'gemini')
+        && action.provider !== translationProvider
+        && typeof action.label === 'string' && action.label.trim()) {
+        toastOptions.actionLabel = action.label;
+        toastOptions.onAction = () => { void switchHostedProvider(action.provider); };
+    }
+    showToast(notice.message, false, toastOptions);
 }
 
 async function handleBillingExhausted() {
@@ -1036,6 +1061,7 @@ const runtimeFrameController = RuntimeFrameController.create({
         setTranslationUiMode: controlPorts.setTranslationUiMode,
         renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
         showToast,
+        showServerNotice,
         restartRecognition: controlPorts.restartRecognition,
         handleSegmentModeChanged: segmentModeController.handleBackendChanged,
         handleSpeakerLabelsChanged: speakerLabelController.handleBackendChanged,

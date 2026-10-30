@@ -1415,3 +1415,13 @@ class RealtimeSessionBase:
             )
         except Exception as error:
             print(f"⚠️  Failed to notify clients about relay session {event}: {error}")
+        if event != "session_connected":
+            return
+        for notice in live_config.take_relay_notices():
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self.broadcast_callback({"type": "server_notice", "notice": notice}),
+                    loop,
+                )
+            except Exception as error:
+                print(f"⚠️  Failed to forward server notice: {error}")

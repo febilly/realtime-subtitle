@@ -1,6 +1,7 @@
 const RuntimeFrameController = require('../../static/js/runtime-frame-controller');
 
 const ACTION_NAMES = [
+    'showServerNotice',
     'applyBundledCjkFontPreference',
     'syncOverlayState',
     'syncVrOverlayState',
@@ -48,6 +49,7 @@ describe('RuntimeFrameController frame boundary', () => {
             'osc_sensitive_filter_triggered',
             'segment_mode_changed',
             'speaker_labels_changed',
+            'server_notice',
         ]);
         expect(Object.isFrozen(RuntimeFrameController.FRAME_TYPES)).toBe(true);
     });
@@ -153,6 +155,14 @@ describe('RuntimeFrameController direct runtime delegation', () => {
             type: 'osc_sensitive_filter_triggered',
         })).toBe(true);
         expect(suppressed.actions.showToast).not.toHaveBeenCalled();
+    });
+
+    it('hands server notices to the page untouched', () => {
+        const page = createHarness();
+        const notice = { id: 'soniox_quota', message: 'try soniox' };
+
+        expect(page.controller.handle({ type: 'server_notice', notice })).toBe(true);
+        expect(page.actions.showServerNotice).toHaveBeenCalledWith(notice);
     });
 
     it('applies translation fallback in persistence, UI, toast, then optional restart order', () => {
