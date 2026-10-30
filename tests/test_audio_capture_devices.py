@@ -115,10 +115,12 @@ def test_mix_worker_zero_pads_when_system_queue_empty_and_mic_active():
     """
     sent_payloads: list[bytes] = []
     mock_ws = SimpleNamespace(send=lambda payload: sent_payloads.append(payload))
+    # The threshold is generous because a scheduling gap longer than it would
+    # legitimately zero-pad the fed side too, once the other buffer is padded.
     streamer = audio_capture.AudioStreamer(
         mock_ws,
         chunk_size=3840,
-        mix_starvation_threshold=0.04,
+        mix_starvation_threshold=0.5,
     )
     streamer.mix_mic_gain = 1.0
     streamer.mix_system_gain = 1.0
@@ -137,14 +139,14 @@ def test_mix_worker_zero_pads_when_system_queue_empty_and_mic_active():
     try:
         # Feed 8 chunks of 960 frames (total 7680 frames = exactly 2 chunks of 3840)
         # Using a distinct mic signal: 0.5 (which maps to int16 ~16383)
-        for _ in range(8):
-            microphone_queue.put(np.full(960, 0.5, dtype=np.float32))
-            time.sleep(0.01)
+        # One payload's worth at a time, so the source-skew limit keeps both payloads.
+        for sent_target in (1, 2):
+            for _ in range(4):
+                microphone_queue.put(np.full(960, 0.5, dtype=np.float32))
 
-        # Wait until 2 mix payloads have been sent
-        deadline = time.monotonic() + 2.0
-        while len(sent_payloads) < 2 and time.monotonic() < deadline:
-            time.sleep(0.02)
+            deadline = time.monotonic() + 2.0
+            while len(sent_payloads) < sent_target and time.monotonic() < deadline:
+                time.sleep(0.02)
 
         assert len(sent_payloads) >= 2, f"Expected at least 2 payloads, got {len(sent_payloads)}"
 
@@ -166,10 +168,11 @@ def test_mix_worker_zero_pads_when_mic_queue_empty_and_system_active():
     """
     sent_payloads: list[bytes] = []
     mock_ws = SimpleNamespace(send=lambda payload: sent_payloads.append(payload))
+    # See the threshold note in the mic-fed test above.
     streamer = audio_capture.AudioStreamer(
         mock_ws,
         chunk_size=3840,
-        mix_starvation_threshold=0.04,
+        mix_starvation_threshold=0.5,
     )
     streamer.mix_mic_gain = 1.0
     streamer.mix_system_gain = 1.0
@@ -190,7 +193,6 @@ def test_mix_worker_zero_pads_when_mic_queue_empty_and_system_active():
         # Using a distinct system signal: 0.3 (maps to int16 ~9830)
         for _ in range(4):
             system_queue.put(np.full(960, 0.3, dtype=np.float32))
-            time.sleep(0.01)
 
         deadline = time.monotonic() + 2.0
         while len(sent_payloads) < 1 and time.monotonic() < deadline:
