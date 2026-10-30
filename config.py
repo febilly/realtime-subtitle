@@ -1155,7 +1155,7 @@ def _queue_relay_notices(notices) -> None:
         return
     clean = [
         notice for notice in notices
-        if isinstance(notice, dict) and isinstance(notice.get("message"), str) and notice["message"].strip()
+        if isinstance(notice, dict) and notice.get("id") in RELAY_NOTICES_SUPPORTED
     ]
     if clean:
         with _relay_notices_lock:
@@ -1192,9 +1192,6 @@ def _relay_connect_url(
     if p != "soniox":
         # Starting on another engine lets the server suggest trying Soniox.
         params["notices"] = ",".join(RELAY_NOTICES_SUPPORTED)
-        lang = _system_default_locale()
-        if lang:
-            params["lang"] = lang
     if params:
         url += "?" + urlencode(params)
     return url

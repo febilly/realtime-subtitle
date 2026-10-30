@@ -994,22 +994,26 @@ async function switchHostedProvider(provider) {
     return true;
 }
 
-// The server decides when to show these and what they say; we only render them.
+// The server decides when a notice is due; its wording is ours, keyed by id.
+const SERVER_NOTICE_MESSAGE_KEYS = Object.freeze({
+    soniox_quota: 'notice_soniox_quota',
+});
+
 function showServerNotice(notice) {
-    if (!notice || typeof notice.message !== 'string' || !notice.message.trim()) return;
+    const messageKey = notice && SERVER_NOTICE_MESSAGE_KEYS[notice.id];
+    if (!messageKey) return;
     if (settingsPorts.getConnectionMode() !== 'relay') return;
     const toastOptions = {};
     const timeoutMs = Number(notice.timeout_ms);
     if (Number.isFinite(timeoutMs) && timeoutMs > 0) toastOptions.timeoutMs = timeoutMs;
     const action = notice.action;
     if (action && action.type === 'switch_provider'
-        && (action.provider === 'soniox' || action.provider === 'gemini')
-        && action.provider !== translationProvider
-        && typeof action.label === 'string' && action.label.trim()) {
-        toastOptions.actionLabel = action.label;
+        && PROVIDER_LABELS[action.provider]
+        && action.provider !== translationProvider) {
+        toastOptions.actionLabel = t('billing_switch_to', { provider: PROVIDER_LABELS[action.provider] });
         toastOptions.onAction = () => { void switchHostedProvider(action.provider); };
     }
-    showToast(notice.message, false, toastOptions);
+    showToast(t(messageKey), false, toastOptions);
 }
 
 async function handleBillingExhausted() {

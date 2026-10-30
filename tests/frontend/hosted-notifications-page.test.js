@@ -421,16 +421,17 @@ describe('hosted notification flows', () => {
                 type: 'server_notice',
                 notice: {
                     id: 'soniox_quota',
-                    message: 'Try Soniox this week.',
-                    action: { label: 'Switch to Soniox', type: 'switch_provider', provider: 'soniox' },
+                    action: { type: 'switch_provider', provider: 'soniox' },
                     timeout_ms: 15000,
                 },
             });
+            await page.emitFrame({ type: 'server_notice', notice: { id: 'from_a_newer_server' } });
             await page.flush(2);
 
             const toast = page.document.getElementById('toast');
+            expect(toast.querySelectorAll('.toast')).toHaveLength(1);
             const item = toast.querySelector('.toast');
-            expect(item.textContent).toContain('Try Soniox this week.');
+            expect(item.textContent).toContain("You haven't used this week's free Soniox quota yet.");
             expect(item.classList.contains('error')).toBe(false);
             const action = toast.querySelector('.toast-action');
             expect(action.textContent).toBe('Switch to Soniox');

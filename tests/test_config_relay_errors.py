@@ -48,20 +48,18 @@ def _stub_connect(monkeypatch, body):
 
     monkeypatch.setattr(config, "SUBTITLE_SERVER_URL", "https://relay.example")
     monkeypatch.setattr(config, "RELAY_TOKEN", "ss_test")
-    monkeypatch.setattr(config, "_system_default_locale", lambda: "zh-CN")
     monkeypatch.setattr(config.requests, "get", fake_get)
     config.take_relay_notices()
     return calls
 
 
 def test_non_soniox_connect_opts_into_notices_and_queues_them_once(monkeypatch):
-    notice = {"id": "soniox_quota", "message": "try soniox", "action": {"type": "switch_provider", "provider": "soniox"}}
-    calls = _stub_connect(monkeypatch, {"url": "wss://relay/x", "notices": [notice, {"message": ""}, "junk"]})
+    notice = {"id": "soniox_quota", "action": {"type": "switch_provider", "provider": "soniox"}}
+    calls = _stub_connect(monkeypatch, {"url": "wss://relay/x", "notices": [notice, {"id": "unknown"}, "junk"]})
 
     config.relay_connect_info("gemini", model="models/gemini")
 
     assert "notices=soniox_quota" in calls[0]
-    assert "lang=zh-CN" in calls[0]
     assert config.take_relay_notices() == [notice]
     assert config.take_relay_notices() == []
 
