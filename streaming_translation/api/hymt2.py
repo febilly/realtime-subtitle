@@ -210,7 +210,7 @@ class HyMT2LocalEngine:
             "<|endoftext|>",
             "</s>",
         ):
-            tid = self.model.token_to_id(s)
+            tid = self._special_token_id(s)
             if tid >= 0:
                 self.stop_ids.add(tid)
         self._engine_lock = threading.Lock()
@@ -220,6 +220,17 @@ class HyMT2LocalEngine:
         self._spec = SpeculativeDecoder(llama_mod, self.ctx, self.model)
         # KV 里当前装着哪串 token（prompt + 已生成），供下一次比公共前缀
         self._cached_tokens: List[int] = []
+
+    def _special_token_id(self, text: str) -> int:
+        """词表里真正的特殊 token 才能当停止符，普通文本返回 -1。
+
+        token_to_id 对普通文本会给出第一个片段（"</s>" -> "</"）；这个 GGUF 的 eos_token_id
+        还指向普通 token "$"。它们一旦进停止符表，译文写到这里就被截断了。
+        """
+        ids = self.model.tokenize(text, add_special=False, parse_special=True)
+        if len(ids) != 1 or ids == self.model.tokenize(text, add_special=False, parse_special=False):
+            return -1
+        return ids[0]
 
     def _prefill(self, tokens: List[int], cached: List[int]) -> int:
         """提交 prompt，返回本次真正送进模型的 token 数。
@@ -315,7 +326,8 @@ class HyMT2LocalEngine:
             )
 
             raw = self.model.detokenize(gen.tokens)
-            clean = re.split(r"<[|｜].*?[|｜]>", raw)[0].strip()
+            # 只认全角竖线：这个词表没有 <|...|> 这种特殊 token，译文里的它是原文带来的普通文本。
+            clean = re.split(r"<｜.*?｜>", raw)[0].strip()
             for prefix in ("Translation:", "翻译：", "译文："):
                 if clean.startswith(prefix):
                     clean = clean[len(prefix) :].strip()

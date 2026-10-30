@@ -46,9 +46,11 @@ export YAKUTAN_ONNX_PROVIDER="${REMOTE_INFERENCE_ONNX_PROVIDER:-cuda}"
 cudnn_lib_dir="$("$python_bin" -c 'import pathlib, nvidia.cudnn; print(pathlib.Path(nvidia.cudnn.__file__).parent / "lib")' 2>/dev/null || true)"
 export LD_LIBRARY_PATH="$llama_bin_dir${cudnn_lib_dir:+:$cudnn_lib_dir}:/share/home/tjfbb/.conda/envs/fbbvllm/lib:${LD_LIBRARY_PATH:-}"
 
+# The GGUF's eos_token_id points at the ordinary token "$", which would end a translation mid-sentence.
 "$llama_bin_dir/llama-server" \
   -m "$hymt2_model" -c "$hymt2_ctx_size" --host 127.0.0.1 --port "$llama_port" \
-  -ngl 99 --parallel "$hymt2_parallel" --cont-batching --no-webui >"$service_root/llama-server.log" 2>&1 &
+  -ngl 99 --parallel "$hymt2_parallel" --cont-batching --no-webui \
+  --override-kv tokenizer.ggml.eos_token_id=int:120020 >"$service_root/llama-server.log" 2>&1 &
 llama_pid=$!
 server_pid=""
 cleanup() {

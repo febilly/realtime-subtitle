@@ -1,4 +1,4 @@
-from streaming_translation.api.hymt2 import HyMT2API
+from streaming_translation.api.hymt2 import HyMT2API, HyMT2LocalEngine
 
 
 class _FakeLocalEngine:
@@ -152,6 +152,21 @@ def test_local_row_cut_short_drops_the_longer_previous_version():
     assert "Previous version" not in prompt
     assert "你看我" not in prompt
     assert draft is None
+
+
+def test_only_real_special_tokens_become_stop_tokens():
+    class Model:
+        def tokenize(self, text, add_special=False, parse_special=True):
+            vocab = {"$": [3], "</s>": [1291, 82, 29]}
+            if text in vocab:
+                return vocab[text]
+            return [120020] if parse_special else [7, 8, 9]
+
+    engine = HyMT2LocalEngine.__new__(HyMT2LocalEngine)
+    engine.model = Model()
+    assert engine._special_token_id("$") == -1
+    assert engine._special_token_id("</s>") == -1
+    assert engine._special_token_id("<｜hy_place▁holder▁no▁2｜>") == 120020
 
 
 def test_local_small_asr_revision_keeps_the_previous_version():
