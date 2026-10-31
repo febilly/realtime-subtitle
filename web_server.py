@@ -459,6 +459,7 @@ class WebServer:
             "client_minimum_version": "",
             "client_update_url": "",
             "client_update_notes": "",
+            "client_update_notes_i18n": None,
             "custom_font_available": self.check_custom_font_exists(),
         }
 
@@ -487,6 +488,7 @@ class WebServer:
                     or public_settings.get("client_download_url")
                     or ""
                 ).strip()
+                payload["client_update_notes_i18n"] = public_settings.get("client_update_notes_i18n")
                 payload["client_update_notes"] = str(
                     public_settings.get("client_update_notes") or ""
                 ).strip()

@@ -310,7 +310,7 @@
                     // a plan and an expiry where a credits code reports a balance.
                     const message = data.kind === 'subscription'
                         ? t('account_redeem_subscription_success', {
-                            plan: String(data.plan_name || ''),
+                            plan: root.ContentI18n ? root.ContentI18n.localizedField(data, 'plan_name', (root.I18N || {}).lang || 'en') : String(data.plan_name || ''),
                             days: formatCredits(data.added_days),
                             expires: formatExpiryDate(data.expires_at),
                         })

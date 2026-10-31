@@ -249,7 +249,7 @@
                     ? `LLM ${subscriptionPoolLabel(pool.period)}`
                     : subscriptionPoolLabel(pool.period);
                 label.textContent = detailed && pool.plan_name
-                    ? `${pool.plan_name} · ${periodLabel}`
+                    ? `${root.ContentI18n ? root.ContentI18n.localizedField(pool, 'plan_name', (root.I18N || {}).lang || 'en') : pool.plan_name} · ${periodLabel}`
                     : periodLabel;
                 const value = documentRef.createElement('span');
                 value.className = 'balance-value';

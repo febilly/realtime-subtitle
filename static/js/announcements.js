@@ -1,6 +1,11 @@
 (function (root) {
     'use strict';
     const labels = {
+        ko: {"title": "공지", "unread": "읽지 않은 공지", "loading": "공지를 불러오는 중…", "empty": "공지가 없습니다", "error": "공지를 불러오지 못했습니다. 다시 시도해 주세요.", "retry": "다시 시도", "close": "닫기", "refresh": "새로 고침", "read": "읽음", "markRead": "읽음으로 표시"},
+        ru: {"title": "Объявления", "unread": "Непрочитанные объявления", "loading": "Загрузка объявлений…", "empty": "Объявлений нет", "error": "Не удалось загрузить объявления. Повторите попытку.", "retry": "Повторить", "close": "Закрыть", "refresh": "Обновить", "read": "Прочитано", "markRead": "Отметить прочитанным"},
+        es: {"title": "Anuncios", "unread": "Anuncios sin leer", "loading": "Cargando anuncios…", "empty": "No hay anuncios", "error": "No se pudieron cargar los anuncios. Vuelve a intentarlo.", "retry": "Reintentar", "close": "Cerrar", "refresh": "Actualizar", "read": "Leído", "markRead": "Marcar como leído"},
+        pt: {"title": "Avisos", "unread": "Avisos não lidos", "loading": "Carregando avisos…", "empty": "Não há avisos", "error": "Não foi possível carregar os avisos. Tente novamente.", "retry": "Tentar novamente", "close": "Fechar", "refresh": "Atualizar", "read": "Lido", "markRead": "Marcar como lido"},
+
         zh: { title: '公告', unread: '未读公告', loading: '正在加载公告…', empty: '暂无公告', error: '公告加载失败，请重试', retry: '重试', close: '关闭', refresh: '刷新' },
         en: { title: 'Announcements', unread: 'Unread announcements', loading: 'Loading announcements…', empty: 'No announcements', error: 'Unable to load announcements. Please retry.', retry: 'Retry', close: 'Close', refresh: 'Refresh' },
         ja: { title: 'お知らせ', unread: '未読のお知らせ', loading: '読み込み中…', empty: 'お知らせはありません', error: 'お知らせを読み込めませんでした。再試行してください。', retry: '再試行', close: '閉じる', refresh: '更新' },
@@ -83,8 +88,8 @@
                 if (doc.defaultView && doc.defaultView.closed) { docs.delete(doc); continue; }
                 const button = doc.getElementById('announcementsButton');
                 if (!button) continue;
-                button.hidden = rows.length === 0;
                 button.style.position = 'relative';
+                button.hidden = rows.length === 0;
                 button.title = pending ? l.unread : l.title;
                 button.setAttribute('aria-label', button.title);
                 button.setAttribute('data-custom-title', button.title);
@@ -133,9 +138,9 @@
             if (!rows.length) body.textContent = l.empty;
             for (const row of rows) {
                 const article = doc.createElement('article'); article.className = 'announcement-item';
-                const title = doc.createElement('h3'); title.textContent = row.title;
+                const title = doc.createElement('h3'); title.textContent = root.ContentI18n ? root.ContentI18n.localizedField(row, 'title', getLanguage()) : row.title;
                 const time = doc.createElement('time'); time.dateTime = row.published_at; time.textContent = new Date(row.published_at).toLocaleString(getLanguage());
-                const content = doc.createElement('div'); renderContent(content, row.content);
+                const content = doc.createElement('div'); renderContent(content, root.ContentI18n ? root.ContentI18n.localizedField(row, 'content', getLanguage()) : row.content);
                 article.append(title, time, content); body.append(article);
             }
             markShown();

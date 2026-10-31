@@ -43,7 +43,8 @@ const t = (key, vars) => {
 };
 const escapeHtml = RenderHtml.createEscapeHtml(document);
 
-const localizeBackendMessage = BackendMessage.createLocalizer({ t });
+const baseBackendLocalizer = BackendMessage.createLocalizer({ t });
+const localizeBackendMessage = (message) => window.ContentI18n.serverMessage(baseBackendLocalizer(message), I18N.lang);
 
 const INITIAL_UI_CONFIG = (window.__INITIAL_UI_CONFIG__ && typeof window.__INITIAL_UI_CONFIG__ === 'object')
     ? window.__INITIAL_UI_CONFIG__

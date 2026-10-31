@@ -130,7 +130,7 @@
                 accountPatch.clientMinimumVersion = data.client_minimum_version.trim();
             }
             if (typeof data.client_update_notes === 'string') {
-                accountPatch.clientUpdateNotes = data.client_update_notes.trim();
+                accountPatch.clientUpdateNotes = root.ContentI18n ? root.ContentI18n.localized(data.client_update_notes_i18n, (root.I18N || {}).lang || 'en', data.client_update_notes.trim()) : data.client_update_notes.trim();
             }
             if (typeof data.mode === 'string') accountPatch.backendMode = data.mode;
             if (typeof data.logged_in === 'boolean') accountPatch.backendLoggedIn = data.logged_in;
