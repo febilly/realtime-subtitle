@@ -426,12 +426,16 @@ describe('hosted notification flows', () => {
                 },
             });
             await page.emitFrame({ type: 'server_notice', notice: { id: 'from_a_newer_server' } });
+            await page.emitFrame({ type: 'server_notice', notice: { id: 'soniox_quota', period: 'daily' } });
             await page.flush(2);
 
             const toast = page.document.getElementById('toast');
-            expect(toast.querySelectorAll('.toast')).toHaveLength(1);
-            const item = toast.querySelector('.toast');
+            // A notice without a period (an older server) reads as weekly.
+            const items = toast.querySelectorAll('.toast');
+            expect(items).toHaveLength(2);
+            const item = items[0];
             expect(item.textContent).toContain("You haven't used this week's free Soniox quota yet.");
+            expect(items[1].textContent).toContain("You haven't used today's free Soniox quota yet.");
             expect(item.classList.contains('error')).toBe(false);
             const action = toast.querySelector('.toast-action');
             expect(action.textContent).toBe('Switch to Soniox');

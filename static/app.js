@@ -998,6 +998,7 @@ async function switchHostedProvider(provider) {
 const SERVER_NOTICE_MESSAGE_KEYS = Object.freeze({
     soniox_quota: 'notice_soniox_quota',
 });
+const SERVER_NOTICE_PERIODS = Object.freeze(['daily', 'weekly', 'monthly']);
 
 function showServerNotice(notice) {
     const messageKey = notice && SERVER_NOTICE_MESSAGE_KEYS[notice.id];
@@ -1013,7 +1014,9 @@ function showServerNotice(notice) {
         toastOptions.actionLabel = t('billing_switch_to', { provider: PROVIDER_LABELS[action.provider] });
         toastOptions.onAction = () => { void switchHostedProvider(action.provider); };
     }
-    showToast(t(messageKey), false, toastOptions);
+    // The wording names the free pool's period; older servers send none (weekly).
+    const period = SERVER_NOTICE_PERIODS.includes(notice.period) ? notice.period : 'weekly';
+    showToast(t(`${messageKey}_${period}`), false, toastOptions);
 }
 
 async function handleBillingExhausted() {
