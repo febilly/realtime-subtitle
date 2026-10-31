@@ -140,6 +140,12 @@ function showToast(...args) {
     return uiFeedbackController.showToast(...args);
 }
 
+const timedNotifications = TimedNotifications.create({
+    fetch, t, showToast, renderServerNotice,
+    canRenderServerNotice: (notice) => !!(notice && SERVER_NOTICE_MESSAGE_KEYS[notice.id])
+        && settingsPorts.getConnectionMode() === 'relay',
+});
+
 const BUNDLED_CJK_FONT_STORAGE_KEY = 'useBundledCjkFont';
 
 let backendBootId = '';
@@ -998,7 +1004,13 @@ const SERVER_NOTICE_MESSAGE_KEYS = Object.freeze({
 });
 const SERVER_NOTICE_PERIODS = Object.freeze(['daily', 'weekly', 'monthly']);
 
-function showServerNotice(notice) {
+function showServerNotice(notice, noticeId) {
+    // The backend retains blocked notices; the next poll retries them.
+    if (noticeId) void timedNotifications.serverNotice(notice, noticeId).catch(() => {});
+    else void timedNotifications.prepare();
+}
+
+function renderServerNotice(notice) {
     const messageKey = notice && SERVER_NOTICE_MESSAGE_KEYS[notice.id];
     if (!messageKey) return;
     if (settingsPorts.getConnectionMode() !== 'relay') return;
@@ -1480,6 +1492,7 @@ const announcements = SubtitleAnnouncements.create({
 });
 announcements.bind(document);
 const hostedUpdate = HostedUpdate.create({
+    timedNotifications,
     onChecked: () => announcements.check({ autoPopup: true }),
     Billing: Hosted.Billing,
     window,
@@ -1647,6 +1660,7 @@ const hostedBalance = HostedBalance.create({
 });
 hostedBalance.init();
 hostedAccount = HostedAccount.create({
+    timedNotifications,
     document,
     window,
     navigator,
@@ -1695,6 +1709,7 @@ hostedAccount = HostedAccount.create({
 hostedAccount.init();
 
 const hostedController = Hosted.createController({
+    prepareTimedNotifications: () => timedNotifications.prepare(),
     preopenHostedLoginIfNeeded: hostedPorts.preopenHostedLoginIfNeeded,
     fetchUiConfig: settingsPorts.fetchUiConfig,
     refreshPreopenedHostedLogin: hostedPorts.refreshPreopenedHostedLogin,
@@ -1719,5 +1734,8 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsRuntime.fetchOutputDevices(),
         settingsRuntime.fetchMicrophoneDevices(),
     ]).then(() => settingsRuntime.saveMicrophoneDeviceSelection());
-    void hostedController.startup();
+    void hostedController.startup().then(() => timedNotifications.start());
 });
+
+timedNotifications.add('update', () => hostedUpdate.ensure({ background: true }));
+timedNotifications.add('invite', () => hostedAccount.maybeShowInviteReminder());

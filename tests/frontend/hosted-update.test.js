@@ -30,6 +30,7 @@ function setup(overrides = {}) {
     const open = vi.fn();
     dom.window.open = open;
     const controller = HostedUpdate.create({
+        timedNotifications: overrides.timedNotifications,
         Billing: Hosted.Billing,
         window: dom.window,
         storage,
@@ -70,6 +71,19 @@ function setup(overrides = {}) {
 }
 
 describe('HostedUpdate state', () => {
+    it('preserves both update cadence keys when the shared notification cooldown blocks it', async () => {
+        const page = setup({
+            timedNotifications: { tryShow: vi.fn().mockResolvedValue(false) },
+        });
+        page.storage.setItem(HostedUpdate.DEFAULT_REMINDER_KEY, '99999');
+        page.storage.setItem(HostedUpdate.DEFAULT_CHECKED_VERSION_KEY, '1.0.1');
+        await expect(page.controller.ensure()).resolves.toBe(true);
+        expect(page.document.getElementById('dialog').hidden).toBe(true);
+        expect(page.storage.getItem(HostedUpdate.DEFAULT_REMINDER_KEY)).toBe('99999');
+        expect(page.storage.getItem(HostedUpdate.DEFAULT_CHECKED_VERSION_KEY)).toBe('1.0.1');
+        page.dom.window.close();
+    });
+
     it.each([
         ['direct mode', { mode: 'direct' }, { needed: false, forced: false }],
         ['relay unavailable', { relayAvailable: false, mode: 'relay' }, { needed: false, forced: false }],

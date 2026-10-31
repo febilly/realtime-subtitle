@@ -158,11 +158,11 @@
             try {
                 return await ensureVersion(optionsForCheck);
             } finally {
-                if (typeof options.onChecked === 'function') await options.onChecked();
+                if (!optionsForCheck.background && typeof options.onChecked === 'function') await options.onChecked();
             }
         }
 
-        async function ensureVersion({ candidateMode = null } = {}) {
+        async function ensureVersion({ candidateMode = null, background = false } = {}) {
             const updateState = state(candidateMode);
             let newerThanLastCheck = false;
             if (updateState.latest) {
@@ -174,13 +174,20 @@
                 }
                 newerThanLastCheck = !!lastCheckedVersion
                     && Billing.compareVersions(updateState.latest, lastCheckedVersion) > 0;
-                try {
-                    storage.setItem(checkedVersionKey, updateState.latest);
-                } catch (error) {
-                    // Preserve the browser's storage-failure fallback.
-                }
             }
-            if (!updateState.needed) return true;
+            if (!updateState.needed) {
+                rememberCheckedVersion(updateState.latest);
+                return true;
+            }
+            if (background && updateState.forced) return true;
+            let dialogPromise;
+            const display = () => {
+                if (!updateState.forced) {
+                    try { storage.setItem(reminderKey, String(now())); } catch (error) { /* storage unavailable */ }
+                }
+                rememberCheckedVersion(updateState.latest);
+                dialogPromise = show(updateState);
+            };
             if (!updateState.forced) {
                 let lastShown = 0;
                 try {
@@ -189,20 +196,31 @@
                     lastShown = 0;
                 }
                 if (!newerThanLastCheck && lastShown && now() - lastShown < reminderMs) {
+                    rememberCheckedVersion(updateState.latest);
                     return true;
                 }
-                try {
-                    storage.setItem(reminderKey, String(now()));
-                } catch (error) {
-                    // Preserve the browser's storage-failure fallback.
-                }
+                if (options.timedNotifications) {
+                    try {
+                        if (!await options.timedNotifications.tryShow('update', display)) return true;
+                    } catch (error) {
+                        return true;
+                    }
+                } else display();
+            } else {
+                display();
             }
-            const action = await show(updateState);
+            if (background) return true;
+            const action = await dialogPromise;
             if (updateState.forced && action === 'direct') {
                 await onSwitchDirect();
                 return false;
             }
             return !updateState.forced;
+        }
+
+        function rememberCheckedVersion(version) {
+            if (!version) return;
+            try { storage.setItem(checkedVersionKey, version); } catch (error) { /* storage unavailable */ }
         }
 
         function destroy() {

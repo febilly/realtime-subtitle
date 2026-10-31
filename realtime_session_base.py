@@ -25,6 +25,7 @@ from typing import Optional, Tuple
 from websockets import ConnectionClosed, ConnectionClosedOK
 
 import config
+import timed_notifications
 from config import (
     FFMPEG_PATH,
     LLM_BASE_URL,
@@ -556,6 +557,17 @@ class RealtimeSessionBase:
             self.audio_streamer = streamer
 
         streamer.start()
+
+    def _record_star_usage(self, *, local_model=False):
+        if self.is_paused or time.monotonic() < getattr(self, "_next_star_usage_check", 0):
+            return
+        self._next_star_usage_check = time.monotonic() + 60
+        try:
+            timed_notifications.record_usage(
+                relay_mode=bool(config.RELAY_MODE), local_model=local_model,
+            )
+        except OSError:
+            logger.warning("Failed to record Star reminder usage", exc_info=True)
 
     def _stop_audio_streamer(self) -> None:
         with self.audio_lock:

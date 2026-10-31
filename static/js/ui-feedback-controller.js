@@ -111,7 +111,7 @@
             const entry = { node: toast, timer: null };
             activeToasts.set(messageText, entry);
             toastContainer.hidden = false;
-            if (isError) return;
+            if (isError || toastOptions.persistent === true) return;
             const requestedTimeoutMs = Number(toastOptions.timeoutMs);
             const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0
                 ? requestedTimeoutMs

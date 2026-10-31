@@ -3,6 +3,10 @@
 
     const MESSAGES = {
         en: {
+            local_model_star_reminder: 'Enjoying this software? Please consider starring the project on GitHub!',
+            local_model_star_link: 'Star on GitHub',
+            local_model_already_starred: 'I already starred it',
+            local_model_star_thanks: 'Thank you!',
             empty_state: 'Waiting for subtitles…',
             theme_toggle: 'Toggle theme',
             restart: 'Restart recognition',
@@ -404,6 +408,10 @@
             client_update_direct_confirm_cancel: 'Go back',
         },
         zh: {
+            local_model_star_reminder: '如果你喜欢本软件，请考虑在 GitHub 为本项目点个 Star！',
+            local_model_star_link: '前往 GitHub 点 Star',
+            local_model_already_starred: '我已 Star',
+            local_model_star_thanks: '谢谢！',
             empty_state: '等待字幕…',
             theme_toggle: '切换主题',
             restart: '重启识别',
@@ -805,6 +813,10 @@
             client_update_direct_confirm_cancel: '返回',
         },
         ja: {
+            local_model_star_reminder: 'このソフトが気に入ったら、GitHub でプロジェクトに Star をお願いします！',
+            local_model_star_link: 'GitHub で Star を付ける',
+            local_model_already_starred: 'Star 済みです',
+            local_model_star_thanks: 'ありがとうございます！',
             empty_state: '字幕を待っています…',
             theme_toggle: 'テーマを切り替え',
             restart: '認識を再起動',
@@ -1132,6 +1144,10 @@
             vr_overlay_hint: 'SteamVR メニューを開いてコントローラーのレーザーを字幕に向けるとボタンが表示されます。背景でトリガーを押し続けると掴んで移動、端を押し続けるとサイズ変更できます。',
         },
         ko: {
+            local_model_star_reminder: '이 소프트웨어가 마음에 드셨다면 GitHub에서 프로젝트에 Star를 눌러 주세요!',
+            local_model_star_link: 'GitHub에서 Star 누르기',
+            local_model_already_starred: '이미 Star를 눌렀어요',
+            local_model_star_thanks: '감사합니다!',
             empty_state: '자막을 기다리는 중…',
             theme_toggle: '테마 전환',
             restart: '인식 재시작',
@@ -1459,6 +1475,10 @@
             vr_overlay_hint: 'SteamVR 메뉴를 열고 컨트롤러 레이저로 자막을 가리키면 버튼이 표시됩니다. 배경에서 트리거를 누른 채 움직이면 이동, 가장자리를 누른 채 움직이면 크기를 조절합니다.',
         },
         ru: {
+            local_model_star_reminder: 'Нравится программа? Поддержите проект звездой на GitHub!',
+            local_model_star_link: 'Поставить звезду на GitHub',
+            local_model_already_starred: 'Звезда уже поставлена',
+            local_model_star_thanks: 'Спасибо!',
             empty_state: 'Ожидание субтитров…',
             theme_toggle: 'Переключить тему',
             restart: 'Перезапустить распознавание',
@@ -1786,6 +1806,10 @@
             vr_overlay_hint: 'Откройте меню SteamVR и наведите луч контроллера на субтитры, чтобы появились кнопки. Удерживайте курок на фоне, чтобы перенести, или на краю, чтобы изменить размер.',
         },
         es: {
+            local_model_star_reminder: 'Si te gusta este software, ¡considera darle una estrella al proyecto en GitHub!',
+            local_model_star_link: 'Dar una estrella en GitHub',
+            local_model_already_starred: 'Ya le di una estrella',
+            local_model_star_thanks: '¡Gracias!',
             empty_state: 'Esperando subtítulos…',
             theme_toggle: 'Cambiar tema',
             restart: 'Reiniciar reconocimiento',
@@ -2113,6 +2137,10 @@
             vr_overlay_hint: 'Abre el menú de SteamVR y apunta con el láser del mando a los subtítulos para ver los botones. Mantén el gatillo sobre el fondo para moverlos o sobre un borde para cambiar el tamaño.',
         },
         pt: {
+            local_model_star_reminder: 'Se você gosta deste software, considere dar uma estrela ao projeto no GitHub!',
+            local_model_star_link: 'Dar uma estrela no GitHub',
+            local_model_already_starred: 'Já dei uma estrela',
+            local_model_star_thanks: 'Obrigado!',
             empty_state: 'Aguardando legendas…',
             theme_toggle: 'Alternar tema',
             restart: 'Reiniciar reconhecimento',

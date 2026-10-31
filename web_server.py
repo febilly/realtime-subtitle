@@ -34,6 +34,7 @@ from audio_capture import (
 )
 from llm_client import close_llm_http_session
 import local_store
+import timed_notifications
 import desktop_shortcut
 from osc_manager import osc_manager
 
@@ -249,6 +250,14 @@ class WebServer:
     
     async def broadcast_to_clients(self, data: dict):
         """向所有连接的客户端广播数据"""
+        if data.get("type") == "server_notice":
+            try:
+                notice_id = self._remember_timed_notice(data.get("notice"))
+            except OSError:
+                config._queue_relay_notices([data.get("notice")])
+                logger.warning("Failed to retain server reminder; will retry", exc_info=True)
+                notice_id = None
+            data = {**data, "notice_id": notice_id}
         if self._frontend_frame_log:
             try:
                 self._frontend_frame_log.write(json.dumps(data, ensure_ascii=False) + "\n")
@@ -356,6 +365,43 @@ class WebServer:
     async def health_handler(self, request):
         """健康检查端点 - 用于浏览器定期检测服务器是否存活"""
         return web.json_response({"status": "ok"})
+
+    def _remember_timed_notice(self, notice):
+        if not isinstance(notice, dict) or notice.get("id") not in config.RELAY_NOTICES_SUPPORTED:
+            return None
+        return timed_notifications.remember_server_notice(notice)
+
+    async def timed_notifications_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"message": "localhost only"}, status=403)
+        try:
+            # A relay connection can have returned its notices before the UI
+            # opens or before the recognition-session broadcast occurs.
+            pending = config.take_relay_notices()
+            for index, notice in enumerate(pending):
+                try:
+                    self._remember_timed_notice(notice)
+                except OSError:
+                    config._queue_relay_notices(pending[index:])
+                    raise
+            if request.method == "POST":
+                payload = await request.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Invalid payload")
+                if payload.get("disable_star") is True:
+                    timed_notifications.disable_star()
+                    return web.json_response({"ok": True})
+                kind = payload.get("kind")
+                notice_id = payload.get("notice_id")
+                result = timed_notifications.claim(kind, notice_id=notice_id)
+                return web.json_response(result)
+            state = timed_notifications.snapshot()
+            return web.json_response(state)
+        except (ValueError, TypeError):
+            return web.json_response({"message": "Invalid timed notification request"}, status=400)
+        except OSError:
+            logger.warning("Failed to persist timed notification state", exc_info=True)
+            return web.json_response({"message": "Notification storage unavailable"}, status=503)
 
     async def local_store_get_handler(self, request):
         """返回跨实例共享的浏览器设置（localStorage 镜像）。
@@ -2604,6 +2650,8 @@ class WebServer:
         app.router.add_get('/ws', self.websocket_handler)
         app.router.add_get('/health', self.health_handler)
         app.router.add_get('/local-store', self.local_store_get_handler)
+        app.router.add_get('/timed-notifications', self.timed_notifications_handler)
+        app.router.add_post('/timed-notifications', self.timed_notifications_handler)
         app.router.add_post('/local-store', self.local_store_post_handler)
         app.router.add_get('/ui-config', self.ui_config_handler)
         app.router.add_get('/api/ipc_status', self.ipc_status_handler)

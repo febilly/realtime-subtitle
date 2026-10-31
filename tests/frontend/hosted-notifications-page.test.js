@@ -31,6 +31,27 @@ function storedHostedLogin() {
 }
 
 describe('hosted notification flows', () => {
+    it('uses a server notice received before UI startup as the shared slot and keeps invite cadence untouched', async () => {
+        const fetch = async (url, request = {}) => {
+            const pathname = new URL(String(url), 'http://localhost/').pathname;
+            if (pathname === '/timed-notifications') {
+                const data = request.method === 'POST'
+                    ? { shown: true, retry_after_seconds: 14400 }
+                    : { notices: [{ notice_id: 'early-server', notice: { id: 'soniox_quota' } }] };
+                return { ok: true, json: async () => data };
+            }
+            if (pathname === '/account/invite') return { ok: true, json: async () => ({ successful_invite_count: 0 }) };
+            return defaultFetchResponse(url, { ...request, uiConfig: hostedConfig });
+        };
+        const page = await createPageHarness({ fetch, initialUiConfig: hostedConfig, uiConfig: hostedConfig,
+            localStorage: storedHostedLogin() });
+        try {
+            expect(page.document.getElementById('toast').textContent).toContain("this week's free Soniox quota");
+            expect(page.document.getElementById('toast').textContent).not.toContain('Invite a friend');
+            expect(page.window.localStorage.getItem('inviteRewardReminderLastShown')).toBeNull();
+        } finally { page.close(); }
+    });
+
     it('recovers a temporary-key session limit with 20 current-model Credits', async () => {
         const fetch = async (url, request = {}) => {
             const parsed = new URL(String(url), 'http://localhost/');
@@ -419,6 +440,7 @@ describe('hosted notification flows', () => {
         try {
             await page.emitFrame({
                 type: 'server_notice',
+                notice_id: 'test-soniox-weekly',
                 notice: {
                     id: 'soniox_quota',
                     action: { type: 'switch_provider', provider: 'soniox' },
@@ -426,16 +448,16 @@ describe('hosted notification flows', () => {
                 },
             });
             await page.emitFrame({ type: 'server_notice', notice: { id: 'from_a_newer_server' } });
-            await page.emitFrame({ type: 'server_notice', notice: { id: 'soniox_quota', period: 'daily' } });
+            await page.emitFrame({ type: 'server_notice', notice_id: 'test-soniox-daily', notice: { id: 'soniox_quota', period: 'daily' } });
             await page.flush(2);
 
             const toast = page.document.getElementById('toast');
             // A notice without a period (an older server) reads as weekly.
             const items = toast.querySelectorAll('.toast');
-            expect(items).toHaveLength(2);
+            expect(items).toHaveLength(1);
             const item = items[0];
             expect(item.textContent).toContain("You haven't used this week's free Soniox quota yet.");
-            expect(items[1].textContent).toContain("You haven't used today's free Soniox quota yet.");
+            expect(toast.textContent).not.toContain("You haven't used today's free Soniox quota yet.");
             expect(item.classList.contains('error')).toBe(false);
             const action = toast.querySelector('.toast-action');
             expect(action.textContent).toBe('Switch to Soniox');

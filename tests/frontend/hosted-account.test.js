@@ -70,6 +70,7 @@ function setup(overrides = {}) {
     const showConfirm = overrides.showConfirm || vi.fn().mockResolvedValue(true);
     const saveServerSettings = vi.fn((value) => { server = { ...value }; });
     const controller = HostedAccount.create({
+        timedNotifications: overrides.timedNotifications,
         document,
         window: dom.window,
         navigator: { clipboard },
@@ -123,6 +124,25 @@ function setup(overrides = {}) {
 }
 
 describe('HostedAccount invite reward reminder', () => {
+    it('retries a due invite without resetting its weekly cadence when the shared slot is occupied', async () => {
+        const gate = { canShow: () => true, tryShow: vi.fn()
+            .mockResolvedValueOnce(false)
+            .mockImplementationOnce(async (_kind, display) => { display(); return true; }) };
+        const page = setup({
+            timedNotifications: gate,
+            signedInAtLaunch: true,
+            now: () => 1_000_000_000,
+            fetch: vi.fn().mockResolvedValue(response({ successful_invite_count: 0 })),
+        });
+        await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(false);
+        expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_STORAGE_KEY)).toBeNull();
+        expect(page.actions.showToast).not.toHaveBeenCalled();
+        await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(true);
+        expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_STORAGE_KEY)).toBe('1000000000');
+        expect(page.actions.showToast).toHaveBeenCalledOnce();
+        page.dom.window.close();
+    });
+
     it('shows only for a user who was already signed in at launch and has no successful invites', async () => {
         const fetch = vi.fn()
             .mockResolvedValueOnce(response({

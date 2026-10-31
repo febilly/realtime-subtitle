@@ -162,7 +162,7 @@ describe('RuntimeFrameController direct runtime delegation', () => {
         const notice = { id: 'soniox_quota', message: 'try soniox' };
 
         expect(page.controller.handle({ type: 'server_notice', notice })).toBe(true);
-        expect(page.actions.showServerNotice).toHaveBeenCalledWith(notice);
+        expect(page.actions.showServerNotice).toHaveBeenCalledWith(notice, undefined);
     });
 
     it('applies translation fallback in persistence, UI, toast, then optional restart order', () => {

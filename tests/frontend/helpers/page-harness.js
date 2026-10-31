@@ -77,6 +77,9 @@ function defaultFetchResponse(url, options = {}) {
         ...(options.uiConfig || {}),
     };
     const payloads = {
+        '/timed-notifications': options.method === 'POST'
+            ? { shown: true, retry_after_seconds: 14400, star_shown_count: 1 }
+            : { notices: [], star_mode: 'auto', usage_days: 0, retry_after_seconds: 0 },
         '/local-store': { store: {} },
         '/ui-config': uiConfig,
         '/api-key-status': { status: 'ok' },
@@ -103,7 +106,7 @@ function installBrowserStubs(window, fetchImpl, options) {
     window.WebSocket = FakeWebSocket;
     window.XMLHttpRequest = FakeXMLHttpRequest;
     const fetchCalls = [];
-    const resolvedFetch = fetchImpl || (async (url) => defaultFetchResponse(url, options));
+    const resolvedFetch = fetchImpl || (async (url, request = {}) => defaultFetchResponse(url, { ...options, ...request }));
     window.fetch = async (...args) => {
         fetchCalls.push(args);
         return resolvedFetch(...args);

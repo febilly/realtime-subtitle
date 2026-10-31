@@ -340,7 +340,7 @@ class LocalInferenceSession(SonioxSession):
 
             stop_event = self._local_stop_event
             while stop_event is not None and not stop_event.wait(0.2):
-                pass
+                self._record_star_usage(local_model=True)
         except Exception as error:
             self._startup_error = str(error)
             self._broadcast_local_error(error)

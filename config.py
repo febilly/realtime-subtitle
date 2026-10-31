@@ -1533,3 +1533,12 @@ LOCAL_SETTINGS_FILE = _env_str(
     "LOCAL_SETTINGS_FILE",
     os.path.join(get_app_data_dir(), "local_settings.json"),
 )
+
+# Nonessential recurring notifications. Required updates and errors bypass this.
+LOCAL_MODEL_STAR_REMINDER = _env_str("LOCAL_MODEL_STAR_REMINDER", "auto").strip().lower()
+if LOCAL_MODEL_STAR_REMINDER not in ("auto", "always", "never"):
+    LOCAL_MODEL_STAR_REMINDER = "auto"
+try:
+    TIMED_NOTIFICATION_COOLDOWN_SECONDS = max(0, int(_env_str("TIMED_NOTIFICATION_COOLDOWN_SECONDS", "14400")))
+except ValueError:
+    TIMED_NOTIFICATION_COOLDOWN_SECONDS = 14400

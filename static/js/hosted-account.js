@@ -100,6 +100,7 @@
 
         async function maybeShowInviteReminder() {
             if (!signedInAtLaunch || !isSignedIn()) return false;
+            if (options.timedNotifications && !options.timedNotifications.canShow()) return false;
             let lastShown = 0;
             try {
                 lastShown = Number(storage && storage.getItem(INVITE_REMINDER_STORAGE_KEY)) || 0;
@@ -112,11 +113,16 @@
                 if (!response.ok) return false;
                 const data = await response.json().catch(() => ({}));
                 if (successfulInviteCount(data) !== 0) return false;
-                call('showToast', t('invite_reward_reminder'), false, {
+                const display = () => call('showToast', t('invite_reward_reminder'), false, {
                     timeoutMs: 20000,
                     actionLabel: t('open_invite_page'),
                     onAction: () => { void openUserWeb('/invite'); },
                 });
+                if (options.timedNotifications) {
+                    if (!await options.timedNotifications.tryShow('invite', display)) return false;
+                } else {
+                    display();
+                }
                 try {
                     if (storage) storage.setItem(INVITE_REMINDER_STORAGE_KEY, String(now()));
                 } catch (error) {

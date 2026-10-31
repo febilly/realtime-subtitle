@@ -18,15 +18,53 @@ import os
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 
 import config
 
 logger = logging.getLogger(__name__)
 
-# Guards against concurrent writes *within* this process. Cross-process races
-# are made safe by atomic os.replace(); settings writes are user-driven and
-# rare, so a lost key in a simultaneous two-instance write is acceptable.
+# Atomic replacement protects readers; the write lock also protects concurrent
+# read/modify/write operations from other app instances.
 _lock = threading.Lock()
+
+
+@contextmanager
+def _write_lock():
+    """Serialize read/modify/write across app processes as well as threads."""
+    with _lock:
+        lock_path = _path() + ".lock"
+        os.makedirs(os.path.dirname(os.path.abspath(lock_path)), exist_ok=True)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        acquired = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"\0")
+                deadline = time.monotonic() + 5
+                while True:
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    try:
+                        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(0.01)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 
 def _path() -> str:
@@ -124,7 +162,7 @@ def merge(updates=None, removals=None) -> dict:
     If loading existing settings fails due to transient IO errors, aborts without
     writing so existing settings are never wiped.
     """
-    with _lock:
+    with _write_lock():
         try:
             data = load()
         except OSError as e:
@@ -141,10 +179,21 @@ def merge(updates=None, removals=None) -> dict:
 
 def clear() -> dict:
     """Empty the store (used by the frontend "reset all" flow)."""
-    with _lock:
+    with _write_lock():
         try:
             _atomic_write({})
             return {}
         except OSError as e:
             logger.warning(f"Failed to clear settings store: {e}")
             raise
+
+
+def transaction(callback):
+    """Read/modify/write backend-owned state without racing settings writes."""
+    with _write_lock():
+        data = load()
+        before = dict(data)
+        result = callback(data)
+        if data != before:
+            _atomic_write(data)
+        return result

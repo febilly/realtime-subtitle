@@ -270,6 +270,11 @@ def run_stream_session(
                 notify_disconnect = False
                 break
 
+            if active_stream is not None:
+                record_usage = getattr(session, "_record_star_usage", None)
+                if record_usage is not None:
+                    record_usage()
+
             current_sleep_enabled = session._sleep_idle_seconds() is not None
             if current_sleep_enabled != sleep_enabled:
                 sleep_enabled = current_sleep_enabled

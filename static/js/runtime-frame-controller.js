@@ -73,7 +73,7 @@
                 return true;
             }
             if (frame.type === 'server_notice') {
-                call('showServerNotice', frame.notice);
+                call('showServerNotice', frame.notice, frame.notice_id);
                 return true;
             }
             if (frame.type === 'osc_sensitive_filter_triggered') {

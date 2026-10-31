@@ -48,6 +48,8 @@
         'oscSensitiveFilterEnabled': true,
         'oscSensitiveFilterNoticeDisabled': true,
         'inviteRewardReminderLastShown': true,
+        'clientUpdateReminderLastShown': true,
+        'clientUpdateLastCheckedVersion': true,
         'useBundledCjkFont': true,
     };
 
