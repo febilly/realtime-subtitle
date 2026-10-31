@@ -53,12 +53,18 @@ def _stub_connect(monkeypatch, body):
     return calls
 
 
-def test_non_soniox_connect_opts_into_notices_and_queues_them_once(monkeypatch):
+@pytest.mark.parametrize(
+    "provider,model,expected_provider",
+    [("gemini", "models/gemini", "gemini"), ("local", "local", "local"), (None, "local", "local")],
+)
+def test_non_soniox_connect_opts_into_notices_and_queues_them_once(monkeypatch, provider, model, expected_provider):
     notice = {"id": "soniox_quota", "action": {"type": "switch_provider", "provider": "soniox"}}
     calls = _stub_connect(monkeypatch, {"url": "wss://relay/x", "notices": [notice, {"id": "unknown"}, "junk"]})
+    monkeypatch.setattr(config, "TRANSLATION_PROVIDER", "local")
 
-    config.relay_connect_info("gemini", model="models/gemini")
+    config.relay_connect_info(provider, model=model)
 
+    assert f"/relay/{expected_provider}/connect?" in calls[0]
     assert "notices=soniox_quota" in calls[0]
     assert config.take_relay_notices() == [notice]
     assert config.take_relay_notices() == []
@@ -71,3 +77,20 @@ def test_soniox_connect_does_not_ask_for_the_soniox_reminder(monkeypatch):
 
     assert "notices=" not in calls[0]
     assert config.take_relay_notices() == []
+
+
+def test_logged_out_relay_mode_reports_no_hosted_llm(monkeypatch):
+    import asyncio
+    import types
+
+    import web_server
+
+    monkeypatch.setattr(config, "RELAY_AVAILABLE", True)
+    monkeypatch.setattr(config, "RELAY_MODE", True)
+    monkeypatch.setattr(config, "HOSTED_LLM_AVAILABLE", True)
+    server = web_server.WebServer.__new__(web_server.WebServer)
+    server.provider_manager = types.SimpleNamespace(relay_token="")
+
+    asyncio.run(server._refresh_hosted_llm_config(force=True))
+
+    assert config.is_llm_refine_available() is False

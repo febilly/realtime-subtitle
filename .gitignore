@@ -20,6 +20,10 @@ dist/
 logs/
 *.log
 
+# User-downloaded Qwen3-ASR / Hy-MT2 weights and llama.cpp runtimes.
+local_models/
+.playwright-cli/
+
 # Cloudflare Wrangler local state/cache
 .wrangler/
 
@@ -50,6 +54,9 @@ coverage/
 
 # Local scratch directory
 scratch/
+scratch-eval/
+
+# Local provider evaluation datasets and benchmark scripts
 scratch-eval/
 
 *.ttc

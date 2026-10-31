@@ -464,11 +464,11 @@
 
         // Push the UI's saved translation mode to a backend that booted with a
         // different one (e.g. UI says 关闭 but the session still translates).
-        // Soniox only: Gemini's 关闭 is display-only and never reaches the backend.
+        // Soniox and local only: Gemini's 关闭 is display-only and never reaches the backend.
         let lastBackendSyncKey = '';
         function syncBackendMode() {
             const state = getState();
-            if (state.translationProvider !== 'soniox') return false;
+            if (!['soniox', 'local'].includes(state.translationProvider)) return false;
             if (state.lockManualControls || state.setupRequired) return false;
             const mode = state.uiTranslationMode;
             if (!['none', 'one_way', 'two_way'].includes(mode)) return false;

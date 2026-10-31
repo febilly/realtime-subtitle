@@ -21,18 +21,30 @@
             throw new TypeError('SettingsPanel.create requires buildCustomSelect');
         }
         const loadProviderSettings = options.loadProviderSettings || (() => ({}));
+        const saveProviderSettings = options.saveProviderSettings || (() => {});
         const freePoolsSummary = typeof options.freePoolsSummary === 'function'
             ? options.freePoolsSummary
             : () => '';
         const getState = typeof options.getState === 'function' ? options.getState : () => ({});
         const providerKeyUrls = options.providerKeyUrls || DEFAULT_PROVIDER_KEY_URLS;
         const actions = options.actions || {};
+        const showConfirm = typeof options.showConfirm === 'function'
+            ? options.showConfirm
+            : () => Promise.resolve(false);
+        let legacyFiles = null;
         const elements = options.elements || {};
         const listeners = [];
         let initialized = false;
         let forcedOpen = false;
         let relayPricing = null;
         let sonioxRegionPicker = null;
+        let localStatusLoaded = false;
+        let localDraftDirty = false;
+        let lastLocalConfig = {};
+        // Provider the panel showed before the current radio change; a
+        // declined local-model download switches the radio back to it.
+        let lastProvider = null;
+        let providerChangeSeq = 0;
 
         function state() {
             const value = getState();
@@ -91,7 +103,9 @@
         }
 
         function getProviderDisplayName(provider) {
-            return provider === 'gemini' ? t('provider_gemini') : t('provider_soniox');
+            if (provider === 'gemini') return t('provider_gemini');
+            if (provider === 'local') return t('provider_local');
+            return t('provider_soniox');
         }
 
         function formatRate(value) {
@@ -215,6 +229,236 @@
             }
         }
 
+        function localDeviceOptions(devices) {
+            const options = [
+                { value: 'auto', label: t('local_device_auto') },
+                { value: 'cpu', label: 'CPU' },
+            ];
+            for (const device of Array.isArray(devices) ? devices : []) {
+                const index = Number(device && device.index);
+                if (!Number.isInteger(index) || index < 0) continue;
+                const name = String(device.description || device.name || `GPU ${index}`);
+                options.push({ value: `vulkan:${index}`, label: `GPU ${index} · ${name}` });
+            }
+            return options;
+        }
+
+        function populateNativeSelect(select, options, value) {
+            if (!select) return;
+            select.innerHTML = '';
+            for (const option of options) {
+                const element = documentRef.createElement('option');
+                element.value = option.value;
+                element.textContent = option.label;
+                select.appendChild(element);
+            }
+            select.value = value || 'auto';
+            if (!select.value) select.value = 'auto';
+        }
+
+        function renderModelState(element, ready) {
+            if (!element) return;
+            element.textContent = t(ready ? 'local_model_ready' : 'local_model_missing');
+            element.classList.toggle('ready', !!ready);
+            element.classList.toggle('missing', !ready);
+        }
+
+        function normalizeLocalBackend(value) {
+            return String(value || '').toLowerCase() === 'remote' ? 'remote' : 'local';
+        }
+
+        function getLocalBackend() {
+            return normalizeLocalBackend(
+                elements.localInferenceBackend && elements.localInferenceBackend.value,
+            );
+        }
+
+        function updateLocalBackendVisibility(backend = getLocalBackend()) {
+            const remote = normalizeLocalBackend(backend) === 'remote';
+            if (elements.localNativeControls) elements.localNativeControls.hidden = remote;
+            if (elements.localRemoteControls) elements.localRemoteControls.hidden = !remote;
+        }
+
+        function renderRemoteStatus(remoteStatus) {
+            const element = elements.localRemoteStatus;
+            if (!element) return;
+            const status = remoteStatus && typeof remoteStatus === 'object' ? remoteStatus : null;
+            const ready = !!(status && status.ready);
+            const detail = status && (status.error || status.health);
+            element.textContent = ready
+                ? t('local_remote_ready')
+                : (detail ? String(detail) : t('local_remote_not_tested'));
+            element.classList.toggle('ready', ready);
+            element.classList.toggle('missing', !!status && !ready);
+        }
+
+        function applyLocalInferenceConfig(config = {}) {
+            const backend = normalizeLocalBackend(config.backend);
+            if (elements.localInferenceBackend) elements.localInferenceBackend.value = backend;
+            if (elements.localRemoteServerUrl) {
+                elements.localRemoteServerUrl.value = config.server_url || 'ws://127.0.0.1:18775';
+            }
+            if (elements.localRemoteTimeoutSeconds) {
+                const timeout = Number(config.remote_timeout_seconds);
+                elements.localRemoteTimeoutSeconds.value = Number.isFinite(timeout) && timeout > 0
+                    ? String(Math.floor(timeout))
+                    : '';
+            }
+            updateLocalBackendVisibility(backend);
+        }
+
+        async function refreshLocalInferenceStatus({ refreshDevices = false } = {}) {
+            if (!fetchRef) return false;
+            try {
+                const suffix = refreshDevices ? '?refresh_devices=1' : '';
+                const response = await fetchRef(`/local-inference/status${suffix}`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'status failed');
+                const models = data.models || {};
+                const asr = models.asr && models.asr['qwen3-asr'] || {};
+                const translation = models.translation && models.translation.hymt2 || {};
+                renderModelState(elements.localAsrStatus, !!asr.ready);
+                renderModelState(elements.localTranslationStatus, !!translation.ready);
+                if (elements.localAsrPath) {
+                    elements.localAsrPath.textContent = asr.model_path || models.models_dir || '';
+                }
+                if (elements.localTranslationPath) {
+                    elements.localTranslationPath.textContent = translation.model_path
+                        || t('local_hymt_install_path', { path: translation.install_dir || '' });
+                }
+                if (elements.localAsrDownloadButton) {
+                    elements.localAsrDownloadButton.hidden = !!asr.ready;
+                }
+                if (elements.localTranslationDownloadButton) {
+                    elements.localTranslationDownloadButton.hidden = !!translation.ready;
+                }
+                renderLegacyCleanup(models.legacy);
+                const options = localDeviceOptions(data.devices);
+                lastLocalConfig = data.config || {};
+                const localConfig = { ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) };
+                if (!localDraftDirty) applyLocalInferenceConfig(localConfig);
+                renderRemoteStatus(data.remote_status);
+                populateNativeSelect(elements.localAsrDevice, options, localConfig.asr_device);
+                populateNativeSelect(
+                    elements.localTranslationDevice,
+                    options,
+                    localConfig.translation_device,
+                );
+                if (elements.localEncoderDevice) {
+                    elements.localEncoderDevice.value = localConfig.encoder_device || 'auto';
+                }
+                localStatusLoaded = true;
+                return true;
+            } catch (error) {
+                if (elements.localAsrStatus) {
+                    elements.localAsrStatus.textContent = String(error);
+                    elements.localAsrStatus.classList.add('missing');
+                }
+                return false;
+            }
+        }
+
+        function formatFileSize(bytes) {
+            const mb = bytes / (1024 * 1024);
+            return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${Math.max(1, Math.round(mb))} MB`;
+        }
+
+        function renderLegacyCleanup(legacy) {
+            const button = elements.localLegacyCleanupButton;
+            if (!button) return;
+            legacyFiles = legacy && legacy.count ? legacy : null;
+            button.hidden = !legacyFiles;
+            if (legacyFiles) {
+                button.textContent = t('local_legacy_cleanup', { size: formatFileSize(legacyFiles.bytes) });
+            }
+        }
+
+        async function cleanupLegacyFiles() {
+            if (!fetchRef || !legacyFiles) return;
+            const confirmed = await showConfirm(t('local_legacy_cleanup_confirm', {
+                size: formatFileSize(legacyFiles.bytes),
+                path: legacyFiles.models_dir,
+            }), { okLabel: t('local_legacy_cleanup_ok'), danger: true });
+            if (!confirmed) return;
+            const button = elements.localLegacyCleanupButton;
+            if (button) button.disabled = true;
+            setError('');
+            try {
+                const response = await fetchRef('/local-inference/legacy-cleanup', { method: 'POST' });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'cleanup failed');
+                if (data.failed && data.failed.length) {
+                    setError(t('local_legacy_cleanup_partial', { count: data.failed.length }));
+                }
+                await refreshLocalInferenceStatus();
+            } catch (error) {
+                setError(String(error));
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        async function probeRemoteInference() {
+            if (!fetchRef) return false;
+            const button = elements.localRemoteProbeButton;
+            const serverUrl = elements.localRemoteServerUrl
+                ? elements.localRemoteServerUrl.value.trim() : 'ws://127.0.0.1:18775';
+            if (button) button.disabled = true;
+            try {
+                const response = await fetchRef('/local-inference/probe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        server_url: serverUrl,
+                    }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'probe failed');
+                if (!elements.localRemoteServerUrl || elements.localRemoteServerUrl.value.trim() === serverUrl) {
+                    renderRemoteStatus(data.remote_status);
+                }
+                return !!(data.remote_status && data.remote_status.ready);
+            } catch (error) {
+                renderRemoteStatus({ ready: false, error: String(error) });
+                return false;
+            } finally {
+                if (button) button.disabled = false;
+            }
+        }
+
+        async function downloadLocalComponent(component, button, labelKey) {
+            if (button) {
+                button.disabled = true;
+                button.textContent = t('local_model_downloading');
+            }
+            setError('');
+            try {
+                const response = await fetchRef('/local-inference/download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ component }),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.message || 'download failed');
+                await refreshLocalInferenceStatus();
+            } catch (error) {
+                setError(String(error));
+            } finally {
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = t(labelKey);
+                }
+            }
+        }
+
+        function downloadLocalAsr() {
+            return downloadLocalComponent('qwen3-asr', elements.localAsrDownloadButton, 'local_asr_download');
+        }
+
+        function downloadLocalTranslation() {
+            return downloadLocalComponent('hymt2', elements.localTranslationDownloadButton, 'local_hymt_download');
+        }
+
         function setMode(mode) {
             if (!elements.form) return;
             elements.form.querySelectorAll('input[name="connmode"]').forEach((radio) => {
@@ -233,31 +477,63 @@
         }
 
         function getDraft() {
-            return {
-                provider: getSelectedProvider(),
+            const provider = getSelectedProvider();
+            const draft = {
+                provider,
                 region: getSelectedSonioxRegion(),
                 mode: getMode(),
                 apiKey: elements.apiKeyInput ? elements.apiKeyInput.value : '',
             };
+            if (provider === 'local') {
+                const backend = getLocalBackend();
+                draft.localConfig = {
+                    backend,
+                    asr_device: elements.localAsrDevice ? elements.localAsrDevice.value : 'auto',
+                    encoder_device: elements.localEncoderDevice ? elements.localEncoderDevice.value : 'auto',
+                    translation_device: elements.localTranslationDevice
+                        ? elements.localTranslationDevice.value
+                        : 'auto',
+                };
+                {
+                    draft.localConfig.server_url = elements.localRemoteServerUrl
+                        ? elements.localRemoteServerUrl.value.trim()
+                        : 'ws://127.0.0.1:18775';
+                    const timeout = Number(elements.localRemoteTimeoutSeconds
+                        && elements.localRemoteTimeoutSeconds.value);
+                    if (Number.isFinite(timeout) && timeout > 0) {
+                        draft.localConfig.remote_timeout_seconds = Math.floor(timeout);
+                    }
+                }
+            }
+            return draft;
         }
 
         function applyModeVisibility(mode) {
             const current = state();
+            const local = getSelectedProvider() === 'local';
+            // Local recognition runs in both modes; hosted mode adds the hosted
+            // LLM and the account, so the switch stays visible for it too.
             if (elements.modeSection) elements.modeSection.hidden = !current.relayAvailable;
             const relay = mode === 'relay';
             if (elements.accountSection) elements.accountSection.hidden = !relay;
-            if (elements.apiKeySection) elements.apiKeySection.hidden = relay;
+            if (elements.apiKeySection) elements.apiKeySection.hidden = relay || local;
+            if (elements.localInferenceSection) elements.localInferenceSection.hidden = !local;
+            if (local) updateLocalBackendVisibility();
             if (elements.modeDescription) {
                 elements.modeDescription.textContent = t(
-                    relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc',
+                    relay ? 'conn_mode_relay_desc' : 'conn_mode_direct_desc'
                 );
             }
+            if (local && !localStatusLoaded) void refreshLocalInferenceStatus();
         }
 
         function populate() {
             const current = state();
+            localDraftDirty = false;
+            applyLocalInferenceConfig({ ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) });
             const provider = getDesiredProvider();
             setProvider(provider);
+            lastProvider = provider;
             const mode = current.relayAvailable && current.connectionMode === 'relay'
                 ? 'relay'
                 : 'direct';
@@ -300,6 +576,19 @@
             setText('providerLabel', 'api_selection');
             setText('providerSonioxLabel', 'provider_soniox');
             setText('providerGeminiLabel', 'provider_gemini');
+            setText('providerLocalLabel', 'provider_local');
+            setText('localInferenceLabel', 'local_models');
+            setText('localInferenceBackendLabel', 'local_inference_backend');
+            setText('localInferenceBackendLocalOption', 'local_inference_local');
+            setText('localInferenceBackendRemoteOption', 'local_inference_remote');
+            setText('localRemoteServerUrlLabel', 'local_remote_server_url');
+            setText('localRemoteTimeoutLabel', 'local_remote_timeout');
+            setText('localRemoteProbeButton', 'local_remote_probe');
+            setText('localAsrDownloadButton', 'local_asr_download');
+            setText('localTranslationDownloadButton', 'local_hymt_download');
+            setText('localAsrDeviceLabel', 'local_asr_device');
+            setText('localEncoderDeviceLabel', 'local_encoder_device');
+            setText('localTranslationDeviceLabel', 'local_translation_device');
             setText('sonioxRegionLabel', 'soniox_region');
             setText('microphoneDeviceLabel', 'microphone_device');
             setText('outputDeviceLabel', 'output_device');
@@ -378,7 +667,9 @@
         function updateProviderFields(provider) {
             updateApiKeyField(provider);
             updateSonioxRegion(provider);
+            applyModeVisibility(getMode());
             call('renderRuntimeSettingsPickers');
+            call('renderTranslationModePicker');
         }
 
         function refreshProviderFields(provider) {
@@ -386,9 +677,27 @@
             updateSonioxRegion(provider);
         }
 
-        function handleProviderChange() {
+        async function handleProviderChange() {
             const provider = getSelectedProvider();
+            const previous = lastProvider;
+            const seq = ++providerChangeSeq;
             updateProviderFields(provider);
+            if (provider === 'local' && previous && previous !== 'local'
+                && getLocalBackend() === 'local'
+                && typeof actions.confirmLocalProvider === 'function') {
+                const result = await actions.confirmLocalProvider({
+                    previousProvider: getProviderDisplayName(previous),
+                });
+                if (seq !== providerChangeSeq) return;
+                if (!result || !result.ok) {
+                    setProvider(previous);
+                    updateProviderFields(previous);
+                    return;
+                }
+                localStatusLoaded = false;
+                void refreshLocalInferenceStatus();
+            }
+            lastProvider = provider;
             if (state().canRefreshBalance) {
                 void call('fetchBalance', { provider, force: true });
             }
@@ -426,6 +735,17 @@
                     bind(radio, 'change', handleModeChange);
                 });
             }
+            bind(elements.localLegacyCleanupButton, 'click', cleanupLegacyFiles);
+            bind(elements.localAsrDownloadButton, 'click', downloadLocalAsr);
+            bind(elements.localTranslationDownloadButton, 'click', downloadLocalTranslation);
+            bind(elements.localRemoteProbeButton, 'click', probeRemoteInference);
+            bind(elements.localInferenceBackend, 'change', () => {
+                localDraftDirty = true;
+                updateLocalBackendVisibility();
+            });
+            for (const field of [elements.localRemoteServerUrl, elements.localRemoteTimeoutSeconds]) {
+                bind(field, 'input', () => { localDraftDirty = true; renderRemoteStatus(null); });
+            }
             return true;
         }
 
@@ -456,6 +776,8 @@
             getDebugState,
             getDraft,
             getMode,
+            refreshLocalInferenceStatus,
+            probeRemoteInference,
             getProviderDescription,
             getSelectedProvider,
             getSelectedSonioxRegion,

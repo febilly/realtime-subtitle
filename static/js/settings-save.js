@@ -48,6 +48,9 @@
                 ? String(settings.keys[provider])
                 : '';
             settings.providerOverride = provider;
+            if (provider === 'local' && draft.localConfig) {
+                settings.localConfig = { ...(settings.localConfig || {}), ...draft.localConfig };
+            }
             if (region) settings.sonioxRegion = region;
             settings.keys = settings.keys || {};
             runtime.writeProviderSettingsDraft(settings, provider);
@@ -72,7 +75,7 @@
             }
 
             if (mode === 'relay') {
-                return saveRelay({ provider, region, settings, server });
+                return saveRelay({ provider, region, settings, server, localConfig: draft.localConfig || null });
             }
             return saveDirect({
                 provider,
@@ -80,10 +83,11 @@
                 settings,
                 previousProviderKey,
                 apiKey: String(draft.apiKey || '').trim(),
+                localConfig: draft.localConfig || null,
             });
         }
 
-        async function saveRelay({ provider, region, settings, server }) {
+        async function saveRelay({ provider, region, settings, server, localConfig = null }) {
             if (!server.token) {
                 saveProviderSettings(settings);
                 call('hideSettingsPanel');
@@ -101,7 +105,8 @@
             }
 
             saveProviderSettings(settings);
-            if (!setup.relayNeedsSetup({ provider, token: server.token })) {
+            // Local settings (backend, devices) apply only through a setup push.
+            if (provider !== 'local' && !setup.relayNeedsSetup({ provider, token: server.token })) {
                 setSaving(false);
                 call('finishHotSettingsSave');
                 return { status: 'hot_saved', mode: 'relay', provider };
@@ -112,6 +117,7 @@
                 mode: 'relay',
                 token: server.token,
                 region,
+                ...(provider === 'local' && localConfig ? { localConfig } : {}),
             });
             setSaving(false);
             if (!result.ok) {
@@ -135,6 +141,7 @@
             settings,
             previousProviderKey,
             apiKey,
+            localConfig,
         }) {
             if (apiKey) {
                 settings.keys[provider] = apiKey;
@@ -143,7 +150,7 @@
             }
             const hasOverride = !!settings.keys[provider];
             const envKeyPresent = state().envKeyPresent || {};
-            if (!hasOverride && !envKeyPresent[provider]) {
+            if (provider !== 'local' && !hasOverride && !envKeyPresent[provider]) {
                 setError(t('api_key_required'));
                 return { status: 'api_key_required', mode: 'direct', provider };
             }
@@ -159,6 +166,22 @@
             }
 
             const apiKeyToPush = settings.keys[provider] || null;
+            if (provider === 'local') {
+                const result = await setup.push('local', null, {
+                    silent: false,
+                    mode: 'direct',
+                    localConfig,
+                });
+                setSaving(false);
+                if (!result.ok) {
+                    const message = result.data && result.data.message;
+                    setError(localizeBackendMessage(message || t('local_model_missing')));
+                    return { status: 'setup_error', mode: 'direct', provider };
+                }
+                call('hideSettingsPanel');
+                call('clearSubtitleState');
+                return { status: 'saved', mode: 'direct', provider };
+            }
             if (!setup.directNeedsSetup({
                 provider,
                 region,

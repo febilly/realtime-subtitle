@@ -30,12 +30,14 @@
                 region = null,
                 mode = null,
                 token = null,
+                localConfig = null,
             } = pushOptions;
             try {
                 const body = policy.buildSetupBody(provider, apiKey, {
                     region,
                     mode,
                     token,
+                    localConfig,
                     sleepOnSilence: state().sleepOnSilenceEnabled,
                 });
                 const response = await fetchRef('/setup', {

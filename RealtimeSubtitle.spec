@@ -13,11 +13,24 @@ from PyInstaller.utils.win32.versioninfo import (
     VSVersionInfo,
 )
 
-datas = [('static', 'static'), ('resources', 'resources'), ('ACKNOWLEDGMENTS.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.')]
+datas = [('static', 'static'), ('resources', 'resources'), ('ACKNOWLEDGMENTS.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.'),
+    # Vendored llama.cpp ctypes bindings (qwen_asr_gguf/inference/llama.py), kept as files.
+    ('local_inference/vendor/qwen_asr_gguf', 'local_inference/vendor/qwen_asr_gguf'),
+]
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
 hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'webview',
                  'provider_setup', 'soniox_session', 'gemini_session', 'soniox_client', 'gemini_client',
+                 'local_session', 'local_client', 'local_relay', 'local_inference.recognizer',
+                 'local_inference.asr_qwen3', 'local_inference.qwen3_asr_mtmd',
+                 'local_inference.mtmd_audio', 'local_inference.vad_processor',
+                 'local_inference.remote_client', 'local_inference.subtitle_pipeline',
+                 'local_inference.subtitle_segments', 'local_inference.model_manager',
+                 'local_inference.repetition_guard',
+                 'local_inference.gpu_devices', 'local_inference.spec_decode',
+                 'local_inference.semantic_boundary', 'local_inference.boundary_scout',
+                 'streaming_translation.api.hymt2',
+                 'onnxruntime', 'gguf', 'gguf.constants',
                  'soniox_key_setup', 'gemini_key_setup',
                  'overlay_window', 'win_overlay_native', 'vr_overlay', 'openvr']
 tmp_ret = collect_all('soundcard')
@@ -50,6 +63,8 @@ tmp_ret = collect_all('pythonosc')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('ten_vad')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# sherpa_onnx（语义边界 A/B sidecar，requirements-semantic-boundary-scout.txt）
+# 默认关闭、只在开发环境用，故意不打包：否则产物大小取决于构建机装没装它。
 # tmp_ret = collect_all('streamlink')
 # datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('webview')

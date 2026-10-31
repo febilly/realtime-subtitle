@@ -371,6 +371,13 @@
         }
 
         function renderAutoRestartPicker() {
+            const supported = selectedProvider() !== 'local';
+            if (elements.autoRestartSettingField) elements.autoRestartSettingField.hidden = !supported;
+            if (!supported) {
+                if (elements.autoRestartPickerHost) elements.autoRestartPickerHost.innerHTML = '';
+                pickers.autoRestart = null;
+                return null;
+            }
             const enabled = !!state().autoRestartEnabled;
             setDraft({ autoRestartEnabled: enabled });
             return replaceSwitchHost(elements.autoRestartPickerHost, 'autoRestart', {
@@ -380,6 +387,13 @@
         }
 
         function renderSleepOnSilencePicker() {
+            const supported = selectedProvider() !== 'local';
+            if (elements.sleepOnSilenceSettingField) elements.sleepOnSilenceSettingField.hidden = !supported;
+            if (!supported) {
+                if (elements.sleepOnSilencePickerHost) elements.sleepOnSilencePickerHost.innerHTML = '';
+                pickers.sleepOnSilence = null;
+                return null;
+            }
             const enabled = state().sleepOnSilenceEnabled !== false;
             setDraft({ sleepOnSilenceEnabled: enabled });
             return replaceSwitchHost(elements.sleepOnSilencePickerHost, 'sleepOnSilence', {
@@ -545,6 +559,21 @@
             elements.translationModeHint.hidden = !hint;
         }
 
+        // 快速 / 混合 on the local provider run Hy-MT2: ask to download it when
+        // missing, and fall back to the previous mode if the user declines.
+        async function confirmLocalTranslationMode(value, previous) {
+            if (selectedProvider() !== 'local' || value === 'accurate' || value === previous) return;
+            if (typeof actions.confirmLocalTranslationModel !== 'function') return;
+            const ok = await actions.confirmLocalTranslationModel({
+                modeLabel: translationModeLabel(value),
+                previousModeLabel: translationModeLabel(previous),
+            });
+            if (ok || getDraft().translationUiMode !== value) return;
+            setDraft({ translationUiMode: previous });
+            if (pickers.translationMode) pickers.translationMode.value = previous;
+            updateTranslationModeHint();
+        }
+
         function renderTranslationModePicker() {
             const current = state();
             const shown = !!current.llmRefineAvailable && !current.lockManualControls;
@@ -569,8 +598,10 @@
                 {
                     value: selected,
                     onChange: (value) => {
+                        const previous = draft.translationUiMode; // picker already holds value
                         setDraft({ translationUiMode: value });
                         updateTranslationModeHint();
+                        void confirmLocalTranslationMode(value, previous);
                     },
                 },
             );
@@ -641,7 +672,9 @@
         }
 
         function renderRuntimeSettingsPickers() {
-            if (elements.runtimeControlsSection) elements.runtimeControlsSection.hidden = false;
+            if (elements.runtimeControlsSection) {
+                elements.runtimeControlsSection.hidden = selectedProvider() === 'local';
+            }
             renderAutoRestartPicker();
             renderSleepOnSilencePicker();
             renderSpeakerLabelsPicker();

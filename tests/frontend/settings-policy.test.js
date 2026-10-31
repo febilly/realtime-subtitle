@@ -57,6 +57,17 @@ describe('settings policy setup payload', () => {
         ['automatic sleep preference', ['gemini', 'key', { sleepOnSilence: false }], {
             provider: 'gemini', api_key: 'key', sleep_on_silence: false,
         }],
+        ['local device allocation', ['local', null, {
+            mode: 'direct',
+            localConfig: {
+                asr_device: 'vulkan:0', encoder_device: 'gpu', translation_device: 'cpu',
+            },
+        }], {
+            provider: 'local', mode: 'direct',
+            local_config: {
+                asr_device: 'vulkan:0', encoder_device: 'gpu', translation_device: 'cpu',
+            },
+        }],
     ])('%s', (_label, args, expected) => {
         expect(buildSetupBody(...args)).toEqual(expected);
     });
@@ -125,6 +136,27 @@ describe('settings policy save decisions', () => {
 });
 
 describe('settings policy provider synchronization', () => {
+    it('restores saved remote inference config once per backend boot', () => {
+        const localConfig = { backend: 'remote', server_url: 'ws://127.0.0.1:18775' };
+        const state = { translationProvider: 'local', connectionMode: 'direct', backendMode: 'direct',
+            providerSettings: { providerOverride: 'local', keys: {}, localConfig },
+            backendBootId: 'new-boot', pushedOverrideBootId: 'old-boot' };
+        expect(buildProviderSyncPlan(state)).toMatchObject({ provider: 'local', options: { localConfig } });
+        expect(buildProviderSyncPlan({ ...state, pushedOverrideBootId: 'new-boot' })).toBeNull();
+    });
+
+    it('restores local recognition in hosted mode with its config and the account token', () => {
+        const localConfig = { backend: 'local', asr_device: 'auto' };
+        const state = { translationProvider: 'local', connectionMode: 'relay', backendMode: 'relay',
+            backendLoggedIn: true, serverSettings: { token: 'ss_saved' },
+            providerSettings: { providerOverride: 'local', keys: {}, localConfig },
+            backendBootId: 'new-boot', pushedOverrideBootId: 'old-boot' };
+        expect(buildProviderSyncPlan(state)).toMatchObject({
+            provider: 'local',
+            options: { mode: 'relay', token: 'ss_saved', localConfig },
+        });
+        expect(buildProviderSyncPlan({ ...state, pushedOverrideBootId: 'new-boot' })).toBeNull();
+    });
     const directBaseline = {
         lockManualControls: false,
         providerSettings: { providerOverride: null, keys: {} },

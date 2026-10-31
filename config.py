@@ -23,7 +23,7 @@ for _output_stream in (sys.stdout, sys.stderr):
 
 
 # ======================== Supported languages (per provider) ========================
-# Two providers are supported and each accepts a different set of target languages.
+# Providers accept different target-language sets.
 # The active set/list is selected by TRANSLATION_PROVIDER (resolved further below).
 
 # Soniox-supported languages (ISO 639-1). Source: https://soniox.com/docs/stt/concepts/supported-languages
@@ -72,6 +72,16 @@ GEMINI_LANGUAGE_CODES_ORDERED = [
     "mn", "ne", "no", "fa", "pl", "pt", "pa", "ro", "ru", "sr",
     "sd", "si", "sk", "sl", "es", "su", "sw", "sv", "ta", "te",
     "th", "tr", "uk", "ur", "uz", "vi", "zu",
+]
+
+# Qwen3-ASR + Hy-MT2 languages.  Qwen can recognize more languages, but the
+# local provider deliberately exposes only the intersection that has been
+# exercised by the bundled Hy-MT2 prompt format.
+LOCAL_SUPPORTED_LANGUAGE_CODES = {
+    "zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru", "it",
+}
+LOCAL_LANGUAGE_CODES_ORDERED = [
+    "zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru", "it",
 ]
 
 # ISO 639-1 (normalized) -> Gemini BCP-47 target language code mapping.
@@ -143,13 +153,21 @@ def to_gemini_language_code(lang: str) -> str:
 def get_supported_language_codes(provider: str | None = None) -> set:
     """Return the validation set of supported (normalized) codes for a provider."""
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
-    return GEMINI_SUPPORTED_LANGUAGE_CODES if p == "gemini" else SONIOX_SUPPORTED_LANGUAGE_CODES
+    if p == "gemini":
+        return GEMINI_SUPPORTED_LANGUAGE_CODES
+    if p == "local":
+        return LOCAL_SUPPORTED_LANGUAGE_CODES
+    return SONIOX_SUPPORTED_LANGUAGE_CODES
 
 
 def get_language_codes_ordered(provider: str | None = None) -> list:
     """Return the ordered list of display language codes for the frontend dropdown."""
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
-    return list(GEMINI_LANGUAGE_CODES_ORDERED if p == "gemini" else SONIOX_LANGUAGE_CODES_ORDERED)
+    if p == "gemini":
+        return list(GEMINI_LANGUAGE_CODES_ORDERED)
+    if p == "local":
+        return list(LOCAL_LANGUAGE_CODES_ORDERED)
+    return list(SONIOX_LANGUAGE_CODES_ORDERED)
 
 
 def is_supported_language_code(lang: str, provider: str | None = None) -> bool:
@@ -375,15 +393,203 @@ def _env_json(name: str, default: dict | None = None) -> dict:
         return default
 
 # ======================== Translation provider selection ========================
-# Which STT/translation backend to use: "soniox" | "gemini".
+# Which STT/translation backend to use: "soniox" | "gemini" | "local".
 # Normally resolved interactively at startup (see provider_setup.py) and persisted
 # to .env as TRANSLATION_PROVIDER. If unset/invalid here, default to "soniox".
 _TRANSLATION_PROVIDER_RAW = _env_str("TRANSLATION_PROVIDER", "")
 TRANSLATION_PROVIDER = str(_TRANSLATION_PROVIDER_RAW).strip().lower()
-if TRANSLATION_PROVIDER not in ("soniox", "gemini"):
+if TRANSLATION_PROVIDER not in ("soniox", "gemini", "local"):
     if _TRANSLATION_PROVIDER_RAW.strip():
         print(f"⚠️  Invalid TRANSLATION_PROVIDER: {_TRANSLATION_PROVIDER_RAW}, fallback to: soniox")
     TRANSLATION_PROVIDER = "soniox"
+
+
+# ======================== Local Qwen3-ASR + Hy-MT2 ========================
+# These settings intentionally live in the shared configuration module so the
+# Web UI can update them without restarting the HTTP server.  Models and native
+# runtimes are resolved lazily by local_inference.model_manager.
+VAD_ENABLED = _env_bool("LOCAL_VAD_ENABLED", True)
+LOCAL_VAD_MODE = _env_str("LOCAL_VAD_MODE", "silero").strip().lower() or "silero"
+LOCAL_VAD_THRESHOLD = min(1.0, max(0.0, _env_float("LOCAL_VAD_THRESHOLD", 0.5)))
+LOCAL_VAD_MIN_SPEECH_DURATION = max(0.05, _env_float("LOCAL_VAD_MIN_SPEECH_DURATION", 1.0))
+LOCAL_VAD_MAX_SPEECH_DURATION = max(
+    LOCAL_VAD_MIN_SPEECH_DURATION,
+    _env_float("LOCAL_VAD_MAX_SPEECH_DURATION", 30.0),
+)
+LOCAL_VAD_SILENCE_DURATION = max(0.05, _env_float("LOCAL_VAD_SILENCE_DURATION", 0.8))
+VAD_PRE_SPEECH_DURATION = max(0.0, _env_float("LOCAL_VAD_PRE_SPEECH_DURATION", 0.5))
+
+LOCAL_INFERENCE_DEVICE = _env_str("LOCAL_INFERENCE_DEVICE", "auto").strip().lower() or "auto"
+LOCAL_QWEN_ENCODER_DEVICE = (
+    _env_str("LOCAL_QWEN_ENCODER_DEVICE", "auto").strip().lower() or "auto"
+)
+LOCAL_TRANSLATION_DEVICE = _env_str("LOCAL_TRANSLATION_DEVICE", "auto").strip().lower() or "auto"
+LOCAL_INFERENCE_BACKEND = "remote" if _env_str("LOCAL_INFERENCE_BACKEND", "local").strip().lower() == "remote" else "local"
+LOCAL_INFERENCE_SERVER_URL = _env_str("LOCAL_INFERENCE_SERVER_URL", "ws://127.0.0.1:18775").strip()
+LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS = max(1.0, _env_float("LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS", 60.0))
+
+LOCAL_INCREMENTAL_ASR = _env_bool("LOCAL_INCREMENTAL_ASR", True)
+LOCAL_INCREMENTAL_TRIGGER_SILENCE_MS = max(
+    0, _env_int("LOCAL_INCREMENTAL_TRIGGER_SILENCE_MS", 10)
+)
+LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL = max(
+    0.1, _env_float("LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL", 0.3)
+)
+LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL = max(
+    LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL,
+    _env_float("LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL", 4.0),
+)
+
+# Continuous-speech semantic commits. Qwen hypotheses are presented as they
+# are scanned; only a punctuation boundary that is internal, has right context
+# and remains stable across revisions is committed.
+LOCAL_SEMANTIC_BOUNDARY_ENABLED = _env_bool("LOCAL_SEMANTIC_BOUNDARY_ENABLED", True)
+# "text": finalize a stable sentence immediately and keep its audio in the
+# window (later hypotheses have it stripped); trim that audio separately with
+# one verifying probe. "audio": locate the boundary with several probes and
+# cut before finalizing (the original behaviour).
+LOCAL_SEMANTIC_COMMIT_MODE = (
+    "audio"
+    if _env_str("LOCAL_SEMANTIC_COMMIT_MODE", "text").strip().lower() == "audio"
+    else "text"
+)
+LOCAL_SEMANTIC_TEXT_COMMIT_MIN_AUDIO_SECONDS = max(
+    0.5, _env_float("LOCAL_SEMANTIC_TEXT_COMMIT_MIN_AUDIO_SECONDS", 1.5)
+)
+# Text mode: trim once this much committed speech sits in the window, cutting
+# this far before its estimated end.
+LOCAL_SEMANTIC_TRIM_MIN_SECONDS = max(
+    2.0, _env_float("LOCAL_SEMANTIC_TRIM_MIN_SECONDS", 6.0)
+)
+LOCAL_SEMANTIC_TRIM_MARGIN_SECONDS = max(
+    0.3, _env_float("LOCAL_SEMANTIC_TRIM_MARGIN_SECONDS", 2.0)
+)
+LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS = max(
+    1.0, _env_float("LOCAL_SEMANTIC_BOUNDARY_MIN_AUDIO_SECONDS", 8.0)
+)
+LOCAL_SEMANTIC_BOUNDARY_SCAN_INTERVAL = max(
+    0.5, _env_float("LOCAL_SEMANTIC_BOUNDARY_SCAN_INTERVAL", 1.0)
+)
+LOCAL_SEMANTIC_BOUNDARY_CONFIRM_INTERVAL = max(
+    0.2, _env_float("LOCAL_SEMANTIC_BOUNDARY_CONFIRM_INTERVAL", 0.35)
+)
+LOCAL_SEMANTIC_BOUNDARY_STABLE_UPDATES = max(
+    2, _env_int("LOCAL_SEMANTIC_BOUNDARY_STABLE_UPDATES", 2)
+)
+LOCAL_SEMANTIC_BOUNDARY_MIN_RIGHT_CHARS = max(
+    1, _env_int("LOCAL_SEMANTIC_BOUNDARY_MIN_RIGHT_CHARS", 2)
+)
+# Agree on a stable prefix by its words, so a comma/period revision inside it
+# does not restart agreement. The boundary itself must still agree.
+LOCAL_SEMANTIC_BOUNDARY_LEXICAL_AGREEMENT = _env_bool(
+    "LOCAL_SEMANTIC_BOUNDARY_LEXICAL_AGREEMENT", True
+)
+LOCAL_SEMANTIC_BOUNDARY_REPLAY_MS = max(
+    160, _env_int("LOCAL_SEMANTIC_BOUNDARY_REPLAY_MS", 800)
+)
+LOCAL_SEMANTIC_BOUNDARY_SCOUT_ENABLED = _env_bool(
+    "LOCAL_SEMANTIC_BOUNDARY_SCOUT_ENABLED", False
+)
+LOCAL_SEMANTIC_BOUNDARY_MODEL_DIR = _env_str(
+    "LOCAL_SEMANTIC_BOUNDARY_MODEL_DIR", ""
+).strip()
+LOCAL_SEMANTIC_BOUNDARY_SCOUT_THREADS = max(
+    1, _env_int("LOCAL_SEMANTIC_BOUNDARY_SCOUT_THREADS", 2)
+)
+LOCAL_SEMANTIC_BOUNDARY_QWEN_LOCATOR_PROBES = max(
+    0, _env_int("LOCAL_SEMANTIC_BOUNDARY_QWEN_LOCATOR_PROBES", 4)
+)
+LOCAL_SEMANTIC_BOUNDARY_QWEN_LOCATOR_RESOLUTION_MS = max(
+    80, _env_int("LOCAL_SEMANTIC_BOUNDARY_QWEN_LOCATOR_RESOLUTION_MS", 160)
+)
+
+# Qwen3-ASR size ("1.7B" or "0.6B"); files per size are in model_manager.QWEN3_ASR_VARIANTS.
+LOCAL_QWEN_ASR_MODEL = _env_str("LOCAL_QWEN_ASR_MODEL", "1.7B").strip() or "1.7B"
+# Experiments only: other decoder / mmproj file names in the same model folder.
+LOCAL_QWEN_ASR_DECODER_FILE = _env_str("LOCAL_QWEN_ASR_DECODER_FILE", "").strip()
+LOCAL_QWEN_ASR_MMPROJ_FILE = _env_str("LOCAL_QWEN_ASR_MMPROJ_FILE", "").strip()
+LOCAL_QWEN_ASR_N_CTX = max(512, _env_int("LOCAL_QWEN_ASR_N_CTX", 2048))
+# Q8_0 KV cache for the ASR decoder (half the f16 size).
+LOCAL_QWEN_ASR_KV_Q8 = _env_bool("LOCAL_QWEN_ASR_KV_Q8", True)
+LOCAL_QWEN_CONTEXT_MAX_TOKENS = max(0, _env_int("LOCAL_QWEN_CONTEXT_MAX_TOKENS", 1024))
+LOCAL_QWEN_LOG_PIPELINE_TIMING = _env_bool("LOCAL_QWEN_LOG_PIPELINE_TIMING", True)
+LOCAL_SPECULATIVE_DECODE = _env_bool("LOCAL_SPECULATIVE_DECODE", True)
+# 0 = greedy. Sampling the same growing audio at a temperature re-rolls every
+# near-tie (comma vs period, homophones) on each partial.
+LOCAL_QWEN_ASR_TEMPERATURE = max(0.0, _env_float("LOCAL_QWEN_ASR_TEMPERATURE", 0.0))
+# Keep a token from the previous partial when its logit is within this margin
+# of the model's pick (1.0 = still kept while the model rates it >= 37% as
+# likely). 0 disables. Needs LOCAL_SPECULATIVE_DECODE and greedy decoding.
+# Replays: 0 left ~2x the pending rows; 2.0 locked in a few early mishearings.
+LOCAL_QWEN_ASR_DRAFT_BIAS = max(0.0, _env_float("LOCAL_QWEN_ASR_DRAFT_BIAS", 1.0))
+# The newest previous-partial tokens were heard mid-word; leave them free.
+LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS = max(
+    0, _env_int("LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS", 6)
+)
+LOCAL_MT_PROMPT_CACHE = _env_bool("LOCAL_MT_PROMPT_CACHE", True)
+# Q8_0 KV cache for Hy-MT2. Saves 60 MB but changed 16 of 180 translations, some for the worse.
+LOCAL_MT_KV_Q8 = _env_bool("LOCAL_MT_KV_Q8", False)
+
+# Conservative estimates used only for GPU auto-selection.
+QWEN3_ASR_VRAM_MB = max(0, _env_int("QWEN3_ASR_VRAM_MB", 1530))
+QWEN3_ASR_ENCODER_VRAM_MB = max(0, _env_int("QWEN3_ASR_ENCODER_VRAM_MB", 510))
+HYMT2_VRAM_MB = max(0, _env_int("HYMT2_VRAM_MB", 1200))
+
+
+def sanitize_local_device(value: str) -> str:
+    """Normalize a llama.cpp local-device selector."""
+    from local_inference.gpu_devices import sanitize_device
+    return sanitize_device(value)
+
+
+def sanitize_qwen_encoder_device(value: str) -> str:
+    """Normalize the ONNX encoder execution-provider selector."""
+    normalized = str(value or "auto").strip().lower()
+    if normalized == "directml":
+        normalized = "gpu"
+    return normalized if normalized in {"auto", "cpu", "gpu"} else "auto"
+
+
+def set_local_inference_config(
+    *,
+    backend: str | None = None,
+    server_url: str | None = None,
+    remote_timeout_seconds: float | None = None,
+    asr_device: str | None = None,
+    encoder_device: str | None = None,
+    translation_device: str | None = None,
+) -> dict:
+    """Apply inference location and device choices for the next session."""
+    global LOCAL_INFERENCE_DEVICE, LOCAL_QWEN_ENCODER_DEVICE, LOCAL_TRANSLATION_DEVICE
+    global LOCAL_INFERENCE_BACKEND, LOCAL_INFERENCE_SERVER_URL, LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS
+    selected_backend = LOCAL_INFERENCE_BACKEND if backend is None else str(backend).strip().lower()
+    if selected_backend not in {"local", "remote"}:
+        raise ValueError("Invalid inference backend")
+    from local_inference.remote_client import normalize_server_url
+    selected_url = normalize_server_url(LOCAL_INFERENCE_SERVER_URL if server_url is None else server_url)
+    if selected_backend == "remote" and not selected_url:
+        raise ValueError("远程推理服务器地址为空")
+    selected_timeout = (LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS if remote_timeout_seconds is None
+                        else float(remote_timeout_seconds))
+    if not 1 <= selected_timeout <= 600:
+        raise ValueError("远程推理超时须在 1–600 秒之间")
+    LOCAL_INFERENCE_BACKEND = selected_backend
+    LOCAL_INFERENCE_SERVER_URL = selected_url
+    LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS = selected_timeout
+    if asr_device is not None:
+        LOCAL_INFERENCE_DEVICE = sanitize_local_device(asr_device)
+    if encoder_device is not None:
+        LOCAL_QWEN_ENCODER_DEVICE = sanitize_qwen_encoder_device(encoder_device)
+    if translation_device is not None:
+        LOCAL_TRANSLATION_DEVICE = sanitize_local_device(translation_device)
+    return {
+        "backend": LOCAL_INFERENCE_BACKEND,
+        "server_url": LOCAL_INFERENCE_SERVER_URL,
+        "remote_timeout_seconds": LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS,
+        "asr_device": LOCAL_INFERENCE_DEVICE,
+        "encoder_device": LOCAL_QWEN_ENCODER_DEVICE,
+        "translation_device": LOCAL_TRANSLATION_DEVICE,
+    }
 
 
 def _provider_sleep_env_names(suffix: str) -> tuple[str, str, str]:
@@ -1030,6 +1236,11 @@ PROVIDER_CAPABILITIES = {
         "speaker_diarization": False,
         "two_way_translation": False,
     },
+    "local": {
+        "segment_mode": False,
+        "speaker_diarization": False,
+        "two_way_translation": False,
+    },
 }
 
 
@@ -1045,8 +1256,8 @@ def get_capabilities(provider: str | None = None) -> dict:
 # created sessions reflect the new provider immediately.
 
 def _compute_enable_speaker_diarization(provider: str) -> bool:
-    """Diarization is Soniox-only; Gemini Live Translation forces it off."""
-    if provider == "gemini":
+    """Diarization is Soniox-only."""
+    if provider in ("gemini", "local"):
         return False
     return _env_bool("ENABLE_SPEAKER_DIARIZATION", True)
 
@@ -1070,7 +1281,7 @@ def set_active_provider(provider: str) -> str:
     global ENABLE_SPEAKER_DIARIZATION, TRANSLATION_TARGET_LANG
 
     p = str(provider or "").strip().lower()
-    if p not in ("soniox", "gemini"):
+    if p not in ("soniox", "gemini", "local"):
         p = "soniox"
 
     TRANSLATION_PROVIDER = p
@@ -1139,7 +1350,7 @@ def set_relay_token(token) -> str:
 def _relay_provider(provider: str | None = None) -> str:
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
     p = str(p).strip().lower()
-    if p not in ("soniox", "gemini"):
+    if p not in ("soniox", "gemini", "local"):
         p = "soniox"
     return p
 

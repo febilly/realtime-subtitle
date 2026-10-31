@@ -4,6 +4,10 @@ websockets
 # av==16.1.0
 soundcard
 numpy<2.0.0
+# On-device Qwen3-ASR + Hy-MT2 runtime (models are downloaded/installed separately).
+# Silero VAD only (CPU); Qwen3-ASR runs entirely on llama.cpp.
+onnxruntime>=1.19.0
+gguf>=0.18.0
 ten-vad
 # Optional alternative VAD backend (not bundled in the packaged exe).
 # Install this and set DEFAULT_VAD_BACKEND="silero" in audio_router.py to switch.
@@ -12,14 +16,12 @@ python-dotenv
 arabic-reshaper
 python-bidi
 aiohttp
-aiohttp-jinja2
 requests
 pywebview
-python-osc
-zeroconf
 PySide6
 # SteamVR 字幕悬浮窗（vr_overlay.py）；自带 openvr_api 运行库
 openvr==2.12.1401
+# python-osc / zeroconf 由它自己声明并带进来，代码里不直接 import
 vrchat_oscquery @ git+https://github.com/theepicsnail/vrchat_oscquery@main
 # streamlink
 # 锁版本：不同 PyInstaller 版本的 bootloader 有不同的杀软误报情况，

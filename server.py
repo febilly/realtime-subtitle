@@ -72,7 +72,7 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--server-port', dest='server_port', type=int, default=None)
 
     parser.add_argument(
-        '--provider', dest='translation_provider', choices=('soniox', 'gemini'), default=None,
+        '--provider', dest='translation_provider', choices=('soniox', 'gemini', 'local'), default=None,
         help='Translation provider to use (otherwise read from TRANSLATION_PROVIDER / prompted at startup)',
     )
 
@@ -245,7 +245,7 @@ class ProviderManager:
         self.boot_id = secrets.token_hex(8)
 
         # Runtime key overrides pushed from the UI; None => fall back to env.
-        self.runtime_keys = {"soniox": None, "gemini": None}
+        self.runtime_keys = {"soniox": None, "gemini": None, "local": None}
 
         # Connection mode: "direct" (user's own provider key) or "relay" (hosted
         # subtitle-server). The relay token is the long-lived ss_ account key,
@@ -278,7 +278,11 @@ class ProviderManager:
 
     # ----- provider module wiring -----
     def _provider_modules(self, provider):
-        if provider == "gemini":
+        if provider == "local":
+            import local_session as session_mod
+            from local_session import LocalInferenceSession as SessionClass
+            from local_client import get_api_key
+        elif provider == "gemini":
             import gemini_session as session_mod
             from gemini_session import GeminiSession as SessionClass
             from gemini_client import get_api_key
@@ -294,6 +298,8 @@ class ProviderManager:
         return provider_has_env_key(provider)
 
     def key_source(self) -> str:
+        if self.provider == "local":
+            return "local"
         if self.mode == "relay":
             if self.relay_token:
                 # Distinguish an env-pinned token from a UI/localStorage one so
@@ -314,7 +320,7 @@ class ProviderManager:
         this is NOT env_key_present(), which also treats a temp-key URL as a
         present key.
         """
-        if self.runtime_keys.get(provider):
+        if provider == "local" or self.runtime_keys.get(provider):
             return False
         env_key = "GEMINI_API_KEY" if provider == "gemini" else "SONIOX_API_KEY"
         return not bool(os.environ.get(env_key, "").strip())
@@ -324,6 +330,8 @@ class ProviderManager:
 
         Used by web_server restart/resume handlers.
         """
+        if self.provider == "local":
+            return "local-on-device"
         if self.mode == "relay":
             if self.relay_token:
                 return self.relay_token
@@ -341,6 +349,8 @@ class ProviderManager:
         In relay mode the active credential is the subtitle-server account token
         (shared across providers); the session uses it as the relay bearer.
         """
+        if self.provider == "local":
+            return "local-on-device", None
         if self.mode == "relay":
             if self.relay_token:
                 return self.relay_token, None
@@ -447,7 +457,11 @@ class ProviderManager:
         self.provider = provider
 
         # Connection mode: "direct" (own provider key) or "relay" (hosted).
-        if mode is not None:
+        # The local provider recognizes on-device in both; in relay mode it
+        # also keeps an LLM-only relay session (hosted LLM + telemetry).
+        if provider == "local" and not self.config.RELAY_AVAILABLE:
+            self.mode = "direct"
+        elif mode is not None:
             m = str(mode).strip().lower()
             if m in ("direct", "relay"):
                 self.mode = m
@@ -470,7 +484,7 @@ class ProviderManager:
         # temporary (dispenser) keys keep the stream open; real keys may sleep.
         # In relay mode the account token behaves like a persistent real key
         # (and sleeping during silence also stops relay billing).
-        uses_temp = False if self.mode == "relay" else self.uses_temp_api_key(provider)
+        uses_temp = False if self.mode == "relay" or provider == "local" else self.uses_temp_api_key(provider)
         self.config.set_uses_temp_api_key(provider, uses_temp)
 
         if translation_mode is not None:
@@ -485,7 +499,7 @@ class ProviderManager:
         # Gemini Live Translation has no two-way mode: downgrade to one-way and
         # use the first language as the target.
         downgraded_two_way = False
-        if provider == "gemini" and self.translation_mode == "two_way":
+        if provider in ("gemini", "local") and self.translation_mode == "two_way":
             self.translation_mode = "one_way"
             if self.target_lang_1:
                 self.target_lang = self.target_lang_1
@@ -534,6 +548,8 @@ class ProviderManager:
         self.ipc_server.set_session(new_session)
         import realtime_session_base
         realtime_session_base.ipc_server = self.ipc_server
+        if hasattr(session_mod, "bind_ipc_server"):
+            session_mod.bind_ipc_server(self.ipc_server)
         self.osc_manager.set_speaker_labels_enabled(bool(self.config.ENABLE_SPEAKER_DIARIZATION))
 
         # Resolve key and start (or mark setup_required).
@@ -678,6 +694,16 @@ def run_server(app, sock):
 
 
 def main():
+    # PyInstaller's executable cannot be launched with ``python -m``.  Local
+    # GPU probing uses this private child-process entry so Vulkan enumeration
+    # stays isolated from the long-running subtitle server in frozen builds.
+    if "--probe-local-gpus" in sys.argv:
+        import json
+        from local_inference.gpu_devices import enumerate_gpu_devices
+
+        print(json.dumps(enumerate_gpu_devices(), ensure_ascii=False))
+        return
+
     # 当以 `--run-overlay` 启动时，进入原生字幕悬浮窗（独立 GUI 进程）。
     # 冻结成 exe 后由主程序重新拉起自身走到这里；源码模式下则直接拉起 overlay_window.py。
     if "--run-overlay" in sys.argv:
@@ -704,7 +730,7 @@ def main():
         from network_debug import enable as enable_network_debug
         enable_network_debug()
 
-    # 非交互式解析翻译 provider（soniox|gemini）。必须在导入 config 之前完成，
+    # 非交互式解析翻译 provider（soniox|gemini|local）。必须在导入 config 之前完成，
     # 以便 config 在求值时能读到 TRANSLATION_PROVIDER。
     from provider_setup import resolve_provider
     provider = resolve_provider()
@@ -741,7 +767,7 @@ def main():
 
     # 锁定手动控制且当前 provider 没有可用的 env key ⇒ 直接报错退出
     # （锁定模式下 UI 不能配置，配置只能来自环境变量）。
-    if provider_manager.lock_manual_controls and not provider_manager.env_key_present(provider):
+    if provider_manager.lock_manual_controls and provider != "local" and not provider_manager.env_key_present(provider):
         print("❌ LOCK_MANUAL_CONTROLS is enabled but no API key is configured for "
               f"provider '{provider}'.")
         print("   In locked mode the key can only come from the environment "
@@ -766,6 +792,8 @@ def main():
     ipc_server.set_session(session)
     import realtime_session_base
     realtime_session_base.ipc_server = ipc_server
+    if hasattr(_seed_mod, "bind_ipc_server"):
+        _seed_mod.bind_ipc_server(ipc_server)
     web_server.ipc_server = ipc_server
 
     provider_manager.web_server = web_server

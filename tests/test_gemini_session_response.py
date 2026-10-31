@@ -40,6 +40,7 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config.llm_timeout_seconds = lambda: 60.0
     config.llm_max_output_tokens = lambda: 128
     config.RELAY_MODE = False
+    config.take_relay_notices = MagicMock(return_value=[])
     config.LLM_REFINE_CONTEXT_MIN_COUNT = 1
     config.LLM_REFINE_CONTEXT_MAX_COUNT = 1
     config.LLM_PROMPT_SUFFIX = ""

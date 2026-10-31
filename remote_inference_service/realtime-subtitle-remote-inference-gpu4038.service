@@ -1,0 +1,16 @@
+[Unit]
+Description=Shared remote inference (SenseVoice, Qwen3-ASR, Hy-MT2)
+ConditionHost=gpu4038
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=REMOTE_INFERENCE_GPU=0
+WorkingDirectory=/share/home/tjfbb/data/yakutan_remote_inference
+ExecStart=/share/home/tjfbb/data/yakutan_remote_inference/run_gpu4038.sh
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

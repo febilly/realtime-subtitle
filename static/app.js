@@ -86,6 +86,7 @@ const confirmController = ConfirmDialog.create({
     },
 });
 confirmController.init();
+const localModelDialog = LocalModelDialog.create({ document, fetch, t });
 const resetAllController = ResetAllController.create({
     document,
     window,
@@ -236,7 +237,9 @@ const settingsRuntime = SettingsRuntime.create({
         outputDeviceSection,
         outputDevicePickerHost,
         outputDeviceHint,
+        autoRestartSettingField: document.getElementById('autoRestartSettingField'),
         autoRestartPickerHost,
+        sleepOnSilenceSettingField: document.getElementById('sleepOnSilenceSettingField'),
         sleepOnSilencePickerHost,
         speakerLabelsSettingField,
         speakerLabelsPickerHost,
@@ -309,6 +312,7 @@ const settingsRuntime = SettingsRuntime.create({
         setSpeakerLabelsHidden: controlPorts.setSpeakerLabelsHidden,
         setSegmentMode: controlPorts.setSegmentMode,
         setTranslationUiMode: controlPorts.setTranslationUiMode,
+        confirmLocalTranslationModel: (args) => confirmLocalTranslationModel(args),
         setVrAttachMode: (mode) => runtimeControls.setVrAttachMode(mode),
         setSubtitleFlowDirection: (direction) => setSubtitleFlowDirection(direction, {
             persist: true,
@@ -1285,6 +1289,7 @@ function handleMessageFrame(data) {
 // ===================== Settings panel (provider + API key) =====================
 
 const settingsPanelController = SettingsPanel.create({
+    showConfirm: confirmController.show,
     policy: SettingsPolicy,
     billing: Hosted.Billing,
     document,
@@ -1292,6 +1297,7 @@ const settingsPanelController = SettingsPanel.create({
     t,
     buildCustomSelect: settingsPorts.buildCustomSelect,
     loadProviderSettings: settingsPorts.loadProviderSettings,
+    saveProviderSettings: settingsPorts.saveProviderSettings,
     freePoolsSummary: hostedPorts.freePoolsSummary,
     getState: () => ({
         lockManualControls,
@@ -1313,6 +1319,7 @@ const settingsPanelController = SettingsPanel.create({
         fetchMicrophoneDevices: settingsPorts.fetchMicrophoneDevices,
         fetchBalance: hostedPorts.fetchBalance,
         updateAccountSection: hostedPorts.updateAccountSection,
+        confirmLocalProvider: (args) => confirmLocalProviderSwitch(args),
     },
     elements: {
         settingsButton,
@@ -1336,12 +1343,65 @@ const settingsPanelController = SettingsPanel.create({
         modeSection: document.getElementById('modeSection'),
         accountSection: document.getElementById('accountSection'),
         apiKeySection: document.getElementById('apiKeySection'),
+        localInferenceSection: document.getElementById('localInferenceSection'),
+        localInferenceBackend: document.getElementById('localInferenceBackend'),
+        localNativeControls: document.getElementById('localNativeControls'),
+        localRemoteControls: document.getElementById('localRemoteControls'),
+        localRemoteServerUrl: document.getElementById('localRemoteServerUrl'),
+        localRemoteTimeoutSeconds: document.getElementById('localRemoteTimeoutSeconds'),
+        localRemoteStatus: document.getElementById('localRemoteStatus'),
+        localRemoteProbeButton: document.getElementById('localRemoteProbeButton'),
+        localAsrStatus: document.getElementById('localAsrStatus'),
+        localAsrPath: document.getElementById('localAsrPath'),
+        localAsrDownloadButton: document.getElementById('localAsrDownloadButton'),
+        localTranslationStatus: document.getElementById('localTranslationStatus'),
+        localTranslationPath: document.getElementById('localTranslationPath'),
+        localTranslationDownloadButton: document.getElementById('localTranslationDownloadButton'),
+        localLegacyCleanupButton: document.getElementById('localLegacyCleanupButton'),
+        localAsrDevice: document.getElementById('localAsrDevice'),
+        localEncoderDevice: document.getElementById('localEncoderDevice'),
+        localTranslationDevice: document.getElementById('localTranslationDevice'),
         modeDescription: document.getElementById('modeDescription'),
         redeemPasteButton: document.getElementById('redeemPasteButton'),
         versionElement: document.getElementById('settingsVersion'),
     },
 });
 settingsPanelController.init();
+
+// First switch to the local provider: offer the model downloads before the
+// switch. Choosing ASR only lands on 准确 (LLM) or, without an LLM, no translation.
+async function confirmLocalProviderSwitch({ previousProvider } = {}) {
+    const llmAvailable = translationModeController.isAvailable();
+    const translationUiMode = settingsRuntime.getDraft().translationUiMode
+        || translationModeController.getTranslationUiMode();
+    const result = await localModelDialog.confirmLocalProvider({
+        previousProvider,
+        llmAvailable,
+        needsTranslation: LocalModelDialog.needsMachineTranslation({
+            uiTranslationMode,
+            translationUiMode,
+            llmAvailable,
+        }),
+    });
+    if (result.ok && result.skippedTranslation) {
+        if (llmAvailable) {
+            settingsRuntime.setDraft({ translationUiMode: 'accurate' });
+            const picker = settingsRuntime.getPickers().translationMode;
+            if (picker) picker.value = 'accurate';
+            settingsRuntime.updateTranslationModeHint();
+        } else {
+            setUiTranslationMode('none');
+        }
+    }
+    return result;
+}
+
+function confirmLocalTranslationModel(args = {}) {
+    const localConfig = settingsPanelController.getDraft().localConfig || {};
+    // A remote inference server runs Hy-MT2 itself.
+    if (localConfig.backend === 'remote') return Promise.resolve(true);
+    return localModelDialog.confirmTranslationModel(args);
+}
 const settingsFlowController = SettingsFlowController.create({
     panel: settingsPanelController,
     policy: SettingsPolicy,

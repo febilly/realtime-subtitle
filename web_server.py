@@ -415,7 +415,7 @@ class WebServer:
             await self._refresh_hosted_llm_config()
         payload = {
             "provider": provider,
-            "providers": ["soniox", "gemini"],
+            "providers": ["soniox", "gemini", "local"],
             "capabilities": capabilities,
             "languages": get_language_codes_ordered(provider),
             "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
@@ -499,6 +499,7 @@ class WebServer:
                 "env_key_present": {
                     "soniox": manager.env_key_present("soniox"),
                     "gemini": manager.env_key_present("gemini"),
+                    "local": True,
                 },
                 "mode": manager.mode,
                 "logged_in": bool(manager.relay_token),
@@ -511,7 +512,7 @@ class WebServer:
                 "boot_id": "",
                 "setup_required": False,
                 "key_source": "env",
-                "env_key_present": {"soniox": False, "gemini": False},
+                "env_key_present": {"soniox": False, "gemini": False, "local": True},
                 "mode": "direct",
                 "logged_in": False,
                 "translation_mode": str(getattr(self.session, "translation", None) or TRANSLATION_MODE),
@@ -574,8 +575,27 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
 
         provider = str(payload.get("provider") or "").strip().lower()
-        if provider not in ("soniox", "gemini"):
+        if provider not in ("soniox", "gemini", "local"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
+
+        if provider == "local":
+            local_config = payload.get("local_config")
+            if local_config is not None and not isinstance(local_config, dict):
+                return web.json_response(
+                    {"status": "error", "message": "Invalid local_config"}, status=400
+                )
+            local_config = local_config or {}
+            try:
+                config.set_local_inference_config(
+                    backend=local_config.get("backend"),
+                    server_url=local_config.get("server_url"),
+                    remote_timeout_seconds=local_config.get("remote_timeout_seconds"),
+                    asr_device=local_config.get("asr_device"),
+                    encoder_device=local_config.get("encoder_device"),
+                    translation_device=local_config.get("translation_device"),
+                )
+            except (ValueError, TypeError) as error:
+                return web.json_response({"status": "error", "message": str(error)}, status=400)
 
         if "sleep_on_silence" in payload:
             if not isinstance(payload.get("sleep_on_silence"), bool):
@@ -588,6 +608,8 @@ class WebServer:
         # Connection mode: "direct" (own provider key) or "relay" (hosted).
         mode = str(payload.get("mode") or "").strip().lower()
         if mode not in ("direct", "relay"):
+            mode = "direct"
+        if provider == "local" and not config.RELAY_AVAILABLE:
             mode = "direct"
 
         # Soniox regional endpoint (us | eu | jp); ignored for other providers.
@@ -697,7 +719,7 @@ class WebServer:
             payload = {}
 
         provider = str((payload or {}).get("provider") or config.TRANSLATION_PROVIDER).strip().lower()
-        if provider not in ("soniox", "gemini"):
+        if provider not in ("soniox", "gemini", "local"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
 
         soniox_region = str((payload or {}).get("soniox_region") or "").strip().lower() or None
@@ -721,6 +743,8 @@ class WebServer:
         provider: str, api_key: str, *, soniox_region: str | None = None
     ) -> tuple[bool, str | None]:
         try:
+            if provider == "local":
+                return True, None
             if provider == "gemini":
                 from gemini_key_setup import validate_gemini_api_key
                 return validate_gemini_api_key(api_key)
@@ -730,6 +754,121 @@ class WebServer:
             return validate_soniox_api_key(api_key, websocket_url)
         except Exception as error:
             return False, str(error)
+
+    async def local_inference_status_handler(self, request):
+        """Return model/runtime/device state without loading either model."""
+        from local_inference.gpu_devices import probe_gpu_devices, resolve_device
+        from local_inference.model_manager import get_all_local_models_status
+        from streaming_translation import get_local_engine_runtime_status
+
+        refresh = str(request.query.get("refresh_devices") or "").lower() in ("1", "true", "yes")
+        devices = await asyncio.to_thread(probe_gpu_devices, refresh=refresh)
+        # The GPU the ASR setting resolves to (None for CPU / no enumeration),
+        # so the download dialog checks the card the models will load on.
+        n_gpu_layers, main_gpu, _ = resolve_device(config.LOCAL_INFERENCE_DEVICE, devices=devices)
+        selected_device = None
+        if n_gpu_layers:
+            selected_device = next((d for d in devices if int(d["index"]) == main_gpu), None)
+        return web.json_response({
+            "status": "ok",
+            "models": get_all_local_models_status(),
+            "runtime": {
+                "translation": get_local_engine_runtime_status(),
+                "session_running": bool(
+                    config.TRANSLATION_PROVIDER == "local"
+                    and getattr(self.session, "thread", None)
+                    and self.session.thread.is_alive()
+                ),
+            },
+            "devices": devices,
+            "selected_device": selected_device,
+            "remote_status": None,
+            "config": {
+                "backend": config.LOCAL_INFERENCE_BACKEND,
+                "server_url": config.LOCAL_INFERENCE_SERVER_URL,
+                "remote_timeout_seconds": config.LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS,
+                "asr_device": config.LOCAL_INFERENCE_DEVICE,
+                "encoder_device": config.LOCAL_QWEN_ENCODER_DEVICE,
+                "translation_device": config.LOCAL_TRANSLATION_DEVICE,
+            },
+        })
+
+    async def local_inference_probe_handler(self, request):
+        """Explicit, bounded WebSocket health check; never changes settings."""
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "Local configuration only"}, status=403)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid payload")
+            from local_inference.remote_client import normalize_server_url, probe_remote_server, remote_readiness_error
+            url = normalize_server_url(payload.get("server_url"))
+            if not url:
+                raise ValueError("远程推理服务器地址为空")
+        except (ValueError, TypeError) as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=400)
+        result = await asyncio.to_thread(probe_remote_server, url, timeout=5)
+        error = remote_readiness_error(result, translation_enabled=True)
+        result = {**result, "ready": not bool(error)}
+        if error:
+            result["error"] = error
+        return web.json_response({"status": "ok", "remote_status": result})
+
+    async def local_inference_download_handler(self, request):
+        """Download the redistributable Qwen3-ASR, Silero and llama runtime."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Configuration is locked by server config"},
+                status=403,
+            )
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        component = str((payload or {}).get("component") or "qwen3-asr").strip().lower()
+        if component not in ("qwen3-asr", "hymt2"):
+            return web.json_response(
+                {"status": "error", "message": f"Unknown component: {component}"}, status=400,
+            )
+        from local_inference.model_manager import (
+            DownloadBusy, DownloadCancelled, get_all_local_models_status, run_download,
+        )
+        try:
+            await asyncio.to_thread(run_download, component)
+            return web.json_response({"status": "ok", "models": get_all_local_models_status()})
+        except DownloadBusy:
+            return web.json_response(
+                {"status": "error", "code": "download_busy", "message": "Another model download is running"},
+                status=409,
+            )
+        except DownloadCancelled:
+            return web.json_response(
+                {"status": "error", "code": "download_cancelled", "message": "Download cancelled"},
+                status=409,
+            )
+        except Exception as error:
+            return web.json_response(
+                {"status": "error", "message": str(error)}, status=500
+            )
+
+    async def local_inference_download_progress_handler(self, request):
+        from local_inference.model_manager import get_download_progress
+        return web.json_response({"status": "ok", "download": get_download_progress()})
+
+    async def local_inference_download_cancel_handler(self, request):
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        from local_inference.model_manager import cancel_download
+        return web.json_response({"status": "ok", "cancelled": cancel_download()})
+
+    async def local_inference_legacy_cleanup_handler(self, request):
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        from local_inference.model_manager import get_all_local_models_status, remove_legacy_files
+        result = await asyncio.to_thread(remove_legacy_files)
+        return web.json_response({"status": "ok", **result, "models": get_all_local_models_status()})
 
     # ===================== Subtitle-server relay (hosted) =====================
 
@@ -1066,6 +1205,8 @@ class WebServer:
 
     @staticmethod
     def _active_relay_model(provider):
+        if provider == "local":
+            return "local"
         return (
             f"models/{config.GEMINI_MODEL}"
             if provider == "gemini" else "stt-rt-v5"
@@ -1085,7 +1226,7 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
 
         provider = request.query.get("provider", config.TRANSLATION_PROVIDER)
-        if provider not in ("soniox", "gemini"):
+        if provider not in ("soniox", "gemini", "local"):
             provider = config.TRANSLATION_PROVIDER
         model = self._active_relay_model(provider)
 
@@ -1097,7 +1238,9 @@ class WebServer:
 
         prepaid = summary.get("prepaid_balance")
         subscriptions = []
-        price_per_second = 1.0
+        # Local recognition never bills per second, even against a server that
+        # does not list the local provider.
+        price_per_second = 0.0 if provider == "local" else 1.0
         free = None
         for api in summary.get("apis", []):
             if api.get("name") == provider or api.get("provider") == provider:
@@ -1518,6 +1661,9 @@ class WebServer:
             return
         token = self._relay_token()
         if not token:
+            # Logged out: the hosted LLM is gone too, don't keep the last answer.
+            config.HOSTED_LLM_AVAILABLE = False
+            self._hosted_llm_cfg_token = None
             return
         if (not force
                 and getattr(self, "_hosted_llm_cfg_token", None) == token
@@ -2473,6 +2619,12 @@ class WebServer:
         app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
         app.router.add_post('/setup', self.setup_handler)
         app.router.add_post('/use-env', self.use_env_handler)
+        app.router.add_get('/local-inference/status', self.local_inference_status_handler)
+        app.router.add_post('/local-inference/probe', self.local_inference_probe_handler)
+        app.router.add_post('/local-inference/download', self.local_inference_download_handler)
+        app.router.add_get('/local-inference/download/progress', self.local_inference_download_progress_handler)
+        app.router.add_post('/local-inference/download/cancel', self.local_inference_download_cancel_handler)
+        app.router.add_post('/local-inference/legacy-cleanup', self.local_inference_legacy_cleanup_handler)
         # Subtitle-server relay (hosted mode) account endpoints.
         app.router.add_post('/account/login-code', self.account_login_code_handler)
         app.router.add_post('/account/login-begin', self.account_login_begin_handler)

@@ -43,6 +43,7 @@
         mode = null,
         token = null,
         sleepOnSilence = null,
+        localConfig = null,
     } = {}) {
         const body = { provider };
         if (mode) {
@@ -57,6 +58,9 @@
         }
         if (provider === 'soniox' && region) {
             body.soniox_region = region;
+        }
+        if (provider === 'local' && localConfig && typeof localConfig === 'object') {
+            body.local_config = localConfig;
         }
         if (typeof sleepOnSilence === 'boolean') {
             body.sleep_on_silence = sleepOnSilence;
@@ -147,7 +151,8 @@
             }
             const modeMismatch = backendMode !== 'relay';
             const needTokenPush = token && !backendLoggedIn;
-            if (!providerMismatch && !modeMismatch && !needTokenPush) {
+            const needLocalPush = desiredProvider === 'local' && settings.localConfig;
+            if (!providerMismatch && !modeMismatch && !needTokenPush && !needLocalPush) {
                 return null;
             }
             if (pushedOverrideBootId === backendBootId) {
@@ -161,6 +166,7 @@
                     mode: 'relay',
                     token,
                     region: desiredRegion,
+                    ...(needLocalPush ? { localConfig: settings.localConfig } : {}),
                 },
             };
         }
@@ -173,7 +179,8 @@
                 && settings.sonioxRegion
                 && desiredRegion !== backendSonioxRegion;
             const modeMismatch = backendMode !== 'direct';
-            if (!providerMismatch && !needKeyPush && !regionMismatch && !modeMismatch) {
+            const needLocalPush = desiredProvider === 'local' && settings.localConfig;
+            if (!providerMismatch && !needKeyPush && !regionMismatch && !modeMismatch && !needLocalPush) {
                 return null;
             }
             if (pushedOverrideBootId === backendBootId) {
@@ -186,6 +193,8 @@
                     silent: true,
                     mode: 'direct',
                     region: desiredRegion,
+                    ...(desiredProvider === 'local' && settings.localConfig
+                        ? { localConfig: settings.localConfig } : {}),
                 },
             };
         }
