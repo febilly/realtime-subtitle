@@ -1214,29 +1214,20 @@ body.dark-theme .confirm-dialog {
 }
 
 /*
- * Notifications dock at the end of the subtitle flow that holds the OLDEST lines
- * (top for upward flow, bottom for downward flow). The dock is in normal layout,
- * so it shrinks the subtitle area instead of covering it; the scroller then
- * re-pins to the newest line.
+ * Notifications dock below the subtitles, whichever way they flow. The dock is
+ * in normal layout, so it shrinks the subtitle area instead of covering it; the
+ * scroller then re-pins to the newest line.
  */
 .toast-container {
-    order: -1;
+    order: 1;
     flex: 0 0 auto;
     display: flex;
     /* Newest notification sits farthest from the subtitles. */
-    flex-direction: column-reverse;
-    gap: 6px;
-    padding: 8px 12px 6px;
-    background: rgba(255, 255, 255, 0.95);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.toast-container.toast-container--bottom {
-    order: 1;
     flex-direction: column;
+    gap: 6px;
     padding: 6px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+    background: rgba(255, 255, 255, 0.95);
     border-top: 1px solid rgba(0, 0, 0, 0.06);
-    border-bottom: none;
 }
 
 body.dark-theme .toast-container {
@@ -1322,7 +1313,7 @@ body.dark-theme .toast.error {
     }
 }
 
-.toast-container--bottom .toast {
+.toast-container .toast {
     animation-name: toast-in-up;
 }
 
@@ -1334,7 +1325,8 @@ body.dark-theme .toast.error {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .toast {
+    .toast,
+    .toast-container .toast {
         animation: none;
     }
 }

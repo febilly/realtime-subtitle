@@ -700,23 +700,16 @@ const subtitleRuntimeController = SubtitleRuntimeController.create({
     }),
 });
 
-// Notifications dock at the old-subtitle end so they never cover the newest line.
-function updateToastPlacement() {
-    toastContainer.classList.toggle('toast-container--bottom', subtitleFlowDirection === 'down');
-}
-
 function setSubtitleFlowDirection(direction, { persist = false, render = false } = {}) {
     subtitleFlowDirection = direction === 'down' ? 'down' : 'up';
     subtitleScroll.setFlowDirection(subtitleFlowDirection);
     if (persist) settingsStore.saveSubtitleFlowDirection(subtitleFlowDirection);
-    updateToastPlacement();
     if (render) {
         subtitleRenderer.invalidateAll({ dom: true });
         subtitleRuntimeController.render();
     }
 }
 
-updateToastPlacement();
 const subtitleFrameController = SubtitleFrameController.create({
     session: subtitleSession,
     renderer: subtitleRenderer,
