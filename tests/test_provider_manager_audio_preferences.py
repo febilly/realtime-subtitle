@@ -39,6 +39,7 @@ class FakeSession:
             "translation_mode": translation_mode,
             "translation_target_lang": translation_target_lang,
         }
+        return True
 
     def get_audio_source(self):
         return self.audio_source
@@ -141,3 +142,58 @@ async def test_provider_switch_reapplies_ui_translation_mode(monkeypatch):
     assert result["started"] is True
     assert new_session.translation_mode_ui == "accurate"
     assert new_session.translation_mode_set_before_start is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["soniox", "gemini", "local"])
+async def test_seed_start_defers_only_local_model_loading(monkeypatch, provider):
+    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
+    manager.provider = provider
+    manager.loop = asyncio.get_running_loop()
+    manager.web_server = SimpleNamespace(session=None)
+    manager._sync_ipc = AsyncMock()
+    monkeypatch.setattr(manager, "_provider_modules", lambda _: (
+        SimpleNamespace(), FakeSession, lambda: "env-key",
+    ))
+
+    result = await manager.seed_start()
+    session = manager.web_server.session
+    assert session.started is (provider != "local")
+    assert session.is_paused is (provider == "local")
+    assert result["started"] is (provider != "local")
+    assert result["setup_required"] is False
+    manager._sync_ipc.assert_awaited_once_with(provider != "local")
+
+    if provider == "local":
+        # The normal resume path must start this never-started session.
+        from local_session import LocalInferenceSession
+        assert LocalInferenceSession.resume(
+            session, audio_format="pcm_s16le", translation="one_way",
+            loop=manager.loop, translation_target_lang="zh",
+        ) is True
+        assert session.started is True
+        assert session.start_args["api_key"] == "local-on-device"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["direct", "relay"])
+async def test_restoring_local_settings_stays_paused_until_manual_start(monkeypatch, mode):
+    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
+    manager.loop = asyncio.get_running_loop()
+    manager.web_server = SimpleNamespace(session=None)
+    manager._sync_ipc = AsyncMock()
+    monkeypatch.setattr(manager, "_provider_modules", lambda _: (
+        SimpleNamespace(), FakeSession, lambda: "env-key",
+    ))
+    result = await manager.apply_provider("local", mode=mode, start_paused=True)
+    assert result["started"] is False
+    assert result["setup_required"] is False
+    assert manager.web_server.session.started is False
+    assert manager.web_server.session.is_paused is True
+
+    # Explicit settings changes retain the normal activation behavior.
+    result = await manager.apply_provider("local", mode=mode)
+    assert result["started"] is True
+    assert manager.web_server.session.is_paused is False

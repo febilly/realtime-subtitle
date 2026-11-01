@@ -263,7 +263,7 @@
             await call('maybeRunFirstLaunchFlow');
             await call('ensureHostedVersionAllowed');
             call('refreshPreopenedHostedLogin');
-            await call('syncProviderFromStorage');
+            await call('syncProviderFromStorage', { startup: true });
             await call('fetchLlmRefineStatus');
             call('fetchApiKeyStatus');
             call('fetchOscTranslationStatus');

@@ -486,3 +486,17 @@ describe('SubtitleRenderer refine diff modes', () => {
         expect(line.innerHTML).not.toContain('llm-diff');
     });
 });
+
+
+it('shows the local start hint while paused and replaces it after starting', () => {
+    const env = createHarness({ view: { translationProvider: 'local', isPaused: true } });
+    env.renderer.render();
+    expect(env.container.textContent).toBe('local_start_hint');
+    env.view.isPaused = false;
+    env.renderer.render();
+    expect(env.container.textContent).toBe('Nothing to show');
+    env.view.isPaused = true;
+    env.view.translationProvider = 'soniox';
+    env.renderer.render();
+    expect(env.container.textContent).toBe('Nothing to show');
+});

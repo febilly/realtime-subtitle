@@ -57,3 +57,22 @@ describe('full-page session frame controller wiring', () => {
         }
     });
 });
+
+
+it('renders the local start instruction until the top-right play button is clicked', async () => {
+    const config = { provider: 'local' };
+    const page = await createPageHarness({ initialUiConfig: config, uiConfig: config });
+    try {
+        const button = page.document.getElementById('pauseButton');
+        const subtitles = page.document.getElementById('subtitleContainer');
+        await page.emitFrame({ type: 'recognition_paused', paused: true });
+        expect(button.querySelector('use').getAttribute('href')).toContain('#play');
+        expect(subtitles.textContent).toContain('Click the Start button in the top right');
+        button.click();
+        await page.flush();
+        expect(page.fetchCalls.some(([url]) => url === '/resume')).toBe(true);
+        expect(subtitles.textContent).toContain('Waiting for subtitles');
+    } finally {
+        page.close();
+    }
+});

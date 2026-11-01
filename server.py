@@ -452,6 +452,7 @@ class ProviderManager:
         target_lang=None,
         target_lang_1=None,
         target_lang_2=None,
+        start_paused=False,
     ) -> dict:
         provider = self.config.set_active_provider(provider)
         self.provider = provider
@@ -552,10 +553,15 @@ class ProviderManager:
             session_mod.bind_ipc_server(self.ipc_server)
         self.osc_manager.set_speaker_labels_enabled(bool(self.config.ENABLE_SPEAKER_DIARIZATION))
 
+        # Restoring local mode must not load weights until the user starts it.
+        start_paused = bool(start_paused and provider == "local" and not self.lock_manual_controls)
+        new_session.is_paused = start_paused
+        self.setup_required = False
+
         # Resolve key and start (or mark setup_required).
         key, error = self._resolve_current_key()
         started = False
-        if key:
+        if key and not start_paused:
             try:
                 new_session.start(
                     key,
@@ -569,7 +575,7 @@ class ProviderManager:
             except Exception as e:
                 error = str(e)
                 print(f"❌ Failed to start session: {e}")
-        if not started:
+        if not started and not start_paused:
             self.setup_required = True
 
         await self._sync_ipc(started)
@@ -582,10 +588,14 @@ class ProviderManager:
         }
 
     async def seed_start(self):
-        """Initial startup: try to start the resolved provider using its env key."""
-        result = await self.apply_provider(self.provider, use_env=True)
+        """Start cloud providers; leave restored local recognition paused."""
+        result = await self.apply_provider(
+            self.provider, use_env=True, start_paused=self.provider == "local"
+        )
         if result["started"]:
             print(f"✅ Session started with provider '{self.provider}'")
+        elif self.provider == "local" and not result["setup_required"]:
+            print("ℹ️  Local recognition is paused; click Start to load models and recognize speech.")
         else:
             print("ℹ️  No usable API key found; waiting for configuration via Settings panel.")
         return result

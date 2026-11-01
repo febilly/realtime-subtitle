@@ -222,7 +222,7 @@ const settingsPorts = {
     setModeRadio: (mode) => { settingsPanelController.setMode(mode); },
     applyModeSectionsVisibility: (mode) => { settingsPanelController.applyModeVisibility(mode); },
     pushSetup: (provider, apiKey, options = {}) => settingsSetup.push(provider, apiKey, options),
-    syncProviderFromStorage: async () => { await settingsSetup.syncFromStorage(); },
+    syncProviderFromStorage: async (options) => { await settingsSetup.syncFromStorage(options); },
     fetchUiConfig: () => uiConfigController.fetch(),
     fetchLlmRefineStatus: () => translationModeController.fetchLlmRefineStatus(),
 };
@@ -690,6 +690,8 @@ const subtitleRenderer = SubtitleRenderer.create({
     escapeHtml,
     TranslationDiff: translationDiff,
     getViewState: () => ({
+        translationProvider,
+        isPaused,
         displayMode,
         suppressTranslationDisplay,
         translateMode: controlPorts.isLlmTranslateMode(),

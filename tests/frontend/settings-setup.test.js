@@ -209,3 +209,23 @@ describe('SettingsSetup decisions and startup sync', () => {
         });
     });
 });
+
+
+it.each(['direct', 'relay'])('defers local model loading when restoring %s startup settings', async (mode) => {
+    const env = setup({ state: {
+        connectionMode: mode,
+        serverSettings: { token: 'saved-token' },
+        providerSettings: { providerOverride: 'local', localConfig: { backend: 'local' } },
+    } });
+    await env.controller.syncFromStorage({ startup: true });
+    expect(JSON.parse(env.fetch.mock.calls[0][1].body)).toMatchObject({
+        provider: 'local', mode, start_paused: true,
+        local_config: { backend: 'local' },
+    });
+});
+
+it('keeps explicit local settings activation immediate', async () => {
+    const env = setup();
+    await env.controller.push('local', null, { mode: 'direct' });
+    expect(JSON.parse(env.fetch.mock.calls[0][1].body)).not.toHaveProperty('start_paused');
+});

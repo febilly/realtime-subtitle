@@ -57,6 +57,12 @@
             return value && typeof value === 'object' ? value : {};
         }
 
+        function emptyStateText() {
+            const view = state();
+            return t(view.translationProvider === 'local' && view.isPaused
+                ? 'local_start_hint' : 'empty_state');
+        }
+
         function getLlmSentenceId(sentence) {
             return renderModel.resolveLlmSentenceId(sentence);
         }
@@ -258,7 +264,7 @@
             const tokens = session.buildRenderTokens();
             session.assignRenderTokenSequences(tokens);
             if (tokens.length === 0) {
-                container.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
+                container.innerHTML = `<div class="empty-state">${escapeHtml(emptyStateText())}</div>`;
                 scroll.reset();
                 return { rendered: false, empty: true, blocked: false };
             }
@@ -271,7 +277,7 @@
             });
             const { speakerBlocks, showOriginal, showTranslation } = model;
             if (speakerBlocks.length === 0) {
-                container.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
+                container.innerHTML = `<div class="empty-state">${escapeHtml(emptyStateText())}</div>`;
                 scroll.restoreAfterEmpty(scrollState);
                 return { rendered: false, empty: true, blocked: false };
             }
@@ -344,7 +350,7 @@
                 return { rendered: false, empty: false, blocked: true };
             }
             if (!html) {
-                container.innerHTML = `<div class="empty-state">${escapeHtml(t('empty_state'))}</div>`;
+                container.innerHTML = `<div class="empty-state">${escapeHtml(emptyStateText())}</div>`;
                 scroll.restoreAfterEmpty(scrollState);
                 return { rendered: false, empty: true, blocked: false };
             }

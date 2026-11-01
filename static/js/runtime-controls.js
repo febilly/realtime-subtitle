@@ -264,6 +264,7 @@
                     if (response.ok) {
                         updateState({ isPaused: false });
                         updatePauseButtonUi();
+                        renderSubtitles();
                         consoleRef.log('Recognition resumed');
                         return true;
                     }
@@ -393,6 +394,7 @@
         function syncPauseState(paused) {
             updateState({ isPaused: !!paused });
             updatePauseButtonUi();
+            renderSubtitles();
         }
 
         function syncOverlayState(open) {

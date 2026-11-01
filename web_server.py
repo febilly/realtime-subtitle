@@ -689,7 +689,8 @@ class WebServer:
                 # we keep the saved token and proceed, so a brief server outage
                 # at startup doesn't log the user out.
             result = await manager.apply_provider(
-                provider, mode="relay", relay_token=token, soniox_region=soniox_region
+                provider, mode="relay", relay_token=token, soniox_region=soniox_region,
+                start_paused=payload.get("start_paused") is True,
             )
             if not result.get("started") and result.get("error") and not token:
                 return web.json_response(
@@ -720,6 +721,7 @@ class WebServer:
         result = await manager.apply_provider(
             provider, mode="direct", api_key=api_key, use_env=(api_key is None),
             soniox_region=soniox_region,
+            start_paused=payload.get("start_paused") is True,
         )
         if not result.get("started") and result.get("error") and api_key is None:
             # No key provided and env had none either.
@@ -2055,6 +2057,8 @@ class WebServer:
                 translation=TRANSLATION_MODE,
                 loop=loop
             )
+            if resumed and self.provider_manager is not None:
+                await self.provider_manager._sync_ipc(True)
 
             # 广播恢复状态给所有 WebSocket 客户端
             await self.broadcast_to_clients({

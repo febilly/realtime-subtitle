@@ -40,6 +40,7 @@
                     localConfig,
                     sleepOnSilence: state().sleepOnSilenceEnabled,
                 });
+                if (provider === 'local' && pushOptions.startPaused) body.start_paused = true;
                 const response = await fetchRef('/setup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -109,12 +110,15 @@
             });
         }
 
-        async function syncFromStorage() {
+        async function syncFromStorage({ startup = false } = {}) {
             const current = state();
             if (current.lockManualControls) return null;
             const plan = policy.buildProviderSyncPlan(current);
             if (!plan) return null;
-            return push(plan.provider, plan.apiKey, plan.options);
+            return push(plan.provider, plan.apiKey, {
+                ...plan.options,
+                startPaused: startup && plan.provider === 'local',
+            });
         }
 
         return {

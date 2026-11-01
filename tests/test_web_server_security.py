@@ -256,6 +256,61 @@ class TestWebServerSecurity:
             manager.apply_provider.assert_awaited_once()
 
     @async_test
+    async def test_local_startup_setup_stays_paused_in_both_connection_modes(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "config": MagicMock(), "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+            for mode in ("direct", "relay"):
+                ws = WebServer(self.mock_session(), self.mock_logger())
+                manager = self.mock_manager()
+                ws.provider_manager = manager
+                ws._validate_relay_token = AsyncMock(return_value=(True, None, {}, False))
+                request = AsyncMock()
+                request.remote = "127.0.0.1"
+                request.json.return_value = {
+                    "provider": "local", "mode": mode,
+                    "start_paused": True, "token": "saved-token",
+                }
+                _, status = await ws.setup_handler(request)
+                assert status == 200
+                assert manager.apply_provider.await_args.kwargs["start_paused"] is True
+
+    @async_test
+    async def test_first_resume_starts_ipc_for_deferred_local_session(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "config": MagicMock(), "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            session = self.mock_session()
+            session.is_paused = True
+            session.resume.return_value = True
+            ws = WebServer(session, self.mock_logger())
+            ws.get_api_key = lambda: "local-on-device"
+            ws.provider_manager = self.mock_manager()
+            ws.provider_manager._sync_ipc = AsyncMock()
+            ws.broadcast_to_clients = AsyncMock()
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            _, status = await ws.resume_handler(request)
+            assert status == 200
+            session.resume.assert_called_once()
+            ws.provider_manager._sync_ipc.assert_awaited_once_with(True)
+
+    @async_test
     async def test_setup_invalid_provider(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),
