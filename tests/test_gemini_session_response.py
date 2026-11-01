@@ -75,6 +75,10 @@ def _install_gemini_session_import_mocks(monkeypatch):
     osc_manager.osc_manager = MagicMock()
     monkeypatch.setitem(sys.modules, "osc_manager", osc_manager)
 
+    timed_notifications = ModuleType("timed_notifications")
+    timed_notifications.record_usage = MagicMock()
+    monkeypatch.setitem(sys.modules, "timed_notifications", timed_notifications)
+
     llm_client = ModuleType("llm_client")
     llm_client.LlmConfig = MagicMock()
     llm_client.chat_completion = MagicMock()
