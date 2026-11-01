@@ -153,6 +153,22 @@ python build_exe.py
 
 The executable will be located at `dist/RealtimeSubtitle.exe`.
 
+## Translation checks before commits
+
+Run `npm install` (or `npm run hooks:install` in an existing checkout) to enable
+the translation pre-commit hook. Node.js must be available when committing.
+`npm run check:i18n` checks the working copy; `npm test` also runs this check.
+
+Every commit checks the **staged** `static/i18n.js` against its English table.
+Missing languages or keys, empty strings, placeholder mismatches, unexpected
+keys, and identical English copy block the commit and report the affected keys.
+Intentional shared wording (brands and natural cognates) is listed explicitly
+in `scripts/check-i18n.js`. This check cannot assess translation meaning.
+
+After correcting a translation, stage the file with `git add static/i18n.js`
+before retrying the commit. A fresh clone needs the hook installation step;
+existing custom hooks are preserved and require manual integration.
+
 ## License
 
 This project is licensed under the GNU Affero General Public License version 3 or later. See [LICENSE](LICENSE) for details.
