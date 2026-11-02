@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -49,6 +50,30 @@ _LANG_MAP = {
     "hu": "Hungarian",
     "mk": "Macedonian",
 }
+_LANG_CODE_BY_NAME = {name.lower(): code for code, name in _LANG_MAP.items()}
+_LANGUAGE_HEADER = re.compile(r"^\s*language\s+([^\r\n]+)", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_qwen_asr_output(raw: str, language: str | None = None) -> tuple[str, str, str]:
+    """Return (ISO code, English language name, transcript) from Qwen output.
+
+    Forced-language prompts already contain the metadata; their output is
+    plain text. Auto prompts generate the language header and <asr_text>.
+    Missing/unknown metadata stays unknown rather than guessing English.
+    """
+    text = raw.strip()
+    if language:
+        return language, _LANG_MAP.get(language, language), text
+    if "<asr_text>" not in text:
+        # A truncated header is metadata, not a subtitle. Accept plain-text
+        # responses defensively, but never claim a language we did not detect.
+        if re.match(r"^language(?:\s|$)", text, re.IGNORECASE):
+            return "", "", ""
+        return "", "", text
+    metadata, text = text.split("<asr_text>", 1)
+    header = _LANGUAGE_HEADER.search(metadata)
+    code = _LANG_CODE_BY_NAME.get(header.group(1).strip().lower(), "") if header else ""
+    return code, _LANG_MAP.get(code, ""), text.strip()
 
 
 class Qwen3ASREngine:
@@ -148,7 +173,12 @@ class Qwen3ASREngine:
             self._context = saved_context
 
     def set_language(self, language: str) -> None:
-        self.language = language if language != "auto" else None
+        selected = str(language or "auto").strip().lower()
+        selected = None if selected == "auto" else selected
+        if selected != self.language:
+            # Auto drafts include metadata, forced drafts contain only text.
+            self.reset_draft()
+        self.language = selected
 
     def _truncate_context_to_tokens(self, text: str) -> str:
         if not text or self._engine is None:
@@ -382,7 +412,7 @@ class Qwen3ASREngine:
                 n_vfy,
                 (gen_s - dec_s - wait_s - vfy_s) * 1000,
             )
-        text = result["text"].strip()
+        detected_lang, language_name, text = parse_qwen_asr_output(result["text"], self.language)
         if not text:
             self._draft_tokens = []
             return None
@@ -395,25 +425,8 @@ class Qwen3ASREngine:
             # 长会话中会偶发复述整段 prompt，造成旧字幕和旧翻译大规模回卷。
             # corpus_text 独立保存，不受这里清理影响。
             self._context = ""
-        detected_lang = self.language or self._guess_language(text)
         return {
             "text": text,
             "language": detected_lang,
-            "language_name": detected_lang,
+            "language_name": language_name,
         }
-
-    @staticmethod
-    def _guess_language(text: str) -> str:
-        cjk = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
-        jp = sum(1 for char in text if "\u3040" <= char <= "\u30ff" or "\u31f0" <= char <= "\u31ff")
-        ko = sum(1 for char in text if "\uac00" <= char <= "\ud7af")
-        total = len(text)
-        if total == 0:
-            return "auto"
-        if jp > 0:
-            return "ja"
-        if ko > total * 0.3:
-            return "ko"
-        if cjk > total * 0.3:
-            return "zh"
-        return "en"

@@ -63,7 +63,7 @@ class MtmdQwenASR:
 
     def _build_prompt_embd(self, audio_embd: np.ndarray, prefix_text: str, context: Optional[str],
                            language: Optional[str]) -> np.ndarray:
-        """Same prompt layout as the vendored engine, so results stay comparable."""
+        """Let auto mode generate language metadata before the transcript."""
         def tk(t):
             return self.model.tokenize(t)
 
@@ -76,7 +76,13 @@ class MtmdQwenASR:
             suffix_head += f"language {language}"
 
         suffix_tokens = [self.ID_AUDIO_END] + [self.ID_IM_END] + \
-                        [self.ID_IM_START] + tk(suffix_head) + [self.ID_ASR_TEXT] + tk(prefix_text)
+                        [self.ID_IM_START] + tk(suffix_head)
+        # In auto mode Qwen generates `language X<asr_text>` itself. Supplying
+        # <asr_text> here would skip language identification entirely. Forced
+        # mode still starts directly at the transcription, as in the SDK.
+        if language:
+            suffix_tokens += [self.ID_ASR_TEXT]
+        suffix_tokens += tk(prefix_text)
 
         n_pre, n_aud, n_suf = len(prefix_tokens), audio_embd.shape[0], len(suffix_tokens)
         total = np.zeros((n_pre + n_aud + n_suf, self.model.n_embd), dtype=np.float32)

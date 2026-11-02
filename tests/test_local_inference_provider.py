@@ -195,6 +195,144 @@ def test_qwen_final_clears_utterance_context_instead_of_rolling_history(monkeypa
     assert engine._prompt_context() == "persistent proper noun"
 
 
+@pytest.mark.parametrize("code,name", [
+    ("zh", "Chinese"), ("en", "English"), ("yue", "Cantonese"), ("ar", "Arabic"),
+    ("de", "German"), ("fr", "French"), ("es", "Spanish"), ("pt", "Portuguese"),
+    ("id", "Indonesian"), ("it", "Italian"), ("ko", "Korean"), ("ru", "Russian"),
+    ("th", "Thai"), ("vi", "Vietnamese"), ("ja", "Japanese"), ("tr", "Turkish"),
+    ("hi", "Hindi"), ("ms", "Malay"), ("nl", "Dutch"), ("sv", "Swedish"),
+    ("da", "Danish"), ("fi", "Finnish"), ("pl", "Polish"), ("cs", "Czech"),
+    ("fil", "Filipino"), ("fa", "Persian"), ("el", "Greek"), ("hu", "Hungarian"),
+    ("mk", "Macedonian"), ("ro", "Romanian"),
+])
+def test_qwen_parses_model_detected_language_for_all_supported_languages(code, name):
+    # Latin-script languages must use the model's metadata, not a script guess.
+    assert _asr_qwen3_module.parse_qwen_asr_output(
+        f"language {name}<asr_text>recognized speech"
+    ) == (code, name, "recognized speech")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("language vIeTnAmEsE\n<asr_text>  Xin chào.  ", ("vi", "Vietnamese", "Xin chào.")),
+    ("language Cantonese<asr_text>你好。", ("yue", "Cantonese", "你好。")),
+    ("language None<asr_text>", ("", "", "")),
+    ("language None<asr_text>heard something", ("", "", "heard something")),
+    ("language Unknown<asr_text>speech", ("", "", "speech")),
+    ("<asr_text>speech", ("", "", "speech")),
+    ("plain text without metadata", ("", "", "plain text without metadata")),
+    ("language Thai", ("", "", "")),
+    ("language", ("", "", "")),
+    ("", ("", "", "")),
+])
+def test_qwen_handles_empty_incomplete_and_missing_language_metadata(raw, expected):
+    assert _asr_qwen3_module.parse_qwen_asr_output(raw) == expected
+
+
+def test_qwen_forced_language_keeps_plain_transcription_including_literal_language_word():
+    assert _asr_qwen3_module.parse_qwen_asr_output(
+        "language is important.", "en"
+    ) == ("en", "English", "language is important.")
+
+
+@pytest.mark.parametrize("language", [None, "Vietnamese"])
+def test_qwen_prompt_requests_metadata_only_in_auto_mode(language):
+    from local_inference.qwen3_asr_mtmd import MtmdQwenASR
+
+    engine = object.__new__(MtmdQwenASR)
+    engine.ID_IM_START, engine.ID_IM_END = 512, 513
+    engine.ID_AUDIO_START, engine.ID_AUDIO_END, engine.ID_ASR_TEXT = 514, 515, 516
+    engine.model = SimpleNamespace(tokenize=lambda text: list(text.encode("ascii")), n_embd=1)
+    engine.embedding_table = np.arange(517, dtype=np.float32).reshape(-1, 1)
+    # In auto mode a replayed prefix must retain its language header as well.
+    prefix = "language Vietnamese<asr_text>Xin" if language is None else "Xin"
+    result = engine._build_prompt_embd(np.array([[-1]], dtype=np.float32), prefix, "", language)
+    suffix = [515, 513, 512] + list(b"assistant\n")
+    if language:
+        suffix += list(f"language {language}".encode("ascii")) + [516]
+    suffix += list(prefix.encode("ascii"))
+    audio_index = list(result[:, 0]).index(-1)
+    assert list(result[audio_index + 1:, 0]) == suffix
+
+
+def _qwen_without_weights(monkeypatch, outputs):
+    engine = object.__new__(Qwen3ASREngine)
+    engine._engine = SimpleNamespace(
+        encoder=SimpleNamespace(encode=lambda audio: (np.zeros((2, 4), dtype=np.float32), 0.0)),
+        _build_prompt_embd=Mock(return_value=np.zeros((2, 4), dtype=np.float32)),
+    )
+    engine._context = ""
+    engine._corpus_text = ""
+    engine._draft_tokens = []
+    engine.language = None
+    engine._decode = Mock(side_effect=outputs)
+    monkeypatch.setattr(_asr_qwen3_module.config, "LOCAL_QWEN_LOG_PIPELINE_TIMING", False)
+    return engine
+
+
+def test_qwen_auto_returns_clean_transcript_and_rechecks_language_each_update(monkeypatch):
+    first_tokens, second_tokens = [1, 2, 3], [4, 5, 6]
+    engine = _qwen_without_weights(monkeypatch, [
+        {"text": "language French<asr_text>Bonjour.", "tokens": first_tokens},
+        {"text": "language Vietnamese<asr_text>Xin chào.", "tokens": second_tokens},
+        {"text": "language Thai<asr_text>สวัสดี", "tokens": [7]},
+    ])
+    audio = np.ones(512, dtype=np.float32)
+    assert engine.transcribe(audio, update_context=False) == {
+        "text": "Bonjour.", "language": "fr", "language_name": "French",
+    }
+    assert engine._draft_tokens == first_tokens  # Keep the full metadata-bearing draft.
+    assert engine.transcribe(audio, update_context=False) == {
+        "text": "Xin chào.", "language": "vi", "language_name": "Vietnamese",
+    }
+    assert engine._draft_tokens == second_tokens
+    assert engine.transcribe(audio) == {
+        "text": "สวัสดี", "language": "th", "language_name": "Thai",
+    }
+    assert engine._draft_tokens == []
+    assert engine.language is None  # Detection must never force the next update.
+    assert all(call.kwargs["language"] is None for call in engine._engine._build_prompt_embd.call_args_list)
+
+
+@pytest.mark.parametrize("raw", ["language None<asr_text>", "language Vietnamese", ""])
+def test_qwen_empty_audio_or_incomplete_header_never_becomes_a_subtitle(monkeypatch, raw):
+    engine = _qwen_without_weights(monkeypatch, [{"text": raw, "tokens": [1, 2]}])
+    engine._draft_tokens = [3]
+    assert engine.transcribe(np.ones(512, dtype=np.float32), update_context=False) is None
+    assert engine._draft_tokens == []
+
+
+def test_qwen_changing_forced_language_clears_incompatible_draft(monkeypatch):
+    engine = _qwen_without_weights(monkeypatch, [{"text": "Bonjour.", "tokens": [1]}])
+    engine._draft_tokens = [2, 3]
+    engine.set_language(" FR ")
+    assert engine._draft_tokens == []
+    assert engine.transcribe(np.ones(512, dtype=np.float32), update_context=False) == {
+        "text": "Bonjour.", "language": "fr", "language_name": "French",
+    }
+    assert engine._engine._build_prompt_embd.call_args.kwargs["language"] == "French"
+    engine.set_language("fr")
+    assert engine._draft_tokens == [1]
+    engine.set_language("auto")
+    assert engine.language is None and engine._draft_tokens == []
+
+
+def test_qwen_detected_language_reaches_the_translation_pipeline(monkeypatch):
+    engine = _qwen_without_weights(monkeypatch, [
+        {"text": "language French<asr_text>Bonjour.", "tokens": [1]},
+    ])
+    result = engine.transcribe(np.ones(512, dtype=np.float32))
+    session = _session()
+    session._subtitle_pipeline = Mock()
+    session._local_stop_event = threading.Event()
+    session.loop = object()
+    session.translation = "one_way"
+    session.translation_target_lang = "zh"
+    session._on_recognition_result(result["text"], True, result)
+    session._subtitle_pipeline.update.assert_called_once_with(
+        "Bonjour.", True, "fr", "zh", translation_enabled=True, semantic_suffix=None,
+    )
+
+
 def _recognizer_without_models(monkeypatch, captured=None):
     monkeypatch.setattr(config, "VAD_ENABLED", False)
     monkeypatch.setattr(config, "LOCAL_VAD_MODE", "disabled")
