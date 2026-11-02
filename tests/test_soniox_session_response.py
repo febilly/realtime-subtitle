@@ -1015,6 +1015,36 @@ def _final_kinds(updates):
     ]
 
 
+@pytest.mark.parametrize("parts", [
+    ["せっかくS.N.S.使うなら。"],
+    ["せっかくS.", "N.", "S.", "使うなら。"],
+    ["せっかくs", ".", "n", ".", "s", ".", "使うなら。"],
+    ["せっかくS.", "N.S.使うなら。"],
+])
+@pytest.mark.parametrize("across_batches", [False, True])
+def test_dotted_initialism_stays_one_sentence(monkeypatch, parts, across_batches):
+    session, updates = _translation_off_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = 0
+    for batch in ([[part] for part in parts] if across_batches else [parts]):
+        sent_count = _feed_final_and_non_final(
+            session, all_final_tokens, sent_count, batch, []
+        )
+    assert _final_kinds(updates) == [*parts, "SEP"]
+
+
+def test_single_initial_flushes_before_unrelated_sentence(monkeypatch):
+    session, updates = _translation_off_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = _feed_final_and_non_final(
+        session, all_final_tokens, 0, ["Vitamin C."], []
+    )
+    _feed_final_and_non_final(
+        session, all_final_tokens, sent_count, [" Next sentence."], []
+    )
+    assert _final_kinds(updates) == ["Vitamin C.", "SEP", " Next sentence.", "SEP"]
+
+
 def test_translation_off_waits_for_closing_quote_shown_in_non_final_tail(monkeypatch):
     """Regression (live 2026-10-12): ``" gallon."`` ended a final batch while
     the closing ``"`` was still non-final. Cutting at the period pushed the
@@ -1093,6 +1123,34 @@ def _feed_stream(session, all_final_tokens, sent_count, finals, non_finals=()):
 
 def _non_final_awaits(updates):
     return [bool(t.get("awaits_translation")) for t in updates[-1]["non_final_tokens"]]
+
+
+@pytest.mark.parametrize("in_translation", [False, True])
+def test_translation_stream_keeps_dotted_initialism_and_pairing_together(monkeypatch, in_translation):
+    session, updates = _translation_stream_session(monkeypatch)
+    all_final_tokens = []
+    sent_count = 0
+    if in_translation:
+        # Leave the source open so only translation punctuation can split it.
+        sent_count = _feed_stream(session, all_final_tokens, sent_count, ["Use SNS today"])
+    parts = ["せっかくS.", "N", ".", "S.", "使うなら。"]
+    for part in parts:
+        sent_count = _feed_stream(
+            session, all_final_tokens, sent_count,
+            [("zh", part) if in_translation else part],
+        )
+    if not in_translation:
+        _feed_stream(session, all_final_tokens, sent_count, [("zh", "既然要利用SNS。")])
+    expected = (["Use SNS today"] if in_translation else []) + parts
+    if not in_translation:
+        expected.append("既然要利用SNS。")
+    assert _final_kinds(updates) == [*expected, "SEP"]
+    ids = {
+        t.get("llm_sentence_id")
+        for update in updates for t in update.get("final_tokens", [])
+        if not t.get("is_separator")
+    }
+    assert len(ids) == 1
 
 
 def test_non_final_source_awaits_translation_only_when_break_waits_for_it(monkeypatch):

@@ -218,6 +218,21 @@ describe('RenderModel speculative token stream', () => {
         expect(tokens).toEqual(values);
     });
 
+    it.each([
+        ['せっかくS.', 'N.', 'S.', '使うなら'],
+        ['せっかくs', '.', 'n', '.', 's', '.', '使うなら'],
+        ['せっかくS.', 'N.S.使うなら'],
+    ])('keeps dotted initials together across final/non-final boundaries: %j', (...parts) => {
+        for (let finalized = 0; finalized <= parts.length; finalized += 1) {
+            const finals = parts.slice(0, finalized).map((text) => original(text));
+            const draft = parts.slice(finalized).map((text) => original(text, { is_final: false }));
+            expect(RenderModel.buildRenderTokens({
+                allFinalTokens: finals,
+                currentNonFinalTokens: draft,
+            })).toEqual([...finals, ...draft]);
+        }
+    });
+
     it('keeps a decimal together when the fractional token has leading whitespace', () => {
         const values = [
             original('误差从21%降到7.', { is_final: false, language: 'zh' }),

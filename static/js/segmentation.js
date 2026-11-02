@@ -19,6 +19,10 @@
         }
         return prefixes;
     });
+    // ASCII initials may directly follow CJK text, but not a Latin word.
+    const DOTTED_INITIALISM = /(?:^|[^A-Za-z0-9_.])(?:[A-Za-z]\.){2,}$/;
+    const INITIALISM_PREFIX = /(?:^|[^A-Za-z0-9_.])[A-Za-z]\.$/;
+    const INITIALISM_CONTINUATION = /^[A-Za-z](?:\.|$)/;
 
     function isDigit(value) {
         return !!value && /\p{N}/u.test(value);
@@ -43,6 +47,9 @@
             const next = nextIndex < value.length ? value[nextIndex] : '';
             if (previous === '.' || next === '.') return false;
             if (textEndsWithNumericPeriod(value.slice(0, index + 1)) && isDigit(next)) return false;
+            const prefix = value.slice(0, index + 1);
+            if (DOTTED_INITIALISM.test(prefix)) return false;
+            if (INITIALISM_PREFIX.test(prefix) && INITIALISM_CONTINUATION.test(value.slice(index + 1))) return false;
         }
         return SENTENCE_END_CHARS.has(ch);
     }
@@ -71,18 +78,21 @@
     }
 
     function textEndsWithAbbreviationException(text) {
-        return SENTENCE_END_ABBREVIATION_EXCEPTIONS.some(
+        return DOTTED_INITIALISM.test(String(text || '').trimEnd()) || SENTENCE_END_ABBREVIATION_EXCEPTIONS.some(
             (abbr) => textEndsWithAbbreviationSegment(text, abbr),
         );
     }
 
     function textEndsWithAbbreviationPrefix(text) {
-        return SENTENCE_END_ABBREVIATION_PREFIXES.some(
+        return INITIALISM_PREFIX.test(String(text || '').trimEnd()) || SENTENCE_END_ABBREVIATION_PREFIXES.some(
             (prefix) => textEndsWithAbbreviationSegment(text, prefix),
         );
     }
 
     function textContinuesAbbreviation(previousContext, nextText) {
+        if ((INITIALISM_PREFIX.test(String(previousContext || ''))
+            || DOTTED_INITIALISM.test(String(previousContext || '')))
+            && INITIALISM_CONTINUATION.test(String(nextText || ''))) return true;
         const combined = `${previousContext || ''}${nextText || ''}`;
         return textEndsWithAbbreviationException(combined) || textEndsWithAbbreviationPrefix(combined);
     }
@@ -176,7 +186,10 @@
             let end = index + 1;
             while (end < value.length && CLOSING_QUOTE_CHARS.has(value[end])) end += 1;
             const segment = value.slice(start, end);
-            if (textEndsWithAbbreviationException(segment) || textEndsWithAbbreviationPrefix(segment)) {
+            if (textEndsWithAbbreviationException(segment)
+                || (textEndsWithAbbreviationPrefix(segment)
+                    && (!INITIALISM_PREFIX.test(segment) || end === value.length
+                        || textContinuesAbbreviation(segment, value.slice(end))))) {
                 index += 1;
                 continue;
             }

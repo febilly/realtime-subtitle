@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+import re
 from typing import Literal
 
 # "…" stays in this set so punctuation-run scans treat it as punctuation
@@ -38,6 +39,11 @@ SENTENCE_END_ABBREVIATION_PREFIXES = {
     for index, ch in enumerate(abbreviation[:-1])
     if ch == "."
 }
+# ASCII initials can directly adjoin Japanese/Chinese text. Do not let a
+# match start inside an ordinary Latin word (e.g. the final S in "SNS.").
+_DOTTED_INITIALISM = re.compile(r"(?<![A-Za-z0-9_.])(?:[A-Za-z]\.){2,}$")
+_INITIALISM_PREFIX = re.compile(r"(?<![A-Za-z0-9_.])[A-Za-z]\.$")
+_INITIALISM_CONTINUATION = re.compile(r"^[A-Za-z](?:\.|$)")
 
 
 def text_ends_with_numeric_period(text: str) -> bool:
@@ -63,6 +69,11 @@ def is_sentence_ender_at(value: str, index: int) -> bool:
         if prev_ch == "." or next_ch == ".":
             return False  # part of an ASCII ellipsis ".." / "..."
         if text_ends_with_numeric_period(value[: index + 1]) and next_ch.isdigit():
+            return False
+        prefix = value[: index + 1]
+        if _DOTTED_INITIALISM.search(prefix):
+            return False
+        if _INITIALISM_PREFIX.search(prefix) and _INITIALISM_CONTINUATION.match(value[index + 1:]):
             return False
     return ch in SENTENCE_END_CHARS
 
@@ -92,20 +103,26 @@ def text_ends_with_abbreviation_segment(text: str, segment: str) -> bool:
 
 
 def text_ends_with_abbreviation_exception(text: str) -> bool:
-    return any(
+    return bool(_DOTTED_INITIALISM.search(str(text or "").rstrip())) or any(
         text_ends_with_abbreviation_segment(text, abbreviation)
         for abbreviation in SENTENCE_END_ABBREVIATION_EXCEPTIONS
     )
 
 
 def text_ends_with_abbreviation_prefix(text: str) -> bool:
-    return any(
+    return bool(_INITIALISM_PREFIX.search(str(text or "").rstrip())) or any(
         text_ends_with_abbreviation_segment(text, prefix)
         for prefix in SENTENCE_END_ABBREVIATION_PREFIXES
     )
 
 
 def text_continues_abbreviation(previous_context: str, next_text: str) -> bool:
+    if (
+        _INITIALISM_PREFIX.search(str(previous_context or ""))
+        or _DOTTED_INITIALISM.search(str(previous_context or ""))
+    ) and _INITIALISM_CONTINUATION.match(str(next_text or "")):
+        # The next token may be only "N", or include "N.S.使うなら".
+        return True
     combined = f"{previous_context or ''}{next_text or ''}"
     return (
         text_ends_with_abbreviation_exception(combined)
@@ -203,7 +220,14 @@ def split_text_at_sentence_boundaries(text: str) -> list[str]:
             end += 1
 
         segment = value[start:end]
-        if text_ends_with_abbreviation_exception(segment) or text_ends_with_abbreviation_prefix(segment):
+        if text_ends_with_abbreviation_exception(segment) or (
+            text_ends_with_abbreviation_prefix(segment)
+            and (
+                not _INITIALISM_PREFIX.search(segment)
+                or end == length
+                or text_continues_abbreviation(segment, value[end:])
+            )
+        ):
             i += 1
             continue
 

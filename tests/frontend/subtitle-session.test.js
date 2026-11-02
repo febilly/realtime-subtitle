@@ -19,6 +19,31 @@ function token(text, options = {}) {
 }
 
 describe('SubtitleSession update stream', () => {
+    it('keeps SNS revisions on one line before and after finalization', () => {
+        const session = create();
+        const revisions = [
+            ['せっかくSNS', '使うなら'],
+            ['せっかくS.', 'N.', 'S.', '使うなら'],
+            ['せっかくSNS', '使うなら'],
+        ];
+        for (const parts of revisions) {
+            session.applyUpdateFrame({
+                non_final_tokens: parts.map((text) => token(text, { is_final: false, language: 'ja' })),
+            });
+            const rendered = session.buildRenderTokens();
+            expect(rendered.some((entry) => entry.is_separator)).toBe(false);
+            expect(RenderModel.buildSentences(rendered)).toHaveLength(1);
+        }
+        session.applyUpdateFrame({
+            final_tokens: [token('せっかくSNS使うなら。', { language: 'ja' }),
+                { is_separator: true, is_final: true, separator_type: 'punctuation' }],
+            non_final_tokens: [],
+        });
+        const sentences = RenderModel.buildSentences(session.buildRenderTokens());
+        expect(sentences).toHaveLength(1);
+        expect(sentences[0].isClosed).toBe(true);
+    });
+
     it('filters end markers, assigns sequence indices, and merges new finals', () => {
         const session = create();
         const result = session.applyUpdateFrame({
