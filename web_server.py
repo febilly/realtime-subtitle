@@ -1793,7 +1793,7 @@ class WebServer:
                 status=400,
             )
 
-        # Two-way is Soniox-only.
+        # Gemini Live Translation only supports a single target language.
         if requested_mode == "two_way" and config.TRANSLATION_PROVIDER == "gemini":
             return web.json_response(
                 {"status": "error", "message": "Gemini does not support two-way translation"},

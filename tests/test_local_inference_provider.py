@@ -57,7 +57,7 @@ def test_local_provider_language_and_capability_matrix():
     assert config.get_capabilities("local") == {
         "segment_mode": False,
         "speaker_diarization": False,
-        "two_way_translation": False,
+        "two_way_translation": True,
     }
 
 
@@ -89,6 +89,124 @@ def test_local_session_rejects_unknown_target_without_changing_selection():
     assert session.set_translation_target_lang("vi")[0]
     assert not session.set_translation_target_lang("not-a-language")[0]
     assert session.get_translation_target_lang() == "vi"
+
+
+@pytest.mark.parametrize("pair,source,target", [
+    (("en", "zh"), "en", "zh"),
+    (("en", "zh"), "zh", "en"),
+    (("ja", "ko"), "ja", "ko"),
+    (("ja", "ko"), "ko", "ja"),
+    (("en-US", "zh_TW"), "en", "zh-hant"),
+    (("en-US", "zh_TW"), "zh", "en"),
+    (("tl", "en"), "fil", "en"),
+    (("tl", "en"), "en", "fil"),
+])
+def test_local_two_way_routes_detected_language_to_partner(pair, source, target):
+    session = _session()
+    assert session.set_target_langs(*pair) == (True, "ok")
+    session.translation = "two_way"
+    session.loop = object()
+    session._local_stop_event = threading.Event()
+    session._subtitle_pipeline = Mock()
+
+    session._on_recognition_result("Speech.", True, {"language": source})
+
+    session._subtitle_pipeline.update.assert_called_once_with(
+        "Speech.", True, source, target, translation_enabled=True, semantic_suffix=None,
+    )
+
+
+@pytest.mark.parametrize("pair", [("en", "EN-us"), ("zh", "zh-hant"), ("xx", "en"), ("en", "xx")])
+def test_local_two_way_rejects_invalid_pair_without_mutating_selection(pair):
+    session = _session()
+    assert session.set_target_langs("ja", "ko")[0]
+    assert not session.set_target_langs(*pair)[0]
+    assert session.get_target_langs() == ("ja", "ko")
+
+
+@pytest.mark.parametrize("fixed_target,expected", [("ja", "zh-hant"), ("en", "en")])
+def test_local_two_way_outside_pair_uses_consistent_fallback(fixed_target, expected):
+    session = _session()
+    session.set_target_langs("en", "zh-hant")
+    session.set_translation_target_lang(fixed_target)
+    session.translation = "two_way"
+    assert session._osc_translation_language_for_comparison([{"language": "fr"}]) == expected
+
+
+def test_local_start_and_resume_preserve_two_way_mode(monkeypatch):
+    session = _session()
+    session._check_models = Mock()
+    session._start_relay_link = Mock()
+    monkeypatch.setattr("local_session.threading.Thread", Mock())
+
+    assert session.start(None, "pcm_s16le", "two_way", object(), "zh")
+    assert session.translation == "two_way"
+    session.thread = None
+    session.is_paused = True
+    assert session.resume()
+    assert session.translation == "two_way"
+
+
+@pytest.mark.parametrize("mode", ["fast", "hybrid", "accurate"])
+def test_local_two_way_pipeline_llm_and_osc_share_direction(monkeypatch, mode):
+    import soniox_session
+
+    monkeypatch.setattr(soniox_session, "is_llm_refine_available", lambda: True)
+    send_osc = Mock(return_value=1)
+    monkeypatch.setattr(soniox_session.osc_manager, "add_message_and_send", send_osc)
+    monkeypatch.setattr(soniox_session.osc_manager, "update_message_and_send", Mock())
+    session = _session()
+    session.translation = "two_way"
+    session.set_target_langs("en", "zh-hant")
+    session.set_translation_mode(mode)
+    session.set_osc_translation_enabled(True)
+    session.loop = asyncio.new_event_loop()
+    session.broadcast_callback = AsyncMock()
+    session._perform_refine = AsyncMock(return_value={"status": "ok", "no_change": True})
+    session._perform_translate = AsyncMock(side_effect=[
+        {"status": "ok", "translation": "你好。"},
+        {"status": "ok", "translation": "Hello."},
+    ])
+    mt_calls, finalized = [], []
+
+    def make_translator():
+        translator = Mock()
+        def translate(source, **kwargs):
+            mt_calls.append((source, kwargs["target_language"]))
+            return "你好。" if kwargs["target_language"] == "zh-hant" else "Hello."
+        translator.translate.side_effect = translate
+        return translator
+
+    def finalize(row):
+        finalized.append(row)
+        tokens = session._local_row_tokens(row)
+        session.loop.run_until_complete(session._finalize_sentence_async(
+            "0", tokens[:1], tokens[1:], row["id"], announce=False,
+        ))
+
+    pipeline = LocalSubtitlePipeline(make_translator, lambda _frame: None, finalize, pytest.fail)
+    session._subtitle_pipeline = pipeline
+    pipeline.set_machine_translation(mode != "accurate")
+    try:
+        session._present_recognition("Hello.", True, "en")
+        session._present_recognition("你好。", True, "zh")
+        pipeline.close()
+        assert [(row["source_language"], row["target_language"]) for row in finalized] == [
+            ("en", "zh-hant"), ("zh", "en"),
+        ]
+        assert all(row["requires_translation"] for row in finalized)
+        expected = [("Hello.", "zh-hant"), ("你好。", "en")]
+        assert mt_calls == ([] if mode == "accurate" else expected)
+        llm = session._perform_translate if mode == "accurate" else session._perform_refine
+        assert [call.kwargs["target_lang"] for call in llm.await_args_list] == (
+            [] if mode == "fast" else ["zh-hant", "en"]
+        )
+        assert [call.args[0] for call in send_osc.call_args_list] == ["你好。", "Hello."]
+        frames = [call.args[0] for call in session.broadcast_callback.await_args_list]
+        assert [frame["target_lang"] for frame in frames if frame["type"] == "refine_result"] == ["zh-hant", "en"]
+    finally:
+        pipeline.close()
+        session.loop.close()
 
 
 def test_local_device_config_is_normalized(monkeypatch):

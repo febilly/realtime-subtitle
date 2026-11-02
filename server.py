@@ -500,7 +500,7 @@ class ProviderManager:
         # Gemini Live Translation has no two-way mode: downgrade to one-way and
         # use the first language as the target.
         downgraded_two_way = False
-        if provider in ("gemini", "local") and self.translation_mode == "two_way":
+        if provider == "gemini" and self.translation_mode == "two_way":
             self.translation_mode = "one_way"
             if self.target_lang_1:
                 self.target_lang = self.target_lang_1

@@ -9,6 +9,31 @@ import pytest
 from server import ProviderManager
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,downgraded", [("local", False), ("soniox", False), ("gemini", True)])
+async def test_provider_switch_preserves_two_way_except_for_gemini(monkeypatch, provider, downgraded):
+    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
+    manager.loop = asyncio.get_running_loop()
+    manager.web_server = SimpleNamespace(session=None)
+    manager._sync_ipc = AsyncMock()
+    monkeypatch.setattr(manager, "_provider_modules", lambda _: (
+        SimpleNamespace(), FakeSession, lambda: "env-key",
+    ))
+
+    result = await manager.apply_provider(
+        provider, api_key="runtime-key", translation_mode="two_way",
+        target_lang_1="ja", target_lang_2="zh",
+    )
+
+    assert result["started"] is True
+    assert result["downgraded_two_way"] is downgraded
+    session = manager.web_server.session
+    assert session.start_args["translation_mode"] == ("one_way" if downgraded else "two_way")
+    if not downgraded:
+        assert session.target_langs == ("ja", "zh")
+
+
 def _get_real_config():
     spec = importlib.util.spec_from_file_location("config", "config.py")
     module = importlib.util.module_from_spec(spec)

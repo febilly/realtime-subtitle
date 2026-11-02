@@ -74,6 +74,31 @@ class LocalInferenceSession(SonioxSession):
         self.translation_target_lang = normalized
         return True, "ok"
 
+    def set_target_langs(self, lang_a: str, lang_b: str) -> tuple[bool, str]:
+        a = config.canonicalize_target_lang(lang_a, "local")
+        b = config.canonicalize_target_lang(lang_b, "local")
+        for original, code in ((lang_a, a), (lang_b, b)):
+            if not config.is_supported_language_code(code, "local"):
+                return False, f"Unsupported language: {original}"
+        # Qwen detects spoken Chinese as zh, independently of its writing system.
+        if config.normalize_language_code(a) == config.normalize_language_code(b):
+            return False, "Two-way translation requires two different languages"
+        self.target_lang_1, self.target_lang_2 = a, b
+        return True, "ok"
+
+    def _osc_translation_language_for_comparison(self, source_tokens: list[dict]) -> str:
+        """Share one per-utterance target across Hy-MT2, LLM and OSC output."""
+        target = config.canonicalize_target_lang(self.get_translation_target_lang(), "local")
+        if str(self.translation or "").strip().lower() != "two_way":
+            return target
+        first, second = self.get_target_langs()
+        source = self._infer_source_language(source_tokens)
+        if source == config.normalize_language_code(first):
+            return second
+        if source == config.normalize_language_code(second):
+            return first
+        return target if target in (first, second) else second
+
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
         # Same mapping as soniox; the local switch never needs a restart because
         # Hy-MT2 is loaded or released in place below.
@@ -208,7 +233,9 @@ class LocalInferenceSession(SonioxSession):
         pipeline = self._subtitle_pipeline
         if not text or self.loop is None or pipeline is None:
             return
-        target_lang = config.canonicalize_target_lang(self.get_translation_target_lang(), "local") or "zh"
+        target_lang = self._osc_translation_language_for_comparison([
+            {"language": source_lang},
+        ]) or "zh"
         mode = str(self.translation or "one_way").strip().lower()
         pipeline.update(
             text, is_final, source_lang, target_lang,
@@ -421,8 +448,6 @@ class LocalInferenceSession(SonioxSession):
         self.api_key = "local-on-device"
         self.audio_format = audio_format
         self.translation = requested_translation
-        if self.translation == "two_way":
-            self.translation = "one_way"
         self.loop = loop
         self.is_paused = False
         self.last_sent_count = 0

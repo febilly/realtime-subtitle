@@ -1241,7 +1241,7 @@ PROVIDER_CAPABILITIES = {
     "local": {
         "segment_mode": False,
         "speaker_diarization": False,
-        "two_way_translation": False,
+        "two_way_translation": True,
     },
 }
 

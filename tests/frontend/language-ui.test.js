@@ -78,8 +78,12 @@ describe('LanguageUI', () => {
         dom.window.close();
     });
 
-    it('applies one-way and two-way drafts through explicit state callbacks', () => {
-        const { dom, controller, state, restartRecognition, setUiTranslationMode } = setup();
+    it.each(['soniox', 'local'])('applies one-way and two-way drafts for %s', (provider) => {
+        const { dom, controller, state, restartRecognition, setUiTranslationMode } = setup({
+            translationProvider: provider,
+        });
+        controller.show();
+        expect(dom.window.document.querySelector('[data-mode="two_way"]').hidden).toBe(false);
         controller.setDraft({ mode: 'one_way', targetLang: 'ja' });
         expect(controller.applyDraft()).toBe(true);
         expect(state.currentTranslationTargetLang).toBe('ja');
@@ -91,6 +95,18 @@ describe('LanguageUI', () => {
         expect(state).toMatchObject({ backendTargetLang1: 'ja', backendTargetLang2: 'zh' });
         expect(restartRecognition).toHaveBeenLastCalledWith({
             translationMode: 'two_way', targetLang1: 'ja', targetLang2: 'zh',
+        });
+        dom.window.close();
+    });
+
+    it('restores local two-way translation and its language pair on startup', () => {
+        const { dom, controller, restartRecognition } = setup({
+            translationProvider: 'local', uiTranslationMode: 'two_way',
+            backendTranslationMode: 'one_way', backendTargetLang1: 'ja', backendTargetLang2: 'zh',
+        });
+        expect(controller.syncBackendMode()).toBe(true);
+        expect(restartRecognition).toHaveBeenCalledWith({
+            auto: true, translationMode: 'two_way', targetLang1: 'ja', targetLang2: 'zh',
         });
         dom.window.close();
     });
