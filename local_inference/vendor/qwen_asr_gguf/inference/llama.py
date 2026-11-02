@@ -450,6 +450,12 @@ def load_model(model_path: str, n_gpu_layers: int = 99, main_gpu: int = 0):
     init_llama_lib()
     model_params = llama_model_default_params()
     model_params.n_gpu_layers = 99 if n_gpu_layers == -1 else n_gpu_layers
+    # Zero layers alone still leaves Vulkan available to the context scheduler,
+    # which can allocate GPU compute buffers and offload operations. An empty
+    # device list makes an explicit CPU model use only CPU backends.
+    cpu_devices = (ctypes.c_void_p * 1)() if n_gpu_layers == 0 else None
+    if cpu_devices is not None:
+        model_params.devices = cpu_devices
     # 默认 split_mode 是 LAYER（devices=NULL 时把层切分到所有可见 GPU）。核显+独显
     # 的机器上这会把一部分层放到核显，比只用独显更慢，因此这里固定只用一张卡。
     model_params.split_mode = LLAMA_SPLIT_MODE_NONE
@@ -497,6 +503,7 @@ def create_context(model, n_ctx=2048, n_batch=2048, n_ubatch=512, n_seq_max=1,
 class LlamaModel:
     """模型的面向对象封装"""
     def __init__(self, path, n_gpu_layers=99, main_gpu=0):
+        self.n_gpu_layers = n_gpu_layers
         self.ptr = load_model(path, n_gpu_layers=n_gpu_layers, main_gpu=main_gpu)
         if not self.ptr:
             raise RuntimeError(f"Failed to load llama model: {path}")
@@ -564,6 +571,9 @@ class LlamaContext:
         params.flash_attn_type = 1 if flash_attn else 0
         params.offload_kqv = offload_kqv
         params.no_perf = no_perf
+        if getattr(model, "n_gpu_layers", None) == 0:
+            params.offload_kqv = False
+            params.op_offload = False
         
         # 线程配置
         cpu_count = os.cpu_count() or 4

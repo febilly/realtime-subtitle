@@ -588,6 +588,7 @@
             setText('localTranslationDownloadButton', 'local_hymt_download');
             setText('localAsrDeviceLabel', 'local_asr_device');
             setText('localEncoderDeviceLabel', 'local_encoder_device');
+            setText('localEncoderDeviceAutoOption', 'local_encoder_device_auto');
             setText('localTranslationDeviceLabel', 'local_translation_device');
             setText('sonioxRegionLabel', 'soniox_region');
             setText('microphoneDeviceLabel', 'microphone_device');
