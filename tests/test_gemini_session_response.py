@@ -713,6 +713,140 @@ def _separator_in_updates(updates):
     )
 
 
+@pytest.fixture
+def gemini_segmentation_session(monkeypatch):
+    _install_gemini_session_import_mocks(monkeypatch)
+    import gemini_session as module
+
+    updates = []
+
+    async def broadcast(data):
+        updates.append(data)
+
+    monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
+    session = module.GeminiSession(MagicMock(), broadcast)
+    session.translation = "one_way"
+    session.loop = object()
+    all_final = []
+
+    def feed(source=None, translation=None, *, language="en", end=False):
+        content = {}
+        if source is not None:
+            content["inputTranscription"] = {"text": source, "languageCode": language}
+        if translation is not None:
+            content["outputTranscription"] = {"text": translation}
+        if end:
+            content["turnComplete"] = True
+        session._process_stream_response(
+            {"serverContent": content}, all_final, len(all_final), object(),
+        )
+
+    return session, updates, feed
+
+
+def _gemini_emitted_lines(updates):
+    lines = [{"original": "", "translation": ""}]
+    for update in updates:
+        for token in update.get("final_tokens", []):
+            if token.get("is_separator"):
+                lines.append({"original": "", "translation": ""})
+            else:
+                lines[-1][token["translation_status"]] += token["text"]
+    return lines
+
+
+@pytest.mark.parametrize("arrival", ["together", "source_first", "translation_first"])
+def test_gemini_batch_middle_boundaries_keep_sentence_pairs_aligned(gemini_segmentation_session, arrival):
+    session, updates, feed = gemini_segmentation_session
+    source = "That was 2021. The world is different. Still changing"
+    translation = "那是2021年。世界不同了。仍在变化"
+    if arrival == "together":
+        feed(source, translation)
+    elif arrival == "source_first":
+        feed(source)
+        feed(translation=translation)
+    else:
+        feed(translation=translation)
+        feed(source)
+
+    assert _gemini_emitted_lines(updates) == [
+        {"original": "That was 2021.", "translation": "那是2021年。"},
+        {"original": " The world is different.", "translation": "世界不同了。"},
+        {"original": " Still changing", "translation": "仍在变化"},
+    ]
+    results = [u for u in updates if u.get("type") == "refine_result"]
+    assert [(u["source"], u["original_translation"]) for u in results] == [
+        ("That was 2021.", "那是2021年。"),
+        ("The world is different.", "世界不同了。"),
+    ]
+    for result in results:
+        tokens = [t for u in updates for t in u.get("final_tokens", [])
+                  if t.get("llm_sentence_id") == result["sentence_id"]]
+        assert tokens
+        for token in tokens:
+            text = result["source"] if token["translation_status"] == "original" else result["original_translation"]
+            assert token["text"].strip() in text
+
+
+@pytest.mark.parametrize("ahead", ["original", "translation"])
+def test_gemini_next_sentence_waits_for_late_current_sentence_tail(gemini_segmentation_session, ahead):
+    session, updates, feed = gemini_segmentation_session
+    if ahead == "original":
+        feed("First sentence. Next sentence", "第一")
+        feed(translation="句。下一句")
+    else:
+        feed("First sen", "第一句。下一句")
+        feed("tence. Next sentence")
+    assert _gemini_emitted_lines(updates) == [
+        {"original": "First sentence.", "translation": "第一句。"},
+        {"original": " Next sentence", "translation": "下一句"},
+    ]
+
+
+@pytest.mark.parametrize(("chunks", "expected"), [
+    (["That was 2021. The world is different"], ["That was 2021.", " The world is different"]),
+    (["Version 3.14 works! Next"], ["Version 3.14 works!", " Next"]),
+    (["Meet Dr. Smith at 9 a.m. tomorrow. Next"], ["Meet Dr. Smith at 9 a.m. tomorrow.", " Next"]),
+    (["Meet at 9 a.", "m. tomorrow. Next"], ["Meet at 9 a.m. tomorrow.", " Next"]),
+    (["Value 3.", "14 works. Next"], ["Value 3.14 works.", " Next"]),
+    (["He said “Hello", ". Welcome” today. Next"], ["He said “Hello. Welcome” today.", " Next"]),
+    (["Wait... really? Next"], ["Wait... really?", " Next"]),
+    (["第一句。第二句！尾巴"], ["第一句。", "第二句！", "尾巴"]),
+])
+def test_gemini_batch_splitting_preserves_context_and_text(gemini_segmentation_session, chunks, expected):
+    session, updates, feed = gemini_segmentation_session
+    session.translation_target_lang = "en"
+    for chunk in chunks:
+        feed(chunk)
+    lines = _gemini_emitted_lines(updates)
+    assert [line["original"] for line in lines] == expected
+    assert "".join(line["original"] for line in lines) == "".join(chunks)
+
+
+def test_gemini_turn_end_flushes_unmatched_queued_tail(gemini_segmentation_session):
+    session, updates, feed = gemini_segmentation_session
+    feed("First. Last fragment", "第一段还没完")
+    feed(translation="但回合结束", end=True)
+    lines = _gemini_emitted_lines(updates)
+    assert "".join(line["original"] for line in lines) == "First. Last fragment"
+    assert "".join(line["translation"] for line in lines) == "第一段还没完但回合结束"
+    assert not any(session._gemini_token_queues.values())
+    assert not session._sentence_buffers
+    assert not session._gemini_sentence_done
+
+
+def test_gemini_reset_discards_queued_next_sentence(gemini_segmentation_session):
+    session, updates, feed = gemini_segmentation_session
+    feed("First. Stale tail", "第一")
+    session._clear_segmentation_state()
+    updates.clear()
+    feed("New sentence.", "新句子。")
+    assert _gemini_emitted_lines(updates) == [
+        {"original": "New sentence.", "translation": "新句子。"},
+        {"original": "", "translation": ""},
+    ]
+
+
 def test_same_language_source_punctuation_triggers_segmentation(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
     import gemini_session as module

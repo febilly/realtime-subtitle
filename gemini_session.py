@@ -18,6 +18,7 @@ from config import (
 from audio_router import AudioSendRouter
 from stream_session_runtime import StreamState as _StreamState
 import gemini_client
+import sentence_segmentation
 from osc_manager import osc_manager
 from osc_draft import OscDraftPublisher
 from realtime_session_base import RealtimeSessionBase
@@ -91,12 +92,10 @@ class GeminiSession(RealtimeSessionBase):
 
     def __init__(self, logger, broadcast_callback):
         super().__init__(logger, broadcast_callback)
-        # Speakers whose translation for the current sentence already ended (with
-        # sentence-ending punctuation) but whose source hasn't caught up yet. The
-        # line break is deferred until the source is also sentence-complete, so
-        # Gemini's slightly-late trailing source tokens don't spill onto the next
-        # line. Flushed unconditionally on a turnComplete <end>.
-        self._pending_translation_finalization: set[str] = set()
+        # Each transcription batch can contain several sentences. Hold the next
+        # sentence on either side until the current source/translation pair closes.
+        self._gemini_token_queues: dict[str, list[dict]] = {"original": [], "translation": []}
+        self._gemini_sentence_done: set[str] = set()
         self._last_input_language = ""
         self._last_char_original = None
         self._last_char_translation = None
@@ -105,7 +104,9 @@ class GeminiSession(RealtimeSessionBase):
 
     def _clear_segmentation_state(self) -> None:
         super()._clear_segmentation_state()
-        self._pending_translation_finalization.clear()
+        for queue in self._gemini_token_queues.values():
+            queue.clear()
+        self._gemini_sentence_done.clear()
 
     def _reset_run_state(self) -> None:
         self._last_input_language = ""
@@ -169,24 +170,99 @@ class GeminiSession(RealtimeSessionBase):
         else:
             buffer["original_tokens"].append(token)
 
-    def _flush_stale_quote_boundaries(self, token: dict, outgoing_final_tokens: list[dict]) -> None:
-        for speaker in self._pending_boundaries.flush_stale_quote_boundaries_before_incompatible_token(token):
-            if not speaker:
-                continue
-            self._pending_translation_finalization.discard(speaker)
-            if self._trigger_sentence_finalization(speaker):
-                outgoing_final_tokens.append(
-                    self._minify_token(self._make_separator_token("punctuation"))
-                )
+    def _split_queued_gemini_token(self, queue: list[dict]) -> None:
+        """Split a batch with buffered context, preserving every character.
 
-    def _buffer_source_is_sentence_complete(self, speaker: str) -> bool:
-        """Whether the speaker's buffered source text ends on sentence-ending
-        punctuation (i.e. Gemini has streamed the whole source sentence)."""
-        buffer = self._sentence_buffers.get(speaker)
-        if not buffer:
-            return False
-        text = self._join_token_texts(buffer.get("original_tokens") or [])
-        return bool(text) and self._is_sentence_ending_punctuation(text)
+        Context keeps a decimal, abbreviation or quote opened in an earlier
+        response from being mistaken for a sentence boundary in this response.
+        """
+        token = queue[0]
+        text = str(token.get("text") or "")
+        context = self._sentence_context_text_for_token({**token, "text": ""})
+        pieces = sentence_segmentation.split_text_at_sentence_boundaries(context + text)
+        offset = 0
+        start = 0
+        tokens = []
+        for piece in pieces:
+            offset += len(piece)
+            end = offset - len(context)
+            if end > start:
+                tokens.append({**token, "text": text[start:end]})
+                start = end
+        queue[:1] = tokens
+
+    def _drain_gemini_sentence_tokens(self, *, hard_end: bool) -> list[dict]:
+        """Emit matching sentence prefixes before releasing either side's tail."""
+        outgoing: list[dict] = []
+        speaker = "1"  # Gemini's transcription stream has a single speaker.
+        while True:
+            progressed = False
+            for status, queue in self._gemini_token_queues.items():
+                if status in self._gemini_sentence_done:
+                    continue
+                while queue:
+                    self._split_queued_gemini_token(queue)
+                    token = queue[0]
+                    # A whole batch may continue an abbreviation and then carry
+                    # on with ordinary words ("a." + "m. tomorrow. Next"). The
+                    # pending-boundary helper expects one small token, so resolve
+                    # that wait against the abbreviation prefix of this batch.
+                    previous = self._sentence_context_text_for_token({**token, "text": ""})
+                    probe = token
+                    if sentence_segmentation.text_ends_with_abbreviation_prefix(previous):
+                        for index, char in enumerate(token["text"]):
+                            if char == "." and sentence_segmentation.text_continues_abbreviation(
+                                previous, token["text"][:index + 1],
+                            ):
+                                probe = {**token, "text": token["text"][:index + 1]}
+                                break
+                    if self._pending_boundaries.flush_before_token(probe):
+                        self._gemini_sentence_done.add(status)
+                        break
+                    context = self._sentence_context_text_for_token(token)
+                    ending = self._pending_boundaries.is_token_sentence_ending(
+                        queue, 0, context_text=context,
+                        is_internal_token=self._is_internal_token, source_as_output=True,
+                    )
+                    self._pending_boundaries.mark_after_token(
+                        queue, 0, context_text=context,
+                        is_internal_token=self._is_internal_token, source_as_output=True,
+                    )
+                    queue.pop(0)
+                    self._process_token_for_sentence(token)
+                    outgoing.append(token)
+                    progressed = True
+                    if ending:
+                        self._gemini_sentence_done.add(status)
+                        break
+
+            buffer = self._sentence_buffers.get(speaker) or {}
+            source_tokens = buffer.get("original_tokens") or []
+            expects_translation = self._expects_translation_stream(source_tokens)
+            pair_done = "original" in self._gemini_sentence_done and (
+                "translation" in self._gemini_sentence_done or not expects_translation
+            )
+            if pair_done:
+                if self._trigger_sentence_finalization(speaker):
+                    outgoing.append(self._make_separator_token("punctuation"))
+                self._gemini_sentence_done.clear()
+                continue
+            if not progressed:
+                break
+
+        if hard_end:
+            # A turn boundary also closes unpunctuated or differently punctuated
+            # source/translation tails. No held text may leak into the next turn.
+            for queue in self._gemini_token_queues.values():
+                for token in queue:
+                    self._process_token_for_sentence(token)
+                    outgoing.append(token)
+                queue.clear()
+            if self._trigger_sentence_finalization(speaker):
+                outgoing.append(self._make_separator_token("punctuation"))
+            self._gemini_sentence_done.clear()
+            self._pending_boundaries.clear_speaker(speaker)
+        return outgoing
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""
@@ -528,104 +604,22 @@ class GeminiSession(RealtimeSessionBase):
         new_final_tokens = all_final_tokens[sent_count:]
         endpoint_detected = bool(converted.get("endpoint_detected", False))
 
-        separator_tokens: list[dict] = []
-        outgoing_final_tokens: list[dict] = []
-        source_as_output = not self._expects_translation_stream(new_final_tokens)
-        output_sentence_done = False
+        hard_end = endpoint_detected or any(t.get("text") == "<end>" for t in new_final_tokens)
+        for token in new_final_tokens:
+            if not token.get("text") or self._is_internal_token(token):
+                continue
+            status = "translation" if token.get("translation_status") == "translation" else "original"
+            self._gemini_token_queues[status].append(token)
 
-        if new_final_tokens:
-            for index, token in enumerate(new_final_tokens):
-                if token.get("text") is None:
-                    continue
-                is_internal = self._is_internal_token(token)
-                context_text = "" if is_internal else self._sentence_context_text_for_token(token)
-                if not is_internal and self._pending_boundaries.flush_before_token(token):
-                    spk = token.get("speaker")
-                    speaker = str(spk) if (spk is not None and spk != "") else None
-                    if speaker:
-                        self._pending_translation_finalization.discard(speaker)
-                        if self._trigger_sentence_finalization(speaker):
-                            outgoing_final_tokens.append(
-                                self._minify_token(self._make_separator_token("punctuation"))
-                            )
-                if not is_internal:
-                    self._flush_stale_quote_boundaries(token, outgoing_final_tokens)
-                if (
-                    not is_internal
-                    and (token.get("translation_status") == "translation" or source_as_output)
-                    and self._pending_boundaries.is_token_sentence_ending(
-                        new_final_tokens,
-                        index,
-                        context_text=context_text,
-                        is_internal_token=self._is_internal_token,
-                        source_as_output=source_as_output,
-                    )
-                ):
-                    output_sentence_done = True
-                self._process_token_for_sentence(token)
-                if not is_internal:
-                    self._pending_boundaries.mark_after_token(
-                        new_final_tokens,
-                        index,
-                        context_text=context_text,
-                        is_internal_token=self._is_internal_token,
-                        source_as_output=source_as_output,
-                    )
-
+        emitted_tokens = self._drain_gemini_sentence_tokens(hard_end=hard_end)
+        outgoing_final_tokens = [self._minify_token(t, is_final=True) for t in emitted_tokens]
         self._maybe_send_live_osc_translation(non_final_tokens)
 
-        if new_final_tokens or endpoint_detected:
-            # Sentence segmentation: by sentence-ending punctuation (or the
-            # internal <end> marker emitted on Gemini turnComplete). Normally we
-            # look at translation tokens, but when the speech is already in the
-            # target language there are no translation tokens, so the source text
-            # is used as the output — in that case segment on punctuation in the
-            # original tokens too (gated by _expects_translation_stream so we
-            # never cut before a real translation arrives).
-            # A turnComplete <end> is a hard turn boundary: always flush.
-            hard_end = any(t.get("text") == "<end>" for t in new_final_tokens)
-            speaker_value = (
-                self._last_token_speaker(
-                    new_final_tokens,
-                    lambda t: t.get("translation_status") == "translation" and bool(t.get("text")),
-                )
-                or self._last_token_speaker(
-                    new_final_tokens,
-                    lambda t: bool(t.get("text")) and not self._is_internal_token(t),
-                )
-                or self._any_buffered_speaker()
-            )
-
-            if speaker_value:
-                # Remember an output-side sentence completion so we can cut once
-                # the SOURCE catches up.
-                if output_sentence_done:
-                    self._pending_translation_finalization.add(speaker_value)
-                # Defer the line break until the source is also sentence-complete:
-                # Gemini frequently streams the last source tokens a beat after the
-                # translation, and cutting on the translation alone would spill
-                # those trailing source characters onto the next line (and feed the
-                # LLM a truncated source). A turnComplete <end> flushes regardless.
-                pending = speaker_value in self._pending_translation_finalization
-                should_finalize = hard_end or (pending and self._buffer_source_is_sentence_complete(speaker_value))
-                if should_finalize:
-                    self._pending_translation_finalization.discard(speaker_value)
-                    if self._trigger_sentence_finalization(speaker_value):
-                        separator_tokens.append(self._make_separator_token("punctuation"))
-
-        if new_final_tokens:
-            for token in new_final_tokens:
-                if token.get("text") is None:
-                    continue
-                if not self._is_internal_token(token):
-                    outgoing_final_tokens.append(self._minify_token(token, is_final=True))
-
-        # 将新的final tokens写入日志
-        if outgoing_final_tokens and not self.is_paused:
-            self.logger.write_to_log([t for t in new_final_tokens if not self._is_internal_token(t)])
+        if emitted_tokens and not self.is_paused:
+            self.logger.write_to_log([t for t in emitted_tokens if not t.get("is_separator")])
 
         # 如果有新的数据，发送给前端（暂停时也显示，只是不记录）
-        if self._broadcast_token_update(loop, outgoing_final_tokens, separator_tokens, non_final_tokens):
+        if self._broadcast_token_update(loop, outgoing_final_tokens, [], non_final_tokens):
             # 更新已发送的计数
             sent_count = len(all_final_tokens)
             self.last_sent_count = sent_count
