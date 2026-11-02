@@ -9,11 +9,12 @@ import sys
 import threading
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from . import LOCAL_INFERENCE_DISPLAY_NAMES, get_common_runtime_issues, get_engine_runtime_issues
 
@@ -98,8 +99,11 @@ LLAMA_RUNTIME_ZIP = f"llama-{LLAMA_CPP_TAG}-bin-win-vulkan-x64-min.zip"
 LLAMA_RUNTIME_ZIP_SHA256 = "b007fea086a8a788cc9e266b236cb27b750fa76e20fc45453f995a10d3856f25"
 SILERO_VAD_ONNX_SHA256 = "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
 HF_ENDPOINT_OFFICIAL = "https://huggingface.co"
-# Tried in order when huggingface.co is unreachable; same resolve/ layout.
-HF_ENDPOINT_MIRRORS = ("https://hf-mirror.com",)
+# Same resolve/ layout as HF. Used first when it serves files itself.
+HF_ENDPOINT_MIRROR = "https://hf-mirror.com"
+# Hosts owned by HuggingFace, including its LFS/Xet storage CDNs.
+HF_OWNED_DOMAINS = ("huggingface.co", "hf.co", "hf.space", "xethub.com")
+HF_PROBE_TIMEOUT_SECONDS = 5.0
 
 
 def _default_models_dir() -> Path:
@@ -403,15 +407,10 @@ def _report(progress_callback, stage: str, done: int, total: int | None) -> None
         logger.debug("Download progress callback failed", exc_info=True)
 
 
-def _hf_endpoints() -> list[str]:
-    """HuggingFace endpoints in try order: env override > official > mirrors."""
+def _hf_override_endpoints() -> list[str]:
+    """Endpoints set by hand (REALTIME_SUBTITLE_HF_ENDPOINT / HF_ENDPOINT)."""
     endpoints: list[str] = []
-    for value in (
-        os.environ.get("REALTIME_SUBTITLE_HF_ENDPOINT"),
-        os.environ.get("HF_ENDPOINT"),
-        HF_ENDPOINT_OFFICIAL,
-        *HF_ENDPOINT_MIRRORS,
-    ):
+    for value in (os.environ.get("REALTIME_SUBTITLE_HF_ENDPOINT"), os.environ.get("HF_ENDPOINT")):
         endpoint = (value or "").strip().rstrip("/")
         if endpoint and endpoint not in endpoints:
             endpoints.append(endpoint)
@@ -422,34 +421,96 @@ def _hf_file_url(endpoint: str, repo_id: str, filename: str, revision: str = "ma
     return f"{endpoint}/{repo_id}/resolve/{revision}/{filename}"
 
 
-def _hf_endpoint_reachable(url: str, timeout: float = 8.0) -> bool:
+def _is_hf_owned(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower().rstrip(".")
+    return any(host == domain or host.endswith("." + domain) for domain in HF_OWNED_DOMAINS)
+
+
+class _RedirectedToHF(Exception):
+    pass
+
+
+class _RedirectGuard(HTTPRedirectHandler):
+    """Refuses a redirect to a HuggingFace-owned host: a mirror that only
+    forwards there is no better than HF itself."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _is_hf_owned(newurl):
+            raise _RedirectedToHF(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _probe_endpoint(url: str, timeout: float, *, reject_hf_redirect: bool = False) -> bool:
     """Fetch one byte: proves both the site and the CDN it redirects to
     (in mainland China often only the latter is blocked)."""
+    request = Request(url, headers={"User-Agent": "RealtimeSubtitle", "Range": "bytes=0-0"})
     try:
-        request = Request(url, headers={"User-Agent": "RealtimeSubtitle", "Range": "bytes=0-0"})
-        with urlopen(request, timeout=timeout) as response:
+        if reject_hf_redirect:
+            response = build_opener(_RedirectGuard()).open(request, timeout=timeout)
+        else:
+            response = urlopen(request, timeout=timeout)
+        with response:
             response.read(1)
         return True
+    except _RedirectedToHF as exc:
+        logger.info("Download source probe: %s redirects to HuggingFace (%s)", url, exc)
+        return False
     except Exception as exc:
-        logger.info("HuggingFace endpoint probe failed %s: %s", url, exc)
+        logger.info("Download source probe failed %s: %s", url, exc)
         return False
 
 
-def _ordered_hf_endpoints(repo_id: str, filename: str) -> list[str]:
-    """Move the first reachable endpoint to the front; unreachable ones stay
-    at the end as a last resort (the probe itself can misjudge)."""
-    endpoints = _hf_endpoints()
-    unreachable: list[str] = []
-    for index, endpoint in enumerate(endpoints):
-        remaining = endpoints[index + 1:]
-        if not remaining:
-            # Last candidate: no point spending another probe timeout on it.
-            return [endpoint, *unreachable]
-        if _hf_endpoint_reachable(_hf_file_url(endpoint, repo_id, filename)):
-            return [endpoint, *remaining, *unreachable]
-        logger.warning("%s unreachable, falling back", endpoint)
-        unreachable.append(endpoint)
-    return unreachable
+_hf_choice_lock = threading.Lock()
+# Endpoint order picked by the first probe of this run; later files reuse it.
+_hf_endpoint_choice: list[str] | None = None
+
+
+def _probe_hf_endpoints(repo_id: str, filename: str) -> list[str] | None:
+    """Probe HF and the mirror at the same time. The mirror goes first only when
+    it serves the file itself (no redirect back to an HF host); otherwise HF
+    does. None when neither answered, so the next download probes again."""
+    official_url = _hf_file_url(HF_ENDPOINT_OFFICIAL, repo_id, filename)
+    mirror_url = _hf_file_url(HF_ENDPOINT_MIRROR, repo_id, filename)
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hf-probe")
+    try:
+        official = pool.submit(_probe_endpoint, official_url, HF_PROBE_TIMEOUT_SECONDS)
+        mirror = pool.submit(_probe_endpoint, mirror_url, HF_PROBE_TIMEOUT_SECONDS, reject_hf_redirect=True)
+        done, _ = wait((official, mirror), timeout=HF_PROBE_TIMEOUT_SECONDS)
+    finally:
+        # A probe stuck past the deadline finishes on its own socket timeout.
+        pool.shutdown(wait=False)
+
+    def ok(future) -> bool:
+        return future in done and future.exception() is None and bool(future.result())
+
+    official_ok, mirror_ok = ok(official), ok(mirror)
+    logger.info("Download source probe: huggingface.co=%s hf-mirror.com=%s", official_ok, mirror_ok)
+    if mirror_ok:
+        return [HF_ENDPOINT_MIRROR, HF_ENDPOINT_OFFICIAL]
+    order = [HF_ENDPOINT_OFFICIAL, HF_ENDPOINT_MIRROR]
+    return order if official_ok else None
+
+
+def _ordered_hf_endpoints(repo_id: str, filename: str, progress_callback=None) -> list[str]:
+    """Endpoints in try order: hand-set ones first (no probe), otherwise the
+    order chosen by the first probe of this run. Every endpoint stays in the
+    list so a failed download still falls through to the other one."""
+    global _hf_endpoint_choice
+    override = _hf_override_endpoints()
+    defaults = [HF_ENDPOINT_OFFICIAL, HF_ENDPOINT_MIRROR]
+    if override:
+        chosen = defaults
+    else:
+        with _hf_choice_lock:
+            if _hf_endpoint_choice is None:
+                _report(progress_callback, "source-probe", 0, None)
+                _hf_endpoint_choice = _probe_hf_endpoints(repo_id, filename)
+            chosen = _hf_endpoint_choice or defaults
+    endpoints: list[str] = []
+    for endpoint in (*override, *chosen):
+        if endpoint not in endpoints:
+            endpoints.append(endpoint)
+    return endpoints
 
 
 def _parse_content_range_total(headers) -> int | None:
@@ -607,7 +668,7 @@ def _sha256_file(path: Path) -> str:
 def _download_hf_file(repo_id: str, filename: str, dest: Path, stage: str, progress_callback=None,
                       *, revision: str = "main", sha256: str | None = None) -> None:
     failures: list[str] = []
-    for endpoint in _ordered_hf_endpoints(repo_id, filename):
+    for endpoint in _ordered_hf_endpoints(repo_id, filename, progress_callback):
         host = urlparse(endpoint).netloc or endpoint
         try:
             logger.info("Downloading %s from %s", filename, host)
@@ -655,11 +716,11 @@ def prepare_engine(engine: str, progress_callback=None) -> None:
 
 
 def download_hymt2(progress_callback=None) -> None:
-    """Download the Hy-MT2 GGUF; falls back to mirrors when huggingface.co is unreachable."""
+    """Download the Hy-MT2 GGUF from the endpoint the source probe picked."""
     if get_hymt2_model_path() is None:
         dest = MODELS_DIR / HYMT2_DIR_NAME / HYMT2_MODEL_FILE
         failures: list[str] = []
-        for endpoint in _ordered_hf_endpoints(HYMT2_REPO_ID, HYMT2_MODEL_FILE):
+        for endpoint in _ordered_hf_endpoints(HYMT2_REPO_ID, HYMT2_MODEL_FILE, progress_callback):
             host = urlparse(endpoint).netloc or endpoint
             try:
                 logger.info("Downloading Hy-MT2 (%s) from %s", HYMT2_MODEL_FILE, host)

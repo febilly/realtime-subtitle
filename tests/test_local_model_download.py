@@ -44,17 +44,35 @@ def models_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(model_manager, "_ensure_llama_runtime", lambda progress=None: None)
     monkeypatch.delenv("REALTIME_SUBTITLE_HF_ENDPOINT", raising=False)
     monkeypatch.delenv("HF_ENDPOINT", raising=False)
+    monkeypatch.setattr(model_manager, "_hf_endpoint_choice", None)
+    # No real network in tests: each test sets the probe outcome it needs.
+    monkeypatch.setattr(model_manager, "_probe_endpoint", lambda url, timeout, **kw: url.startswith("https://huggingface.co/"))
     return tmp_path
 
 
-def test_hymt2_falls_back_to_mirror_when_huggingface_is_unreachable(models_dir, monkeypatch):
+MIRROR_HYMT2_URL = (
+    "https://hf-mirror.com/febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF/resolve/main/"
+    "Hy-MT2-1.8B-StreamRevise-v4-Q4_K_M.gguf"
+)
+
+
+def _probe_results(monkeypatch, *, official, mirror):
+    calls = []
+
+    def fake_probe(url, timeout, *, reject_hf_redirect=False):
+        calls.append((url, timeout, reject_hf_redirect))
+        return mirror if url.startswith("https://hf-mirror.com/") else official
+
+    monkeypatch.setattr(model_manager, "_probe_endpoint", fake_probe)
+    return calls
+
+
+def test_hymt2_uses_the_mirror_when_it_serves_the_file_itself(models_dir, monkeypatch):
+    calls = _probe_results(monkeypatch, official=True, mirror=True)
     requested = []
 
     def fake_urlopen(request, timeout=None):
-        url = request.full_url
-        requested.append(url)
-        if url.startswith("https://huggingface.co/"):
-            raise OSError("connection reset")
+        requested.append(request.full_url)
         return FakeResponse(b"GGUF" + b"\0" * 100)
 
     monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
@@ -64,12 +82,72 @@ def test_hymt2_falls_back_to_mirror_when_huggingface_is_unreachable(models_dir, 
 
     dest = models_dir / "hymt2" / model_manager.HYMT2_MODEL_FILE
     assert dest.read_bytes().startswith(b"GGUF")
-    assert model_manager.get_hymt2_model_path() == dest
-    assert requested[-1] == (
-        "https://hf-mirror.com/febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF/resolve/main/"
-        "Hy-MT2-1.8B-StreamRevise-v4-Q4_K_M.gguf"
-    )
+    assert requested == [MIRROR_HYMT2_URL]
+    assert sorted((timeout, guard) for _, timeout, guard in calls) == [(5.0, False), (5.0, True)]
+    assert progress[0] == ("source-probe", 0, None)
     assert progress[-1] == ("hymt2", 104, 104)
+
+
+def test_official_hf_is_used_when_the_mirror_fails_or_redirects_to_hf(models_dir, monkeypatch):
+    _probe_results(monkeypatch, official=False, mirror=False)
+    assert model_manager._ordered_hf_endpoints("a/b", "c") == ["https://huggingface.co", "https://hf-mirror.com"]
+    # Neither answered: not remembered, so the next download probes again.
+    assert model_manager._hf_endpoint_choice is None
+
+    _probe_results(monkeypatch, official=True, mirror=False)
+    assert model_manager._ordered_hf_endpoints("a/b", "c") == ["https://huggingface.co", "https://hf-mirror.com"]
+
+
+def test_hymt2_falls_back_to_the_other_endpoint_when_a_download_fails(models_dir, monkeypatch):
+    _probe_results(monkeypatch, official=True, mirror=False)
+    requested = []
+
+    def fake_urlopen(request, timeout=None):
+        requested.append(request.full_url)
+        if request.full_url.startswith("https://huggingface.co/"):
+            raise OSError("connection reset")
+        return FakeResponse(b"GGUF" + b"\0" * 100)
+
+    monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
+
+    model_manager.download_hymt2()
+
+    assert requested[-1] == MIRROR_HYMT2_URL
+    assert model_manager.get_hymt2_model_path() is not None
+
+
+def test_the_probe_runs_once_per_run(models_dir, monkeypatch):
+    calls = _probe_results(monkeypatch, official=True, mirror=True)
+    first = model_manager._ordered_hf_endpoints("a/b", "c")
+    second = model_manager._ordered_hf_endpoints("x/y", "z", lambda *a: pytest.fail("probed again"))
+
+    assert first == second == ["https://hf-mirror.com", "https://huggingface.co"]
+    assert len(calls) == 2
+
+
+def test_a_hand_set_endpoint_goes_first_without_probing(models_dir, monkeypatch):
+    monkeypatch.setattr(model_manager, "_probe_endpoint", lambda *a, **k: pytest.fail("probed"))
+    monkeypatch.setenv("HF_ENDPOINT", "https://my-mirror.example/")
+
+    assert model_manager._ordered_hf_endpoints("a/b", "c") == [
+        "https://my-mirror.example", "https://huggingface.co", "https://hf-mirror.com",
+    ]
+
+
+def test_hf_owned_hosts_include_its_cdns():
+    for url in (
+        "https://huggingface.co/a", "https://hf.co/a", "https://cdn-lfs.huggingface.co/x",
+        "https://cas-bridge.xethub.hf.co/x", "https://cdn-lfs-us-1.hf.co/x", "https://HF.CO./x",
+    ):
+        assert model_manager._is_hf_owned(url), url
+    for url in ("https://hf-mirror.com/a", "https://cdn-lfs.hf-mirror.com/x", "https://nothf.co/x"):
+        assert not model_manager._is_hf_owned(url), url
+
+
+def test_the_mirror_probe_refuses_a_redirect_to_hf(monkeypatch):
+    guard = model_manager._RedirectGuard()
+    with pytest.raises(model_manager._RedirectedToHF):
+        guard.redirect_request(None, None, 302, "Found", Message(), "https://cas-bridge.xethub.hf.co/x")
 
 
 def test_download_rejects_a_gateway_page_and_keeps_no_model(models_dir, monkeypatch):
