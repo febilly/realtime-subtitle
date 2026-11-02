@@ -73,7 +73,7 @@ except Exception:  # pragma: no cover - 仅在缺依赖时触发
 # 颜色 / 样式常量（与网页版 dark 主题大致对应）
 # ---------------------------------------------------------------------------
 FINAL_COLOR = "#e5e7eb"        # 已确定文本（接近白）
-NONFINAL_COLOR = "#60a5fa"     # 进行中（蓝）
+NONFINAL_COLOR = "#80c4ff"     # 进行中（亮蓝）
 PLACEHOLDER_COLOR = "#9ca3af"  # 空状态 / 占位
 TAG_BG = "rgba(255,255,255,0.16)"
 TAG_FG = "#d1d5db"
