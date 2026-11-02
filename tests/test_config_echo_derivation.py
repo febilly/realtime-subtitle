@@ -160,3 +160,16 @@ def test_language_english_name_zh_defaults_to_simplified_unless_traditional_loca
     assert config.language_english_name("zh-hant") == "Chinese (Traditional)"
     assert config.describe_target_language("zh") == "zh (Chinese (Traditional))"
 
+
+@pytest.mark.parametrize("locale_name,expected", [
+    ("zh_TW.UTF-8", "zh-hant"), ("zh-Hant", "zh-hant"),
+    ("zh_CN", "zh"), ("fil_PH", "fil"), ("tl_PH", "fil"),
+    ("bo_CN", "bo"), ("ug_CN", "ug"),
+])
+def test_local_system_language_preserves_hymt_target_variants(
+    monkeypatch, restore_config_module, locale_name, expected,
+):
+    config = _reload_config(monkeypatch, "smart")
+    monkeypatch.setattr(config, "_system_default_locale", lambda: locale_name)
+    assert config.get_system_language("local") == expected
+

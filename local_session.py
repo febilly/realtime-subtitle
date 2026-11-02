@@ -17,6 +17,7 @@ from local_inference.subtitle_pipeline import LocalSubtitlePipeline
 from local_relay import LocalRelayLink
 from soniox_session import SonioxSession
 from streaming_translation import HyMT2API
+from shared.hymt_languages import normalize_hymt_language
 
 logger = logging.getLogger(__name__)
 ipc_server = None
@@ -38,6 +39,8 @@ class LocalInferenceSession(SonioxSession):
 
     def __init__(self, logger_obj, broadcast_callback):
         super().__init__(logger_obj, broadcast_callback)
+        self.target_lang_1 = config.canonicalize_target_lang(config.TARGET_LANG_1, "local") or "en"
+        self.target_lang_2 = config.canonicalize_target_lang(config.TARGET_LANG_2, "local") or "zh"
         self._recognizer: LocalQwenRecognizer | None = None
         self._translator: HyMT2API | None = None
         self._subtitle_pipeline: LocalSubtitlePipeline | None = None
@@ -63,6 +66,13 @@ class LocalInferenceSession(SonioxSession):
     def _machine_translation_wanted(self) -> bool:
         mode = str(self.translation or "one_way").strip().lower()
         return mode != "none" and not self._suppress_soniox_translation
+
+    def set_translation_target_lang(self, lang: str) -> tuple[bool, str]:
+        normalized = config.canonicalize_target_lang(lang, "local")
+        if not config.is_supported_language_code(normalized, "local"):
+            return False, f"Unsupported translation target language: {lang}"
+        self.translation_target_lang = normalized
+        return True, "ok"
 
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
         # Same mapping as soniox; the local switch never needs a restart because
@@ -189,7 +199,7 @@ class LocalInferenceSession(SonioxSession):
             return
         if self._local_stop_event.is_set() and not is_final:
             return
-        detected = config.normalize_language_code((raw or {}).get("language")) or "en"
+        detected = normalize_hymt_language((raw or {}).get("language")) or "en"
         self._present_recognition(text, is_final, detected, raw)
 
     def _present_recognition(
@@ -198,7 +208,7 @@ class LocalInferenceSession(SonioxSession):
         pipeline = self._subtitle_pipeline
         if not text or self.loop is None or pipeline is None:
             return
-        target_lang = config.normalize_language_code(self.get_translation_target_lang()) or "zh"
+        target_lang = config.canonicalize_target_lang(self.get_translation_target_lang(), "local") or "zh"
         mode = str(self.translation or "one_way").strip().lower()
         pipeline.update(
             text, is_final, source_lang, target_lang,

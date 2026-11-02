@@ -9,6 +9,21 @@ describe('LanguageCatalog', () => {
         ]);
     });
 
+    it('labels every Hy-MT2 base target including minority languages and script variants', () => {
+        const codes = 'en zh ja ko ar bn my yue zh-hant cs nl fil fr de gu he hi id it kk km ms mr mn fa pl pt ru es ta te th bo tr uk ur ug vi'.split(' ');
+        const languages = LanguageCatalog.buildLanguageList(codes);
+        expect(languages).toHaveLength(38);
+        for (const language of languages) {
+            expect(language.en).not.toBe(language.code);
+            expect(language.native).not.toBe(language.code);
+        }
+        expect(LanguageCatalog.buildLanguageList(['yue', 'bo', 'ug'])).toEqual([
+            { code: 'yue', en: 'Cantonese', native: '粵語' },
+            { code: 'bo', en: 'Tibetan', native: 'བོད་ཡིག' },
+            { code: 'ug', en: 'Uyghur', native: 'ئۇيغۇرچە' },
+        ]);
+    });
+
     it('coerces case-insensitively and falls back through the active provider list', () => {
         const catalog = LanguageCatalog.create(['ja', 'zh-hant']);
         expect(catalog.coerce('JA', 'zh-hant')).toBe('ja');

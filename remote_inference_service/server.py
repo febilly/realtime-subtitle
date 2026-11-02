@@ -24,12 +24,6 @@ CHAT_PREFIX = "<｜hy_begin▁of▁sentence｜><｜hy_User｜>"
 CHAT_SUFFIX = "<｜hy_Assistant｜>"
 
 TRAINED_HISTORY_PAIRS = 5
-LANGUAGE_NAMES = {
-    "ar": "Arabic", "de": "German", "en": "English", "es": "Spanish",
-    "fr": "French", "it": "Italian", "ja": "Japanese", "ko": "Korean",
-    "pt": "Portuguese", "ru": "Russian", "vi": "Vietnamese",
-    "yue": "Cantonese", "zh": "Chinese",
-}
 
 
 def parse_args() -> argparse.Namespace:
@@ -271,13 +265,17 @@ def _source_history(items: Any, limit: int) -> list[tuple[str, str]]:
 
 
 def _translation_prompt(payload: dict[str, Any], source: str, history_limit: int) -> str:
+    # configure_runtime adds the application runtime root before serving;
+    # keep this lazy so the standalone service's --help still works.
+    from shared.hymt_languages import hymt_language_name
+
     # Must match the Hy-MT2 LoRA training template word for word
     # (hy-mt-2-lora v4/pipeline/prompt_v4.py:render_v4); the model has never
     # seen any other section, e.g. following-source context.
     source_lang = str(payload.get("source_lang") or "en").lower()
     target_lang = str(payload.get("target_lang") or "zh").lower()
-    source_name = LANGUAGE_NAMES.get(source_lang, source_lang)
-    target_name = LANGUAGE_NAMES.get(target_lang, target_lang)
+    source_name = hymt_language_name(source_lang)
+    target_name = hymt_language_name(target_lang)
     previous_source = str(payload.get("previous_source") or "")
     previous_translation = str(payload.get("previous_translation") or "")
     # Training only had pairs with a translation, at most TRAINED_HISTORY_PAIRS of them.

@@ -27,6 +27,7 @@ import re
 import threading
 import time
 from typing import Dict, List, Optional
+from shared.hymt_languages import HYMT2_LANGUAGE_NAMES, normalize_hymt_language
 
 from local_inference.repetition_guard import (
     RETRY_REPEAT_PENALTY,
@@ -52,18 +53,7 @@ MAX_HISTORY = 8        # 服务端接受 <=10 条，取 8 与本应用上下文�
 HISTORY_KEEP = 20      # 本地保留的完成句对上限（截断后再取最新一条发送）
 TRAINED_HISTORY_PAIRS = 5  # 微调数据（v4 build_traj.HISTORY_WINDOW）里历史最多 5 对
 
-LANGUAGE_NAMES: Dict[str, str] = {
-    "zh": "Chinese",
-    "en": "English",
-    "ja": "Japanese",
-    "ko": "Korean",
-    "yue": "Cantonese",
-    "fr": "French",
-    "de": "German",
-    "es": "Spanish",
-    "ru": "Russian",
-    "it": "Italian",
-}
+LANGUAGE_NAMES: Dict[str, str] = HYMT2_LANGUAGE_NAMES
 
 
 def _local_backend_available() -> bool:
@@ -563,13 +553,8 @@ class HyMT2API(BaseTranslationAPI):
 
     @staticmethod
     def _normalize_lang(code: Optional[str]) -> str:
-        """小写并去掉地区后缀（zh-CN -> zh），'auto'/空 -> ''。"""
-        if not code:
-            return ""
-        norm = str(code).strip().lower()
-        if not norm or norm == "auto":
-            return ""
-        return norm.split("-")[0]
+        """Normalize aliases and regions without losing zh-Hant."""
+        return normalize_hymt_language(code)
 
     def _resolve_source_lang(self, source_language: str, detected: Optional[str]) -> str:
         code = self._normalize_lang(detected) or self._normalize_lang(source_language)
@@ -874,7 +859,14 @@ class HyMT2API(BaseTranslationAPI):
         context_signature,
     ) -> str:
         with self._lock:
-            if self._last_final:
+            direction_changed = (
+                self._last_source_lang is not None and self._last_source_lang != source_lang
+            ) or (
+                self._last_target_lang is not None and self._last_target_lang != target_lang
+            )
+            if direction_changed:
+                self._history = []
+            if self._last_final or direction_changed:
                 self._prev_source = None
                 self._prev_translation = None
                 self._prev_tokens = []
@@ -956,6 +948,8 @@ class HyMT2API(BaseTranslationAPI):
                 )
             )
             new_utterance = (not self._sent_any) or self._last_final or direction_changed
+            if direction_changed:
+                self._history = []
             if not new_utterance and self.backend == "remote" and source_was_cut(self._prev_source, text):
                 self._prev_source = None
                 self._prev_translation = None

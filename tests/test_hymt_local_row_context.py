@@ -1,4 +1,5 @@
 from streaming_translation.api.hymt2 import HyMT2API, HyMT2LocalEngine
+import pytest
 
 
 class _FakeLocalEngine:
@@ -17,6 +18,42 @@ def _local_api():
     api.backend = "local"
     api._local_engine = _FakeLocalEngine()
     return api
+
+
+@pytest.mark.parametrize("code,name", [
+    ("th", "Thai"), ("vi", "Vietnamese"), ("id", "Indonesian"),
+    ("ms", "Malay"), ("fil", "Filipino"), ("tl", "Filipino"),
+    ("zh-Hant", "Chinese (Traditional)"), ("zh_TW", "Chinese (Traditional)"),
+    ("bo", "Tibetan"), ("ug", "Uyghur"), ("yue", "Cantonese"),
+    ("ar", "Arabic"), ("uk", "Ukrainian"),
+])
+def test_new_targets_use_full_language_names_through_local_and_remote_prompt_paths(code, name):
+    from remote_inference_service.server import _translation_prompt
+
+    api = _local_api()
+    api.translate("Hello", source_language="en", target_language=code, is_partial=True)
+    prompt, _draft = api._local_engine.prompts[0]
+    assert f"from English into {name}." in prompt
+    remote = _translation_prompt({"source_lang": "en", "target_lang": code}, "Hello", 5)
+    assert f"from English into {name}." in remote
+
+
+def test_switching_simplified_to_traditional_chinese_clears_translation_draft():
+    api = _local_api()
+    api.translate("Hello", source_language="en", target_language="zh", is_partial=True)
+    api.translate("Hello", source_language="en", target_language="zh-Hant", is_partial=True)
+    prompt, draft = api._local_engine.prompts[1]
+    assert "into Chinese (Traditional)." in prompt
+    assert draft is None
+
+
+def test_filipino_source_and_target_aliases_share_one_direction():
+    api = _local_api()
+    api.translate("Kumusta", source_language="fil", target_language="zh", is_partial=True)
+    api.translate("Kumusta ka", source_language="tl", target_language="zh", is_partial=True)
+    prompt, draft = api._local_engine.prompts[1]
+    assert "from Filipino into Chinese" in prompt
+    assert draft == [1]
 
 
 def test_local_row_prompt_matches_training_template_and_ignores_following_source():

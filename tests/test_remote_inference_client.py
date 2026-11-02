@@ -122,6 +122,18 @@ def test_remote_hymt_keeps_revision_history_and_context_sensitive_final(endpoint
         translator.close()
 
 
+@pytest.mark.parametrize("target,canonical", [("zh-Hant", "zh-hant"), ("tl", "fil"), ("bo", "bo")])
+def test_remote_hymt_preserves_script_variants_and_target_aliases(endpoint, target, canonical):
+    translator = HyMT2API(backend="remote", websocket_url=endpoint.url, max_retries=0)
+    try:
+        translator.translate("Hello", "en", target, is_partial=True)
+        payload = endpoint.calls[-1][1]
+        assert payload["target_lang"] == canonical
+        assert payload["source_lang"] == "en"
+    finally:
+        translator.close()
+
+
 def test_missing_unused_sensevoice_does_not_block_remote_qwen():
     status = {"ready": False, "models": {"qwen3-asr": {"ready": True}, "hymt2": {"ready": True}}}
     assert remote_readiness_error(status, translation_enabled=True) == ""

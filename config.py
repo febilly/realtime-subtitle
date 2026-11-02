@@ -9,6 +9,11 @@ import threading
 from urllib.parse import urlencode
 import requests
 from dotenv import load_dotenv
+from shared.hymt_languages import (
+    HYMT2_LANGUAGE_CODES_ORDERED,
+    HYMT2_LANGUAGE_NAMES,
+    normalize_hymt_language,
+)
 
 # Make console output resilient: on Windows a redirected stdout/stderr uses
 # the ANSI code page (e.g. GBK), where the emoji used throughout the logs
@@ -74,15 +79,11 @@ GEMINI_LANGUAGE_CODES_ORDERED = [
     "th", "tr", "uk", "ur", "uz", "vi", "zu",
 ]
 
-# Qwen3-ASR + Hy-MT2 languages.  Qwen can recognize more languages, but the
-# local provider deliberately exposes only the intersection that has been
-# exercised by the bundled Hy-MT2 prompt format.
-LOCAL_SUPPORTED_LANGUAGE_CODES = {
-    "zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru", "it",
-}
-LOCAL_LANGUAGE_CODES_ORDERED = [
-    "zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru", "it",
-]
+# Translation targets follow Hy-MT2 base coverage, not the ASR source-language
+# intersection. StreamRevise directions beyond Chinese/English/Japanese have
+# not been quality-validated. Keep Traditional Chinese as a distinct target.
+LOCAL_SUPPORTED_LANGUAGE_CODES = set(HYMT2_LANGUAGE_NAMES)
+LOCAL_LANGUAGE_CODES_ORDERED = list(HYMT2_LANGUAGE_CODES_ORDERED)
 
 # ISO 639-1 (normalized) -> Gemini BCP-47 target language code mapping.
 # Codes not listed here are passed through unchanged.
@@ -171,13 +172,16 @@ def get_language_codes_ordered(provider: str | None = None) -> list:
 
 
 def is_supported_language_code(lang: str, provider: str | None = None) -> bool:
-    code = normalize_language_code(lang)
+    p = provider or globals().get("TRANSLATION_PROVIDER") or "soniox"
+    code = normalize_hymt_language(lang) if p == "local" else normalize_language_code(lang)
     return bool(code) and code in get_supported_language_codes(provider)
 
 
 def canonicalize_target_lang(lang: str, provider: str | None = None) -> str:
     """Canonicalize a target language for the given provider (variant-aware for Gemini)."""
     p = (provider or globals().get("TRANSLATION_PROVIDER") or "soniox")
+    if p == "local":
+        return normalize_hymt_language(lang)
     return canonicalize_language_code(lang) if p == "gemini" else normalize_language_code(lang)
 
 
@@ -261,6 +265,7 @@ LANGUAGE_ENGLISH_NAMES = {
     "sv": "Swedish", "tl": "Tagalog", "ta": "Tamil", "te": "Telugu",
     "th": "Thai", "tr": "Turkish", "uk": "Ukrainian", "ur": "Urdu",
     "uz": "Uzbek", "vi": "Vietnamese", "cy": "Welsh", "zu": "Zulu",
+    "bo": "Tibetan", "ug": "Uyghur", "yue": "Cantonese",
 }
 
 
@@ -1191,10 +1196,7 @@ def get_system_language(provider: str | None = None) -> str:
         system_locale = _system_default_locale()  # e.g. 'zh_CN', 'en_US', 'zh-CN'
 
         if system_locale:
-            if p == "gemini":
-                lang_code = canonicalize_language_code(system_locale)
-            else:
-                lang_code = normalize_language_code(system_locale)
+            lang_code = canonicalize_target_lang(system_locale, p)
             if is_supported_language_code(lang_code, p):
                 print(f"🌐 Detected system language: {system_locale} -> {lang_code}")
                 return lang_code

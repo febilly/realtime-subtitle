@@ -263,8 +263,8 @@ class ProviderManager:
         # at the full rate).
         self.ui_translation_mode = None
         self.target_lang = config.TRANSLATION_TARGET_LANG
-        self.target_lang_1 = config.normalize_language_code(config.TARGET_LANG_1) or "en"
-        self.target_lang_2 = config.normalize_language_code(config.TARGET_LANG_2) or "zh"
+        self.target_lang_1 = config.canonicalize_target_lang(config.TARGET_LANG_1, self.provider) or "en"
+        self.target_lang_2 = config.canonicalize_target_lang(config.TARGET_LANG_2, self.provider) or "zh"
         self.audio_source = "twitch" if bool(getattr(config, "USE_TWITCH_AUDIO_STREAM", False)) else "system"
         self.microphone_device_id = str(getattr(config, "MICROPHONE_DEVICE_ID", "") or "").strip()
         self.output_device_id = str(getattr(config, "OUTPUT_DEVICE_ID", "") or "").strip()

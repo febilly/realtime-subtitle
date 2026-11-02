@@ -76,13 +76,16 @@
         ta: { en: 'Tamil', native: 'தமிழ்' },
         te: { en: 'Telugu', native: 'తెలుగు' },
         th: { en: 'Thai', native: 'ไทย' },
+        bo: { en: 'Tibetan', native: 'བོད་ཡིག' },
         tr: { en: 'Turkish', native: 'Türkçe' },
         uk: { en: 'Ukrainian', native: 'Українська' },
         ur: { en: 'Urdu', native: 'اردو' },
+        ug: { en: 'Uyghur', native: 'ئۇيغۇرچە' },
         uz: { en: 'Uzbek', native: 'Oʻzbekcha' },
         vi: { en: 'Vietnamese', native: 'Tiếng Việt' },
         cy: { en: 'Welsh', native: 'Cymraeg' },
         zu: { en: 'Zulu', native: 'isiZulu' },
+        yue: { en: 'Cantonese', native: '粵語' },
     };
 
     function buildLanguageList(codes) {

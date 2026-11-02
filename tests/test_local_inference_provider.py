@@ -42,15 +42,53 @@ def _session():
 
 
 def test_local_provider_language_and_capability_matrix():
-    assert config.get_supported_language_codes("local") == {
-        "zh", "en", "ja", "ko", "yue", "fr", "de", "es", "ru", "it",
-    }
-    assert config.get_language_codes_ordered("local")[:5] == ["zh", "en", "ja", "ko", "yue"]
+    # All entries from the official base table, with tl canonicalized to fil.
+    assert config.get_supported_language_codes("local") == set(
+        "zh en fr pt es ja tr ru ar ko th it de vi ms id fil hi zh-hant "
+        "pl cs nl km my fa gu ur te mr he bn ta uk bo kk mn ug yue".split()
+    )
+    ordered = config.get_language_codes_ordered("local")
+    assert ordered[:4] == ["en", "zh", "ja", "ko"]
+    assert len(ordered) == len(set(ordered)) == 38
+    from shared.hymt_languages import HYMT2_LANGUAGE_NAMES
+    assert ordered[4:] == sorted(ordered[4:], key=lambda code: HYMT2_LANGUAGE_NAMES[code].casefold())
+    # A target need not be recognizable as ASR input.
+    assert "bo" in ordered and "bo" not in _asr_qwen3_module._LANG_MAP
     assert config.get_capabilities("local") == {
         "segment_mode": False,
         "speaker_diarization": False,
         "two_way_translation": False,
     }
+
+
+@pytest.mark.parametrize("target", "zh en fr pt es ja tr ru ar ko th it de vi ms id fil hi zh-hant pl cs nl km my fa gu ur te mr he bn ta uk bo kk mn ug yue".split())
+def test_local_session_accepts_every_hymt_base_target(target):
+    session = _session()
+    assert session.set_translation_target_lang(target) == (True, "ok")
+    assert session.get_translation_target_lang() == target
+
+
+@pytest.mark.parametrize("value,canonical", [
+    ("zh-Hant", "zh-hant"), ("zh_TW", "zh-hant"), ("zh_HK", "zh-hant"),
+    ("zh-Hans", "zh"), ("tl", "fil"), ("fil-PH", "fil"),
+])
+def test_local_target_alias_survives_selection_and_row_pipeline(value, canonical):
+    session = _session()
+    assert session.set_translation_target_lang(value) == (True, "ok")
+    session.loop = object()
+    session._subtitle_pipeline = Mock()
+    session.translation = "one_way"
+    session._present_recognition("Hello.", False, "en")
+    assert session._subtitle_pipeline.update.call_args.args == ("Hello.", False, "en", canonical)
+    assert config.canonicalize_target_lang(value, "local") == canonical
+    assert config.is_supported_language_code(value, "local")
+
+
+def test_local_session_rejects_unknown_target_without_changing_selection():
+    session = _session()
+    assert session.set_translation_target_lang("vi")[0]
+    assert not session.set_translation_target_lang("not-a-language")[0]
+    assert session.get_translation_target_lang() == "vi"
 
 
 def test_local_device_config_is_normalized(monkeypatch):
