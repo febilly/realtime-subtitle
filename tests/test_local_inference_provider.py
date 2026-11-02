@@ -883,6 +883,38 @@ def test_mode_switch_while_stopped_only_records_the_mode():
     session._make_row_translator.assert_not_called()
 
 
+def test_translation_off_releases_model_and_disables_translation_rows():
+    session = _session()
+    session.translation = "one_way"
+    session._local_stop_event = threading.Event()
+    session._subtitle_pipeline = Mock()
+    translator = Mock()
+    session._translator = translator
+    session._make_row_translator = Mock()
+    assert session.set_translation_mode("off") == (True, "off", False)
+    assert session.get_translation_mode() == "off"
+    assert not session._machine_translation_wanted()
+    assert session.get_llm_refine_mode() == "off"
+    translator.close.assert_called_once()
+    session._subtitle_pipeline.set_machine_translation.assert_called_with(False)
+    session.loop = object()
+    session._present_recognition("Hello", False, "en")
+    assert session._subtitle_pipeline.update.call_args.kwargs["translation_enabled"] is False
+    session._make_row_translator.assert_not_called()
+
+
+def test_translation_off_at_start_does_not_require_the_translation_model(monkeypatch):
+    session = _session()
+    session._check_models = Mock()
+    session._start_relay_link = Mock()
+    monkeypatch.setattr("local_session.threading.Thread", Mock())
+    assert session.set_translation_mode("off") == (True, "off", False)
+    assert session.start(None, "pcm_s16le", "one_way", object(), "zh")
+    session._check_models.assert_called_once_with(False)
+    assert session.set_translation_mode("fast") == (True, "fast", False)
+    assert session._machine_translation_wanted()
+
+
 def test_hosted_mode_opens_the_relay_link_and_routes_llm_frames_through_it(monkeypatch):
     import local_session
     session = _session()

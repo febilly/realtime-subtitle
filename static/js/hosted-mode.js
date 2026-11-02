@@ -165,8 +165,31 @@
             await call('ensureHostedVersionAllowed', { candidateMode: 'relay' });
         }
 
+        async function ensureStartupConnection() {
+            while (true) {
+                const current = state();
+                if (current.lockManualControls || current.offlineMode
+                    || current.connectionMode === 'direct' || current.hostedReachable !== false) return;
+                call('hideLogin');
+                const asr = !!(current.offlineModels && current.offlineModels.asr);
+                const retry = await call('showConnectionDialog', t(asr
+                    ? 'hosted_connection_failed_offline' : 'hosted_connection_failed'), {
+                    okLabel: t('hosted_retry_connection'),
+                    cancelLabel: t('hosted_use_offline'),
+                    allowCancel: asr,
+                    dismissible: false,
+                });
+                if (!retry && asr) {
+                    const result = await call('enterOfflineMode');
+                    if (result && result.ok) return;
+                }
+                await call('fetchUiConfig');
+            }
+        }
+
         return {
             applyChooserI18n,
+            ensureStartupConnection,
             clearConnectionModeChoice,
             maybeRunFirstLaunchFlow,
             openModeChooser,

@@ -14,6 +14,7 @@
         const listeners = [];
         let resolvePending = null;
         let initialized = false;
+        let dismissible = true;
 
         function close(result) {
             if (overlay) overlay.hidden = true;
@@ -27,28 +28,34 @@
         }
 
         function handleKeydown(event) {
-            if (event.key === 'Escape') {
+            if (event.key === 'Escape' && dismissible) {
                 close(false);
             } else if (event.key === 'Enter') {
-                close(true);
+                event.preventDefault();
+                close(event.target !== cancelButton);
             }
         }
 
-        function show(message, { okLabel, cancelLabel, danger = false } = {}) {
+        function show(message, { okLabel, cancelLabel, danger = false, allowCancel = true, dismissible: canDismiss = true } = {}) {
             if (!dialog || !overlay) {
                 return Promise.resolve(windowRef.confirm(message));
             }
             if (resolvePending) close(false);
+            dismissible = canDismiss;
             if (messageElement) messageElement.textContent = message;
             if (okButton) {
                 okButton.textContent = okLabel || t('confirm');
                 okButton.className = danger ? 'danger-button' : 'primary-button';
             }
-            if (cancelButton) cancelButton.textContent = cancelLabel || t('cancel');
+            if (cancelButton) {
+                cancelButton.textContent = cancelLabel || t('cancel');
+                cancelButton.hidden = !allowCancel;
+            }
             overlay.hidden = false;
             dialog.hidden = false;
             documentRef.addEventListener('keydown', handleKeydown);
-            if (cancelButton) cancelButton.focus();
+            const focusButton = allowCancel ? cancelButton : okButton;
+            if (focusButton) focusButton.focus();
             return new Promise((resolve) => {
                 resolvePending = resolve;
             });
@@ -65,7 +72,7 @@
             initialized = true;
             bind(okButton, 'click', () => close(true));
             bind(cancelButton, 'click', () => close(false));
-            bind(overlay, 'click', () => close(false));
+            bind(overlay, 'click', () => { if (dismissible) close(false); });
             return true;
         }
 

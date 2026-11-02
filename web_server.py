@@ -460,6 +460,8 @@ class WebServer:
         if config.RELAY_MODE:
             await self._refresh_hosted_llm_config()
         payload = {
+            "offline_mode": bool(getattr(self, "offline_mode", False)),
+            "recognition_paused": bool(getattr(self.session, "is_paused", False)),
             "provider": provider,
             "providers": ["soniox", "gemini", "local"],
             "capabilities": capabilities,
@@ -509,10 +511,27 @@ class WebServer:
             "custom_font_available": self.check_custom_font_exists(),
         }
 
-        if config.RELAY_AVAILABLE:
+        if getattr(self, "offline_mode", False):
+            from local_inference.model_manager import get_all_local_models_status
+            models = get_all_local_models_status()
+            payload["offline_models"] = {
+                "asr": bool(models["asr"]["qwen3-asr"]["ready"]),
+                "translation": bool(models["translation"]["hymt2"]["ready"]),
+            }
+            payload["llm_refine_available"] = False
+
+        if config.RELAY_AVAILABLE and not getattr(self, "offline_mode", False):
             status, public_settings = await self._server_request(
                 "GET", "/public/settings", timeout=5
             )
+            payload["hosted_reachable"] = status == 200
+            if status != 200:
+                from local_inference.model_manager import get_all_local_models_status
+                models = get_all_local_models_status()
+                payload["offline_models"] = {
+                    "asr": bool(models["asr"]["qwen3-asr"]["ready"]),
+                    "translation": bool(models["translation"]["hymt2"]["ready"]),
+                }
             if status == 200 and isinstance(public_settings, dict):
                 payload["credits_purchase_url"] = str(
                     public_settings.get("credits_purchase_url") or ""
@@ -626,6 +645,29 @@ class WebServer:
         if provider not in ("soniox", "gemini", "local"):
             return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
 
+        offline = getattr(self, "offline_mode", False) or payload.get("offline_mode") is True
+        if offline:
+            if provider != "local":
+                return web.json_response({"status": "error", "message": "Offline mode requires local recognition"}, status=409)
+            if not getattr(self, "offline_mode", False):
+                from local_inference.model_manager import get_all_local_models_status
+                models = get_all_local_models_status()
+                if not models["asr"]["qwen3-asr"]["ready"]:
+                    return web.json_response({"status": "error", "message": "Local ASR model unavailable"}, status=400)
+                manager.ui_translation_mode = "fast" if models["translation"]["hymt2"]["ready"] else "off"
+                if manager.translation_mode == "none":
+                    manager.translation_mode = "one_way"
+            if payload.get("local_config") is not None and not isinstance(payload["local_config"], dict):
+                return web.json_response({"status": "error", "message": "Invalid local_config"}, status=400)
+            payload["mode"] = "direct"
+            payload["local_config"] = {**(payload.get("local_config") or {}), "backend": "local"}
+            # Enter offline mode without starting, and preserve a paused local
+            # session when saving settings. Only the main Start button resumes it.
+            payload["start_paused"] = (
+                not getattr(self, "offline_mode", False)
+                or bool(getattr(getattr(self, "session", None), "is_paused", True))
+            )
+
         if provider == "local":
             local_config = payload.get("local_config")
             if local_config is not None and not isinstance(local_config, dict):
@@ -685,6 +727,15 @@ class WebServer:
                          "setup_required": True, "boot_id": manager.boot_id},
                         status=400,
                     )
+                if not ok and payload.get("startup") is True:
+                    from local_inference.model_manager import get_all_local_models_status
+                    models = get_all_local_models_status()
+                    return web.json_response(
+                        {"status": "error", "message": error or "Hosted server unavailable", "hosted_unreachable": True,
+                         "offline_models": {"asr": bool(models["asr"]["qwen3-asr"]["ready"]),
+                                            "translation": bool(models["translation"]["hymt2"]["ready"])}},
+                        status=503,
+                    )
                 # On a transient validation failure (server unreachable / 5xx)
                 # we keep the saved token and proceed, so a brief server outage
                 # at startup doesn't log the user out.
@@ -723,6 +774,8 @@ class WebServer:
             soniox_region=soniox_region,
             start_paused=payload.get("start_paused") is True,
         )
+        if offline and not result.get("error"):
+            self.offline_mode = True
         if not result.get("started") and result.get("error") and api_key is None:
             # No key provided and env had none either.
             return web.json_response(
@@ -945,7 +998,9 @@ class WebServer:
         retry_seconds = 1
         while True:
             token = self._relay_token()
-            if not config.RELAY_AVAILABLE or not token:
+            if (not config.RELAY_AVAILABLE or not token
+                    or getattr(config, "SIMULATE_HOSTED_OFFLINE", False) is True
+                    or getattr(self, "offline_mode", False)):
                 self._ticket_notifications_connected = False
                 retry_seconds = 1
                 await asyncio.sleep(1)
@@ -1009,6 +1064,8 @@ class WebServer:
         """
         if not config.RELAY_AVAILABLE:
             return 503, {"detail": "Subtitle server not configured"}
+        if getattr(config, "SIMULATE_HOSTED_OFFLINE", False) is True:
+            return 502, {"detail": "Hosted server connection unavailable (SIMULATE_HOSTED_OFFLINE)"}
         url = config.relay_rest_url(path)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         if include_client_version and token:
@@ -1736,6 +1793,20 @@ class WebServer:
         except Exception:
             payload = {}
         mode = str((payload or {}).get("mode") or "").strip().lower()
+        if getattr(self, "offline_mode", False) and mode not in ("off", "fast"):
+            return web.json_response({"status": "error", "message": "Translation mode unavailable offline"}, status=400)
+        if getattr(self, "offline_mode", False) and mode == "fast":
+            from local_inference.model_manager import get_all_local_models_status
+            if not get_all_local_models_status()["translation"]["hymt2"]["ready"]:
+                return web.json_response({"status": "error", "message": "Local translation model unavailable"}, status=400)
+        # A settings save can select the local provider and its mode together.
+        # Keep that mode for the upcoming rebuild without changing the old stream.
+        if payload.get("provider") == "local" and config.TRANSLATION_PROVIDER != "local":
+            if mode not in ("off", "fast", "accurate", "hybrid"):
+                return web.json_response({"status": "error", "message": "Invalid translation mode"}, status=400)
+            if self.provider_manager is not None:
+                self.provider_manager.ui_translation_mode = mode
+            return web.json_response({"status": "ok", "mode": mode, "needs_restart": False})
         if not hasattr(self.session, "set_translation_mode"):
             return web.json_response({"status": "error", "message": "unsupported"}, status=400)
         ok, message, needs_restart = self.session.set_translation_mode(mode)
@@ -1836,6 +1907,11 @@ class WebServer:
                     l1, l2 = self.session.get_target_langs()
                     self.provider_manager.target_lang_1 = l1
                     self.provider_manager.target_lang_2 = l2
+
+            if (is_auto and config.TRANSLATION_PROVIDER == "local"
+                    and getattr(self.session, "is_paused", False)):
+                self.session.translation = translation_mode
+                return web.json_response({"status": "ok", "paused": True})
 
             # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
             # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求

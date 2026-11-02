@@ -28,7 +28,7 @@
     // Whether the local provider runs Hy-MT2 with this UI state: 准确 needs no
     // local model, but only while an LLM is there to do the translating.
     function needsMachineTranslation({ uiTranslationMode, translationUiMode, llmAvailable }) {
-        if (uiTranslationMode === 'none') return false;
+        if (uiTranslationMode === 'none' || translationUiMode === 'off') return false;
         return !(llmAvailable && translationUiMode === 'accurate');
     }
 

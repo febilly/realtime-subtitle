@@ -1,7 +1,7 @@
 (function (root) {
     'use strict';
 
-    const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid'];
+    const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid', 'off'];
     const DEFAULT_TRANSLATION_UI_MODE = 'hybrid';
     const EMPTY_MICROPHONE_DATA = {
         available: false,
@@ -184,9 +184,12 @@
 
         function getTranslationModes() {
             const configured = state().translationUiModes;
-            return Array.isArray(configured) && configured.length
+            const modes = Array.isArray(configured) && configured.length
                 ? configured.filter((mode) => TRANSLATION_UI_MODES.includes(mode))
                 : [...TRANSLATION_UI_MODES];
+            return modes.filter((mode) => selectedProvider() === 'local'
+                ? (state().llmRefineAvailable || ['fast', 'off'].includes(mode))
+                : mode !== 'off');
         }
 
         function getSegmentModes() {
@@ -545,7 +548,7 @@
         }
 
         function translationModeCostHint(mode) {
-            return mode === 'fast' ? '' : t('translation_cost_llm');
+            return ['fast', 'off'].includes(mode) ? '' : t('translation_cost_llm');
         }
 
         function updateTranslationModeHint() {
@@ -562,7 +565,7 @@
         // 快速 / 混合 on the local provider run Hy-MT2: ask to download it when
         // missing, and fall back to the previous mode if the user declines.
         async function confirmLocalTranslationMode(value, previous) {
-            if (selectedProvider() !== 'local' || value === 'accurate' || value === previous) return;
+            if (selectedProvider() !== 'local' || ['accurate', 'off'].includes(value) || value === previous) return;
             if (typeof actions.confirmLocalTranslationModel !== 'function') return;
             const ok = await actions.confirmLocalTranslationModel({
                 modeLabel: translationModeLabel(value),
@@ -576,7 +579,7 @@
 
         function renderTranslationModePicker() {
             const current = state();
-            const shown = !!current.llmRefineAvailable && !current.lockManualControls;
+            const shown = (!!current.llmRefineAvailable || selectedProvider() === 'local') && !current.lockManualControls;
             if (elements.translationModeSection) elements.translationModeSection.hidden = !shown;
             if (elements.translationModeSettingField) elements.translationModeSettingField.hidden = !shown;
             if (!shown) {
@@ -589,7 +592,8 @@
             const fallback = modes.includes(current.defaultTranslationUiMode)
                 ? current.defaultTranslationUiMode
                 : DEFAULT_TRANSLATION_UI_MODE;
-            const selected = modes.includes(current.translationUiMode) ? current.translationUiMode : fallback;
+            const selected = modes.includes(current.translationUiMode) ? current.translationUiMode
+                : (modes.includes(fallback) ? fallback : modes[0]);
             setDraft({ translationUiMode: selected });
             const picker = replaceHost(
                 elements.translationModePickerHost,
@@ -814,6 +818,7 @@
             ) {
                 const ok = await actionSucceeded('setTranslationUiMode', requestedTranslationMode, {
                     restartIfNeeded: true,
+                    ...(currentProvider === 'local' ? { provider: currentProvider } : {}),
                 });
                 if (!ok) return { ok: false, message: t('validation_error') };
             }

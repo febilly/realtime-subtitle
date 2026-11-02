@@ -61,6 +61,32 @@ function setup(overrides = {}) {
 }
 
 describe('HostedMode chooser and startup', () => {
+    it('retries a failed hosted startup without saving settings', async () => {
+        const page = setup({ state: { connectionMode: 'relay', hostedReachable: false, offlineModels: { asr: true } } });
+        page.actions.showConnectionDialog = vi.fn(async () => true);
+        page.actions.fetchUiConfig = vi.fn(async () => { page.state.hostedReachable = true; });
+        await page.controller.ensureStartupConnection();
+        expect(page.actions.fetchUiConfig).toHaveBeenCalledOnce();
+        expect(page.actions.showConnectionDialog).toHaveBeenCalledWith('hosted_connection_failed_offline', expect.objectContaining({ allowCancel: true, dismissible: false }));
+        expect(page.saveServerSettings).not.toHaveBeenCalled();
+    });
+
+    it('enters temporary offline mode after the user selects it', async () => {
+        const page = setup({ state: { connectionMode: 'relay', hostedReachable: false, offlineModels: { asr: true } } });
+        page.actions.showConnectionDialog = vi.fn(async () => false);
+        page.actions.enterOfflineMode = vi.fn(async () => ({ ok: true }));
+        await page.controller.ensureStartupConnection();
+        expect(page.actions.enterOfflineMode).toHaveBeenCalledOnce();
+        expect(page.saveServerSettings).not.toHaveBeenCalled();
+    });
+
+    it('offers only retry when ASR is missing', async () => {
+        const page = setup({ state: { connectionMode: 'relay', hostedReachable: false, offlineModels: { asr: false } } });
+        page.actions.showConnectionDialog = vi.fn(async () => true);
+        page.actions.fetchUiConfig = vi.fn(async () => { page.state.hostedReachable = true; });
+        await page.controller.ensureStartupConnection();
+        expect(page.actions.showConnectionDialog).toHaveBeenCalledWith('hosted_connection_failed', expect.objectContaining({ allowCancel: false }));
+    });
     it.each([
         ['first launch', {}, true],
         ['explicit direct', { server: { mode: 'direct' } }, false],

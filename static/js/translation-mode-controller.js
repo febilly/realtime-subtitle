@@ -2,12 +2,13 @@
     'use strict';
 
     const LLM_REFINE_MODES = Object.freeze(['off', 'refine', 'translate']);
-    const TRANSLATION_UI_MODES = Object.freeze(['fast', 'accurate', 'hybrid']);
+    const TRANSLATION_UI_MODES = Object.freeze(['fast', 'accurate', 'hybrid', 'off']);
     const DEFAULT_TRANSLATION_UI_MODE = 'hybrid';
     const TRANSLATION_UI_MODE_TO_LLM = Object.freeze({
         fast: 'off',
         accurate: 'translate',
         hybrid: 'refine',
+        off: 'off',
     });
     const TRANSLATION_UI_MODE_STORAGE_KEY = 'translationUiMode';
 
@@ -84,6 +85,7 @@
         }
 
         function persistTranslationUiMode(mode) {
+            if (getRuntimeState().offlineMode) return;
             try {
                 storage.setItem(TRANSLATION_UI_MODE_STORAGE_KEY, mode);
             } catch (error) {
@@ -129,15 +131,16 @@
             translationUiMode = normalized;
             session().noteHybridBoundary(normalized, previous);
             persistTranslationUiMode(normalized);
-            applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[normalized], { persist: true });
+            applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[normalized], { persist: !getRuntimeState().offlineMode });
             updateTranslationModeHint();
+            if (typeof actions.updateLanguageControl === 'function') actions.updateLanguageControl();
             if (setOptions.silent) return true;
 
             try {
                 const response = await fetchImpl('/translation-mode', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mode: normalized }),
+                    body: JSON.stringify({ mode: normalized, ...(setOptions.provider ? { provider: setOptions.provider } : {}) }),
                 });
                 if (!response.ok) {
                     throw new Error(`translation-mode returned ${response.status}`);
@@ -152,8 +155,9 @@
                 translationUiMode = previous;
                 session().noteHybridBoundary(previous, normalized);
                 persistTranslationUiMode(previous);
-                applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[previous], { persist: true });
+                applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[previous], { persist: !getRuntimeState().offlineMode });
                 renderTranslationModePicker();
+                if (typeof actions.updateLanguageControl === 'function') actions.updateLanguageControl();
                 return false;
             }
         }
@@ -164,9 +168,14 @@
                 forceUnavailable();
             }
 
-            translationUiMode = normalizeTranslationUiMode(
-                settingsStore.readTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE,
-            );
+            const local = data.provider === 'local';
+            const waitingForHosted = !data.offline_mode && data.hosted_reachable === false
+                && getRuntimeState().connectionMode !== 'direct';
+            translationUiMode = normalizeTranslationUiMode(data.offline_mode
+                ? data.translation_ui_mode
+                : (settingsStore.readTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE));
+            if (!local && translationUiMode === 'off') translationUiMode = 'fast';
+            if (local && !llmRefineAvailable && !waitingForHosted && !['fast', 'off'].includes(translationUiMode)) translationUiMode = 'fast';
             renderTranslationModePicker();
 
             const nextBootId = typeof data.boot_id === 'string' ? data.boot_id : '';
@@ -178,7 +187,7 @@
             }
 
             let syncPromise = null;
-            if (llmRefineAvailable && !translationModeSynced) {
+            if ((llmRefineAvailable || local) && !waitingForHosted && !translationModeSynced) {
                 translationModeSynced = true;
                 syncPromise = setTranslationUiMode(translationUiMode, { restartIfNeeded: true });
             }
@@ -235,7 +244,9 @@
             applyBackendConfig,
             applyLlmRefineMode,
             fetchLlmRefineStatus,
-            getAvailableTranslationModes: () => [...TRANSLATION_UI_MODES],
+            getAvailableTranslationModes: () => getRuntimeState().offlineMode
+                ? (getRuntimeState().offlineTranslationAvailable ? ['fast', 'off'] : ['off'])
+                : [...TRANSLATION_UI_MODES],
             getDebugState,
             getLlmRefineMode: () => llmRefineMode,
             getTranslationUiMode: () => translationUiMode,

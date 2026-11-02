@@ -164,6 +164,9 @@ let llmRefineDiffMode = 'off';
 let pushedOverrideBootId = null;
 let useBundledCjkFont = localStorage.getItem(BUNDLED_CJK_FONT_STORAGE_KEY) === 'true';
 let customFontAvailable = false;
+let offlineMode = false;
+let hostedReachable;
+let offlineModels = {};
 
 const controlPorts = {
     applySpeakerLabelVisibility: () => speakerLabelController.applyVisibility(),
@@ -198,14 +201,26 @@ const settingsPorts = {
     applyBundledCjkFontPreference: (enabled, { persist = false, sync = false } = {}) => (
         settingsRuntime.applyBundledCjkFontPreference(enabled, { persist, sync })
     ),
-    loadServerSettings: () => settingsStore.loadServerSettings(),
-    saveServerSettings: (settings) => { settingsStore.saveServerSettings(settings); },
-    getConnectionMode: () => SettingsPolicy.resolveConnectionMode({
+    loadServerSettings: () => offlineMode
+        ? { ...settingsStore.loadServerSettings(), mode: 'direct', modeChosen: true, token: '' }
+        : settingsStore.loadServerSettings(),
+    saveServerSettings: (settings) => { if (!offlineMode) settingsStore.saveServerSettings(settings); },
+    getConnectionMode: () => offlineMode ? 'direct' : SettingsPolicy.resolveConnectionMode({
         relayAvailable,
         serverSettings: settingsStore.loadServerSettings(),
     }),
-    loadProviderSettings: () => settingsStore.loadProviderSettings(),
-    saveProviderSettings: (settings) => { settingsStore.saveProviderSettings(settings); },
+    loadProviderSettings: () => {
+        const saved = settingsStore.loadProviderSettings();
+        return offlineMode ? { ...saved, providerOverride: 'local', localConfig: { ...saved.localConfig, backend: 'local' } } : saved;
+    },
+    saveProviderSettings: (settings) => {
+        if (offlineMode) {
+            const saved = settingsStore.loadProviderSettings();
+            settings = { ...settings, providerOverride: saved.providerOverride,
+                localConfig: { ...settings.localConfig, backend: saved.localConfig && saved.localConfig.backend } };
+        }
+        settingsStore.saveProviderSettings(settings);
+    },
     buildCustomSelect: (options, config = {}) => settingsUi.buildCustomSelect(options, config),
     buildToggleSwitch: (config = {}) => settingsUi.buildToggleSwitch(config),
     renderMicrophoneDevicePicker: () => settingsRuntime.renderMicrophoneDevicePicker(),
@@ -222,7 +237,7 @@ const settingsPorts = {
     setModeRadio: (mode) => { settingsPanelController.setMode(mode); },
     applyModeSectionsVisibility: (mode) => { settingsPanelController.applyModeVisibility(mode); },
     pushSetup: (provider, apiKey, options = {}) => settingsSetup.push(provider, apiKey, options),
-    syncProviderFromStorage: async (options) => { await settingsSetup.syncFromStorage(options); },
+    syncProviderFromStorage: async (options) => { if (!offlineMode) await settingsSetup.syncFromStorage(options); },
     fetchUiConfig: () => uiConfigController.fetch(),
     fetchLlmRefineStatus: () => translationModeController.fetchLlmRefineStatus(),
 };
@@ -438,7 +453,11 @@ const translationModeController = TranslationModeController.create({
     settingsStore,
     console,
     getSession: () => subtitleSession,
-    getRuntimeState: () => ({ lockManualControls }),
+    getRuntimeState: () => ({
+        lockManualControls, offlineMode,
+        offlineTranslationAvailable: !!offlineModels.translation,
+        connectionMode: settingsPorts.getConnectionMode(),
+    }),
     actions: {
         enforceTranslateSegmentMode: segmentModeController.enforceTranslateMode,
         updateSegmentModeButton: segmentModeController.updateButton,
@@ -446,6 +465,7 @@ const translationModeController = TranslationModeController.create({
         updateTranslationModeHint: settingsPorts.updateTranslationModeHint,
         renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
         restartRecognition: controlPorts.restartRecognition,
+        updateLanguageControl: () => languageUi.updateAvailability(),
     },
 });
 const subtitleSession = SubtitleSession.create({
@@ -484,6 +504,7 @@ const languageUi = LanguageUI.create({
         lockManualControls,
         setupRequired,
         backendBootId,
+        translationDisabled: translationProvider === 'local' && translationModeController.getTranslationUiMode() === 'off',
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'currentTranslationTargetLang')) {
@@ -842,6 +863,7 @@ const appShellController = AppShellController.create({
     },
     actions: {
         updatePauseButtonUi: runtimeControls.updatePauseButtonUi,
+        updateLanguageControl: () => languageUi.updateAvailability(),
         updateOverlayButton: runtimeControls.updateOverlayButton,
         updateVrOverlayButton: runtimeControls.updateVrOverlayButton,
         updateAutoRestartButton: recognitionControls.updateAutoRestartButton,
@@ -1122,6 +1144,7 @@ const settingsSetup = SettingsSetup.create({
     fetch,
     t,
     getState: () => ({
+        offlineMode,
         translationProvider,
         backendBootId,
         setupRequired,
@@ -1139,6 +1162,8 @@ const settingsSetup = SettingsSetup.create({
         sleepOnSilenceEnabled,
     }),
     updateState: (patch) => {
+        if (Object.prototype.hasOwnProperty.call(patch, 'hostedReachable')) hostedReachable = patch.hostedReachable;
+        if (Object.prototype.hasOwnProperty.call(patch, 'offlineModels')) offlineModels = patch.offlineModels;
         if (Object.prototype.hasOwnProperty.call(patch, 'translationProvider')) translationProvider = patch.translationProvider;
         if (Object.prototype.hasOwnProperty.call(patch, 'backendBootId')) backendBootId = patch.backendBootId;
         if (Object.prototype.hasOwnProperty.call(patch, 'setupRequired')) setupRequired = patch.setupRequired;
@@ -1148,6 +1173,7 @@ const settingsSetup = SettingsSetup.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'uiTranslationMode')) uiTranslationMode = patch.uiTranslationMode;
     },
     actions: {
+        ensureStartupConnection: () => hostedMode.ensureStartupConnection(),
         sessionCostReset: hostedPorts.sessionCostReset,
         showToast,
         setUiTranslationMode,
@@ -1193,6 +1219,9 @@ const themeController = ThemeController.create({
 themeController.init();
 
 function updateUiConfigState(patch) {
+    if (Object.prototype.hasOwnProperty.call(patch, 'offlineMode')) offlineMode = patch.offlineMode;
+    if (Object.prototype.hasOwnProperty.call(patch, 'hostedReachable')) hostedReachable = patch.hostedReachable;
+    if (Object.prototype.hasOwnProperty.call(patch, 'offlineModels')) offlineModels = patch.offlineModels;
     for (const [key, value] of Object.entries(patch || {})) {
         switch (key) {
             case 'lockManualControls': lockManualControls = value; break;
@@ -1252,6 +1281,7 @@ const uiConfigController = UiConfigController.create({
     }),
     updateState: updateUiConfigState,
     actions: {
+        syncPauseState: (paused) => runtimeControls.syncPauseState(paused),
         sessionCostReset: hostedPorts.sessionCostReset,
         setLanguageListFromCodes: languageUi.setLanguageCodes,
         resetFirstRedeemBonus: (value) => hostedBalance.resetFirstRedeemBonus(value),
@@ -1267,7 +1297,7 @@ const uiConfigController = UiConfigController.create({
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,
         enforceTranslateSegmentMode: controlPorts.enforceTranslateSegmentMode,
-        syncTranslationModeWithBackend: () => languageUi.syncBackendMode(),
+        syncTranslationModeWithBackend: () => { languageUi.updateAvailability(); return languageUi.syncBackendMode(); },
     },
 });
 
@@ -1315,6 +1345,7 @@ const settingsPanelController = SettingsPanel.create({
     saveProviderSettings: settingsPorts.saveProviderSettings,
     freePoolsSummary: hostedPorts.freePoolsSummary,
     getState: () => ({
+        offlineMode,
         lockManualControls,
         relayAvailable,
         connectionMode: settingsPorts.getConnectionMode(),
@@ -1405,7 +1436,10 @@ async function confirmLocalProviderSwitch({ previousProvider } = {}) {
             if (picker) picker.value = 'accurate';
             settingsRuntime.updateTranslationModeHint();
         } else {
-            setUiTranslationMode('none');
+            settingsRuntime.setDraft({ translationUiMode: 'off' });
+            const picker = settingsRuntime.getPickers().translationMode;
+            if (picker) picker.value = 'off';
+            settingsRuntime.updateTranslationModeHint();
         }
     }
     return result;
@@ -1547,12 +1581,25 @@ const hostedMode = HostedMode.create({
     loadServerSettings: settingsPorts.loadServerSettings,
     saveServerSettings: settingsPorts.saveServerSettings,
     getState: () => ({
+        offlineMode,
+        hostedReachable,
+        offlineModels,
         lockManualControls,
         relayAvailable,
         relayServerUrl,
         connectionMode: settingsPorts.getConnectionMode(),
     }),
     actions: {
+        fetchUiConfig: settingsPorts.fetchUiConfig,
+        showConnectionDialog: confirmController.show,
+        enterOfflineMode: async () => {
+            const result = await settingsSetup.push('local', null, {
+                silent: true, mode: 'direct', startPaused: true, offlineMode: true,
+                localConfig: { ...settingsStore.loadProviderSettings().localConfig, backend: 'local' },
+            });
+            if (result.ok) settingsPanelController.populate();
+            return result;
+        },
         openLogin: hostedPorts.openLogin,
         hideLogin: hostedPorts.hideLogin,
         applyLoginI18n: hostedPorts.applyLoginI18n,
@@ -1711,6 +1758,7 @@ hostedAccount = HostedAccount.create({
 hostedAccount.init();
 
 const hostedController = Hosted.createController({
+    ensureStartupConnection: () => hostedMode.ensureStartupConnection(),
     prepareTimedNotifications: () => timedNotifications.prepare(),
     preopenHostedLoginIfNeeded: hostedPorts.preopenHostedLoginIfNeeded,
     fetchUiConfig: settingsPorts.fetchUiConfig,

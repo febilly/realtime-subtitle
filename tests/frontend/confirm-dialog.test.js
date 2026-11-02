@@ -25,6 +25,20 @@ function setup({ elements = true } = {}) {
 }
 
 describe('ConfirmDialog presentation', () => {
+    it('keeps a retry-only connection dialog open on Escape and backdrop clicks', async () => {
+        const page = setup();
+        page.controller.init();
+        const result = page.controller.show('Retry connection', { allowCancel: false, dismissible: false });
+        expect(page.document.getElementById('cancel').hidden).toBe(true);
+        page.document.dispatchEvent(new page.dom.window.KeyboardEvent('keydown', { key: 'Escape' }));
+        page.document.getElementById('overlay').click();
+        expect(page.document.getElementById('dialog').hidden).toBe(false);
+        page.document.getElementById('ok').click();
+        expect(await result).toBe(true);
+        void page.controller.show('Normal confirmation');
+        expect(page.document.getElementById('cancel').hidden).toBe(false);
+        page.controller.close(false);
+    });
     it('shows default labels, normal style, and focuses cancel', () => {
         const page = setup();
         page.controller.init();

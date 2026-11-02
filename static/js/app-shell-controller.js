@@ -29,6 +29,7 @@
             if (elements.translationLangButton) {
                 elements.translationLangButton.title = t('translation_language');
             }
+            call('updateLanguageControl');
             if (elements.pauseButton) call('updatePauseButtonUi');
             if (elements.overlayButton) call('updateOverlayButton');
             if (elements.vrOverlayButton) call('updateVrOverlayButton');

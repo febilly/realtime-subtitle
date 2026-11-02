@@ -41,6 +41,8 @@
                     sleepOnSilence: state().sleepOnSilenceEnabled,
                 });
                 if (provider === 'local' && pushOptions.startPaused) body.start_paused = true;
+                if (pushOptions.offlineMode) body.offline_mode = true;
+                if (pushOptions.startup) body.startup = true;
                 const response = await fetchRef('/setup', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -115,10 +117,17 @@
             if (current.lockManualControls) return null;
             const plan = policy.buildProviderSyncPlan(current);
             if (!plan) return null;
-            return push(plan.provider, plan.apiKey, {
+            const result = await push(plan.provider, plan.apiKey, {
                 ...plan.options,
+                startup,
                 startPaused: startup && plan.provider === 'local',
             });
+            if (startup && result.data && result.data.hosted_unreachable) {
+                updateState({ hostedReachable: false, offlineModels: result.data.offline_models || {} });
+                await callAction('ensureStartupConnection');
+                if (!state().offlineMode) return syncFromStorage({ startup: true });
+            }
+            return result;
         }
 
         return {

@@ -73,7 +73,7 @@ describe('TranslationModeController normalization and dependencies', () => {
         expect(TranslationModeController.normalizeTranslationUiMode('accurate')).toBe('accurate');
         expect(TranslationModeController.normalizeTranslationUiMode('ACCURATE')).toBe('hybrid');
         expect(TranslationModeController.TRANSLATION_UI_MODE_TO_LLM).toEqual({
-            fast: 'off', accurate: 'translate', hybrid: 'refine',
+            fast: 'off', accurate: 'translate', hybrid: 'refine', off: 'off',
         });
     });
 
@@ -169,6 +169,27 @@ describe('TranslationModeController local mode transitions', () => {
 });
 
 describe('TranslationModeController backend synchronization', () => {
+    it('keeps the saved local LLM mode while hosted startup is waiting for the offline choice', async () => {
+        const page = createHarness({ storedUiMode: 'accurate', storedLlmMode: 'translate', runtime: { connectionMode: 'relay' } });
+        await page.controller.applyBackendConfig({ provider: 'local', hosted_reachable: false, llm_refine_available: false });
+        expect(page.stored.uiMode).toBe('accurate');
+        expect(page.stored.llmMode).toBe('translate');
+        expect(page.fetch).not.toHaveBeenCalled();
+        expect(page.storage.setItem).not.toHaveBeenCalled();
+    });
+    it('uses the process offline mode without persisting translation preferences', async () => {
+        const page = createHarness({ storedUiMode: 'accurate', storedLlmMode: 'translate', runtime: { offlineMode: true, offlineTranslationAvailable: true } });
+        await page.controller.applyBackendConfig({ provider: 'local', offline_mode: true, translation_ui_mode: 'off', llm_refine_available: false });
+        expect(page.controller.getTranslationUiMode()).toBe('off');
+        expect(page.controller.getAvailableTranslationModes()).toEqual(['fast', 'off']);
+        await page.controller.setTranslationUiMode('fast');
+        expect(page.stored.uiMode).toBe('accurate');
+        expect(page.stored.llmMode).toBe('translate');
+        expect(page.storage.setItem).not.toHaveBeenCalled();
+        expect(page.settingsStore.saveLlmRefineMode).not.toHaveBeenCalled();
+        page.runtime.offlineTranslationAvailable = false;
+        expect(page.controller.getAvailableTranslationModes()).toEqual(['off']);
+    });
     it('disables runtime LLM state without overwriting a saved preference', () => {
         const page = createHarness({ storedUiMode: 'accurate', storedLlmMode: 'translate' });
 

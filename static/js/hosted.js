@@ -258,6 +258,7 @@
         async function startup() {
             call('preopenHostedLoginIfNeeded');
             await call('fetchUiConfig');
+            await call('ensureStartupConnection');
             await call('prepareTimedNotifications');
             call('refreshPreopenedHostedLogin');
             await call('maybeRunFirstLaunchFlow');

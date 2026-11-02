@@ -45,6 +45,20 @@ function setup(overrides = {}) {
 }
 
 describe('LanguageUI', () => {
+    it('disables the target picker and shows the settings hint while translation is off', () => {
+        const page = setup({ translationDisabled: true });
+        page.controller.init();
+        page.controller.updateAvailability();
+        const button = page.dom.window.document.getElementById('languages');
+        expect(button.getAttribute('aria-disabled')).toBe('true');
+        expect(button.title).toBe('translation_disabled_hint');
+        expect(page.controller.show()).toBe(false);
+        page.state.translationDisabled = false;
+        page.controller.updateAvailability();
+        expect(button.classList.contains('translation-disabled')).toBe(false);
+        expect(page.controller.show()).toBe(true);
+        page.controller.destroy();
+    });
     it('coerces supported language codes and seeds favorites', () => {
         const { dom, controller } = setup();
         expect(controller.coerceSupportedLanguageCode('JA', 'en')).toBe('ja');

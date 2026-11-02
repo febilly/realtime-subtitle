@@ -489,6 +489,7 @@
 
         function show() {
             if (!button) return false;
+            if (getState().translationDisabled) return false;
             if (popoverOpen) return true;
             const element = ensurePopover();
             draft = createDraft();
@@ -538,6 +539,15 @@
             return true;
         }
 
+        function updateAvailability() {
+            if (!button) return;
+            const disabled = !!getState().translationDisabled;
+            button.setAttribute('aria-disabled', String(disabled));
+            button.classList.toggle('translation-disabled', disabled);
+            button.title = t(disabled ? 'translation_disabled_hint' : 'translation_language');
+            if (disabled) hide();
+        }
+
         function invalidate() {
             hide();
             closeSelectMenu();
@@ -585,6 +595,7 @@
             setDraft,
             applyDraft,
             syncBackendMode,
+            updateAvailability,
         };
     }
 

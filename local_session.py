@@ -56,6 +56,7 @@ class LocalInferenceSession(SonioxSession):
         # translates with the LLM only (_suppress_soniox_translation).
         self._llm_refine_mode = "off"
         self._suppress_soniox_translation = False
+        self._translation_disabled = False
         self._segment_mode = "punctuation"
         self._mt_lock = threading.Lock()
         self._mt_generation = 0
@@ -65,7 +66,7 @@ class LocalInferenceSession(SonioxSession):
 
     def _machine_translation_wanted(self) -> bool:
         mode = str(self.translation or "one_way").strip().lower()
-        return mode != "none" and not self._suppress_soniox_translation
+        return mode != "none" and not self._translation_disabled and not self._suppress_soniox_translation
 
     def set_translation_target_lang(self, lang: str) -> tuple[bool, str]:
         normalized = config.canonicalize_target_lang(lang, "local")
@@ -102,10 +103,16 @@ class LocalInferenceSession(SonioxSession):
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
         # Same mapping as soniox; the local switch never needs a restart because
         # Hy-MT2 is loaded or released in place below.
-        ok, normalized, _needs_restart = super().set_translation_mode(mode)
+        disabled = str(mode or "").strip().lower() == "off"
+        ok, normalized, _needs_restart = super().set_translation_mode("fast" if disabled else mode)
         if ok:
+            self._translation_disabled = disabled
+            self._suppress_soniox_translation = disabled or self._suppress_soniox_translation
             self._apply_machine_translation()
-        return ok, normalized, False
+        return ok, "off" if ok and disabled else normalized, False
+
+    def get_translation_mode(self) -> str:
+        return "off" if self._translation_disabled else super().get_translation_mode()
 
     def _apply_machine_translation(self) -> None:
         """Load or release Hy-MT2 to match the current mode while running.
@@ -179,6 +186,8 @@ class LocalInferenceSession(SonioxSession):
         link.send(text)
 
     def _on_hosted_llm_disabled(self, reason: str) -> None:
+        if self._translation_disabled:
+            return
         # Falling back to 快速 means Hy-MT2 again; it loads in place, so the
         # UI must not be told to restart (that would reload the ASR model).
         self._suppress_soniox_translation = False
@@ -239,7 +248,7 @@ class LocalInferenceSession(SonioxSession):
         mode = str(self.translation or "one_way").strip().lower()
         pipeline.update(
             text, is_final, source_lang, target_lang,
-            translation_enabled=mode != "none",
+            translation_enabled=mode != "none" and not self._translation_disabled,
             semantic_suffix=(raw or {}).get("semantic_suffix_text") if is_final else None,
         )
 

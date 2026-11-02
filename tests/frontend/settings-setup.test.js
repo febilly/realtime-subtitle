@@ -229,3 +229,16 @@ it('keeps explicit local settings activation immediate', async () => {
     await env.controller.push('local', null, { mode: 'direct' });
     expect(JSON.parse(env.fetch.mock.calls[0][1].body)).not.toHaveProperty('start_paused');
 });
+
+it('opens the connection fallback when hosted startup validation is unreachable', async () => {
+    const env = setup({ state: {
+        connectionMode: 'relay', serverSettings: { token: 'saved-token' },
+    }, fetch: vi.fn().mockResolvedValue(response({
+        hosted_unreachable: true, offline_models: { asr: true, translation: false },
+    }, { ok: false, status: 503 })) });
+    env.actions.ensureStartupConnection = vi.fn(async () => { env.state.offlineMode = true; });
+    await env.controller.syncFromStorage({ startup: true });
+    expect(env.actions.ensureStartupConnection).toHaveBeenCalledOnce();
+    expect(env.state).toMatchObject({ hostedReachable: false, offlineModels: { asr: true, translation: false } });
+    expect(env.fetch).toHaveBeenCalledOnce();
+});

@@ -50,7 +50,12 @@
         function apply(data = {}) {
             const previous = { ...state() };
             const lockManualControls = !!data.lock_manual_controls;
-            updateState({ lockManualControls });
+            updateState({
+                lockManualControls,
+                offlineMode: !!data.offline_mode,
+                hostedReachable: data.hosted_reachable,
+                offlineModels: data.offline_models || {},
+            });
             translationMode.applyBackendConfig(data, {
                 currentBootId: previous.backendBootId,
             });
@@ -79,6 +84,9 @@
                 providerPatch.translationProvider = translationProvider;
             }
             updateState(providerPatch);
+            if (typeof data.recognition_paused === 'boolean') {
+                call('syncPauseState', data.recognition_paused);
+            }
             if (
                 Object.prototype.hasOwnProperty.call(providerPatch, 'translationProvider')
                 && translationProvider !== previous.translationProvider
@@ -139,6 +147,7 @@
             call('updateAccountSection');
 
             const translationPatch = {};
+            if (data.offline_mode) translationPatch.uiTranslationMode = data.translation_mode || 'one_way';
             if (typeof data.translation_mode === 'string' && data.translation_mode.trim()) {
                 translationPatch.backendTranslationMode = data.translation_mode.trim().toLowerCase();
             }
@@ -183,6 +192,7 @@
             call('applyOscSensitiveFilterNoticeConfig', data);
             call('applyInterruptRepairConfig', data);
             call('renderRuntimeSettingsPickers');
+            call('renderTranslationModePicker');
             if (typeof data.enable_chroma_theme === 'boolean') {
                 theme.setChromaEnabled(data.enable_chroma_theme);
             }

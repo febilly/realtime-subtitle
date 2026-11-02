@@ -802,6 +802,8 @@ def set_sleep_on_silence_enabled(enabled: bool) -> bool:
 # the environment (.env) and is never editable from the UI.
 SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
+# Test the hosted startup retry/offline flow without changing the server URL.
+SIMULATE_HOSTED_OFFLINE = _env_bool("SIMULATE_HOSTED_OFFLINE", False)
 CLIENT_VERSION = "4.13.0"
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
@@ -1429,6 +1431,8 @@ def relay_connect_info(
     """
     if not SUBTITLE_SERVER_URL:
         raise RuntimeError("SUBTITLE_SERVER_URL is required for hosted relay mode")
+    if SIMULATE_HOSTED_OFFLINE:
+        raise RuntimeError("Hosted server connection unavailable (SIMULATE_HOSTED_OFFLINE)")
 
     token = str(RELAY_TOKEN or "").strip()
     if not token:

@@ -83,6 +83,7 @@
         }
 
         function getDesiredProvider() {
+            if (state().offlineMode) return 'local';
             const settings = loadProviderSettings();
             return settings.providerOverride || state().translationProvider || 'soniox';
         }
@@ -92,6 +93,16 @@
             elements.form.querySelectorAll('input[name="provider"]').forEach((radio) => {
                 radio.checked = radio.value === provider;
             });
+            updateProviderAvailability();
+        }
+
+        function updateProviderAvailability() {
+            const offline = !!state().offlineMode;
+            if (elements.form) elements.form.querySelectorAll('input[name="provider"]').forEach((radio) => {
+                radio.disabled = offline;
+            });
+            const fieldset = documentRef && documentRef.getElementById('providerFieldset');
+            if (fieldset) fieldset.title = offline ? t('offline_api_locked_hint') : '';
         }
 
         function getSelectedProvider() {
@@ -268,6 +279,7 @@
         }
 
         function getLocalBackend() {
+            if (state().offlineMode) return 'local';
             return normalizeLocalBackend(
                 elements.localInferenceBackend && elements.localInferenceBackend.value,
             );
@@ -510,10 +522,11 @@
 
         function applyModeVisibility(mode) {
             const current = state();
+            if (elements.localInferenceBackend) elements.localInferenceBackend.disabled = !!current.offlineMode;
             const local = getSelectedProvider() === 'local';
             // Local recognition runs in both modes; hosted mode adds the hosted
             // LLM and the account, so the switch stays visible for it too.
-            if (elements.modeSection) elements.modeSection.hidden = !current.relayAvailable;
+            if (elements.modeSection) elements.modeSection.hidden = !current.relayAvailable || !!current.offlineMode;
             const relay = mode === 'relay';
             if (elements.accountSection) elements.accountSection.hidden = !relay;
             if (elements.apiKeySection) elements.apiKeySection.hidden = relay || local;
@@ -577,6 +590,7 @@
             setText('providerSonioxLabel', 'provider_soniox');
             setText('providerGeminiLabel', 'provider_gemini');
             setText('providerLocalLabel', 'provider_local');
+            updateProviderAvailability();
             setText('localInferenceLabel', 'local_models');
             setText('localInferenceBackendLabel', 'local_inference_backend');
             setText('localInferenceBackendLocalOption', 'local_inference_local');
@@ -679,6 +693,7 @@
         }
 
         async function handleProviderChange() {
+            if (state().offlineMode) { setProvider('local'); return; }
             const provider = getSelectedProvider();
             const previous = lastProvider;
             const seq = ++providerChangeSeq;
