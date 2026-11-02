@@ -72,6 +72,26 @@ describe('CustomTooltip title hooks', () => {
 });
 
 describe('CustomTooltip interactions', () => {
+    it.each([50, 630])('places wide-control hints above or below within a narrow viewport (top %i)', (top) => {
+        const page = setup();
+        Object.defineProperty(page.dom.window, 'innerWidth', { value: 380 });
+        Object.defineProperty(page.dom.window, 'innerHeight', { value: 700 });
+        page.target.getBoundingClientRect.mockReturnValue({ left: 25, right: 355, top, bottom: top + 40, width: 330, height: 40 });
+        page.controller.init();
+        page.target.dispatchEvent(new page.dom.window.MouseEvent('mouseover', { bubbles: true }));
+        const tooltip = page.document.querySelector('.custom-tooltip');
+        Object.defineProperty(tooltip, 'offsetWidth', { value: 350 });
+        Object.defineProperty(tooltip, 'offsetHeight', { value: 64 });
+        page.target.title = '离线模式下无法更换API。重启软件以退出离线模式';
+        expect(tooltip.style.maxWidth).toBe('350px');
+        expect(Number.parseFloat(tooltip.style.left)).toBe(15);
+        const tooltipTop = Number.parseFloat(tooltip.style.top);
+        expect(tooltipTop).toBeGreaterThanOrEqual(8);
+        expect(tooltipTop + 64).toBeLessThanOrEqual(692);
+        expect(tooltipTop >= top + 40 || tooltipTop + 64 <= top).toBe(true);
+        page.controller.destroy();
+        page.dom.window.close();
+    });
     it('hides after five seconds without reopening until the pointer leaves and returns', () => {
         vi.useFakeTimers();
         const page = setup({ setTimeout, clearTimeout });

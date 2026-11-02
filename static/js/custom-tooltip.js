@@ -45,13 +45,16 @@
             const rightSpace = Math.max(0, windowRef.innerWidth - rect.right - margin - gap);
             const placeLeft = leftSpace >= rightSpace;
             const availableWidth = placeLeft ? leftSpace : rightSpace;
-            tooltipElement.style.maxWidth = `${Math.max(
-                1,
-                Math.min(maxTooltipWidth, availableWidth),
+            const viewportWidth = Math.max(1, windowRef.innerWidth - 2 * margin);
+            const placeBeside = availableWidth >= Math.min(220, viewportWidth);
+            tooltipElement.style.maxWidth = `${Math.min(
+                maxTooltipWidth, placeBeside ? availableWidth : viewportWidth,
             )}px`;
 
             let left;
-            if (placeLeft) {
+            if (!placeBeside) {
+                left = rect.left + (rect.width - tooltipElement.offsetWidth) / 2;
+            } else if (placeLeft) {
                 left = rect.left - tooltipElement.offsetWidth - gap;
                 if (left < margin) left = margin;
             } else {
@@ -60,13 +63,17 @@
                     left = windowRef.innerWidth - tooltipElement.offsetWidth - margin;
                 }
             }
+            left = Math.max(margin, Math.min(left, windowRef.innerWidth - tooltipElement.offsetWidth - margin));
 
             const tooltipHeight = tooltipElement.offsetHeight;
             let top = rect.top + (rect.height - tooltipHeight) / 2;
-            if (top < margin) top = margin;
-            if (top + tooltipHeight > windowRef.innerHeight - margin) {
-                top = windowRef.innerHeight - tooltipHeight - margin;
+            if (!placeBeside) {
+                const below = windowRef.innerHeight - rect.bottom - gap - margin;
+                const above = rect.top - gap - margin;
+                top = below >= tooltipHeight || below >= above
+                    ? rect.bottom + gap : rect.top - tooltipHeight - gap;
             }
+            top = Math.max(margin, Math.min(top, windowRef.innerHeight - tooltipHeight - margin));
             tooltipElement.style.left = `${left}px`;
             tooltipElement.style.top = `${top}px`;
         }
