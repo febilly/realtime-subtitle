@@ -410,6 +410,8 @@ describe('SettingsPanel pricing and lifecycle', () => {
             .toBe('provider_relay_desc_free (日 100)');
         expect(page.controller.getProviderDescription('gemini'))
             .toBe('provider_relay_desc|price=R0.25|minutePrice=R15');
+        // Local recognition runs on this computer, not through the relay.
+        expect(page.controller.getProviderDescription('local')).toBe('provider_local_desc');
         page.dom.window.close();
     });
 

@@ -124,7 +124,8 @@
         }
 
         function getProviderDescription(provider) {
-            if (getMode() === 'relay') {
+            // Local recognition runs on this computer even in hosted mode.
+            if (getMode() === 'relay' && provider !== 'local') {
                 const info = relayPricing && relayPricing[provider];
                 if (!info) return t('provider_relay_desc_loading');
                 const summary = freePoolsSummary(info.free_pools);
