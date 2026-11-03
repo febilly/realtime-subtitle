@@ -657,14 +657,6 @@ class OSCManager:
         except Exception as e:
             logger.error(f"[OSC] Failed to send OSC message: {e}")
     
-    async def set_typing(self, typing: bool):
-        """兼容旧调用方式的异步接口"""
-        if hasattr(asyncio, "to_thread"):
-            await asyncio.to_thread(self.set_typing_sync, typing)
-        else:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self.set_typing_sync, typing)
-
     def set_typing_sync(self, typing: bool):
         """
         设置 VRChat 聊天框的 typing 状态
@@ -679,14 +671,6 @@ class OSCManager:
         except Exception as e:
             logger.error(f"[OSC] Failed to set typing state: {e}")
     
-    async def send_text(self, text: str, ongoing: bool):
-        """兼容旧调用方式的异步接口"""
-        if hasattr(asyncio, "to_thread"):
-            await asyncio.to_thread(self.send_text_sync, text, ongoing)
-        else:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self.send_text_sync, text, ongoing)
-
     def send_text_sync(self, text: str, ongoing: bool):
         """发送文本到 VRChat（带冷却，最多保留一个待发消息）"""
         text = self._prepare_outgoing_text_for_osc(text)

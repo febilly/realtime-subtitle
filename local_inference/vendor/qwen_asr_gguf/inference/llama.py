@@ -184,9 +184,9 @@ def _llama_primary_dll_basename() -> str:
 
 
 def _resolve_llama_lib_dir() -> str:
-    """优先 YAKUTAN_QWEN_LLAMA_BIN（如 local_models/llama_vulkan_<tag>），否则为包内 inference/bin。"""
+    """优先 REALTIME_SUBTITLE_LLAMA_BIN（如 local_models/llama_vulkan_<tag>），否则为包内 inference/bin。"""
     default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
-    env = os.environ.get("YAKUTAN_QWEN_LLAMA_BIN", "").strip()
+    env = os.environ.get("REALTIME_SUBTITLE_LLAMA_BIN", "").strip()
 
     def usable(d: str) -> bool:
         if not d or not os.path.isdir(d):

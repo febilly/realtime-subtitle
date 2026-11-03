@@ -1,4 +1,4 @@
 import logging
 
-logger = logging.getLogger('Yakutan.LocalInference.Qwen3')
+logger = logging.getLogger('RealtimeSubtitle.LocalInference.Qwen3')
 

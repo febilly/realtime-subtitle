@@ -1,7 +1,6 @@
 """Streaming local Qwen3-ASR recognizer for RealtimeSubtitle.
 
-This is the Qwen-only form of FunASR's local recognizer.  It keeps the proven
-512-sample Silero VAD path, bounded audio queue, serialized inference, partial
+It keeps the proven 512-sample Silero VAD path, bounded audio queue, serialized inference, partial
 refresh policy and final-result reuse, while exposing a small callback API that
 fits this application's Provider/AudioStreamer lifecycle.
 """

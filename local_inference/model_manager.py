@@ -208,7 +208,7 @@ def warn_if_weights_not_resident(label: str, weights_path):
 
 
 def prepare_qwen_llama_runtime_env() -> None:
-    os.environ["YAKUTAN_QWEN_LLAMA_BIN"] = str(qwen_llama_bin_dir().resolve())
+    os.environ["REALTIME_SUBTITLE_LLAMA_BIN"] = str(qwen_llama_bin_dir().resolve())
     os.environ["GGML_VK_ENABLE_MEMORY_PRIORITY"] = "1"
     os.environ.pop("GGML_VK_ALLOW_SYSMEM_FALLBACK", None)
     # ggml-vulkan puts weights in host-visible VRAM (the ReBAR window) when it

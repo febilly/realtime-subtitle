@@ -267,7 +267,7 @@ class Qwen3ASREngine:
         """整段 prefill + 生成，带草稿推测解码；复读时按 vendor 的做法加温重试。
 
         对应 vendor 的 _decode/_safe_decode。这里不复刻 rollback_num 那套显示队列：
-        yakutan 每次都以 is_last_chunk=True 调用、整段取用文本，队列最终会被全部冲出，
+        这里每次都以 is_last_chunk=True 调用、整段取用文本，队列最终会被全部冲出，
         对结果没有影响。
         """
         import time
