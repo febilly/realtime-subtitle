@@ -413,6 +413,8 @@ def _probe_endpoint(url: str, timeout: float, *, reject_hf_redirect: bool = Fals
     """Fetch one byte: proves both the site and the CDN it redirects to
     (in mainland China often only the latter is blocked)."""
     request = Request(url, headers={"User-Agent": "RealtimeSubtitle", "Range": "bytes=0-0"})
+    host = urlparse(url).netloc
+    started = time.monotonic()
     try:
         if reject_hf_redirect:
             response = build_opener(_RedirectGuard()).open(request, timeout=timeout)
@@ -420,12 +422,16 @@ def _probe_endpoint(url: str, timeout: float, *, reject_hf_redirect: bool = Fals
             response = urlopen(request, timeout=timeout)
         with response:
             response.read(1)
+            final_host = urlparse(response.geturl()).netloc
+        # Warning level: nothing configures logging, so INFO never reaches the console.
+        logger.warning("Download source probe: %s OK in %.1fs (served by %s)",
+                       host, time.monotonic() - started, final_host)
         return True
     except _RedirectedToHF as exc:
-        logger.info("Download source probe: %s redirects to HuggingFace (%s)", url, exc)
+        logger.warning("Download source probe: %s rejected, redirects to HuggingFace (%s)", host, exc)
         return False
     except Exception as exc:
-        logger.info("Download source probe failed %s: %s", url, exc)
+        logger.warning("Download source probe: %s failed after %.1fs: %s", host, time.monotonic() - started, exc)
         return False
 
 
@@ -453,7 +459,7 @@ def _probe_hf_endpoints(repo_id: str, filename: str) -> list[str] | None:
         return future in done and future.exception() is None and bool(future.result())
 
     official_ok, mirror_ok = ok(official), ok(mirror)
-    logger.info("Download source probe: huggingface.co=%s hf-mirror.com=%s", official_ok, mirror_ok)
+    logger.warning("Download source probe: huggingface.co=%s hf-mirror.com=%s", official_ok, mirror_ok)
     if mirror_ok:
         return [HF_ENDPOINT_MIRROR, HF_ENDPOINT_OFFICIAL]
     order = [HF_ENDPOINT_OFFICIAL, HF_ENDPOINT_MIRROR]
