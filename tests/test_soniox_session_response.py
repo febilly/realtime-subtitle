@@ -65,7 +65,6 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.get_llm_api_key = lambda: ""
     config.normalize_language_code = lambda value: (value or "").strip().lower()
     config.OSC_SEND_TEXT_MODE = "smart"
-    config.LLM_REFINE_DEFAULT_ENABLED = False
     config.LLM_REFINE_DEFAULT_MODE = "off"
     config.TARGET_LANG_1 = "en"
     config.TARGET_LANG_2 = "zh"

@@ -116,9 +116,6 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         default=None,
         help='Disable long-silence Soniox stream sleeping',
     )
-    parser.add_argument('--soniox-sleep-idle-seconds', dest='soniox_sleep_idle_seconds', type=float, default=None)
-    parser.add_argument('--soniox-sleep-pre-roll-seconds', dest='soniox_sleep_pre_roll_seconds', type=float, default=None)
-    parser.add_argument('--soniox-sleep-speech-grace-seconds', dest='soniox_sleep_speech_grace_seconds', type=float, default=None)
 
     # --- Gemini-specific options ---
     parser.add_argument('--gemini-temp-key-url', dest='gemini_temp_key_url', default=None)
@@ -139,9 +136,6 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         default=None,
         help='Disable long-silence Gemini stream sleeping',
     )
-    parser.add_argument('--gemini-sleep-idle-seconds', dest='gemini_sleep_idle_seconds', type=float, default=None)
-    parser.add_argument('--gemini-sleep-pre-roll-seconds', dest='gemini_sleep_pre_roll_seconds', type=float, default=None)
-    parser.add_argument('--gemini-sleep-speech-grace-seconds', dest='gemini_sleep_speech_grace_seconds', type=float, default=None)
 
     twitch_group = parser.add_mutually_exclusive_group()
     twitch_group.add_argument('--use-twitch-audio-stream', dest='use_twitch_audio_stream', action='store_true', default=None)
@@ -151,9 +145,11 @@ def parse_cli_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument('--ffmpeg-path', dest='ffmpeg_path', default=None)
 
     refine_toggle_group = parser.add_mutually_exclusive_group()
-    refine_toggle_group.add_argument('--llm-refine', dest='llm_refine_default_enabled', action='store_true', default=None,
+    refine_toggle_group.add_argument('--llm-refine', dest='llm_refine_default_mode', action='store_const', const='refine',
+                                     default=None,
                                      help='Enable LLM refine by default (can be toggled in UI if unlocked)')
-    refine_toggle_group.add_argument('--no-llm-refine', dest='llm_refine_default_enabled', action='store_false', default=None,
+    refine_toggle_group.add_argument('--no-llm-refine', dest='llm_refine_default_mode', action='store_const', const='off',
+                                     default=None,
                                      help='Disable LLM refine by default (can be toggled in UI if unlocked)')
     parser.add_argument(
         '--llm-refine-diff-mode',
@@ -195,24 +191,18 @@ def apply_cli_overrides_to_env(args: argparse.Namespace) -> None:
     _set_env_if_provided('SONIOX_TEMP_KEY_URL', args.soniox_temp_key_url)
     _set_env_if_provided('SONIOX_WEBSOCKET_URL', args.soniox_websocket_url)
     _set_env_bool_if_provided('SONIOX_SLEEP_ON_SILENCE', args.soniox_sleep_on_silence)
-    _set_env_if_provided('SONIOX_SLEEP_IDLE_SECONDS', args.soniox_sleep_idle_seconds)
-    _set_env_if_provided('SONIOX_SLEEP_PRE_ROLL_SECONDS', args.soniox_sleep_pre_roll_seconds)
-    _set_env_if_provided('SONIOX_SLEEP_SPEECH_GRACE_SECONDS', args.soniox_sleep_speech_grace_seconds)
 
     _set_env_if_provided('GEMINI_TEMP_KEY_URL', args.gemini_temp_key_url)
     _set_env_if_provided('GEMINI_WEBSOCKET_URL', args.gemini_websocket_url)
     _set_env_if_provided('GEMINI_MODEL', args.gemini_model)
     _set_env_bool_if_provided('GEMINI_SLEEP_ON_SILENCE', args.gemini_sleep_on_silence)
-    _set_env_if_provided('GEMINI_SLEEP_IDLE_SECONDS', args.gemini_sleep_idle_seconds)
-    _set_env_if_provided('GEMINI_SLEEP_PRE_ROLL_SECONDS', args.gemini_sleep_pre_roll_seconds)
-    _set_env_if_provided('GEMINI_SLEEP_SPEECH_GRACE_SECONDS', args.gemini_sleep_speech_grace_seconds)
 
     _set_env_bool_if_provided('USE_TWITCH_AUDIO_STREAM', args.use_twitch_audio_stream)
     _set_env_if_provided('TWITCH_CHANNEL', args.twitch_channel)
     _set_env_if_provided('TWITCH_STREAM_QUALITY', args.twitch_stream_quality)
     _set_env_if_provided('FFMPEG_PATH', args.ffmpeg_path)
 
-    _set_env_bool_if_provided('LLM_REFINE_DEFAULT_ENABLED', args.llm_refine_default_enabled)
+    _set_env_if_provided('LLM_REFINE_DEFAULT_MODE', args.llm_refine_default_mode)
     _set_env_if_provided('LLM_REFINE_DIFF_MODE', args.llm_refine_diff_mode)
 
 
@@ -749,6 +739,9 @@ def main():
     from config import (
         SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW,
     )
+    # After config has loaded .env, so both sources are checked.
+    from legacy_env import warn_legacy_settings
+    warn_legacy_settings(sys.argv[1:])
     from logger import TranscriptLogger
     from web_server import WebServer
     from ipc_server import IPCServer

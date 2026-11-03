@@ -75,7 +75,7 @@ def test_osc_mode_drives_echo_and_is_not_a_standalone_env(
     assert config.GEMINI_ECHO_TARGET_LANGUAGE is True
 
 
-def test_shared_sleep_tuning_overrides_provider_specific_aliases(
+def test_sleep_tuning_reads_only_the_shared_name(
     monkeypatch, restore_config_module
 ):
     _clear_sleep_env(monkeypatch)
@@ -86,23 +86,19 @@ def test_shared_sleep_tuning_overrides_provider_specific_aliases(
     config = _reload_config(monkeypatch, "smart")
 
     assert config.SLEEP_IDLE_SECONDS == 12
-    assert config.GEMINI_SLEEP_IDLE_SECONDS == 12
-    assert config.SONIOX_SLEEP_IDLE_SECONDS == 12
+    assert not hasattr(config, "GEMINI_SLEEP_IDLE_SECONDS")
 
 
-def test_sleep_tuning_reads_active_provider_legacy_alias(
+def test_old_provider_sleep_name_is_ignored(
     monkeypatch, restore_config_module
 ):
     _clear_sleep_env(monkeypatch)
     monkeypatch.setenv("TRANSLATION_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_SLEEP_IDLE_SECONDS", "44")
-    monkeypatch.setenv("SONIOX_SLEEP_IDLE_SECONDS", "55")
 
     config = _reload_config(monkeypatch, "smart")
 
-    assert config.SLEEP_IDLE_SECONDS == 44
-    assert config.GEMINI_SLEEP_IDLE_SECONDS == 44
-    assert config.SONIOX_SLEEP_IDLE_SECONDS == 44
+    assert config.SLEEP_IDLE_SECONDS == 30
 
 
 def test_runtime_sleep_preference_defaults_on_and_survives_key_type_changes(

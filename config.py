@@ -597,33 +597,6 @@ def set_local_inference_config(
     }
 
 
-def _provider_sleep_env_names(suffix: str) -> tuple[str, str, str]:
-    active_prefix = TRANSLATION_PROVIDER.upper()
-    fallback_prefix = "GEMINI" if active_prefix == "SONIOX" else "SONIOX"
-    return (
-        f"SLEEP_{suffix}",
-        f"{active_prefix}_SLEEP_{suffix}",
-        f"{fallback_prefix}_SLEEP_{suffix}",
-    )
-
-
-def _provider_rollover_env_names(suffix: str) -> tuple[str, str, str]:
-    active_prefix = TRANSLATION_PROVIDER.upper()
-    fallback_prefix = "GEMINI" if active_prefix == "SONIOX" else "SONIOX"
-    return (
-        f"ROLLOVER_{suffix}",
-        f"{active_prefix}_ROLLOVER_{suffix}",
-        f"{fallback_prefix}_ROLLOVER_{suffix}",
-    )
-
-
-def _env_float_any(names: tuple[str, ...], default: float) -> float:
-    for name in names:
-        if os.environ.get(name) is not None:
-            return _env_float(name, default)
-    return default
-
-
 def _env_optional_bool_any(names: tuple[str, ...]) -> bool | None:
     for name in names:
         value = _env_optional_bool(name)
@@ -636,59 +609,38 @@ def _env_optional_bool_any(names: tuple[str, ...]) -> bool | None:
 SUPPORTED_LANGUAGE_CODES = get_supported_language_codes(TRANSLATION_PROVIDER)
 
 # Shared local VAD/silence-sleep tuning. These values feed the same
-# AudioSendRouter for both Soniox and Gemini. Prefer SLEEP_* names; provider
-# specific *_SLEEP_* names remain accepted as compatibility aliases.
-SLEEP_IDLE_SECONDS = max(1.0, _env_float_any(_provider_sleep_env_names("IDLE_SECONDS"), 30.0))
-SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float_any(_provider_sleep_env_names("PRE_ROLL_SECONDS"), 0.45))
+# AudioSendRouter for every provider. Old provider-specific names
+# (SONIOX_SLEEP_*, GEMINI_SLEEP_*, ...) are only reported by legacy_env.py.
+SLEEP_IDLE_SECONDS = max(1.0, _env_float("SLEEP_IDLE_SECONDS", 30.0))
+SLEEP_PRE_ROLL_SECONDS = max(0.0, _env_float("SLEEP_PRE_ROLL_SECONDS", 0.45))
 SLEEP_SPEECH_GRACE_SECONDS = max(
     0.0,
-    _env_float_any(_provider_sleep_env_names("SPEECH_GRACE_SECONDS"), 0.45),
+    _env_float("SLEEP_SPEECH_GRACE_SECONDS", 0.45),
 )
 SLEEP_SPEECH_WINDOW_SECONDS = max(
     SLEEP_SPEECH_GRACE_SECONDS,
-    _env_float_any(_provider_sleep_env_names("SPEECH_WINDOW_SECONDS"), 0.9),
+    _env_float("SLEEP_SPEECH_WINDOW_SECONDS", 0.9),
 )
 SLEEP_WAKE_SPEECH_SECONDS = max(
     SLEEP_SPEECH_GRACE_SECONDS,
-    _env_float_any(_provider_sleep_env_names("WAKE_SPEECH_SECONDS"), 0.65),
+    _env_float("SLEEP_WAKE_SPEECH_SECONDS", 0.65),
 )
 SLEEP_WAKE_SPEECH_WINDOW_SECONDS = max(
     SLEEP_WAKE_SPEECH_SECONDS,
-    _env_float_any(_provider_sleep_env_names("WAKE_SPEECH_WINDOW_SECONDS"), 0.9),
+    _env_float("SLEEP_WAKE_SPEECH_WINDOW_SECONDS", 0.9),
 )
 SLEEP_VAD_THRESHOLD = min(
     1.0,
-    max(0.0, _env_float_any(_provider_sleep_env_names("VAD_THRESHOLD"), 0.5)),
+    max(0.0, _env_float("SLEEP_VAD_THRESHOLD", 0.5)),
 )
 SLEEP_WAKE_VAD_THRESHOLD = min(
     1.0,
-    max(0.0, _env_float_any(_provider_sleep_env_names("WAKE_VAD_THRESHOLD"), 0.6)),
+    max(0.0, _env_float("SLEEP_WAKE_VAD_THRESHOLD", 0.6)),
 )
 ROLLOVER_VAD_THRESHOLD = min(
     1.0,
-    max(0.0, _env_float_any(_provider_rollover_env_names("VAD_THRESHOLD"), 0.8)),
+    max(0.0, _env_float("ROLLOVER_VAD_THRESHOLD", 0.8)),
 )
-
-# Backwards-compatible constant aliases for code/tests that still import the
-# provider-specific names.
-SONIOX_SLEEP_IDLE_SECONDS = SLEEP_IDLE_SECONDS
-SONIOX_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
-SONIOX_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
-SONIOX_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
-SONIOX_SLEEP_WAKE_SPEECH_SECONDS = SLEEP_WAKE_SPEECH_SECONDS
-SONIOX_SLEEP_WAKE_SPEECH_WINDOW_SECONDS = SLEEP_WAKE_SPEECH_WINDOW_SECONDS
-SONIOX_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
-SONIOX_SLEEP_WAKE_VAD_THRESHOLD = SLEEP_WAKE_VAD_THRESHOLD
-SONIOX_ROLLOVER_VAD_THRESHOLD = ROLLOVER_VAD_THRESHOLD
-GEMINI_SLEEP_IDLE_SECONDS = SLEEP_IDLE_SECONDS
-GEMINI_SLEEP_PRE_ROLL_SECONDS = SLEEP_PRE_ROLL_SECONDS
-GEMINI_SLEEP_SPEECH_GRACE_SECONDS = SLEEP_SPEECH_GRACE_SECONDS
-GEMINI_SLEEP_SPEECH_WINDOW_SECONDS = SLEEP_SPEECH_WINDOW_SECONDS
-GEMINI_SLEEP_WAKE_SPEECH_SECONDS = SLEEP_WAKE_SPEECH_SECONDS
-GEMINI_SLEEP_WAKE_SPEECH_WINDOW_SECONDS = SLEEP_WAKE_SPEECH_WINDOW_SECONDS
-GEMINI_SLEEP_VAD_THRESHOLD = SLEEP_VAD_THRESHOLD
-GEMINI_SLEEP_WAKE_VAD_THRESHOLD = SLEEP_WAKE_VAD_THRESHOLD
-GEMINI_ROLLOVER_VAD_THRESHOLD = ROLLOVER_VAD_THRESHOLD
 
 # Soniox API configuration
 SONIOX_WEBSOCKET_URL = _env_str("SONIOX_WEBSOCKET_URL", "wss://stt-rt.soniox.com/transcribe-websocket")
@@ -987,15 +939,12 @@ LLM_BASE_URL = _env_str("LLM_BASE_URL", "")
 LLM_API_KEY = _env_str("LLM_API_KEY", "")
 LLM_MODEL = _env_str("LLM_MODEL", "openai/gpt-oss-120b:google-vertex")
 
-# Default LLM refine switch (startup default; user can toggle unless frontend is locked)
-LLM_REFINE_DEFAULT_ENABLED = _env_bool("LLM_REFINE_DEFAULT_ENABLED", True)
-
 # Default LLM translation mode: off | refine | translate
 # Effective only when browser has no stored history, or when LOCK_MANUAL_CONTROLS is enabled
 _LLM_DEFAULT_MODE_RAW = _env_str("LLM_REFINE_DEFAULT_MODE", "")
 _LLM_DEFAULT_MODE = str(_LLM_DEFAULT_MODE_RAW).strip().lower()
 if _LLM_DEFAULT_MODE not in ("off", "refine", "translate"):
-    _LLM_DEFAULT_MODE = "refine" if LLM_REFINE_DEFAULT_ENABLED else "off"
+    _LLM_DEFAULT_MODE = "refine"
 LLM_REFINE_DEFAULT_MODE = _LLM_DEFAULT_MODE
 
 # Optional suffix appended to the end of the LLM prompt.

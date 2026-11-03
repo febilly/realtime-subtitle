@@ -54,7 +54,6 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config.normalize_language_code = lambda value: (value or "").strip().lower().split("-")[0].split("_")[0]
     config.GEMINI_FULLWIDTH_PUNCT_FIX = True
     config.OSC_SEND_TEXT_MODE = "smart"
-    config.LLM_REFINE_DEFAULT_ENABLED = False
     config.LLM_REFINE_DEFAULT_MODE = "off"
     config.TARGET_LANG_1 = "en"
     config.TARGET_LANG_2 = "zh"

@@ -31,7 +31,6 @@ from config import (
     LLM_BASE_URL,
     LLM_MODEL,
     LLM_REFINE_CONTEXT_MIN_COUNT,
-    LLM_REFINE_DEFAULT_ENABLED,
     LLM_REFINE_DEFAULT_MODE,
     LLM_REQUEST_HEADERS,
     LLM_REQUEST_JSON,
@@ -146,7 +145,7 @@ class RealtimeSessionBase:
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
         default_mode = str(LLM_REFINE_DEFAULT_MODE or "").strip().lower()
         if default_mode not in LLM_REFINE_MODES:
-            default_mode = "refine" if bool(LLM_REFINE_DEFAULT_ENABLED) else "off"
+            default_mode = "refine"
         self._llm_refine_mode = default_mode
         self._osc_send_text_mode = str(OSC_SEND_TEXT_MODE or "smart").strip().lower()
         # 准确 (accurate) mode: the provider runs STT-only and the LLM does the
