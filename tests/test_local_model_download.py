@@ -40,7 +40,6 @@ class FakeResponse:
 @pytest.fixture
 def models_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(model_manager, "MODELS_DIR", tmp_path)
-    monkeypatch.setattr(model_manager, "_legacy_models_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr(model_manager, "_ensure_llama_runtime", lambda progress=None: None)
     monkeypatch.delenv("REALTIME_SUBTITLE_HF_ENDPOINT", raising=False)
     monkeypatch.delenv("HF_ENDPOINT", raising=False)
@@ -367,14 +366,6 @@ def test_legacy_cleanup_removes_old_files_and_keeps_everything_else(models_dir):
     assert not (models_dir / "qwen_llama_vulkan_bin").exists()
     assert (models_dir / "qwen3-asr").is_dir()  # still holds notes.txt
     assert model_manager.get_legacy_files_status()["count"] == 0
-
-
-def test_legacy_cleanup_never_touches_the_yakutan_models_root(models_dir):
-    _make_legacy_files(models_dir / "legacy")
-
-    assert model_manager.get_legacy_files_status()["count"] == 0
-    assert model_manager.remove_legacy_files() == {"removed_bytes": 0, "failed": []}
-    assert (models_dir / "legacy" / "qwen3-asr" / model_manager.LEGACY_QWEN3_ASR_FILES[0]).is_file()
 
 
 def test_legacy_cleanup_reports_a_file_that_is_in_use(models_dir, monkeypatch):

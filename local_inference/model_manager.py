@@ -123,28 +123,9 @@ def apply_cache_env() -> None:
     os.environ.setdefault("HF_HOME", str((MODELS_DIR / "huggingface").resolve()))
 
 
-def _legacy_models_dir() -> Path:
-    configured = os.environ.get("FUNASR_LOCAL_MODELS_DIR", "").strip()
-    if configured:
-        return Path(configured).expanduser()
-    return PROJECT_ROOT.parent.parent / "funasr" / "local_asr_models"
-
-
-def model_roots() -> list[Path]:
-    roots: list[Path] = []
-    for value in (MODELS_DIR, _legacy_models_dir()):
-        resolved = value.resolve()
-        if resolved not in roots:
-            roots.append(resolved)
-    return roots
-
-
 def _find_dir(name: str, ready) -> Path | None:
-    for root in model_roots():
-        candidate = root / name
-        if ready(candidate):
-            return candidate
-    return None
+    candidate = MODELS_DIR.resolve() / name
+    return candidate if ready(candidate) else None
 
 
 def qwen3_asr_variant() -> dict:
@@ -279,7 +260,7 @@ def get_semantic_boundary_model_path(explicit: str | None = None) -> Path | None
             configured = runtime_root / configured
         candidates.append(configured)
     candidates.append(runtime_root / "models" / NEMOTRON_BOUNDARY_DIR_NAME)
-    candidates.extend(root / NEMOTRON_BOUNDARY_DIR_NAME for root in model_roots())
+    candidates.append(MODELS_DIR / NEMOTRON_BOUNDARY_DIR_NAME)
 
     seen: set[Path] = set()
     for candidate in candidates:
@@ -300,21 +281,6 @@ def silero_onnx_path() -> Path:
     bundled = PACKAGE_DIR / "models" / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
     if _silero_ready(bundled):
         return bundled
-    for root in model_roots():
-        candidates = (
-            root / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME,
-            # FunASR keeps downloaded weights in ``local_asr_models`` but its
-            # bundled VAD under ``local_inference/models``.  Deriving this from
-            # an explicit model root also works after PyInstaller extraction,
-            # where PROJECT_ROOT no longer points at the source checkout.
-            root.parent / "local_inference" / "models" / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME,
-        )
-        for path in candidates:
-            if _silero_ready(path):
-                return path
-    legacy_bundle = PROJECT_ROOT.parent.parent / "funasr" / "local_inference" / "models" / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
-    if _silero_ready(legacy_bundle):
-        return legacy_bundle
     return MODELS_DIR / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
 
 
@@ -340,14 +306,13 @@ def is_asr_cached(engine: str) -> bool:
 
 
 def get_hymt2_model_path() -> Path | None:
-    for root in model_roots():
-        model_dir = root / HYMT2_DIR_NAME
-        if model_dir.is_dir():
-            if (model_dir / HYMT2_MODEL_FILE).is_file():
-                return model_dir / HYMT2_MODEL_FILE
-            files = sorted(path for path in model_dir.glob("*.gguf") if ".imatrix." not in path.name)
-            if files:
-                return files[0]
+    model_dir = MODELS_DIR.resolve() / HYMT2_DIR_NAME
+    if model_dir.is_dir():
+        if (model_dir / HYMT2_MODEL_FILE).is_file():
+            return model_dir / HYMT2_MODEL_FILE
+        files = sorted(path for path in model_dir.glob("*.gguf") if ".imatrix." not in path.name)
+        if files:
+            return files[0]
     return None
 
 
@@ -820,8 +785,7 @@ def get_hymt2_status() -> dict:
 def _legacy_files() -> list[Path]:
     """Files left in MODELS_DIR by versions before the llama.cpp mtmd migration.
 
-    Only MODELS_DIR, never the other model_roots(): the legacy root belongs to Yakutan,
-    which still uses these files. Matched by name, so anything else in the folders stays.
+    Matched by name, so anything else in the folders stays.
     """
     found: list[Path] = []
     model_dir = MODELS_DIR / LEGACY_QWEN3_ASR_DIR_NAME
@@ -885,7 +849,6 @@ def get_all_local_models_status() -> dict:
     return {
         "models_dir": str(MODELS_DIR.resolve()),
         "disk_free_bytes": models_dir_free_bytes(),
-        "search_roots": [str(path) for path in model_roots()],
         "asr": {"qwen3-asr": get_engine_status("qwen3-asr")},
         "translation": {"hymt2": get_hymt2_status()},
         "legacy": get_legacy_files_status(),
