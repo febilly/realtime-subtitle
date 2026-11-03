@@ -16,6 +16,8 @@ from PyInstaller.utils.win32.versioninfo import (
 datas = [('static', 'static'), ('resources', 'resources'), ('ACKNOWLEDGMENTS.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.'),
     # Vendored llama.cpp ctypes bindings (qwen_asr_gguf/inference/llama.py), kept as files.
     ('local_inference/vendor/qwen_asr_gguf', 'local_inference/vendor/qwen_asr_gguf'),
+    # Silero VAD (1.3 MB): silence sleep, stream rollover and local ASR segmentation.
+    ('local_inference/models/silero_vad', 'local_inference/models/silero_vad'),
 ]
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
@@ -60,8 +62,6 @@ binaries += [(_openvr_dll, 'openvr')]
 excludes_openvr = ['openvr.glframework', 'openvr.gl_renderer',
                    'openvr.color_cube_actor', 'openvr.tracked_devices_actor']
 tmp_ret = collect_all('pythonosc')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('ten_vad')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # sherpa_onnx（语义边界 A/B sidecar，requirements-semantic-boundary-scout.txt）
 # 默认关闭、只在开发环境用，故意不打包：否则产物大小取决于构建机装没装它。

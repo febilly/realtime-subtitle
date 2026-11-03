@@ -285,7 +285,7 @@ def test_qwen3_asr_rejects_a_file_with_the_wrong_sha256(models_dir, monkeypatch)
     assert not list((models_dir / model_manager.QWEN3_ASR_DIR_NAME).glob("*.gguf"))
 
 
-def test_silero_and_runtime_come_from_the_pinned_hf_repo(models_dir, monkeypatch):
+def test_runtime_comes_from_the_pinned_hf_repo(models_dir, monkeypatch):
     requested = []
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as bundle:
@@ -294,49 +294,27 @@ def test_silero_and_runtime_come_from_the_pinned_hf_repo(models_dir, monkeypatch
 
     def fake_urlopen(request, timeout=None):
         requested.append(request.full_url)
-        return FakeResponse(archive.getvalue() if request.full_url.endswith(".zip") else b"onnx")
+        return FakeResponse(archive.getvalue())
 
     monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
     monkeypatch.setattr(model_manager, "_ordered_hf_endpoints", lambda *a: ["https://hf-mirror.com"])
     monkeypatch.setattr(model_manager, "LLAMA_RUNTIME_ZIP_SHA256", hashlib.sha256(archive.getvalue()).hexdigest())
-    monkeypatch.setattr(model_manager, "SILERO_VAD_ONNX_SHA256", hashlib.sha256(b"onnx").hexdigest())
-    monkeypatch.setattr(model_manager, "is_silero_cached", lambda: False)
     monkeypatch.setattr(model_manager.sys, "platform", "win32")
 
-    model_manager.download_silero()
     model_manager._download_llama_runtime(models_dir / "runtime")
 
     base = f"https://hf-mirror.com/{model_manager.LOCAL_RUNTIME_REPO}/resolve/{model_manager.LOCAL_RUNTIME_REVISION}/"
-    assert requested == [base + model_manager.SILERO_VAD_ONNX_NAME, base + model_manager.LLAMA_RUNTIME_ZIP]
+    assert requested == [base + model_manager.LLAMA_RUNTIME_ZIP]
     assert sorted(path.name for path in (models_dir / "runtime").iterdir()) == ["libomp.dll", "llama.dll", "mtmd.dll"]
     assert not (models_dir / model_manager.LLAMA_RUNTIME_ZIP).exists()
 
 
-def test_asr_download_button_fetches_only_the_missing_vad(models_dir, monkeypatch):
-    # Qwen3-ASR and the runtime already there, Silero VAD missing: the
-    # "Download Qwen3-ASR" action must still make the engine ready.
-    variant = model_manager.qwen3_asr_variant()
-    model_dir = models_dir / model_manager.QWEN3_ASR_DIR_NAME
-    model_dir.mkdir()
-    for key in ("decoder", "mmproj"):
-        (model_dir / variant[key]).write_bytes(b"GGUF")
-    monkeypatch.setattr(model_manager, "_runtime_ready", lambda path: True)
-    requested = []
-    onnx = bytes(200_000)  # readiness wants a real-sized file
-
-    def fake_urlopen(request, timeout=None):
-        requested.append(request.full_url)
-        return FakeResponse(onnx)
-
-    monkeypatch.setattr(model_manager, "urlopen", fake_urlopen)
-    monkeypatch.setattr(model_manager, "_ordered_hf_endpoints", lambda *a: ["https://hf-mirror.com"])
-    monkeypatch.setattr(model_manager, "SILERO_VAD_ONNX_SHA256", hashlib.sha256(onnx).hexdigest())
-    monkeypatch.setattr(model_manager, "PACKAGE_DIR", models_dir / "no-bundle")
-
-    model_manager.prepare_engine("qwen3-asr")
-
-    assert [url.rsplit("/", 1)[1] for url in requested] == [model_manager.SILERO_VAD_ONNX_NAME]
-    assert model_manager.is_silero_cached() and model_manager.is_qwen3_asr_ready()
+def test_silero_vad_ships_with_the_app():
+    path = model_manager.silero_onnx_path()
+    assert path.is_file() and model_manager.is_silero_cached()
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
+        "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
+    )
 
 
 def test_runtime_falls_back_to_github_when_hf_fails(models_dir, monkeypatch):

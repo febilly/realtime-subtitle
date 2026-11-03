@@ -159,7 +159,6 @@ def test_remote_session_checks_service_without_requiring_local_models(monkeypatc
     session._server_url = "ws://127.0.0.1:18775"
     session._check_models(True)
     monkeypatch.setattr("local_inference.remote_client.probe_remote_server", lambda url: {"ready": True})
-    monkeypatch.setattr("local_inference.model_manager.download_silero", Mock())
     session._check_models(True, prepare_remote=True)
     translator = session._make_row_translator()
     assert translator.backend == "remote" and translator._local_engine is None

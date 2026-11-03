@@ -2,17 +2,14 @@ import audio_router as audio_router_module
 from audio_router import (
     AudioSendRouter,
     EnergySilenceDetector,
-    SileroVadLiteSilenceDetector,
-    TenVadSilenceDetector,
+    SileroSilenceDetector,
 )
 
 
 def _force_energy_backend(monkeypatch):
-    """Make every VAD backend unavailable so the router falls back to energy."""
-    monkeypatch.setattr(audio_router_module, "TenVadBackend", None)
-    monkeypatch.setattr(audio_router_module, "TenVadImportError", RuntimeError("missing"))
-    monkeypatch.setattr(audio_router_module, "SileroVadLiteBackend", None)
-    monkeypatch.setattr(audio_router_module, "SileroVadLiteImportError", RuntimeError("missing"))
+    """Make the VAD backend unavailable so the router falls back to energy."""
+    monkeypatch.setattr(audio_router_module, "SileroVadBackend", None)
+    monkeypatch.setattr(audio_router_module, "SileroVadImportError", RuntimeError("missing"))
 
 
 class RecordingTarget:
@@ -262,44 +259,18 @@ def test_energy_silence_detector_waits_for_hold_duration():
     assert detector.is_ready() is True
 
 
-def test_ten_vad_silence_detector_waits_for_non_speech_hold(monkeypatch):
-    class FakeTenVad:
-        def __init__(self, hop_size, threshold):
-            self.hop_size = hop_size
-            self.threshold = threshold
-
-        def process(self, audio_frame):
-            flag = 1 if int(audio_frame[0]) else 0
-            return float(flag), flag
-
-    monkeypatch.setattr(audio_router_module, "TenVadBackend", FakeTenVad)
-    monkeypatch.setattr(audio_router_module, "TenVadImportError", None)
-
-    detector = TenVadSilenceDetector(sample_rate=16000, silence_hold_seconds=0.03, hop_size=256)
-    silence_frame = b"\0" * 512
-    speech_frame = (1).to_bytes(2, "little", signed=True) + (b"\0" * 510)
-
-    assert detector.update(silence_frame) is True
-    assert detector.is_ready() is False
-    assert detector.update(silence_frame) is True
-    assert detector.is_ready() is True
-    assert detector.update(speech_frame) is False
-    assert detector.is_ready() is False
-
-
-def test_silero_vad_lite_silence_detector_waits_for_non_speech_hold(monkeypatch):
+def test_silero_silence_detector_waits_for_non_speech_hold(monkeypatch):
     class FakeSileroVAD:
-        def __init__(self, sample_rate):
-            self.sample_rate = sample_rate
-            self.window_size_samples = 512
+        def __init__(self, model_path):
+            self.model_path = model_path
 
-        def process(self, audio_frame):
+        def probability(self, audio_frame, sample_rate):
             return 1.0 if float(audio_frame[0]) > 0.0 else 0.0
 
-    monkeypatch.setattr(audio_router_module, "SileroVadLiteBackend", FakeSileroVAD)
-    monkeypatch.setattr(audio_router_module, "SileroVadLiteImportError", None)
+    monkeypatch.setattr(audio_router_module, "SileroVadBackend", FakeSileroVAD)
+    monkeypatch.setattr(audio_router_module, "SileroVadImportError", None)
 
-    detector = SileroVadLiteSilenceDetector(sample_rate=16000, silence_hold_seconds=0.06)
+    detector = SileroSilenceDetector(sample_rate=16000, silence_hold_seconds=0.06)
     silence_frame = b"\0" * 1024
     speech_frame = (1000).to_bytes(2, "little", signed=True) + (b"\0" * 1022)
 

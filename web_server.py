@@ -918,7 +918,7 @@ class WebServer:
         return web.json_response({"status": "ok", "remote_status": result})
 
     async def local_inference_download_handler(self, request):
-        """Download the redistributable Qwen3-ASR, Silero and llama runtime."""
+        """Download the redistributable Qwen3-ASR (or Hy-MT2) and the llama runtime."""
         if LOCK_MANUAL_CONTROLS:
             return web.json_response(
                 {"status": "error", "message": "Configuration is locked by server config"},

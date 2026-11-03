@@ -273,10 +273,6 @@ class LocalInferenceSession(SonioxSession):
                 error = remote_readiness_error(status, translation_enabled=translation_enabled)
                 if error:
                     raise RuntimeError(error)
-                if config.VAD_ENABLED and config.LOCAL_VAD_MODE == "silero":
-                    # Only the small CPU pause detector remains on this PC.
-                    from local_inference.model_manager import download_silero
-                    download_silero()
             return
         status = get_all_local_models_status()
         asr_status = status["asr"]["qwen3-asr"]

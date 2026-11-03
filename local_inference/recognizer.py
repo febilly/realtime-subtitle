@@ -197,7 +197,7 @@ class LocalQwenRecognizer:
             return engine
         if not is_asr_cached("qwen3-asr"):
             if not is_silero_cached():
-                raise RuntimeError("Silero VAD 尚未就绪，请先在本地模型设置中下载。")
+                raise RuntimeError("Silero VAD 文件缺失，安装可能不完整，请重新安装。")
             issues = get_engine_runtime_issues("qwen3-asr")
             if is_asr_models_ready("qwen3-asr") and issues:
                 raise RuntimeError(

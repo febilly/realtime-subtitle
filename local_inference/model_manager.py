@@ -79,11 +79,7 @@ LLAMA_CPP_DLL_URL_TEMPLATE = (
     "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/"
     "llama-{tag}-bin-win-vulkan-x64.zip"
 )
-SILERO_VAD_ONNX_URL = (
-    "https://raw.githubusercontent.com/snakers4/silero-vad/master/"
-    f"src/silero_vad/data/{SILERO_VAD_ONNX_NAME}"
-)
-_MODEL_SIZE_BYTES = {"silero-vad": 1_300_000, "qwen3-asr": 2_030_000_000, "hymt2": 1_100_000_000}
+_MODEL_SIZE_BYTES = {"qwen3-asr": 2_030_000_000, "hymt2": 1_100_000_000}
 # Rough VRAM while loaded (weights + KV cache + runtime), shown before download.
 _MODEL_VRAM_BYTES = {"qwen3-asr": 2_100_000_000, "hymt2": 1_300_000_000}
 
@@ -91,13 +87,12 @@ HYMT2_REPO_ID = "febilly/Hy-MT2-1.8B-StreamRevise-v4-GGUF"
 # The repo also carries an .imatrix.gguf (quantization calibration data);
 # inference needs only this weight file.
 HYMT2_MODEL_FILE = "Hy-MT2-1.8B-StreamRevise-v4-Q4_K_M.gguf"
-# Copies of the llama.cpp runtime and Silero VAD so they download through HF and its
-# mirrors too; the upstream GitHub URLs above stay as the last resort.
+# A copy of the llama.cpp runtime so it downloads through HF and its mirrors
+# too; the upstream GitHub URL above stays as the last resort.
 LOCAL_RUNTIME_REPO = "febilly/realtime-subtitle-local-runtime"
 LOCAL_RUNTIME_REVISION = "dc80402dfe3d6be8d90c93c60bd67a77a4c36115"
 LLAMA_RUNTIME_ZIP = f"llama-{LLAMA_CPP_TAG}-bin-win-vulkan-x64-min.zip"
 LLAMA_RUNTIME_ZIP_SHA256 = "b007fea086a8a788cc9e266b236cb27b750fa76e20fc45453f995a10d3856f25"
-SILERO_VAD_ONNX_SHA256 = "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
 HF_ENDPOINT_OFFICIAL = "https://huggingface.co"
 # Same resolve/ layout as HF. Used first when it serves files itself.
 HF_ENDPOINT_MIRROR = "https://hf-mirror.com"
@@ -278,10 +273,8 @@ def _silero_ready(path: Path) -> bool:
 
 
 def silero_onnx_path() -> Path:
-    bundled = PACKAGE_DIR / "models" / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
-    if _silero_ready(bundled):
-        return bundled
-    return MODELS_DIR / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
+    # Shipped with the app (1.3 MB): local ASR and silence sleep both use it.
+    return PACKAGE_DIR / "models" / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
 
 
 def is_silero_cached() -> bool:
@@ -586,22 +579,6 @@ def _download_file(url: str, dest: Path, stage: str, progress_callback=None) -> 
     _stream_download(url, dest, stage, progress_callback)
 
 
-def download_silero(progress_callback=None) -> None:
-    if is_silero_cached():
-        return
-    dest = MODELS_DIR / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
-    try:
-        _download_hf_file(
-            LOCAL_RUNTIME_REPO, SILERO_VAD_ONNX_NAME, dest, "silero", progress_callback,
-            revision=LOCAL_RUNTIME_REVISION, sha256=SILERO_VAD_ONNX_SHA256,
-        )
-    except DownloadCancelled:
-        raise
-    except Exception as exc:
-        logger.warning("Silero VAD download from HF failed, trying GitHub: %s", exc)
-        _download_file(SILERO_VAD_ONNX_URL, dest, "silero", progress_callback)
-
-
 def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
     if _runtime_ready(destination):
         return
@@ -689,7 +666,6 @@ def _ensure_llama_runtime(progress_callback=None) -> None:
 def prepare_engine(engine: str, progress_callback=None) -> None:
     if engine != "qwen3-asr":
         raise ValueError(f"Unknown local ASR engine: {engine}")
-    download_silero(progress_callback)
     if not is_qwen3_asr_ready():
         download_qwen3_asr(progress_callback)
 

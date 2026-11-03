@@ -9,32 +9,19 @@ from typing import Any
 
 import numpy as np
 
-# Default local VAD backend. "ten_vad" is the shipped default and the only
-# backend bundled into the packaged exe. "silero" is kept as a quick code-level
-# alternative: install silero-vad-lite and set DEFAULT_VAD_BACKEND = "silero"
-# (or pass vad_backend="silero" to AudioSendRouter) to switch.
-DEFAULT_VAD_BACKEND = "ten_vad"
-
 try:
-    from ten_vad import TenVad as TenVadBackend
+    # Bundled Silero VAD (local_inference/models/silero_vad), run on onnxruntime.
+    from local_inference.model_manager import silero_onnx_path
+    from local_inference.vad_processor import SileroOnnxVAD as SileroVadBackend
 except Exception as exc:  # noqa: BLE001 - optional at import time for tests/dev envs
-    TenVadBackend = None
-    TenVadImportError = exc
+    SileroVadBackend = None
+    SileroVadImportError = exc
 else:
-    TenVadImportError = None
-
-try:
-    # Optional alternative backend; not installed/bundled by default.
-    from silero_vad_lite import SileroVAD as SileroVadLiteBackend
-except Exception as exc:  # noqa: BLE001 - optional at import time for tests/dev envs
-    SileroVadLiteBackend = None
-    SileroVadLiteImportError = exc
-else:
-    SileroVadLiteImportError = None
+    SileroVadImportError = None
 
 
-class TenVadSilenceDetector:
-    """TEN VAD backed PCM_s16le detector used to find safe rollover gaps."""
+class SileroSilenceDetector:
+    """Silero VAD backed PCM_s16le detector used to find speech/silence."""
 
     def __init__(
         self,
@@ -42,98 +29,21 @@ class TenVadSilenceDetector:
         sample_rate: int = 16000,
         sample_width_bytes: int = 2,
         silence_hold_seconds: float = 0.7,
-        hop_size: int = 256,
+        hop_size: int = 512,
         speech_threshold: float = 0.5,
     ):
-        if TenVadBackend is None:
-            raise RuntimeError(f"ten-vad is unavailable: {TenVadImportError}")
+        if SileroVadBackend is None:
+            raise RuntimeError(f"Silero VAD is unavailable: {SileroVadImportError}")
+        if int(sample_rate) != 16000:
+            raise RuntimeError(f"Silero VAD here expects 16 kHz audio, got {sample_rate}")
 
-        self.sample_rate = max(1, int(sample_rate))
-        self.sample_width_bytes = max(1, int(sample_width_bytes))
-        self.silence_hold_seconds = max(0.0, float(silence_hold_seconds))
-        self.hop_size = max(1, int(hop_size))
-        self.speech_threshold = max(0.0, float(speech_threshold))
-        self._vad = TenVadBackend(self.hop_size, self.speech_threshold)
-        self._pending = bytearray()
-        self.consecutive_silence_seconds = 0.0
-        self.last_audio_at: float | None = None
-        self.last_probability = 0.0
-        self.last_flag = 0
-        self.last_observed_seconds = 0.0
-        self.last_speech_seconds = 0.0
-
-    def update(self, pcm_bytes: bytes) -> bool:
-        """Record real-audio chunks and return whether all processed frames were non-speech."""
-        if not pcm_bytes:
-            return False
-
-        frame_bytes = self.hop_size * self.sample_width_bytes
-        if frame_bytes <= 0:
-            return False
-
-        self._pending.extend(pcm_bytes)
-        processed_any = False
-        saw_speech = False
-        processed_frames = 0
-        speech_frames = 0
-
-        while len(self._pending) >= frame_bytes:
-            frame = bytes(self._pending[:frame_bytes])
-            del self._pending[:frame_bytes]
-            audio_frame = np.frombuffer(frame, dtype=np.int16)
-            probability, flag = self._vad.process(audio_frame)
-            # print(f"TEN VAD probability: {probability}")
-            self.last_probability = float(probability)
-            self.last_flag = int(flag)
-            processed_any = True
-            processed_frames += 1
-            self.last_audio_at = time.monotonic()
-
-            if int(flag) == 1:
-                saw_speech = True
-                speech_frames += 1
-                self.consecutive_silence_seconds = 0.0
-            else:
-                self.consecutive_silence_seconds += self.hop_size / self.sample_rate
-
-        if not processed_any:
-            self.last_observed_seconds = 0.0
-            self.last_speech_seconds = 0.0
-            return False
-        frame_duration = self.hop_size / self.sample_rate
-        self.last_observed_seconds = processed_frames * frame_duration
-        self.last_speech_seconds = speech_frames * frame_duration
-        return not saw_speech
-
-    def is_ready(self, *, min_observed_at: float | None = None) -> bool:
-        if self.last_audio_at is None:
-            return False
-        if min_observed_at is not None and self.last_audio_at < min_observed_at:
-            return False
-        return self.consecutive_silence_seconds >= self.silence_hold_seconds
-
-
-class SileroVadLiteSilenceDetector:
-    """Silero VAD Lite backed PCM_s16le detector used to find speech/silence."""
-
-    def __init__(
-        self,
-        *,
-        sample_rate: int = 16000,
-        sample_width_bytes: int = 2,
-        silence_hold_seconds: float = 0.7,
-        hop_size: int | None = None,
-        speech_threshold: float = 0.5,
-    ):
-        if SileroVadLiteBackend is None:
-            raise RuntimeError(f"silero-vad-lite is unavailable: {SileroVadLiteImportError}")
-
-        self.sample_rate = max(1, int(sample_rate))
+        self.sample_rate = int(sample_rate)
         self.sample_width_bytes = max(1, int(sample_width_bytes))
         self.silence_hold_seconds = max(0.0, float(silence_hold_seconds))
         self.speech_threshold = min(1.0, max(0.0, float(speech_threshold)))
-        self._vad = SileroVadLiteBackend(self.sample_rate)
-        self.hop_size = max(1, int(hop_size or self._vad.window_size_samples))
+        # The 16 kHz model takes 512-sample (32 ms) windows.
+        self.hop_size = max(1, int(hop_size))
+        self._vad = SileroVadBackend(str(silero_onnx_path()))
         self._pending = bytearray()
         self.consecutive_silence_seconds = 0.0
         self.last_audio_at: float | None = None
@@ -161,9 +71,8 @@ class SileroVadLiteSilenceDetector:
             frame = bytes(self._pending[:frame_bytes])
             del self._pending[:frame_bytes]
             audio_frame = np.frombuffer(frame, dtype=np.int16)
-            float_frame = (audio_frame.astype(np.float32) / 32768.0).copy()
-            probability = self._vad.process(memoryview(float_frame))
-            self.last_probability = float(probability)
+            float_frame = audio_frame.astype(np.float32) / 32768.0
+            self.last_probability = float(self._vad.probability(float_frame, self.sample_rate))
             self.last_flag = int(self.last_probability >= self.speech_threshold)
             processed_any = True
             processed_frames += 1
@@ -389,7 +298,6 @@ class AudioSendRouter:
         chunk_size: int = 3840,
         silence_hold_seconds: float = 0.7,
         vad_speech_threshold: float = 0.5,
-        vad_backend: str | None = None,
         sleep_idle_seconds: float | None = None,
         sleep_pre_roll_seconds: float = 0.45,
         sleep_speech_grace_seconds: float = 0.5,
@@ -431,9 +339,7 @@ class AudioSendRouter:
             if sleep_idle_seconds is not None and float(sleep_idle_seconds) > 0
             else None
         )
-        backend = (vad_backend or DEFAULT_VAD_BACKEND or "ten_vad").strip().lower()
         self._silence_detector = self._build_silence_detector(
-            backend,
             sample_rate=sample_rate,
             silence_hold_seconds=silence_hold_seconds,
             vad_speech_threshold=vad_speech_threshold,
@@ -443,7 +349,6 @@ class AudioSendRouter:
             sleep_vad_threshold if sleep_vad_threshold is not None else vad_speech_threshold
         )
         self._sleep_silence_detector = self._build_silence_detector(
-            backend,
             sample_rate=sample_rate,
             silence_hold_seconds=silence_hold_seconds,
             vad_speech_threshold=actual_sleep_vad_threshold,
@@ -454,7 +359,6 @@ class AudioSendRouter:
             else actual_sleep_vad_threshold
         )
         self._wake_silence_detector = self._build_silence_detector(
-            backend,
             sample_rate=sample_rate,
             silence_hold_seconds=silence_hold_seconds,
             vad_speech_threshold=actual_wake_vad_threshold,
@@ -462,31 +366,20 @@ class AudioSendRouter:
 
     @staticmethod
     def _build_silence_detector(
-        backend: str,
         *,
         sample_rate: int,
         silence_hold_seconds: float,
         vad_speech_threshold: float,
     ):
-        """Build the configured VAD detector, falling back to energy on failure.
-
-        "ten_vad" is the default/shipped backend. "silero" is an optional
-        alternative kept for quick switching (requires silero-vad-lite).
-        """
-        if backend == "silero":
-            detector_cls = SileroVadLiteSilenceDetector
-            label = "Silero VAD Lite"
-        else:
-            detector_cls = TenVadSilenceDetector
-            label = "TEN VAD"
+        """Build the Silero VAD detector, falling back to energy on failure."""
         try:
-            return detector_cls(
+            return SileroSilenceDetector(
                 sample_rate=sample_rate,
                 silence_hold_seconds=silence_hold_seconds,
                 speech_threshold=vad_speech_threshold,
             )
         except Exception as error:
-            print(f"⚠️  {label} unavailable for stream rollover, using energy silence detector: {error}")
+            print(f"⚠️  Silero VAD unavailable for stream rollover, using energy silence detector: {error}")
             return EnergySilenceDetector(
                 sample_rate=sample_rate,
                 silence_hold_seconds=silence_hold_seconds,

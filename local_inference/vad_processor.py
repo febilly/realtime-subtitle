@@ -10,7 +10,7 @@ from .model_manager import apply_cache_env, silero_onnx_path
 logger = logging.getLogger(__name__)
 
 
-class _SileroOnnxVAD:
+class SileroOnnxVAD:
     """Silero VAD via `silero_vad_16k_op15.onnx` (no PyTorch)."""
 
     def __init__(self, model_path: str) -> None:
@@ -88,7 +88,7 @@ class VADProcessor:
         self.mode = "silero"
 
         apply_cache_env()
-        self._silero: _SileroOnnxVAD | None = None
+        self._silero: SileroOnnxVAD | None = None
 
         self._speech_buffer: list[np.ndarray] = []
         self._confidence_history: list[float] = []
@@ -104,15 +104,13 @@ class VADProcessor:
         self._silence_limit = self._seconds_to_chunks(0.8)
         self.last_confidence = 0.0
 
-    def _ensure_silero(self) -> _SileroOnnxVAD:
+    def _ensure_silero(self) -> SileroOnnxVAD:
         if self._silero is not None:
             return self._silero
         path = silero_onnx_path()
         if not path.is_file():
-            raise FileNotFoundError(
-                f"Silero VAD ONNX 未找到: {path}。请先运行 download_silero() 或 prepare_engine()。"
-            )
-        self._silero = _SileroOnnxVAD(str(path))
+            raise FileNotFoundError(f"Silero VAD ONNX 未找到: {path}（随程序附带，安装可能不完整）")
+        self._silero = SileroOnnxVAD(str(path))
         return self._silero
 
     def _seconds_to_chunks(self, seconds: float) -> int:
