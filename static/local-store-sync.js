@@ -33,7 +33,7 @@
 
     // Only these keys are shared across instances: API key / provider config
     // (providerSettings.v1), server address + login auth (subtitleServer.v1),
-    // the LLM refine/translate mode, automatic sleep, the invite-reminder cadence,
+    // the translation mode (快速/准确/混合), automatic sleep, the invite-reminder cadence,
     // and the optional bundled CJK font toggle.
     // Everything else (theme,
     // segment/display/subtitle-flow mode, audio source, auto-restart, …) stays per-instance.
@@ -41,9 +41,7 @@
     var ALLOWLIST = {
         'providerSettings.v1': true,
         'subtitleServer.v1': true,
-        'llmTranslationMode': true,
-        'llmRefineMode': true,
-        'llmRefineEnabled': true,
+        'translationUiMode': true,
         'sleepOnSilenceEnabled': true,
         'oscSensitiveFilterEnabled': true,
         'oscSensitiveFilterNoticeDisabled': true,

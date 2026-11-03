@@ -18,7 +18,6 @@ describe('full-page translation mode controller wiring', () => {
             expect(postPaths(page).filter((path) => path === '/translation-mode')).toHaveLength(1);
             expect(requestedPaths).not.toContain('/llm-refine');
             expect(page.window.localStorage.getItem('translationUiMode')).toBe('accurate');
-            expect(page.window.localStorage.getItem('llmRefineMode')).toBe('translate');
         } finally {
             page.close();
         }
@@ -32,7 +31,6 @@ describe('full-page translation mode controller wiring', () => {
         try {
             expect(postPaths(page)).not.toContain('/translation-mode');
             expect(page.window.localStorage.getItem('translationUiMode')).toBe('accurate');
-            expect(page.window.localStorage.getItem('llmRefineMode')).toBe('translate');
 
             page.document.getElementById('settingsButton').click();
             await page.flush(2);
@@ -59,7 +57,6 @@ describe('full-page translation mode controller wiring', () => {
                 && JSON.parse(options.body).mode === 'fast'
             ))).toBe(true);
             expect(page.window.localStorage.getItem('translationUiMode')).toBe('fast');
-            expect(page.window.localStorage.getItem('llmRefineMode')).toBe('off');
             expect(fallbackCalls.map(([url]) => pathOf(url))).not.toContain('/restart');
         } finally {
             page.close();

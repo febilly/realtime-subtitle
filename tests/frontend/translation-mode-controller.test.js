@@ -10,7 +10,6 @@ function jsonResponse(body = {}, options = {}) {
 
 function createHarness(options = {}) {
     let storedUiMode = options.storedUiMode ?? null;
-    let storedLlmMode = options.storedLlmMode ?? null;
     const runtime = { lockManualControls: false, ...(options.runtime || {}) };
     const storage = {
         setItem: vi.fn((key, value) => {
@@ -19,11 +18,6 @@ function createHarness(options = {}) {
         }),
     };
     const settingsStore = {
-        loadLlmRefineMode: vi.fn(() => storedLlmMode),
-        saveLlmRefineMode: vi.fn((mode) => {
-            storedLlmMode = mode;
-            return options.persistLlmResult !== false;
-        }),
         readTranslationUiMode: vi.fn(() => storedUiMode),
     };
     const session = {
@@ -60,7 +54,6 @@ function createHarness(options = {}) {
         settingsStore,
         storage,
         stored: {
-            get llmMode() { return storedLlmMode; },
             get uiMode() { return storedUiMode; },
         },
     };
@@ -77,8 +70,8 @@ describe('TranslationModeController normalization and dependencies', () => {
         });
     });
 
-    it('loads persisted state and fails fast for an incomplete store', () => {
-        const page = createHarness({ storedUiMode: 'accurate', storedLlmMode: 'translate' });
+    it('derives the LLM mode from the saved translation mode and fails fast for an incomplete store', () => {
+        const page = createHarness({ storedUiMode: 'accurate' });
         expect(page.controller.getDebugState()).toMatchObject({
             llmRefineAvailable: false,
             llmRefineMode: 'translate',
@@ -91,22 +84,21 @@ describe('TranslationModeController normalization and dependencies', () => {
             fetch: vi.fn(),
             storage: { setItem() {} },
             settingsStore: {},
-        })).toThrow('TranslationModeController settingsStore requires loadLlmRefineMode');
+        })).toThrow('TranslationModeController settingsStore requires readTranslationUiMode');
     });
 });
 
 describe('TranslationModeController local mode transitions', () => {
-    it('applies LLM state, segment locking, persistence, and translate exit rendering', () => {
-        const page = createHarness({ storedLlmMode: 'off' });
+    it('applies LLM state, segment locking, and translate exit rendering without storing it', () => {
+        const page = createHarness({ storedUiMode: 'fast' });
 
         expect(page.controller.applyLlmRefineMode('translate')).toBe('translate');
-        expect(page.settingsStore.saveLlmRefineMode).toHaveBeenLastCalledWith('translate');
         expect(page.session.applyLlmMode).toHaveBeenLastCalledWith('translate', 'off');
         expect(page.actions.enforceTranslateSegmentMode).toHaveBeenCalledOnce();
         expect(page.actions.updateSegmentModeButton).toHaveBeenCalledOnce();
 
-        expect(page.controller.applyLlmRefineMode('refine', { persist: false })).toBe('refine');
-        expect(page.settingsStore.saveLlmRefineMode).toHaveBeenCalledTimes(1);
+        expect(page.controller.applyLlmRefineMode('refine')).toBe('refine');
+        expect(page.storage.setItem).not.toHaveBeenCalled();
         expect(page.session.applyLlmMode).toHaveBeenLastCalledWith('refine', 'translate');
         expect(page.actions.renderSubtitles).toHaveBeenCalledOnce();
         expect(page.actions.updateSegmentModeButton).toHaveBeenCalledTimes(2);
@@ -119,7 +111,7 @@ describe('TranslationModeController local mode transitions', () => {
             .resolves.toBe(true);
         expect(page.controller.getTranslationUiMode()).toBe('accurate');
         expect(page.session.noteHybridBoundary).toHaveBeenCalledWith('accurate', 'fast');
-        expect(page.settingsStore.saveLlmRefineMode).toHaveBeenCalledWith('translate');
+        expect(page.controller.getLlmRefineMode()).toBe('translate');
         expect(page.actions.updateTranslationModeHint).toHaveBeenCalledOnce();
         expect(page.fetch).not.toHaveBeenCalled();
     });
@@ -142,9 +134,9 @@ describe('TranslationModeController local mode transitions', () => {
         expect(page.actions.restartRecognition).not.toHaveBeenCalled();
     });
 
-    it('rolls back UI, boundaries, and persisted LLM state after a POST failure', async () => {
+    it('rolls back UI, boundaries, and LLM state after a POST failure', async () => {
         const fetch = vi.fn(async () => jsonResponse({}, { ok: false, status: 503 }));
-        const page = createHarness({ storedUiMode: 'hybrid', storedLlmMode: 'refine', fetch });
+        const page = createHarness({ storedUiMode: 'hybrid', fetch });
 
         await expect(page.controller.setTranslationUiMode('accurate')).resolves.toBe(false);
         expect(page.controller.getTranslationUiMode()).toBe('hybrid');
@@ -156,9 +148,9 @@ describe('TranslationModeController local mode transitions', () => {
             ['translationUiMode', 'accurate'],
             ['translationUiMode', 'hybrid'],
         ]);
-        expect(page.settingsStore.saveLlmRefineMode.mock.calls).toEqual([
-            ['translate'],
-            ['refine'],
+        expect(page.session.applyLlmMode.mock.calls).toEqual([
+            ['translate', 'refine'],
+            ['refine', 'translate'],
         ]);
         expect(page.actions.renderTranslationModePicker).toHaveBeenCalledOnce();
         expect(page.logger.warn).toHaveBeenCalledWith(
@@ -170,28 +162,25 @@ describe('TranslationModeController local mode transitions', () => {
 
 describe('TranslationModeController backend synchronization', () => {
     it('keeps the saved local LLM mode while hosted startup is waiting for the offline choice', async () => {
-        const page = createHarness({ storedUiMode: 'accurate', storedLlmMode: 'translate', runtime: { connectionMode: 'relay' } });
+        const page = createHarness({ storedUiMode: 'accurate', runtime: { connectionMode: 'relay' } });
         await page.controller.applyBackendConfig({ provider: 'local', hosted_reachable: false, llm_refine_available: false });
         expect(page.stored.uiMode).toBe('accurate');
-        expect(page.stored.llmMode).toBe('translate');
         expect(page.fetch).not.toHaveBeenCalled();
         expect(page.storage.setItem).not.toHaveBeenCalled();
     });
     it('uses the process offline mode without persisting translation preferences', async () => {
-        const page = createHarness({ storedUiMode: 'accurate', storedLlmMode: 'translate', runtime: { offlineMode: true, offlineTranslationAvailable: true } });
+        const page = createHarness({ storedUiMode: 'accurate', runtime: { offlineMode: true, offlineTranslationAvailable: true } });
         await page.controller.applyBackendConfig({ provider: 'local', offline_mode: true, translation_ui_mode: 'off', llm_refine_available: false });
         expect(page.controller.getTranslationUiMode()).toBe('off');
         expect(page.controller.getAvailableTranslationModes()).toEqual(['fast', 'off']);
         await page.controller.setTranslationUiMode('fast');
         expect(page.stored.uiMode).toBe('accurate');
-        expect(page.stored.llmMode).toBe('translate');
         expect(page.storage.setItem).not.toHaveBeenCalled();
-        expect(page.settingsStore.saveLlmRefineMode).not.toHaveBeenCalled();
         page.runtime.offlineTranslationAvailable = false;
         expect(page.controller.getAvailableTranslationModes()).toEqual(['off']);
     });
     it('disables runtime LLM state without overwriting a saved preference', () => {
-        const page = createHarness({ storedUiMode: 'accurate', storedLlmMode: 'translate' });
+        const page = createHarness({ storedUiMode: 'accurate' });
 
         expect(page.controller.applyBackendConfig({
             llm_refine_available: false,
@@ -203,7 +192,6 @@ describe('TranslationModeController backend synchronization', () => {
             translationUiMode: 'accurate',
         });
         expect(page.session.disableLlmBoundary).toHaveBeenCalledOnce();
-        expect(page.settingsStore.saveLlmRefineMode).not.toHaveBeenCalled();
         expect(page.storage.setItem).not.toHaveBeenCalled();
         expect(page.actions.renderTranslationModePicker).toHaveBeenCalledOnce();
     });
@@ -261,7 +249,7 @@ describe('TranslationModeController backend synchronization', () => {
 
 describe('TranslationModeController legacy status', () => {
     it('skips the legacy endpoint when unavailable or controls are unlocked', async () => {
-        const page = createHarness({ storedLlmMode: 'translate' });
+        const page = createHarness({ storedUiMode: 'accurate' });
 
         await expect(page.controller.fetchLlmRefineStatus()).resolves.toBe(false);
         expect(page.session.disableLlmBoundary).toHaveBeenCalledOnce();
@@ -277,11 +265,10 @@ describe('TranslationModeController legacy status', () => {
     it('uses the configured default in locked mode without persisting it', async () => {
         const fetch = vi.fn(async (url) => {
             expect(url).toBe('/llm-refine');
-            return jsonResponse({ mode: 'off', enabled: false });
+            return jsonResponse({ mode: 'off' });
         });
         const page = createHarness({
-            storedUiMode: 'hybrid',
-            storedLlmMode: 'off',
+            storedUiMode: 'fast',
             runtime: { lockManualControls: true },
             fetch,
         });
@@ -295,14 +282,13 @@ describe('TranslationModeController legacy status', () => {
         await expect(page.controller.fetchLlmRefineStatus()).resolves.toBe(true);
         expect(page.controller.getLlmRefineMode()).toBe('translate');
         expect(page.session.applyLlmMode).toHaveBeenCalledWith('translate', 'off');
-        expect(page.settingsStore.saveLlmRefineMode).not.toHaveBeenCalled();
         expect(page.actions.enforceTranslateSegmentMode).toHaveBeenCalledOnce();
     });
 
     it('logs legacy fetch errors and keeps the current mode', async () => {
         const failure = new Error('offline');
         const page = createHarness({
-            storedLlmMode: 'refine',
+            storedUiMode: 'hybrid',
             runtime: { lockManualControls: true },
             fetch: vi.fn(async () => { throw failure; }),
         });

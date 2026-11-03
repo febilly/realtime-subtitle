@@ -6,9 +6,6 @@
         provider: 'providerSettings.v1',
         uiTranslationMode: 'uiTranslationMode',
         translationUiMode: 'translationUiMode',
-        llmTranslationMode: 'llmTranslationMode',
-        llmRefineMode: 'llmRefineMode',
-        llmRefineEnabled: 'llmRefineEnabled',
         segmentMode: 'segmentMode',
         displayMode: 'displayMode',
         subtitleFlowDirection: 'subtitleFlowDirection',
@@ -26,7 +23,6 @@
 
     const UI_TRANSLATION_MODES = ['none', 'one_way', 'two_way'];
     const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid'];
-    const LLM_REFINE_MODES = ['off', 'refine', 'translate'];
     const SEGMENT_MODES = ['translation', 'endpoint', 'punctuation'];
     const AUDIO_SOURCES = ['system', 'microphone', 'mix'];
     const SUBTITLE_FLOW_DIRECTIONS = ['up', 'down'];
@@ -209,7 +205,6 @@
 
         function readTranslationUiMode() {
             const value = read(KEYS.translationUiMode);
-            if (value === 'refine') return 'hybrid';
             return TRANSLATION_UI_MODES.includes(value) ? value : null;
         }
 
@@ -220,27 +215,6 @@
         function saveTranslationUiMode(mode) {
             const normalized = TRANSLATION_UI_MODES.includes(mode) ? mode : 'hybrid';
             return write(KEYS.translationUiMode, normalized);
-        }
-
-        function loadLlmRefineMode() {
-            let value = read(KEYS.llmTranslationMode);
-            if (!LLM_REFINE_MODES.includes(String(value || '').trim().toLowerCase())) {
-                value = read(KEYS.llmRefineMode);
-            }
-            const normalized = String(value || '').trim().toLowerCase();
-            if (LLM_REFINE_MODES.includes(normalized)) return normalized;
-            const legacy = read(KEYS.llmRefineEnabled);
-            return legacy === null ? null : (legacy === 'true' ? 'refine' : 'off');
-        }
-
-        function saveLlmRefineMode(mode) {
-            const normalized = LLM_REFINE_MODES.includes(String(mode || '').trim().toLowerCase())
-                ? String(mode).trim().toLowerCase()
-                : 'off';
-            const first = write(KEYS.llmRefineMode, normalized);
-            const second = write(KEYS.llmTranslationMode, normalized);
-            const third = write(KEYS.llmRefineEnabled, normalized === 'off' ? 'false' : 'true');
-            return first && second && third;
         }
 
         function loadSegmentMode() {
@@ -295,8 +269,6 @@
             readTranslationUiMode,
             loadTranslationUiMode,
             saveTranslationUiMode,
-            loadLlmRefineMode,
-            saveLlmRefineMode,
             loadSegmentMode,
             saveSegmentMode,
             loadDisplayMode,

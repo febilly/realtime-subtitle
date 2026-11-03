@@ -387,9 +387,6 @@ class GeminiSession(RealtimeSessionBase):
         refine); 准确 does a full LLM translate. Gemini always keeps its built-in
         translation on, so no stream restart is ever needed here."""
         normalized = str(mode or "").strip().lower()
-        # "refine" is accepted as a legacy alias and normalized to 混合.
-        if normalized == "refine":
-            normalized = "hybrid"
         mapping = {"fast": "off", "accurate": "translate", "hybrid": "refine"}
         if normalized not in mapping:
             return False, f"Invalid translation mode: {mode}", False

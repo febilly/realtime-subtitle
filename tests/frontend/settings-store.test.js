@@ -165,7 +165,6 @@ describe('settings-store typed preferences', () => {
 
         expect(store.loadUiTranslationMode()).toBeNull();
         expect(store.loadTranslationUiMode()).toBe('hybrid');
-        expect(store.loadLlmRefineMode()).toBeNull();
         expect(store.loadSegmentMode()).toBe('punctuation');
         expect(store.loadDisplayMode()).toBe('both');
         expect(store.loadSubtitleFlowDirection()).toBe('up');
@@ -183,7 +182,6 @@ describe('settings-store typed preferences', () => {
 
         expect(store.saveUiTranslationMode('two_way')).toBe(true);
         expect(store.saveTranslationUiMode('accurate')).toBe(true);
-        expect(store.saveLlmRefineMode('translate')).toBe(true);
         expect(store.saveSegmentMode('endpoint')).toBe(true);
         expect(store.saveDisplayMode('translation')).toBe(true);
         expect(store.saveSubtitleFlowDirection('down')).toBe(true);
@@ -199,7 +197,6 @@ describe('settings-store typed preferences', () => {
 
         expect(store.loadUiTranslationMode()).toBe('two_way');
         expect(store.loadTranslationUiMode()).toBe('accurate');
-        expect(store.loadLlmRefineMode()).toBe('translate');
         expect(store.loadSegmentMode()).toBe('endpoint');
         expect(store.loadDisplayMode()).toBe('translation');
         expect(store.loadSubtitleFlowDirection()).toBe('down');
@@ -218,10 +215,9 @@ describe('settings-store typed preferences', () => {
         expect(store.loadClientUpdateReminder()).toBe(1234);
     });
 
-    it('preserves legacy migrations and existing corrupt-value behavior', () => {
+    it('rejects retired and corrupt stored values', () => {
         const storage = createMemoryStorage({
             [SettingsStore.KEYS.translationUiMode]: 'refine',
-            [SettingsStore.KEYS.llmRefineEnabled]: 'true',
             [SettingsStore.KEYS.segmentMode]: 'bogus',
             [SettingsStore.KEYS.displayMode]: 'bogus',
             [SettingsStore.KEYS.subtitleFlowDirection]: 'sideways',
@@ -230,8 +226,7 @@ describe('settings-store typed preferences', () => {
         });
         const store = SettingsStore.create({ storage });
 
-        expect(store.readTranslationUiMode()).toBe('hybrid');
-        expect(store.loadLlmRefineMode()).toBe('refine');
+        expect(store.readTranslationUiMode()).toBeNull();
         expect(store.loadSegmentMode()).toBe('punctuation');
         // app.js currently accepts any non-empty displayMode string at startup.
         expect(store.loadDisplayMode()).toBe('bogus');

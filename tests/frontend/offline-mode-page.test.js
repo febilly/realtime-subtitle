@@ -40,7 +40,6 @@ describe('temporary offline startup', () => {
             expect(radios.every((radio) => radio.disabled)).toBe(true);
             expect(radios.find((radio) => radio.checked).value).toBe('local');
             expect(page.window.localStorage.getItem('translationUiMode')).toBe('accurate');
-            expect(page.window.localStorage.getItem('llmRefineMode')).toBe('translate');
             expect(page.window.localStorage.getItem('subtitleServer.v1')).toBe(savedServer);
             expect(page.window.localStorage.getItem('providerSettings.v1')).toBe(savedProvider);
             expect(page.document.getElementById('translationLangButton').getAttribute('aria-disabled')).toBe(String(mode === 'off'));

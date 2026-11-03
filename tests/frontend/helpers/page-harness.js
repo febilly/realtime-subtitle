@@ -88,7 +88,7 @@ function defaultFetchResponse(url, options = {}) {
         '/microphones': { available: false, devices: [] },
         '/account/balance': options.balancePayload || {},
         '/account/login-code': options.loginCodePayload || {},
-        '/llm-refine': { enabled: true, mode: llmMode },
+        '/llm-refine': { mode: llmMode },
         '/translation-mode': { mode: translationUiMode, needs_restart: false },
     };
     const body = payloads[pathname] || {};
@@ -148,7 +148,6 @@ async function createPageHarness(options = {}) {
     const translationUiMode = normalizeTranslationUiMode(
         options.translationUiMode || (options.localStorage && options.localStorage.translationUiMode)
     );
-    const llmMode = llmModeForTranslationUiMode(translationUiMode);
     const html = fs.readFileSync(path.join(STATIC_ROOT, 'index.html'), 'utf8');
     const virtualConsole = new VirtualConsole();
     if (options.forwardConsole) virtualConsole.sendTo(console);
@@ -173,17 +172,9 @@ async function createPageHarness(options = {}) {
     const storedValues = Object.assign({
         autoRestartEnabled: String(options.autoRestartEnabled === true),
         translationUiMode,
-        llmTranslationMode: llmMode,
-        llmRefineMode: llmMode,
-        llmRefineEnabled: String(llmMode !== 'off'),
     }, options.localStorage || {});
     if (options.translationUiMode) {
-        Object.assign(storedValues, {
-            translationUiMode,
-            llmTranslationMode: llmMode,
-            llmRefineMode: llmMode,
-            llmRefineEnabled: String(llmMode !== 'off'),
-        });
+        storedValues.translationUiMode = translationUiMode;
     }
     for (const [key, value] of Object.entries(storedValues)) {
         dom.window.localStorage.setItem(key, String(value));

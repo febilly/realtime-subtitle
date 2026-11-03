@@ -1715,7 +1715,6 @@ class WebServer:
         """获取 LLM 改进开关状态"""
         mode = self.session.get_llm_refine_mode()
         return web.json_response({
-            "enabled": self.session.get_llm_refine_enabled(),
             "mode": mode,
             "available": bool(is_llm_refine_available()),
         })
@@ -1739,13 +1738,7 @@ class WebServer:
         except Exception:
             return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
 
-        mode = None
-        if isinstance(payload, dict):
-            if "mode" in payload:
-                mode = payload.get("mode")
-            elif "enabled" in payload:
-                enabled = bool(payload.get("enabled"))
-                mode = "refine" if enabled else "off"
+        mode = payload.get("mode") if isinstance(payload, dict) else None
 
         if not mode:
             return web.json_response({"status": "error", "message": "Missing 'mode' field"}, status=400)
@@ -1757,7 +1750,6 @@ class WebServer:
         return web.json_response({
             "status": "ok",
             "mode": self.session.get_llm_refine_mode(),
-            "enabled": self.session.get_llm_refine_enabled(),
         })
 
     async def _refresh_hosted_llm_config(self, force: bool = False) -> None:

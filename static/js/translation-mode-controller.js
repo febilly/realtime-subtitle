@@ -56,8 +56,6 @@
             throw new TypeError('TranslationModeController.create requires settingsStore');
         }
         for (const method of [
-            'loadLlmRefineMode',
-            'saveLlmRefineMode',
             'readTranslationUiMode',
         ]) {
             if (typeof settingsStore[method] !== 'function') {
@@ -70,10 +68,11 @@
 
         let llmRefineAvailable = false;
         let defaultLlmRefineMode = null;
-        let llmRefineMode = normalizeLlmRefineMode(settingsStore.loadLlmRefineMode());
         let translationUiMode = normalizeTranslationUiMode(
             settingsStore.readTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE,
         );
+        // Derived from the translation mode; never stored on its own.
+        let llmRefineMode = TRANSLATION_UI_MODE_TO_LLM[translationUiMode];
         let translationModeSynced = false;
 
         function session() {
@@ -97,17 +96,11 @@
             return llmRefineMode === 'translate';
         }
 
-        function applyLlmRefineMode(mode, applyOptions = {}) {
+        function applyLlmRefineMode(mode) {
             const normalized = normalizeLlmRefineMode(mode);
             const previous = llmRefineMode;
             const wasTranslate = previous === 'translate';
             llmRefineMode = normalized;
-
-            if (applyOptions.persist !== false) {
-                if (!settingsStore.saveLlmRefineMode(llmRefineMode)) {
-                    logger.warn('Unable to persist LLM refine mode');
-                }
-            }
 
             session().applyLlmMode(llmRefineMode, previous);
             if (llmRefineMode === 'translate') {
@@ -131,7 +124,7 @@
             translationUiMode = normalized;
             session().noteHybridBoundary(normalized, previous);
             persistTranslationUiMode(normalized);
-            applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[normalized], { persist: !getRuntimeState().offlineMode });
+            applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[normalized]);
             updateTranslationModeHint();
             if (typeof actions.updateLanguageControl === 'function') actions.updateLanguageControl();
             if (setOptions.silent) return true;
@@ -155,7 +148,7 @@
                 translationUiMode = previous;
                 session().noteHybridBoundary(previous, normalized);
                 persistTranslationUiMode(previous);
-                applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[previous], { persist: !getRuntimeState().offlineMode });
+                applyLlmRefineMode(TRANSLATION_UI_MODE_TO_LLM[previous]);
                 renderTranslationModePicker();
                 if (typeof actions.updateLanguageControl === 'function') actions.updateLanguageControl();
                 return false;
@@ -212,13 +205,8 @@
                 if (!response.ok) return false;
                 const data = await response.json();
                 if (!data) return false;
-                const serverMode = normalizeLlmRefineMode(
-                    typeof data.mode === 'string'
-                        ? data.mode
-                        : (data.enabled ? 'refine' : 'off'),
-                );
-                const preferred = normalizeLlmRefineMode(defaultLlmRefineMode || serverMode);
-                applyLlmRefineMode(preferred, { persist: false });
+                const serverMode = normalizeLlmRefineMode(data.mode);
+                applyLlmRefineMode(defaultLlmRefineMode || serverMode);
                 return true;
             } catch (error) {
                 logger.error('Error fetching LLM refine status:', error);

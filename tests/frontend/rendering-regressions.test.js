@@ -166,8 +166,6 @@ describe('subtitle rendering regressions', () => {
         const page = await openPage({
             localStorage: {
                 translationUiMode: 'accurate',
-                llmTranslationMode: 'translate',
-                llmRefineMode: 'translate',
             },
             fetch: async (url) => {
                 const response = defaultFetchResponse(url);

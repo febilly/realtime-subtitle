@@ -879,18 +879,15 @@ class SonioxSession(RealtimeSessionBase):
         })
 
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
-        """Apply the unified 翻译模式 (fast/accurate/hybrid/refine).
+        """Apply the unified 翻译模式 (fast/accurate/hybrid).
 
         Maps onto the internal LLM mode + soniox-translation suppression. Returns
         (ok, normalized_mode, needs_restart) — needs_restart is True when the
         soniox stream must be reopened because its translation on/off changed.
         """
         normalized = str(mode or "").strip().lower()
-        # 混合 (hybrid) now shows the STT draft immediately and refines it in place,
-        # so it maps onto the internal refine mode. "refine" is accepted as a
-        # legacy alias (old stored prefs / clients) and normalized to hybrid.
-        if normalized == "refine":
-            normalized = "hybrid"
+        # 混合 (hybrid) shows the STT draft immediately and refines it in place,
+        # so it maps onto the internal refine mode.
         mapping = {
             "fast": ("off", False),
             "accurate": ("translate", True),

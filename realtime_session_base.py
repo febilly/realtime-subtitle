@@ -969,13 +969,6 @@ class RealtimeSessionBase:
         self._on_llm_refine_mode_changed(value)
         return True, "ok"
 
-    def get_llm_refine_enabled(self) -> bool:
-        return self._llm_refine_mode != "off"
-
-    def set_llm_refine_enabled(self, enabled: bool):
-        mode = "refine" if bool(enabled) else "off"
-        self.set_llm_refine_mode(mode)
-
     def _context_bounds(self) -> tuple[int, int]:
         """Effective (min, max) context item counts (server-delivered in relay mode)."""
         return config.llm_context_bounds()

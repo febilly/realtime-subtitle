@@ -1126,11 +1126,7 @@ def test_gemini_translation_mode_maps_onto_internal_llm_mode(monkeypatch):
     assert session._llm_refine_mode == "off"
     assert session.get_translation_mode() == "fast"
 
-    # Legacy 改进 value folds into 混合.
-    ok, normalized, _ = session.set_translation_mode("refine")
-    assert normalized == "hybrid"
-    assert session._llm_refine_mode == "refine"
-
+    assert session.set_translation_mode("refine")[0] is False
     assert session.set_translation_mode("nonsense")[0] is False
 
 
