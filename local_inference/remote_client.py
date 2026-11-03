@@ -1,4 +1,4 @@
-"""Client for Yakutan's shared protocol-v1 Qwen ASR / Hy-MT endpoint."""
+"""Client for the shared protocol-v1 remote Qwen ASR / Hy-MT endpoint (server lives in the Yakutan repo)."""
 from __future__ import annotations
 
 import base64
@@ -49,7 +49,7 @@ def probe_remote_server(url: str, *, timeout: float = 5.0) -> dict:
             ws.send(json.dumps({"type": "health", "protocol_version": PROTOCOL_VERSION}))
             reply = _recv_json(ws, timeout)
         if reply.get("type") != "health_ok" or reply.get("protocol_version") != PROTOCOL_VERSION:
-            raise RuntimeError("远程服务协议不兼容，需要 Yakutan protocol v1 推理服务")
+            raise RuntimeError("远程服务协议不兼容，需要 protocol v1 推理服务")
         return reply
     except Exception as exc:
         return {"ready": False, "error": str(exc)}
@@ -162,7 +162,7 @@ class RemoteASREngine:
 
     def probe_transcribe(self, audio: np.ndarray) -> dict | None:
         # A separate connection makes locator probes independent of the live
-        # draft even on the already-deployed Yakutan v1 server.
+        # draft, whatever the server version.
         probe = RemoteASREngine(self.server_url, timeout=self.timeout, corpus_text=self._corpus_text)
         probe.set_language(self.language)
         probe.set_context(self._context)

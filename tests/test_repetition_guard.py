@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 
 from local_inference.repetition_guard import (
@@ -10,7 +8,6 @@ from local_inference.repetition_guard import (
     tail_repeats,
     text_units,
 )
-from remote_inference_service import server
 from streaming_translation.api.hymt2 import HyMT2API
 
 
@@ -102,23 +99,3 @@ def test_local_clean_output_runs_once():
     api = _local_api(engine)
     api.translate("你好", "zh", "en", is_partial=False)
     assert len(engine.calls) == 1
-
-
-class _RemoteBackend:
-    def __init__(self, outputs):
-        self.outputs = list(outputs)
-        self.penalties = []
-
-    async def complete(self, prompt, repeat_penalty=1.0, max_new_tokens=0):
-        self.penalties.append(repeat_penalty)
-        return self.outputs.pop(0)
-
-
-def test_remote_runaway_retries_once_with_penalty():
-    backend = _RemoteBackend(["Run, " * 30, "Run, hurry!"])
-    assert asyncio.run(server._translate(backend, "prompt", "run了快跑")) == "Run, hurry!"
-    assert backend.penalties == [1.0, RETRY_REPEAT_PENALTY]
-
-    backend = _RemoteBackend(["Ha, " * 30])
-    asyncio.run(server._translate(backend, "prompt", "哈哈哈哈哈哈哈哈哈哈"))
-    assert backend.penalties == [1.0]

@@ -27,15 +27,11 @@ def _local_api():
     ("bo", "Tibetan"), ("ug", "Uyghur"), ("yue", "Cantonese"),
     ("ar", "Arabic"), ("uk", "Ukrainian"),
 ])
-def test_new_targets_use_full_language_names_through_local_and_remote_prompt_paths(code, name):
-    from remote_inference_service.server import _translation_prompt
-
+def test_new_targets_use_full_language_names_in_the_local_prompt(code, name):
     api = _local_api()
     api.translate("Hello", source_language="en", target_language=code, is_partial=True)
     prompt, _draft = api._local_engine.prompts[0]
     assert f"from English into {name}." in prompt
-    remote = _translation_prompt({"source_lang": "en", "target_lang": code}, "Hello", 5)
-    assert f"from English into {name}." in remote
 
 
 def test_switching_simplified_to_traditional_chinese_clears_translation_draft():
