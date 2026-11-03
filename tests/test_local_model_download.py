@@ -87,10 +87,12 @@ def test_hymt2_uses_the_mirror_when_it_serves_the_file_itself(models_dir, monkey
     assert progress[-1] == ("hymt2", 104, 104)
 
 
-def test_official_hf_is_used_when_the_mirror_fails_or_redirects_to_hf(models_dir, monkeypatch):
+def test_official_hf_is_used_when_the_mirror_fails_and_neither_fails_fast(models_dir, monkeypatch):
     _probe_results(monkeypatch, official=False, mirror=False)
-    assert model_manager._ordered_hf_endpoints("a/b", "c") == ["https://huggingface.co", "https://hf-mirror.com"]
-    # Neither answered: not remembered, so the next download probes again.
+    # Neither answered: fail at once instead of waiting out a connect timeout,
+    # and remember nothing, so the next download probes again.
+    with pytest.raises(model_manager.HFUnreachable):
+        model_manager._ordered_hf_endpoints("a/b", "c")
     assert model_manager._hf_endpoint_choice is None
 
     _probe_results(monkeypatch, official=True, mirror=False)

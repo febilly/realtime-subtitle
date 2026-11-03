@@ -391,6 +391,10 @@ def _is_hf_owned(url: str) -> bool:
     return any(host == domain or host.endswith("." + domain) for domain in HF_OWNED_DOMAINS)
 
 
+class HFUnreachable(OSError):
+    """The source probe reached neither HuggingFace nor the mirror."""
+
+
 class _RedirectedToHF(Exception):
     pass
 
@@ -470,7 +474,11 @@ def _ordered_hf_endpoints(repo_id: str, filename: str, progress_callback=None) -
             if _hf_endpoint_choice is None:
                 _report(progress_callback, "source-probe", 0, None)
                 _hf_endpoint_choice = _probe_hf_endpoints(repo_id, filename)
-            chosen = _hf_endpoint_choice or defaults
+            if _hf_endpoint_choice is None:
+                # Neither answered in time: fail now rather than sit through
+                # the OS connect timeout (~21 s on Windows) per endpoint.
+                raise HFUnreachable("huggingface.co and hf-mirror.com are both unreachable")
+            chosen = _hf_endpoint_choice
     endpoints: list[str] = []
     for endpoint in (*override, *chosen):
         if endpoint not in endpoints:
