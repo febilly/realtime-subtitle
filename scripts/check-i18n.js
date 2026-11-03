@@ -15,7 +15,6 @@ const SAME_AS_ENGLISH = {
     es: { error_title: 'Error', provider_local: 'Local' },
     pt: {
         provider_local: 'Local', login_method_status: 'Status',
-        local_dialog_model_meta: 'Download ~{download} · VRAM ~{vram}',
     },
 };
 

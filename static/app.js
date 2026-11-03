@@ -1416,12 +1416,11 @@ settingsPanelController.init();
 
 // First switch to the local provider: offer the model downloads before the
 // switch. Choosing ASR only lands on 准确 (LLM) or, without an LLM, no translation.
-async function confirmLocalProviderSwitch({ previousProvider } = {}) {
+async function confirmLocalProviderSwitch() {
     const llmAvailable = translationModeController.isAvailable();
     const translationUiMode = settingsRuntime.getDraft().translationUiMode
         || translationModeController.getTranslationUiMode();
     const result = await localModelDialog.confirmLocalProvider({
-        previousProvider,
         llmAvailable,
         needsTranslation: LocalModelDialog.needsMachineTranslation({
             uiTranslationMode,

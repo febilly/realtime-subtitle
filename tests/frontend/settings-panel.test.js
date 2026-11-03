@@ -330,7 +330,7 @@ describe('SettingsPanel local model confirmation', () => {
         page.controller.populate();
         switchToLocal(page);
         await vi.waitFor(() => expect(checkedProvider(page)).toBe('soniox'));
-        expect(confirmLocalProvider).toHaveBeenCalledWith({ previousProvider: 'provider_soniox' });
+        expect(confirmLocalProvider).toHaveBeenCalledOnce();
         expect(page.document.getElementById('localInferenceSection').hidden).toBe(true);
         page.dom.window.close();
     });

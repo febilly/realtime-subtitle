@@ -19,6 +19,12 @@
         return `${(value / 1e9).toFixed(1)} GB`;
     }
 
+    // The runtime and VAD are a few MB: "0.0 GB / 0.0 GB" says nothing.
+    function formatProgress(bytes) {
+        const value = Number(bytes) || 0;
+        return value < 1e9 ? `${Math.round(value / 1e6)} MB` : formatGb(value);
+    }
+
     // VRAM in GiB, labelled GB like Task Manager does.
     function formatVram(bytes) {
         const value = Number(bytes) || 0;
@@ -97,16 +103,15 @@
             return node;
         }
 
-        function modelRow(name, model, badge) {
+        function modelRow(name, model) {
             const row = element('div', 'local-model-dialog-row');
             const head = element('div', 'local-model-dialog-row-head');
             head.appendChild(element('strong', '', name));
-            head.appendChild(element('span', 'local-model-dialog-badge', badge));
-            row.appendChild(head);
-            row.appendChild(element('div', 'field-hint', t('local_dialog_model_meta', {
+            head.appendChild(element('span', 'field-hint', t('local_dialog_model_meta', {
                 download: formatGb(model.estimated_bytes),
                 vram: formatGb(model.estimated_vram_bytes),
             })));
+            row.appendChild(head);
             return row;
         }
 
@@ -122,15 +127,6 @@
             return String(gpu.description || gpu.name || 'GPU');
         }
 
-        function gpuLine(status) {
-            const gpu = selectedGpu(status);
-            if (!gpu || !(Number(gpu.free_bytes) > 0)) return null;
-            return element('p', 'field-hint', t('local_dialog_gpu_free', {
-                gpu: gpuName(gpu),
-                free: formatVram(gpu.free_bytes),
-            }));
-        }
-
         // Warnings shown only when something falls short: free disk space for
         // downloadBytes, and the selected card's total / free VRAM.
         function resourceWarnings(status, downloadBytes) {
@@ -141,7 +137,6 @@
                 warnings.push(element('p', 'local-model-dialog-warning', t('local_dialog_disk_low', {
                     need: formatGb(downloadBytes),
                     free: formatGb(diskFree),
-                    dir: String(models.models_dir || ''),
                 })));
             }
             const gpu = selectedGpu(status);
@@ -198,7 +193,7 @@
                                 let text = stageLabel(download.stage);
                                 if (total > 0) {
                                     bar.value = Math.min(1, done / total);
-                                    text += ` · ${formatGb(done)} / ${formatGb(total)}`;
+                                    text += ` · ${formatProgress(done)} / ${formatProgress(total)}`;
                                 } else {
                                     bar.removeAttribute('value');
                                 }
@@ -256,7 +251,7 @@
         //   { ok: false }                          cancelled / failed: keep the old provider
         //   { ok: true, skippedTranslation: bool } switch; skippedTranslation means
         //                                          Hy-MT2 is still missing by choice
-        async function confirmLocalProvider({ previousProvider, llmAvailable, needsTranslation } = {}) {
+        async function confirmLocalProvider({ llmAvailable, needsTranslation } = {}) {
             let status;
             try {
                 status = await fetchStatus();
@@ -269,45 +264,29 @@
             if (!asrMissing && !mtMissing) return { ok: true, skippedTranslation: false };
 
             const view = open(asrMissing ? t('local_dialog_title') : t('local_dialog_mt_title'));
-            const intro = [element('p', 'confirm-message', t('local_dialog_body'))];
-            if (asrMissing) intro.push(modelRow(t('local_dialog_asr_name'), asr, t('local_dialog_required')));
-            if (mtMissing) intro.push(modelRow(t('local_dialog_mt_name'), mt, t('local_dialog_mt_usage')));
-            const gpu = gpuLine(status);
-            if (gpu) intro.push(gpu);
+            const intro = [];
+            if (asrMissing) intro.push(modelRow(t('local_dialog_asr_name'), asr));
+            if (mtMissing) intro.push(modelRow(t('local_dialog_mt_name'), mt));
             intro.push(...resourceWarnings(status,
                 (asrMissing ? Number(asr.estimated_bytes) || 0 : 0)
                 + (mtMissing ? Number(mt.estimated_bytes) || 0 : 0)));
-            if (mtMissing) {
-                intro.push(element('p', 'field-hint', t(
-                    llmAvailable ? 'local_dialog_asr_only_llm' : 'local_dialog_asr_only_no_llm',
-                )));
-            }
             view.body.replaceChildren(...intro);
 
             const choice = await new Promise((resolve) => {
-                const buttons = [button(
-                    t('local_dialog_cancel_keep', { provider: previousProvider || '' }),
-                    'secondary-button',
-                    () => resolve(null),
-                )];
+                const buttons = [button(t('local_dialog_cancel'), 'secondary-button', () => resolve(null))];
                 if (asrMissing && mtMissing) {
-                    buttons.push(button(t('local_dialog_download_asr', {
-                        size: formatGb(asr.estimated_bytes),
-                    }), 'secondary-button', () => resolve(['qwen3-asr'])));
-                    buttons.push(button(t('local_dialog_download_both', {
-                        size: formatGb((Number(asr.estimated_bytes) || 0) + (Number(mt.estimated_bytes) || 0)),
-                    }), 'primary-button', () => resolve(['qwen3-asr', 'hymt2'])));
+                    buttons.push(button(t('local_dialog_download_asr'), 'secondary-button',
+                        () => resolve(['qwen3-asr'])));
+                    buttons.push(button(t('local_dialog_download_both'), 'primary-button',
+                        () => resolve(['qwen3-asr', 'hymt2'])));
                 } else if (asrMissing) {
-                    buttons.push(button(t('local_dialog_download_mt', {
-                        size: formatGb(asr.estimated_bytes),
-                    }), 'primary-button', () => resolve(['qwen3-asr'])));
+                    buttons.push(button(t('local_dialog_download'), 'primary-button', () => resolve(['qwen3-asr'])));
                 } else {
+                    // Without Hy-MT2 the LLM translates (准确), or translation turns off.
                     buttons.push(button(t(
                         llmAvailable ? 'local_dialog_skip_mt_llm' : 'local_dialog_skip_mt_no_llm',
                     ), 'secondary-button', () => resolve([])));
-                    buttons.push(button(t('local_dialog_download_mt', {
-                        size: formatGb(mt.estimated_bytes),
-                    }), 'primary-button', () => resolve(['hymt2'])));
+                    buttons.push(button(t('local_dialog_download'), 'primary-button', () => resolve(['hymt2'])));
                 }
                 view.actions.replaceChildren(...buttons);
             });
@@ -323,7 +302,7 @@
 
         // Before selecting 快速 / 混合 on the local provider. Resolves true when
         // Hy-MT2 is (now) downloaded.
-        async function confirmTranslationModel({ modeLabel, previousModeLabel } = {}) {
+        async function confirmTranslationModel() {
             let status;
             try {
                 status = await fetchStatus();
@@ -333,20 +312,13 @@
             const { mt } = modelInfo(status);
             if (mt.model_ready) return true;
             const view = open(t('local_dialog_mt_title'));
-            const intro = [
-                element('p', 'confirm-message', t('local_dialog_mt_body', { mode: modeLabel || '' })),
-                modelRow(t('local_dialog_mt_name'), mt, t('local_dialog_mt_usage')),
-            ];
-            const gpu = gpuLine(status);
-            if (gpu) intro.push(gpu);
+            const intro = [modelRow(t('local_dialog_mt_name'), mt)];
             intro.push(...resourceWarnings(status, Number(mt.estimated_bytes) || 0));
             view.body.replaceChildren(...intro);
             const confirmed = await new Promise((resolve) => {
                 view.actions.replaceChildren(
-                    button(t('local_dialog_cancel_mode', { mode: previousModeLabel || '' }),
-                        'secondary-button', () => resolve(false)),
-                    button(t('local_dialog_download_mt', { size: formatGb(mt.estimated_bytes) }),
-                        'primary-button', () => resolve(true)),
+                    button(t('local_dialog_cancel'), 'secondary-button', () => resolve(false)),
+                    button(t('local_dialog_download'), 'primary-button', () => resolve(true)),
                 );
             });
             const finished = confirmed ? await runDownloads(view, ['hymt2']) : false;

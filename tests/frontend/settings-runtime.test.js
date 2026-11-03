@@ -212,6 +212,26 @@ describe('SettingsRuntime picker state', () => {
         expect(page.document.getElementById('translationHint').textContent).toBe('translation_cost_llm');
         page.dom.window.close();
     });
+
+    it('declining the Hy-MT2 download never falls back to another mode that needs it', async () => {
+        for (const [llm, expected] of [[true, 'accurate'], [false, 'off']]) {
+            const confirmLocalTranslationModel = vi.fn().mockResolvedValue(false);
+            const page = setup({
+                state: {
+                    selectedProvider: 'local',
+                    llmRefineAvailable: llm,
+                    translationUiMode: llm ? 'hybrid' : 'fast',
+                    translationUiModes: ['fast', 'accurate', 'hybrid', 'off'],
+                },
+                actions: { confirmLocalTranslationModel },
+            });
+            const picker = page.controller.renderTranslationModePicker();
+            picker.choose(llm ? 'fast' : 'hybrid');
+            await vi.waitFor(() => expect(picker.value).toBe(expected));
+            expect(page.controller.getDraft().translationUiMode).toBe(expected);
+            page.dom.window.close();
+        }
+    });
 });
 
 describe('SettingsRuntime microphone and font effects', () => {

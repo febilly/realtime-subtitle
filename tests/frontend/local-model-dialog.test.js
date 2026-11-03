@@ -91,14 +91,13 @@ describe('LocalModelDialog', () => {
         const text = page.document.querySelector('.local-model-dialog').textContent;
         expect(text).toContain('download=1.5 GB|vram=2.0 GB');
         expect(text).toContain('download=1.1 GB|vram=1.5 GB');
-        expect(text).toContain('local_dialog_gpu_free|gpu=RTX 3080|free=6.4 GB');
-        expect(text).toContain('local_dialog_asr_only_llm');
+        expect(page.document.querySelectorAll('.local-model-dialog p')).toHaveLength(0);
         expect(buttons(page.document).map((button) => button.textContent)).toEqual([
-            'local_dialog_cancel_keep|provider=Soniox',
-            'local_dialog_download_asr|size=1.5 GB',
-            'local_dialog_download_both|size=2.6 GB',
+            'local_dialog_cancel',
+            'local_dialog_download_asr',
+            'local_dialog_download_both',
         ]);
-        await clickButton(page.document, 'local_dialog_cancel_keep');
+        await clickButton(page.document, 'local_dialog_cancel');
         await expect(pending).resolves.toEqual({ ok: false });
         expect(page.calls.some((call) => call.url === '/local-inference/download')).toBe(false);
         page.dom.window.close();
@@ -124,9 +123,6 @@ describe('LocalModelDialog', () => {
             '/local-inference/download': response({ status: 'ok' }),
         });
         const pending = page.dialog.confirmLocalProvider({ previousProvider: 'Soniox', llmAvailable: false });
-        await vi.waitFor(() => expect(page.dialog.isOpen()).toBe(true));
-        expect(page.document.querySelector('.local-model-dialog').textContent)
-            .toContain('local_dialog_asr_only_no_llm');
         await clickButton(page.document, 'local_dialog_download_asr');
         await expect(pending).resolves.toEqual({ ok: true, skippedTranslation: true });
         page.dom.window.close();
@@ -143,7 +139,7 @@ describe('LocalModelDialog', () => {
             },
         });
         const pending = page.dialog.confirmLocalProvider({ previousProvider: 'Gemini', llmAvailable: true });
-        await clickButton(page.document, 'local_dialog_download_mt');
+        await clickButton(page.document, 'local_dialog_download');
         await clickButton(page.document, 'local_dialog_cancel_download');
         await expect(pending).resolves.toEqual({ ok: false });
         page.dom.window.close();
@@ -154,12 +150,12 @@ describe('LocalModelDialog', () => {
             '/local-inference/status': response(status({ asrReady: true, mtReady: false })),
             '/local-inference/download': response({ message: 'all mirrors down' }, { ok: false }),
         });
-        const pending = page.dialog.confirmTranslationModel({ modeLabel: 'Fast', previousModeLabel: 'Accurate' });
+        const pending = page.dialog.confirmTranslationModel();
         await vi.waitFor(() => expect(buttons(page.document).map((button) => button.textContent)).toEqual([
-            'local_dialog_cancel_mode|mode=Accurate',
-            'local_dialog_download_mt|size=1.1 GB',
+            'local_dialog_cancel',
+            'local_dialog_download',
         ]));
-        await clickButton(page.document, 'local_dialog_download_mt');
+        await clickButton(page.document, 'local_dialog_download');
         await vi.waitFor(() => expect(page.document.querySelector('.local-model-dialog-error').textContent)
             .toBe('local_dialog_failed|error=all mirrors down'));
         await clickButton(page.document, 'local_dialog_close');
@@ -179,10 +175,10 @@ describe('LocalModelDialog', () => {
             page, () => page.dialog.confirmLocalProvider({ previousProvider: 'Soniox' }),
         );
         expect(warnings).toEqual(['local_dialog_disk_low']);
-        expect(text).toContain('local_dialog_disk_low|need=2.6 GB|free=2.0 GB|dir=D:/models');
+        expect(text).toContain('local_dialog_disk_low|need=2.6 GB|free=2.0 GB');
         // Hy-MT2 alone (1.1 GB) fits in 2 GB.
         const mtOnly = setup({ '/local-inference/status': response(status({ asrReady: true, diskFree: 2e9 })) });
-        const second = await openedText(mtOnly, () => mtOnly.dialog.confirmTranslationModel({ modeLabel: 'Fast' }));
+        const second = await openedText(mtOnly, () => mtOnly.dialog.confirmTranslationModel());
         expect(second.warnings).toEqual([]);
     });
 
@@ -196,7 +192,7 @@ describe('LocalModelDialog', () => {
             [{ totalGib: 15.9, freeGib: 12 }, []],
         ]) {
             const page = setup({ '/local-inference/status': response(status({ asrReady: true, ...gpu })) });
-            const { warnings } = await openedText(page, () => page.dialog.confirmTranslationModel({ modeLabel: 'Fast' }));
+            const { warnings } = await openedText(page, () => page.dialog.confirmTranslationModel());
             expect(warnings).toEqual(expected);
         }
     });
@@ -208,12 +204,12 @@ describe('LocalModelDialog', () => {
             page, () => page.dialog.confirmLocalProvider({ previousProvider: 'Soniox' }),
         );
         expect(warnings).toEqual([]);
-        expect(text).not.toContain('local_dialog_gpu_free');
+        expect(text).not.toContain('local_dialog_vram');
     });
 
     it('skips the translation-model prompt when Hy-MT2 is already there', async () => {
         const page = setup({ '/local-inference/status': response(status({ asrReady: true, mtReady: true })) });
-        await expect(page.dialog.confirmTranslationModel({ modeLabel: 'Fast' })).resolves.toBe(true);
+        await expect(page.dialog.confirmTranslationModel()).resolves.toBe(true);
         expect(page.dialog.isOpen()).toBe(false);
         page.dom.window.close();
     });

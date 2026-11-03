@@ -701,9 +701,7 @@
             if (provider === 'local' && previous && previous !== 'local'
                 && getLocalBackend() === 'local'
                 && typeof actions.confirmLocalProvider === 'function') {
-                const result = await actions.confirmLocalProvider({
-                    previousProvider: getProviderDisplayName(previous),
-                });
+                const result = await actions.confirmLocalProvider();
                 if (seq !== providerChangeSeq) return;
                 if (!result || !result.ok) {
                     setProvider(previous);

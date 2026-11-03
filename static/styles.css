@@ -1317,11 +1317,6 @@ body.dark-theme .local-model-dialog-row {
     font-size: 14px;
 }
 
-.local-model-dialog-badge {
-    font-size: 12px;
-    opacity: 0.7;
-}
-
 .local-model-dialog-actions {
     flex-wrap: wrap;
 }

@@ -563,17 +563,17 @@
         }
 
         // 快速 / 混合 on the local provider run Hy-MT2: ask to download it when
-        // missing, and fall back to the previous mode if the user declines.
+        // missing. Declining lands on a mode that needs no Hy-MT2: the previous
+        // one if it was 准确 / 关闭, else 准确 (with an LLM) or 关闭.
         async function confirmLocalTranslationMode(value, previous) {
             if (selectedProvider() !== 'local' || ['accurate', 'off'].includes(value) || value === previous) return;
             if (typeof actions.confirmLocalTranslationModel !== 'function') return;
-            const ok = await actions.confirmLocalTranslationModel({
-                modeLabel: translationModeLabel(value),
-                previousModeLabel: translationModeLabel(previous),
-            });
+            const ok = await actions.confirmLocalTranslationModel();
             if (ok || getDraft().translationUiMode !== value) return;
-            setDraft({ translationUiMode: previous });
-            if (pickers.translationMode) pickers.translationMode.value = previous;
+            const fallback = ['accurate', 'off'].includes(previous) ? previous
+                : (getTranslationModes().includes('accurate') ? 'accurate' : 'off');
+            setDraft({ translationUiMode: fallback });
+            if (pickers.translationMode) pickers.translationMode.value = fallback;
             updateTranslationModeHint();
         }
 
