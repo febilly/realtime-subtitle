@@ -281,6 +281,9 @@ class PendingBoundaryState:
             if key[0] == speaker_value:
                 self._pending.pop(key, None)
 
+    def clear_key(self, speaker: str, status: str) -> None:
+        self._pending.pop((str(speaker), status), None)
+
     def key(self, token: dict) -> tuple[str, str]:
         speaker = str(token.get("speaker", "?"))
         status = "translation" if token.get("translation_status") == "translation" else "original"

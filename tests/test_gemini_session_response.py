@@ -822,6 +822,69 @@ def test_gemini_batch_splitting_preserves_context_and_text(gemini_segmentation_s
     assert "".join(line["original"] for line in lines) == "".join(chunks)
 
 
+def _gemini_preview_text(updates, status):
+    last = updates[-1].get("non_final_tokens", [])
+    return "".join(t["text"] for t in last if t["translation_status"] == status)
+
+
+def test_gemini_translation_split_keeps_streaming_and_stays_in_one_line(gemini_segmentation_session):
+    """Gemini renders one Japanese sentence as two Chinese ones. The second
+    half must stay visible while the source sentence is still open, and land
+    on the same line instead of pushing every later pair out of step."""
+    session, updates, feed = gemini_segmentation_session
+    session.translation_target_lang = "zh"
+    feed("そうそう、それでね、最初は一緒に住んだら楽しいだろうなって思ってて", "对对，然后呢，一开始觉得住在一起应该会很开心，我是这么想的。",
+         language="ja")
+    feed("このまま", "然后呢，同居之后，", language="ja")
+    assert _gemini_preview_text(updates, "translation") == "然后呢，同居之后，"
+    feed("同棲してから一週間ぐらいで、もう無理かもって思うようになりました。", "大概一个星期就觉得可能不行了。",
+         language="ja")
+    feed("次の話です。", "下面是另一件事。", language="ja")
+    assert _gemini_emitted_lines(updates) == [
+        {
+            "original": "そうそう、それでね、最初は一緒に住んだら楽しいだろうなって思っててこのまま"
+                        "同棲してから一週間ぐらいで、もう無理かもって思うようになりました。",
+            "translation": "对对，然后呢，一开始觉得住在一起应该会很开心，我是这么想的。"
+                           "然后呢，同居之后，大概一个星期就觉得可能不行了。",
+        },
+        {"original": "次の話です。", "translation": "下面是另一件事。"},
+        {"original": "", "translation": ""},
+    ]
+    assert _gemini_preview_text(updates, "translation") == ""
+
+
+def test_gemini_cut_short_translation_waits_for_its_late_second_half(gemini_segmentation_session):
+    """The translation's premature period arrives before the source closes and
+    its second half only after: the line break waits for that second half."""
+    session, updates, feed = gemini_segmentation_session
+    session.translation_target_lang = "zh"
+    # An earlier pair gives the session its usual length ratio.
+    feed("今日はね、最近あった同棲の話をしようと思います。", "今天呢，我想聊聊最近同居的事。", language="ja")
+    feed("そうそう、それでね、最初は一緒に住んだら楽しいだろうなって思ってて", "对对，然后呢，我是这么想的。", language="ja")
+    feed("同棲してから一週間ぐらいで、もう無理かもって思うようになりました。", language="ja")
+    feed(translation="同居之后，大概一个星期就觉得一起住在一块可能已经不行了。")
+    feed("次の話です。", "下面是另一件事。", language="ja")
+    lines = _gemini_emitted_lines(updates)[1:]
+    assert lines[0]["translation"] == "对对，然后呢，我是这么想的。同居之后，大概一个星期就觉得一起住在一块可能已经不行了。"
+    assert lines[1] == {"original": "次の話です。", "translation": "下面是另一件事。"}
+
+
+def test_gemini_source_split_joins_the_next_source_sentence(gemini_segmentation_session):
+    session, updates, feed = gemini_segmentation_session
+    session.translation_target_lang = "zh"
+    feed("I moved in with him last spring. ", "去年春天我搬去和他住，")
+    feed("Within a week I was already tired of it.", language="en")
+    assert _gemini_preview_text(updates, "original").strip() == "Within a week I was already tired of it."
+    feed(translation="结果一个星期我就已经厌倦了。")
+    feed(" Next story.", "下一个故事。")
+    lines = [{k: " ".join(v.split()) for k, v in line.items()} for line in _gemini_emitted_lines(updates)]
+    assert lines[0] == {
+        "original": "I moved in with him last spring. Within a week I was already tired of it.",
+        "translation": "去年春天我搬去和他住，结果一个星期我就已经厌倦了。",
+    }
+    assert lines[1] == {"original": "Next story.", "translation": "下一个故事。"}
+
+
 def test_gemini_turn_end_flushes_unmatched_queued_tail(gemini_segmentation_session):
     session, updates, feed = gemini_segmentation_session
     feed("First. Last fragment", "第一段还没完")

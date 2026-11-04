@@ -2,6 +2,7 @@
 Gemini会话模块 - 管理与Gemini Live Translation服务的WebSocket会话
 """
 import asyncio
+import math
 import re
 import time
 from typing import Optional
@@ -26,6 +27,13 @@ from realtime_session_base import RealtimeSessionBase
 # Half-width ASCII punctuation -> full-width, applied only when wedged between
 # two CJK (Han) characters (see fix_fullwidth_punctuation_between_cjk).
 HALFWIDTH_TO_FULLWIDTH_PUNCT = {",": "，", ".": "。", "?": "？", "!": "！"}
+# Absorbing the other side's next queued sentence(s) into a closing pair must
+# bring its translation/source length at least 1.5x closer to the recent ratio.
+_GEMINI_RESYNC_GAIN = math.log(1.5)
+_GEMINI_RATIO_DECAY = 0.8
+# How long a pair whose translation looks cut short waits for the rest of it.
+_GEMINI_RESYNC_WAIT_SECONDS = 2.5
+
 _CJK_JA_CHAR_CLASS = (
     r"㐀-䶿一-鿿豈-﫿" # CJK Ideographs (Han characters)
     r"\u3040-\u309F"  # Hiragana
@@ -96,6 +104,9 @@ class GeminiSession(RealtimeSessionBase):
         # sentence on either side until the current source/translation pair closes.
         self._gemini_token_queues: dict[str, list[dict]] = {"original": [], "translation": []}
         self._gemini_sentence_done: set[str] = set()
+        # Decayed (source, translation) alnum-char totals of recent pairs.
+        self._gemini_ratio_history: tuple[float, float] = (0.0, 0.0)
+        self._gemini_pair_wait_started: float | None = None
         self._last_input_language = ""
         self._last_char_original = None
         self._last_char_translation = None
@@ -107,6 +118,7 @@ class GeminiSession(RealtimeSessionBase):
         for queue in self._gemini_token_queues.values():
             queue.clear()
         self._gemini_sentence_done.clear()
+        self._gemini_pair_wait_started = None
 
     def _reset_run_state(self) -> None:
         self._last_input_language = ""
@@ -191,50 +203,177 @@ class GeminiSession(RealtimeSessionBase):
                 start = end
         queue[:1] = tokens
 
+    def _consume_gemini_sentence(self, status: str, outgoing: list[dict]) -> bool:
+        """Move one side's queued tokens into the open sentence until it ends.
+
+        Marks ``status`` done when its sentence ends. Returns whether any token
+        was consumed.
+        """
+        queue = self._gemini_token_queues[status]
+        progressed = False
+        while queue:
+            self._split_queued_gemini_token(queue)
+            token = queue[0]
+            # A whole batch may continue an abbreviation and then carry
+            # on with ordinary words ("a." + "m. tomorrow. Next"). The
+            # pending-boundary helper expects one small token, so resolve
+            # that wait against the abbreviation prefix of this batch.
+            previous = self._sentence_context_text_for_token({**token, "text": ""})
+            probe = token
+            if sentence_segmentation.text_ends_with_abbreviation_prefix(previous):
+                for index, char in enumerate(token["text"]):
+                    if char == "." and sentence_segmentation.text_continues_abbreviation(
+                        previous, token["text"][:index + 1],
+                    ):
+                        probe = {**token, "text": token["text"][:index + 1]}
+                        break
+            if self._pending_boundaries.flush_before_token(probe):
+                self._gemini_sentence_done.add(status)
+                break
+            context = self._sentence_context_text_for_token(token)
+            ending = self._pending_boundaries.is_token_sentence_ending(
+                queue, 0, context_text=context,
+                is_internal_token=self._is_internal_token, source_as_output=True,
+            )
+            self._pending_boundaries.mark_after_token(
+                queue, 0, context_text=context,
+                is_internal_token=self._is_internal_token, source_as_output=True,
+            )
+            queue.pop(0)
+            self._process_token_for_sentence(token)
+            outgoing.append(token)
+            progressed = True
+            if ending:
+                self._gemini_sentence_done.add(status)
+                break
+        return progressed
+
+    @staticmethod
+    def _gemini_text_weight(text: str) -> int:
+        return sum(1 for char in text if char.isalnum())
+
+    def _gemini_length_ratio(self, buffer: dict) -> float | None:
+        """Translation/source length ratio of recent pairs plus all text seen
+        but not yet finalized (so the very first sentence has an estimate)."""
+        source = self._gemini_ratio_history[0] + self._gemini_text_weight(
+            self._join_token_texts(buffer.get("original_tokens") or [])
+            + self._join_token_texts(self._gemini_token_queues["original"])
+        )
+        translation = self._gemini_ratio_history[1] + self._gemini_text_weight(
+            self._join_token_texts(buffer.get("translation_tokens") or [])
+            + self._join_token_texts(self._gemini_token_queues["translation"])
+        )
+        if source <= 0 or translation <= 0:
+            return None
+        return translation / source
+
+    def _gemini_queued_sentence_weights(self, status: str, buffer: dict) -> list[int]:
+        text = self._join_token_texts(self._gemini_token_queues[status])
+        if not text:
+            return []
+        key = "translation_tokens" if status == "translation" else "original_tokens"
+        context = self._join_token_texts(buffer.get(key) or [])
+        weights = []
+        offset = 0
+        for piece in sentence_segmentation.split_text_at_sentence_boundaries(context + text):
+            piece_start = max(offset - len(context), 0)
+            offset += len(piece)
+            piece_end = offset - len(context)
+            if piece_end > piece_start:
+                weights.append(self._gemini_text_weight(text[piece_start:piece_end]))
+        return weights
+
+    def _resync_gemini_pair(self, speaker: str, outgoing: list[dict]) -> str:
+        """Decide whether a pair whose both sides ended may close.
+
+        Gemini often renders one source sentence as two translated sentences
+        (Japanese "…と思って…" -> Chinese "…我是这么想的。然后…"), or the
+        reverse. Pairing purely by sentence count would close the pair on the
+        first half and push every later sentence one line out of step. When the
+        closing pair's lengths are far off the recent translation/source ratio
+        and the short side's queued text brings them back in line, that text
+        belongs to this pair.
+
+        Returns "close", "open" (text was absorbed and the short side is
+        mid-sentence again) or "wait" (the translation looks cut short and the
+        rest of it has not arrived yet; held text stays visible as preview).
+        """
+        buffer = self._sentence_buffers.get(speaker) or {}
+        source_weight = self._gemini_text_weight(self._join_token_texts(buffer.get("original_tokens") or []))
+        translation_weight = self._gemini_text_weight(self._join_token_texts(buffer.get("translation_tokens") or []))
+        ratio = self._gemini_length_ratio(buffer)
+        if not ratio or source_weight <= 0 or translation_weight <= 0:
+            return "close"
+
+        def deviation(src: float, tgt: float) -> float:
+            return abs(math.log(tgt / (ratio * src)))
+
+        before = deviation(source_weight, translation_weight)
+        if before < _GEMINI_RESYNC_GAIN:
+            return "close"
+        short_side = "translation" if translation_weight < ratio * source_weight else "original"
+        src, tgt = float(source_weight), float(translation_weight)
+        best, take = before, 0
+        for count, weight in enumerate(self._gemini_queued_sentence_weights(short_side, buffer), start=1):
+            if short_side == "translation":
+                tgt += weight
+            else:
+                src += weight
+            candidate = deviation(src, tgt)
+            if candidate < best:
+                best, take = candidate, count
+        # Sentence lengths are noisy (numbers, names), so only re-pair when the
+        # absorbed text makes the pair clearly more proportionate.
+        if take and before - best >= _GEMINI_RESYNC_GAIN:
+            # The sentence end on the short side was a split the other side
+            # did not make: drop any boundary still waiting on it.
+            self._pending_boundaries.clear_key(speaker, short_side)
+            for _ in range(take):
+                self._gemini_sentence_done.discard(short_side)
+                if not self._consume_gemini_sentence(short_side, outgoing):
+                    break
+            self._gemini_pair_wait_started = None
+            return "close" if short_side in self._gemini_sentence_done else "open"
+
+        # Translation trails the source, so a premature translation period is
+        # often followed by its second half only after the source has closed.
+        # Hold the line break while everything queued is still one unfinished
+        # translated sentence that would not overshoot the expected length.
+        if short_side != "translation":
+            return "close"
+        queued = self._join_token_texts(self._gemini_token_queues["translation"])
+        if queued and (
+            self._is_sentence_ending_punctuation(queued) or tgt >= ratio * source_weight
+        ):
+            return "close"
+        now = time.monotonic()
+        if self._gemini_pair_wait_started is None:
+            self._gemini_pair_wait_started = now
+        if now - self._gemini_pair_wait_started >= _GEMINI_RESYNC_WAIT_SECONDS:
+            return "close"
+        return "wait"
+
+    def _record_gemini_pair_lengths(self, buffer: dict) -> None:
+        source = self._gemini_text_weight(self._join_token_texts(buffer.get("original_tokens") or []))
+        translation = self._gemini_text_weight(self._join_token_texts(buffer.get("translation_tokens") or []))
+        if source <= 0 or translation <= 0:
+            return
+        history = self._gemini_ratio_history
+        self._gemini_ratio_history = (
+            history[0] * _GEMINI_RATIO_DECAY + source,
+            history[1] * _GEMINI_RATIO_DECAY + translation,
+        )
+
     def _drain_gemini_sentence_tokens(self, *, hard_end: bool) -> list[dict]:
         """Emit matching sentence prefixes before releasing either side's tail."""
         outgoing: list[dict] = []
         speaker = "1"  # Gemini's transcription stream has a single speaker.
         while True:
             progressed = False
-            for status, queue in self._gemini_token_queues.items():
+            for status in self._gemini_token_queues:
                 if status in self._gemini_sentence_done:
                     continue
-                while queue:
-                    self._split_queued_gemini_token(queue)
-                    token = queue[0]
-                    # A whole batch may continue an abbreviation and then carry
-                    # on with ordinary words ("a." + "m. tomorrow. Next"). The
-                    # pending-boundary helper expects one small token, so resolve
-                    # that wait against the abbreviation prefix of this batch.
-                    previous = self._sentence_context_text_for_token({**token, "text": ""})
-                    probe = token
-                    if sentence_segmentation.text_ends_with_abbreviation_prefix(previous):
-                        for index, char in enumerate(token["text"]):
-                            if char == "." and sentence_segmentation.text_continues_abbreviation(
-                                previous, token["text"][:index + 1],
-                            ):
-                                probe = {**token, "text": token["text"][:index + 1]}
-                                break
-                    if self._pending_boundaries.flush_before_token(probe):
-                        self._gemini_sentence_done.add(status)
-                        break
-                    context = self._sentence_context_text_for_token(token)
-                    ending = self._pending_boundaries.is_token_sentence_ending(
-                        queue, 0, context_text=context,
-                        is_internal_token=self._is_internal_token, source_as_output=True,
-                    )
-                    self._pending_boundaries.mark_after_token(
-                        queue, 0, context_text=context,
-                        is_internal_token=self._is_internal_token, source_as_output=True,
-                    )
-                    queue.pop(0)
-                    self._process_token_for_sentence(token)
-                    outgoing.append(token)
-                    progressed = True
-                    if ending:
-                        self._gemini_sentence_done.add(status)
-                        break
+                progressed = self._consume_gemini_sentence(status, outgoing) or progressed
 
             buffer = self._sentence_buffers.get(speaker) or {}
             source_tokens = buffer.get("original_tokens") or []
@@ -242,7 +381,15 @@ class GeminiSession(RealtimeSessionBase):
             pair_done = "original" in self._gemini_sentence_done and (
                 "translation" in self._gemini_sentence_done or not expects_translation
             )
+            if pair_done and expects_translation:
+                decision = self._resync_gemini_pair(speaker, outgoing)
+                if decision == "open":
+                    continue
+                if decision == "wait":
+                    break
             if pair_done:
+                self._gemini_pair_wait_started = None
+                self._record_gemini_pair_lengths(buffer)
                 if self._trigger_sentence_finalization(speaker):
                     outgoing.append(self._make_separator_token("punctuation"))
                 self._gemini_sentence_done.clear()
@@ -253,6 +400,12 @@ class GeminiSession(RealtimeSessionBase):
         if hard_end:
             # A turn boundary also closes unpunctuated or differently punctuated
             # source/translation tails. No held text may leak into the next turn.
+            if {"original", "translation"} <= self._gemini_sentence_done:
+                # A pair still waiting for a cut-short translation closes as is.
+                self._record_gemini_pair_lengths(self._sentence_buffers.get(speaker) or {})
+                if self._trigger_sentence_finalization(speaker):
+                    outgoing.append(self._make_separator_token("punctuation"))
+            self._gemini_pair_wait_started = None
             for queue in self._gemini_token_queues.values():
                 for token in queue:
                     self._process_token_for_sentence(token)
@@ -263,6 +416,14 @@ class GeminiSession(RealtimeSessionBase):
             self._gemini_sentence_done.clear()
             self._pending_boundaries.clear_speaker(speaker)
         return outgoing
+
+    def _gemini_held_preview_tokens(self) -> list[dict]:
+        """Queued text waiting for the other side, shown provisionally so the
+        subtitle keeps moving while a pair is still open."""
+        held = []
+        for queue in self._gemini_token_queues.values():
+            held.extend({**token, "is_final": False} for token in queue)
+        return held
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""
@@ -616,7 +777,9 @@ class GeminiSession(RealtimeSessionBase):
             self.logger.write_to_log([t for t in emitted_tokens if not t.get("is_separator")])
 
         # 如果有新的数据，发送给前端（暂停时也显示，只是不记录）
-        if self._broadcast_token_update(loop, outgoing_final_tokens, [], non_final_tokens):
+        if self._broadcast_token_update(
+            loop, outgoing_final_tokens, [], non_final_tokens + self._gemini_held_preview_tokens(),
+        ):
             # 更新已发送的计数
             sent_count = len(all_final_tokens)
             self.last_sent_count = sent_count
