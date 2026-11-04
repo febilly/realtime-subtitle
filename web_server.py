@@ -683,6 +683,8 @@ class WebServer:
                     asr_device=local_config.get("asr_device"),
                     encoder_device=local_config.get("encoder_device"),
                     translation_device=local_config.get("translation_device"),
+                    vad_silence_duration=local_config.get("vad_silence_duration"),
+                    incremental_max_update_interval=local_config.get("incremental_max_update_interval"),
                 )
             except (ValueError, TypeError) as error:
                 return web.json_response({"status": "error", "message": str(error)}, status=400)
@@ -893,6 +895,8 @@ class WebServer:
                 "asr_device": config.LOCAL_INFERENCE_DEVICE,
                 "encoder_device": config.LOCAL_QWEN_ENCODER_DEVICE,
                 "translation_device": config.LOCAL_TRANSLATION_DEVICE,
+                "vad_silence_duration": config.LOCAL_VAD_SILENCE_DURATION,
+                "incremental_max_update_interval": config.LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL,
             },
         })
 

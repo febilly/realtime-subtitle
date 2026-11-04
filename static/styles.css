@@ -1065,6 +1065,64 @@ body.dark-theme .local-model-card {
     color: #dc2626;
 }
 
+/* Timing sliders: value on the right of the label, a tick for the default. */
+.range-field-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.range-field-header output {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    opacity: 0.8;
+}
+
+.range-track {
+    --thumb-size: 16px;
+    position: relative;
+    display: block;
+    height: 24px;
+}
+
+.form-field .range-track input[type="range"] {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    min-height: 0;
+    height: 24px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+    accent-color: #3b82f6;
+    cursor: pointer;
+}
+
+body.dark-theme .form-field .range-track input[type="range"] {
+    background: transparent;
+    color-scheme: dark;
+}
+
+.range-default-mark {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: calc(var(--thumb-size) / 2 + (100% - var(--thumb-size)) * var(--default-frac));
+    width: 2px;
+    margin-left: -1px;
+    border-radius: 1px;
+    background: rgba(0, 0, 0, 0.35);
+    pointer-events: none;
+    z-index: 2;
+}
+
+body.dark-theme .range-default-mark {
+    background: rgba(255, 255, 255, 0.45);
+}
+
 .local-model-card .secondary-button {
     align-self: flex-start;
 }

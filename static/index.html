@@ -247,6 +247,26 @@
                                 <select id="localTranslationDevice"></select>
                             </label>
                         </div>
+                        <label class="form-field range-field" for="localVadSilenceDuration">
+                            <span class="range-field-header">
+                                <span id="localVadSilenceLabel">Pause before a sentence ends</span>
+                                <output id="localVadSilenceValue" for="localVadSilenceDuration">0.8 s</output>
+                            </span>
+                            <span class="range-track" style="--default-frac: 0.25">
+                                <input id="localVadSilenceDuration" type="range" min="0.4" max="2" step="0.1" value="0.8" data-default="0.8">
+                                <span class="range-default-mark" id="localVadSilenceDefaultMark" aria-hidden="true"></span>
+                            </span>
+                        </label>
+                        <label class="form-field range-field" for="localMaxUpdateInterval">
+                            <span class="range-field-header">
+                                <span id="localMaxUpdateIntervalLabel">Subtitle refresh during nonstop speech</span>
+                                <output id="localMaxUpdateIntervalValue" for="localMaxUpdateInterval">4.0 s</output>
+                            </span>
+                            <span class="range-track" style="--default-frac: 0.428571">
+                                <input id="localMaxUpdateInterval" type="range" min="1" max="8" step="0.5" value="4" data-default="4">
+                                <span class="range-default-mark" id="localMaxUpdateIntervalDefaultMark" aria-hidden="true"></span>
+                            </span>
+                        </label>
                     </section>
                 </div>
             </section>

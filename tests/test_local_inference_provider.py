@@ -227,7 +227,25 @@ def test_local_device_config_is_normalized(monkeypatch):
         "asr_device": "vulkan:2",
         "encoder_device": "gpu",
         "translation_device": "auto",
+        "vad_silence_duration": config.LOCAL_VAD_SILENCE_DURATION,
+        "incremental_max_update_interval": config.LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL,
     }
+
+
+def test_local_timing_config_is_clamped_to_slider_ranges(monkeypatch):
+    monkeypatch.setattr(config, "LOCAL_VAD_SILENCE_DURATION", 0.8)
+    monkeypatch.setattr(config, "LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL", 4.0)
+
+    result = config.set_local_inference_config(
+        vad_silence_duration=1.3, incremental_max_update_interval=99,
+    )
+    assert result["vad_silence_duration"] == config.LOCAL_VAD_SILENCE_DURATION == 1.3
+    assert result["incremental_max_update_interval"] == config.LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL == 8.0
+
+    config.set_local_inference_config(vad_silence_duration=0.01)
+    assert config.LOCAL_VAD_SILENCE_DURATION == 0.4
+    with pytest.raises(ValueError):
+        config.set_local_inference_config(vad_silence_duration="abc")
 
 
 def test_local_session_emits_source_before_translation_and_preserves_final_side_effects():

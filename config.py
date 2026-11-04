@@ -555,6 +555,19 @@ def sanitize_qwen_encoder_device(value: str) -> str:
     return normalized if normalized in {"auto", "cpu", "gpu"} else "auto"
 
 
+# Ranges the settings sliders offer; values from the UI are clamped to them.
+LOCAL_VAD_SILENCE_DURATION_RANGE = (0.4, 2.0)
+LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL_RANGE = (1.0, 8.0)
+
+
+def _clamped_seconds(value, value_range: tuple[float, float]) -> float:
+    number = float(value)
+    if number != number:  # NaN
+        raise ValueError("Invalid duration")
+    low, high = value_range
+    return round(min(high, max(low, number)), 2)
+
+
 def set_local_inference_config(
     *,
     backend: str | None = None,
@@ -563,10 +576,18 @@ def set_local_inference_config(
     asr_device: str | None = None,
     encoder_device: str | None = None,
     translation_device: str | None = None,
+    vad_silence_duration: float | None = None,
+    incremental_max_update_interval: float | None = None,
 ) -> dict:
-    """Apply inference location and device choices for the next session."""
+    """Apply inference location, device and timing choices for the next session."""
     global LOCAL_INFERENCE_DEVICE, LOCAL_QWEN_ENCODER_DEVICE, LOCAL_TRANSLATION_DEVICE
     global LOCAL_INFERENCE_BACKEND, LOCAL_INFERENCE_SERVER_URL, LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS
+    global LOCAL_VAD_SILENCE_DURATION, LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL
+    silence = (None if vad_silence_duration is None
+               else _clamped_seconds(vad_silence_duration, LOCAL_VAD_SILENCE_DURATION_RANGE))
+    max_interval = (None if incremental_max_update_interval is None
+                    else _clamped_seconds(incremental_max_update_interval,
+                                          LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL_RANGE))
     selected_backend = LOCAL_INFERENCE_BACKEND if backend is None else str(backend).strip().lower()
     if selected_backend not in {"local", "remote"}:
         raise ValueError("Invalid inference backend")
@@ -587,6 +608,10 @@ def set_local_inference_config(
         LOCAL_QWEN_ENCODER_DEVICE = sanitize_qwen_encoder_device(encoder_device)
     if translation_device is not None:
         LOCAL_TRANSLATION_DEVICE = sanitize_local_device(translation_device)
+    if silence is not None:
+        LOCAL_VAD_SILENCE_DURATION = silence
+    if max_interval is not None:
+        LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL = max(LOCAL_INCREMENTAL_MIN_UPDATE_INTERVAL, max_interval)
     return {
         "backend": LOCAL_INFERENCE_BACKEND,
         "server_url": LOCAL_INFERENCE_SERVER_URL,
@@ -594,6 +619,8 @@ def set_local_inference_config(
         "asr_device": LOCAL_INFERENCE_DEVICE,
         "encoder_device": LOCAL_QWEN_ENCODER_DEVICE,
         "translation_device": LOCAL_TRANSLATION_DEVICE,
+        "vad_silence_duration": LOCAL_VAD_SILENCE_DURATION,
+        "incremental_max_update_interval": LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL,
     }
 
 

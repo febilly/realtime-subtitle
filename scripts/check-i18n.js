@@ -9,7 +9,7 @@ const REQUIRED_LANGUAGES = ['en', 'zh', 'ja', 'ko', 'ru', 'es', 'pt'];
 // Intentional identical wording: brands, abbreviations, and natural cognates.
 // Scope exceptions to both the language and exact English value so later copy
 // changes do not silently inherit an old exception.
-const SHARED_COPY = { provider_soniox: 'Soniox', provider_gemini: 'Gemini' };
+const SHARED_COPY = { provider_soniox: 'Soniox', provider_gemini: 'Gemini', local_seconds_value: '{value} s' };
 const SAME_AS_ENGLISH = {
     zh: { api_key: 'API Key' },
     es: { error_title: 'Error', provider_local: 'Local' },

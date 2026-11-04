@@ -305,7 +305,37 @@
             element.classList.toggle('missing', !!status && !ready);
         }
 
+        // [config key, slider, value label, default mark]
+        function localTimingSliders() {
+            return [
+                ['vad_silence_duration', elements.localVadSilenceDuration,
+                    elements.localVadSilenceValue, elements.localVadSilenceDefaultMark],
+                ['incremental_max_update_interval', elements.localMaxUpdateInterval,
+                    elements.localMaxUpdateIntervalValue, elements.localMaxUpdateIntervalDefaultMark],
+            ];
+        }
+
+        function formatSeconds(value) {
+            return t('local_seconds_value', { value: Number(value).toFixed(1) });
+        }
+
+        function renderTimingSlider(slider, output, mark) {
+            if (!slider) return;
+            if (output) output.textContent = formatSeconds(slider.value);
+            if (mark) mark.title = t('local_slider_default', { value: formatSeconds(slider.dataset.default) });
+        }
+
+        function applyLocalTimingConfig(config = {}) {
+            for (const [key, slider, output, mark] of localTimingSliders()) {
+                if (!slider) continue;
+                const value = Number(config[key]);
+                slider.value = String(Number.isFinite(value) ? value : slider.dataset.default);
+                renderTimingSlider(slider, output, mark);
+            }
+        }
+
         function applyLocalInferenceConfig(config = {}) {
+            applyLocalTimingConfig(config);
             const backend = normalizeLocalBackend(config.backend);
             if (elements.localInferenceBackend) elements.localInferenceBackend.value = backend;
             if (elements.localRemoteServerUrl) {
@@ -507,6 +537,10 @@
                         ? elements.localTranslationDevice.value
                         : 'auto',
                 };
+                for (const [key, slider] of localTimingSliders()) {
+                    const value = Number(slider && slider.value);
+                    if (slider && Number.isFinite(value)) draft.localConfig[key] = value;
+                }
                 {
                     draft.localConfig.server_url = elements.localRemoteServerUrl
                         ? elements.localRemoteServerUrl.value.trim()
@@ -605,6 +639,11 @@
             setText('localEncoderDeviceLabel', 'local_encoder_device');
             setText('localEncoderDeviceAutoOption', 'local_encoder_device_auto');
             setText('localTranslationDeviceLabel', 'local_translation_device');
+            setText('localVadSilenceLabel', 'local_vad_silence_duration');
+            setText('localMaxUpdateIntervalLabel', 'local_max_update_interval');
+            for (const [, slider, output, mark] of localTimingSliders()) {
+                renderTimingSlider(slider, output, mark);
+            }
             setText('sonioxRegionLabel', 'soniox_region');
             setText('microphoneDeviceLabel', 'microphone_device');
             setText('outputDeviceLabel', 'output_device');
@@ -760,6 +799,12 @@
             });
             for (const field of [elements.localRemoteServerUrl, elements.localRemoteTimeoutSeconds]) {
                 bind(field, 'input', () => { localDraftDirty = true; renderRemoteStatus(null); });
+            }
+            for (const [, slider, output, mark] of localTimingSliders()) {
+                bind(slider, 'input', () => {
+                    localDraftDirty = true;
+                    renderTimingSlider(slider, output, mark);
+                });
             }
             return true;
         }
