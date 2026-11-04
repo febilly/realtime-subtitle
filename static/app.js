@@ -146,8 +146,38 @@ function showToast(...args) {
     return uiFeedbackController.showToast(...args);
 }
 
+async function quitAfterUpdate() {
+    // Give the browser a moment to hand the download page off before we exit.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+        await fetch('/shutdown', { method: 'POST' });
+    } catch (_) {
+        // The server may close the connection while shutting down.
+    }
+    try {
+        window.close();
+    } catch (_) {}
+    const color = document.body.classList.contains('dark-theme') ? '#e5e7eb' : '#1f2937';
+    document.body.innerHTML = '';
+    const message = document.createElement('div');
+    message.style.cssText = 'display:flex;align-items:center;justify-content:center;height:100vh;'
+        + 'font-size:15px;opacity:0.7;text-align:center;padding:24px;color:' + color + ';';
+    message.textContent = t('client_update_quitting');
+    document.body.append(message);
+}
+
+// The update dialog is created further down; until then nothing is showing.
+function updateDialogShowing() {
+    try {
+        return hostedUpdate.isShowing();
+    } catch (error) {
+        return false;
+    }
+}
+
 const timedNotifications = TimedNotifications.create({
     fetch, t, showToast, renderServerNotice,
+    isSuppressed: updateDialogShowing,
     canRenderServerNotice: (notice) => !!(notice && SERVER_NOTICE_MESSAGE_KEYS[notice.id])
         && settingsPorts.getConnectionMode() === 'relay',
 });
@@ -1541,6 +1571,13 @@ announcements.bind(document);
 const hostedUpdate = HostedUpdate.create({
     timedNotifications,
     onChecked: () => announcements.check({ autoPopup: true }),
+    // After "later" (or leaving for direct mode) the held-back reminders get their turn.
+    onDismissed: () => {
+        void timedNotifications.tick();
+        if (hostedAccount) void hostedAccount.maybeShowTicketUnreadReminder();
+    },
+    // "Update" opens the download page and quits this version.
+    onQuit: quitAfterUpdate,
     Billing: Hosted.Billing,
     window,
     storage: localStorage,
@@ -1721,6 +1758,7 @@ const hostedBalance = HostedBalance.create({
 hostedBalance.init();
 hostedAccount = HostedAccount.create({
     timedNotifications,
+    isSuppressed: updateDialogShowing,
     document,
     window,
     navigator,
@@ -1798,5 +1836,5 @@ document.addEventListener('DOMContentLoaded', () => {
     void hostedController.startup().then(() => timedNotifications.start());
 });
 
-timedNotifications.add('update', () => hostedUpdate.ensure({ background: true }));
+timedNotifications.addUngated('update', () => hostedUpdate.ensure({ background: true }));
 timedNotifications.add('invite', () => hostedAccount.maybeShowInviteReminder());

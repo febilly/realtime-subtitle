@@ -131,18 +131,19 @@ function updateSetup(overrides = {}) {
     const dom = new JSDOM('<!doctype html><body><div id="overlay" hidden></div><section id="dialog" hidden><button id="update"></button><button id="later"></button><button id="direct"></button></section></body>', { url: 'http://localhost/' });
     const doc = dom.window.document, order = [];
     const onChecked = vi.fn(() => { order.push('announcement'); });
+    const onQuit = vi.fn(() => { order.push('quit'); });
     const state = { relayAvailable: true, connectionMode: 'relay', currentVersion: '1.0.0', latestVersion: '1.1.0', minimumVersion: '0.9.0', updateUrl: 'https://example.com/update', ...overrides };
     dom.window.open = vi.fn();
     const controller = Update.create({ Billing: Hosted.Billing, window: dom.window, storage: dom.window.localStorage, getState: () => state,
-        showConfirm: vi.fn().mockResolvedValue(true), onSwitchDirect: async () => { order.push('direct'); }, onChecked,
+        showConfirm: vi.fn().mockResolvedValue(true), onSwitchDirect: async () => { order.push('direct'); }, onChecked, onQuit,
         elements: { overlay: doc.getElementById('overlay'), dialog: doc.getElementById('dialog'), updateButton: doc.getElementById('update'), laterButton: doc.getElementById('later'), directButton: doc.getElementById('direct') } });
-    return { dom, doc, order, state, controller, onChecked };
+    return { dom, doc, order, state, controller, onChecked, onQuit };
 }
 describe('announcement checks after update decisions', () => {
-    it.each(['later', 'update'])('waits for optional %s before checking announcements', async action => {
+    it('waits for optional later before checking announcements', async () => {
         const page = updateSetup(); const pending = page.controller.ensure();
         expect(page.onChecked).not.toHaveBeenCalled();
-        page.doc.getElementById(action).click();
+        page.doc.getElementById('later').click();
         await expect(pending).resolves.toBe(true);
         expect(page.doc.getElementById('dialog').hidden).toBe(true);
         expect(page.onChecked).toHaveBeenCalledOnce();
@@ -157,10 +158,10 @@ describe('announcement checks after update decisions', () => {
         expect(page.order).toEqual([]); page.doc.getElementById('direct').click();
         await expect(pending).resolves.toBe(false); expect(page.order).toEqual(['direct', 'announcement']); page.dom.window.close();
     });
-    it('allows announcements after choosing a required download while the version gate remains blocking', async () => {
-        const page = updateSetup({ minimumVersion: '1.1.0' }); const pending = page.controller.ensure();
-        expect(page.onChecked).not.toHaveBeenCalled(); page.doc.getElementById('update').click();
-        expect(page.onChecked).toHaveBeenCalledOnce(); expect(page.doc.getElementById('dialog').hidden).toBe(false);
-        page.controller.close('later'); await expect(pending).resolves.toBe(false); page.dom.window.close();
+    it.each([['optional', {}], ['required', { minimumVersion: '1.1.0' }]])('quits without announcements after choosing an %s download', async (_label, overrides) => {
+        const page = updateSetup(overrides); void page.controller.ensure();
+        page.doc.getElementById('update').click(); await new Promise(resolve => setTimeout(resolve, 0));
+        expect(page.order).toEqual(['quit']); expect(page.onChecked).not.toHaveBeenCalled();
+        expect(page.doc.getElementById('dialog').hidden).toBe(false); page.dom.window.close();
     });
 });

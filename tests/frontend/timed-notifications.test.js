@@ -5,6 +5,7 @@ const UiFeedback = require('../../static/js/ui-feedback-controller');
 function setup({ mode = 'auto', cooldown = 14400, days = 7, count = 0, pending = [] } = {}) {
     let clock = 1000000000;
     let last = 0;
+    let suppressed = false;
     const state = { star_mode: mode, usage_days: days, star_disabled: false, notices: pending };
     const posts = [];
     const dom = new JSDOM('<div id="toast" hidden></div>');
@@ -35,15 +36,36 @@ function setup({ mode = 'auto', cooldown = 14400, days = 7, count = 0, pending =
     const make = () => TimedNotifications.create({
         window: dom.window, fetch, now: () => clock,
         showToast: feedback.showToast, renderServerNotice,
+        isSuppressed: () => suppressed,
     });
     const controller = make();
     return { controller, state, toast, posts, make, dom, renderServerNotice,
         advance(seconds) { clock += seconds * 1000; },
+        suppress(value) { suppressed = value; },
         close() { controller.destroy(); feedback.hideToast(); dom.window.close(); },
     };
 }
 
 describe('timed reminders', () => {
+    it('holds every reminder while the update dialog is up and runs update checks outside the cooldown', async () => {
+        const page = setup({ pending: [{ notice_id: 'server-1', notice: { id: 'soniox_quota' } }] });
+        try {
+            const update = vi.fn(async () => { page.suppress(true); });
+            page.controller.addUngated('update', update);
+            await page.controller.tick();
+            expect(update).toHaveBeenCalledOnce();
+            expect(page.renderServerNotice).not.toHaveBeenCalled();
+            expect(page.toast.hidden).toBe(true);
+            expect(page.controller.canShow()).toBe(false);
+            page.suppress(false);
+            update.mockImplementation(async () => {});
+            await page.controller.tick();
+            expect(page.renderServerNotice).toHaveBeenCalledOnce();
+            await page.controller.tick();
+            expect(update).toHaveBeenCalledTimes(3);
+        } finally { page.close(); }
+    });
+
     it('gives startup server notices priority and retries a due Star reminder after four hours', async () => {
         const page = setup({ pending: [{ notice_id: 'server-1', notice: { id: 'soniox_quota' } }] });
         try {

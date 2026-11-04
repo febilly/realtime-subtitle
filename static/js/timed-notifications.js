@@ -8,7 +8,11 @@
         const t = options.t || ((key) => key);
         const renderServerNotice = options.renderServerNotice || (() => {});
         const now = options.now || (() => Date.now());
+        // While something more important is on screen (the update dialog), no
+        // reminder may appear; the next tick after it goes away decides again.
+        const isSuppressed = options.isSuppressed || (() => false);
         const tasks = new Map();
+        const ungatedTasks = new Map();
         let blockedUntil = 0;
         let ready = false;
         let busy = null;
@@ -32,7 +36,7 @@
         }
 
         async function tryShow(kind, display, extra = {}) {
-            if (!ready || now() < blockedUntil) return false;
+            if (!ready || now() < blockedUntil || isSuppressed()) return false;
             const result = await post({ kind, ...extra });
             if (!result.shown) {
                 if (result.retry_after_seconds) blockedUntil = now() + result.retry_after_seconds * 1000;
@@ -61,6 +65,13 @@
                 if (!response.ok) return false;
                 const state = await response.json();
                 ready = true;
+                // Checks with their own cadence run first and ignore the shared
+                // cooldown; what they show holds back everything below.
+                for (const task of runTasks ? ungatedTasks.values() : []) {
+                    if (isSuppressed()) break;
+                    await task();
+                }
+                if (isSuppressed()) return true;
                 blockedUntil = Math.max(blockedUntil, now() + (Number(state.retry_after_seconds) || 0) * 1000);
                 // Server notices take the startup slot before any local task.
                 for (const item of state.notices || []) {
@@ -75,7 +86,7 @@
                     ? !starShownThisLaunch
                     : state.star_mode !== 'never' && !state.star_disabled
                         && !starDisabledThisLaunch && state.usage_days >= 7;
-                if (starDue) {
+                if (starDue && !isSuppressed()) {
                     await tryShow('local_star', (result) => {
                         starShownThisLaunch = true;
                         const actions = [{
@@ -127,11 +138,13 @@
             if (timer) root.clearInterval(timer);
             timer = null;
             tasks.clear();
+            ungatedTasks.clear();
         }
 
         return {
             add: (key, task) => tasks.set(key, task),
-            canShow: () => ready && now() >= blockedUntil,
+            addUngated: (key, task) => ungatedTasks.set(key, task),
+            canShow: () => ready && now() >= blockedUntil && !isSuppressed(),
             prepare: () => tick({ runTasks: false }),
             serverNotice,
             start,

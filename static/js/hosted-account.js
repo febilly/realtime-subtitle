@@ -177,6 +177,8 @@
 
         async function checkTicketUnread() {
             if (!isSignedIn()) return false;
+            // Held back while the update dialog is up; re-checked when it closes.
+            if (typeof options.isSuppressed === 'function' && options.isSuppressed()) return false;
             try {
                 const response = await fetchRef('/account/tickets/unread-summary');
                 const data = await response.json().catch(() => ({}));

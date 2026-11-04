@@ -1,7 +1,7 @@
 (function (root) {
     'use strict';
 
-    const DEFAULT_REMINDER_MS = 20 * 60 * 60 * 1000;
+    const DEFAULT_REMINDER_MS = 44 * 60 * 60 * 1000;
     const DEFAULT_REMINDER_KEY = 'clientUpdateReminderLastShown';
     const DEFAULT_CHECKED_VERSION_KEY = 'clientUpdateLastCheckedVersion';
 
@@ -40,6 +40,8 @@
         const onSwitchDirect = typeof options.onSwitchDirect === 'function'
             ? options.onSwitchDirect
             : () => {};
+        const onQuit = typeof options.onQuit === 'function' ? options.onQuit : () => {};
+        const onDismissed = typeof options.onDismissed === 'function' ? options.onDismissed : () => {};
         const reminderMs = options.reminderMs || DEFAULT_REMINDER_MS;
         const reminderKey = options.reminderKey || DEFAULT_REMINDER_KEY;
         const checkedVersionKey = options.checkedVersionKey || DEFAULT_CHECKED_VERSION_KEY;
@@ -113,24 +115,24 @@
                 updateButton.textContent = t('client_update_button');
                 updateButton.disabled = !updateState.updateUrl;
                 updateButton.onclick = () => {
-                    if (updateState.updateUrl) {
-                        windowRef.open(updateState.updateUrl, '_blank', 'noopener,noreferrer');
-                        if (updateState.forced) {
-                            // A required update stays blocking, but announcements may be read
-                            // after the user has chosen to download the update.
-                            if (typeof options.onChecked === 'function') void options.onChecked();
-                        } else {
-                            close('update');
-                        }
-                    }
+                    if (!updateState.updateUrl) return;
+                    windowRef.open(updateState.updateUrl, '_blank', 'noopener,noreferrer');
+                    // The user is off to install the new version: quit instead of
+                    // carrying on with this one. The dialog stays up until we exit.
+                    updateButton.disabled = true;
+                    if (laterButton) laterButton.disabled = true;
+                    if (directButton) directButton.disabled = true;
+                    void Promise.resolve().then(onQuit).catch(() => {});
                 };
             }
             if (laterButton) {
+                laterButton.disabled = false;
                 laterButton.textContent = t('client_update_later');
                 laterButton.hidden = !!updateState.forced;
                 laterButton.onclick = () => close('later');
             }
             if (directButton) {
+                directButton.disabled = false;
                 directButton.textContent = t('client_update_direct');
                 directButton.hidden = !updateState.forced;
                 directButton.onclick = async () => {
@@ -154,12 +156,21 @@
             return new Promise((resolve) => { resolver = resolve; });
         }
 
+        async function checked() {
+            if (typeof options.onChecked === 'function') await options.onChecked();
+        }
+
         async function ensure(optionsForCheck = {}) {
             try {
                 return await ensureVersion(optionsForCheck);
-            } finally {
-                if (!optionsForCheck.background && typeof options.onChecked === 'function') await options.onChecked();
+            } catch (error) {
+                if (!optionsForCheck.background) await checked();
+                throw error;
             }
+        }
+
+        function isShowing() {
+            return !!resolver;
         }
 
         async function ensureVersion({ candidateMode = null, background = false } = {}) {
@@ -177,9 +188,12 @@
             }
             if (!updateState.needed) {
                 rememberCheckedVersion(updateState.latest);
+                if (!background) await checked();
                 return true;
             }
             if (background && updateState.forced) return true;
+            // Never stack a second update dialog on one that is already up.
+            if (resolver) return !updateState.forced;
             let dialogPromise;
             const display = () => {
                 if (!updateState.forced) {
@@ -197,24 +211,26 @@
                 }
                 if (!newerThanLastCheck && lastShown && now() - lastShown < reminderMs) {
                     rememberCheckedVersion(updateState.latest);
+                    if (!background) await checked();
                     return true;
                 }
-                if (options.timedNotifications) {
-                    try {
-                        if (!await options.timedNotifications.tryShow('update', display)) return true;
-                    } catch (error) {
-                        return true;
-                    }
-                } else display();
-            } else {
-                display();
             }
-            if (background) return true;
-            const action = await dialogPromise;
-            if (updateState.forced && action === 'direct') {
-                await onSwitchDirect();
-                return false;
+            // The update dialog has its own cadence and is not part of the shared
+            // reminder cooldown. Other popups wait until it has been dismissed.
+            display();
+            const settled = dialogPromise.then(async (action) => {
+                if (updateState.forced && action === 'direct') await onSwitchDirect();
+                if (action === 'update') return action;
+                await checked();
+                onDismissed(action);
+                return action;
+            });
+            if (background) {
+                void settled.catch(() => {});
+                return true;
             }
+            const action = await settled;
+            if (updateState.forced && action === 'direct') return false;
             return !updateState.forced;
         }
 
@@ -230,7 +246,7 @@
             if (directButton) directButton.onclick = null;
         }
 
-        return { close, destroy, ensure, getState: state, show };
+        return { close, destroy, ensure, getState: state, isShowing, show };
     }
 
     const api = {

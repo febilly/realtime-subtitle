@@ -27,6 +27,8 @@ function setup(overrides = {}) {
     const storage = overrides.storage || dom.window.localStorage;
     const showConfirm = overrides.showConfirm || vi.fn().mockResolvedValue(true);
     const onSwitchDirect = vi.fn();
+    const onQuit = vi.fn();
+    const onDismissed = vi.fn();
     const open = vi.fn();
     dom.window.open = open;
     const controller = HostedUpdate.create({
@@ -39,6 +41,8 @@ function setup(overrides = {}) {
         now: () => clock,
         getState: () => state,
         onSwitchDirect,
+        onQuit,
+        onDismissed,
         elements: {
             overlay: document.getElementById('overlay'),
             dialog: document.getElementById('dialog'),
@@ -62,6 +66,8 @@ function setup(overrides = {}) {
         controller,
         document,
         dom,
+        onDismissed,
+        onQuit,
         onSwitchDirect,
         open,
         showConfirm,
@@ -71,17 +77,22 @@ function setup(overrides = {}) {
 }
 
 describe('HostedUpdate state', () => {
-    it('preserves both update cadence keys when the shared notification cooldown blocks it', async () => {
-        const page = setup({
-            timedNotifications: { tryShow: vi.fn().mockResolvedValue(false) },
-        });
-        page.storage.setItem(HostedUpdate.DEFAULT_REMINDER_KEY, '99999');
-        page.storage.setItem(HostedUpdate.DEFAULT_CHECKED_VERSION_KEY, '1.0.1');
-        await expect(page.controller.ensure()).resolves.toBe(true);
-        expect(page.document.getElementById('dialog').hidden).toBe(true);
-        expect(page.storage.getItem(HostedUpdate.DEFAULT_REMINDER_KEY)).toBe('99999');
-        expect(page.storage.getItem(HostedUpdate.DEFAULT_CHECKED_VERSION_KEY)).toBe('1.0.1');
+    it('is not held back by the shared reminder cooldown', async () => {
+        const tryShow = vi.fn().mockResolvedValue(false);
+        const page = setup({ timedNotifications: { tryShow } });
+        await expect(page.controller.ensure({ background: true })).resolves.toBe(true);
+        expect(page.document.getElementById('dialog').hidden).toBe(false);
+        expect(page.controller.isShowing()).toBe(true);
+        expect(tryShow).not.toHaveBeenCalled();
+        page.document.getElementById('later').click();
+        await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+        expect(page.controller.isShowing()).toBe(false);
+        expect(page.onDismissed).toHaveBeenCalledOnce();
         page.dom.window.close();
+    });
+
+    it('waits 44 hours between optional reminders', () => {
+        expect(HostedUpdate.DEFAULT_REMINDER_MS).toBe(44 * 60 * 60 * 1000);
     });
 
     it.each([
@@ -108,7 +119,7 @@ describe('HostedUpdate state', () => {
 describe('HostedUpdate dialog and policy', () => {
     it('renders optional update details and resolves after opening the update URL', async () => {
         const page = setup();
-        const result = page.controller.show(page.controller.getState());
+        void page.controller.ensure();
         expect(page.document.getElementById('overlay').hidden).toBe(false);
         expect(page.document.getElementById('notes').textContent).toBe('changes');
         expect(page.document.getElementById('direct').hidden).toBe(true);
@@ -116,8 +127,11 @@ describe('HostedUpdate dialog and policy', () => {
         expect(page.open).toHaveBeenCalledWith(
             'https://example.com/update', '_blank', 'noopener,noreferrer',
         );
-        expect(page.document.getElementById('dialog').hidden).toBe(true);
-        await expect(result).resolves.toBe('update');
+        await Promise.resolve(); await Promise.resolve();
+        expect(page.onQuit).toHaveBeenCalledOnce();
+        expect(page.onDismissed).not.toHaveBeenCalled();
+        expect(page.document.getElementById('dialog').hidden).toBe(false);
+        expect(page.document.getElementById('later').disabled).toBe(true);
         page.dom.window.close();
     });
 
