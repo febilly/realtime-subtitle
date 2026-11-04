@@ -46,6 +46,11 @@
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const setTimer = options.setTimeout || root.setTimeout.bind(root);
         const clearTimer = options.clearTimeout || root.clearTimeout.bind(root);
+        // Called after every download attempt (done, cancelled or failed) so
+        // other views of the model status can refresh.
+        const onDownloadsEnded = typeof options.onDownloadsEnded === 'function'
+            ? options.onDownloadsEnded
+            : () => {};
         let overlay = null;
         let dialog = null;
         let pollTimer = null;
@@ -209,10 +214,14 @@
                 async function downloadAll() {
                     showProgress();
                     poll();
+                    const finish = (ok) => {
+                        onDownloadsEnded();
+                        resolve(ok);
+                    };
                     try {
                         for (const component of components) {
                             if (cancelled) {
-                                resolve(false);
+                                finish(false);
                                 return;
                             }
                             const response = await fetchRef('/local-inference/download', {
@@ -223,16 +232,17 @@
                             const data = await response.json().catch(() => ({}));
                             if (!response.ok) {
                                 if (data.code === 'download_cancelled' || cancelled) {
-                                    resolve(false);
+                                    finish(false);
                                     return;
                                 }
                                 throw new Error(data.message || 'download failed');
                             }
                         }
-                        resolve(true);
+                        finish(true);
                     } catch (error) {
                         if (pollTimer !== null) clearTimer(pollTimer);
                         pollTimer = null;
+                        onDownloadsEnded();
                         view.body.replaceChildren(element('p', 'local-model-dialog-error', t('local_dialog_failed', {
                             error: String(error && error.message ? error.message : error),
                         })));

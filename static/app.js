@@ -87,7 +87,13 @@ const confirmController = ConfirmDialog.create({
     },
 });
 confirmController.init();
-const localModelDialog = LocalModelDialog.create({ document, fetch, t });
+const localModelDialog = LocalModelDialog.create({
+    document,
+    fetch,
+    t,
+    // The settings panel shows each model's status; refresh it after a download.
+    onDownloadsEnded: () => { void settingsPanelController.refreshLocalInferenceStatus(); },
+});
 const resetAllController = ResetAllController.create({
     document,
     window,

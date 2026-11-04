@@ -36,7 +36,7 @@ async function openedText(page, start) {
     return { text, warnings };
 }
 
-function setup(routes) {
+function setup(routes, options = {}) {
     const dom = new JSDOM('<!doctype html><body></body>', { url: 'http://localhost/' });
     const document = dom.window.document;
     const calls = [];
@@ -51,7 +51,7 @@ function setup(routes) {
         ([name, value]) => `${name}=${value}`,
     )].join('|');
     const dialog = LocalModelDialog.create({
-        document, fetch, t, setTimeout: () => 1, clearTimeout: () => {},
+        document, fetch, t, setTimeout: () => 1, clearTimeout: () => {}, ...options,
     });
     return { calls, dialog, document, dom };
 }
@@ -114,6 +114,19 @@ describe('LocalModelDialog', () => {
         expect(page.calls.filter((call) => call.url === '/local-inference/download').map((call) => call.body))
             .toEqual([{ component: 'qwen3-asr' }, { component: 'hymt2' }]);
         expect(page.dialog.isOpen()).toBe(false);
+        page.dom.window.close();
+    });
+
+    it('tells the caller when downloads end, so other status views refresh', async () => {
+        const onDownloadsEnded = vi.fn();
+        const page = setup({
+            '/local-inference/status': response(status({ asrReady: true })),
+            '/local-inference/download': response({ status: 'ok' }),
+        }, { onDownloadsEnded });
+        const pending = page.dialog.confirmTranslationModel();
+        await clickButton(page.document, 'local_dialog_download');
+        await expect(pending).resolves.toBe(true);
+        expect(onDownloadsEnded).toHaveBeenCalledOnce();
         page.dom.window.close();
     });
 
