@@ -296,7 +296,8 @@ class GeminiSession(RealtimeSessionBase):
 
         Returns "close", "open" (text was absorbed and the short side is
         mid-sentence again) or "wait" (the translation looks cut short and the
-        rest of it has not arrived yet; held text stays visible as preview).
+        rest of it has not arrived yet; the line stays open, so whatever
+        arrives meanwhile joins it).
         """
         buffer = self._sentence_buffers.get(speaker) or {}
         source_weight = self._gemini_text_weight(self._join_token_texts(buffer.get("original_tokens") or []))
@@ -337,7 +338,7 @@ class GeminiSession(RealtimeSessionBase):
 
         # Translation trails the source, so a premature translation period is
         # often followed by its second half only after the source has closed.
-        # Hold the line break while everything queued is still one unfinished
+        # Delay the line break while everything queued is still one unfinished
         # translated sentence that would not overshoot the expected length.
         if short_side != "translation":
             return "close"
@@ -365,7 +366,7 @@ class GeminiSession(RealtimeSessionBase):
         )
 
     def _drain_gemini_sentence_tokens(self, *, hard_end: bool) -> list[dict]:
-        """Emit matching sentence prefixes before releasing either side's tail."""
+        """Pair sentences inside a batch; release any remaining tail at once."""
         outgoing: list[dict] = []
         speaker = "1"  # Gemini's transcription stream has a single speaker.
         while True:
@@ -386,7 +387,7 @@ class GeminiSession(RealtimeSessionBase):
                 if decision == "open":
                     continue
                 if decision == "wait":
-                    break
+                    pair_done = False
             if pair_done:
                 self._gemini_pair_wait_started = None
                 self._record_gemini_pair_lengths(buffer)
@@ -394,7 +395,19 @@ class GeminiSession(RealtimeSessionBase):
                     outgoing.append(self._make_separator_token("punctuation"))
                 self._gemini_sentence_done.clear()
                 continue
-            if not progressed:
+            if progressed:
+                continue
+            # Nothing is held back across responses: text shown once never
+            # moves, and showing it promptly beats pairing it exactly. When one
+            # side already ended its sentence and runs ahead, its next text
+            # joins the open line, which then closes once both sides end.
+            released = False
+            for status, queue in self._gemini_token_queues.items():
+                if queue and status in self._gemini_sentence_done:
+                    self._gemini_sentence_done.discard(status)
+                    self._pending_boundaries.clear_key(speaker, status)
+                    released = True
+            if not released:
                 break
 
         if hard_end:
@@ -416,14 +429,6 @@ class GeminiSession(RealtimeSessionBase):
             self._gemini_sentence_done.clear()
             self._pending_boundaries.clear_speaker(speaker)
         return outgoing
-
-    def _gemini_held_preview_tokens(self) -> list[dict]:
-        """Queued text waiting for the other side, shown provisionally so the
-        subtitle keeps moving while a pair is still open."""
-        held = []
-        for queue in self._gemini_token_queues.values():
-            held.extend({**token, "is_final": False} for token in queue)
-        return held
 
     def _trigger_sentence_finalization(self, speaker: str) -> bool:
         """触发句子完成处理"""
@@ -777,9 +782,7 @@ class GeminiSession(RealtimeSessionBase):
             self.logger.write_to_log([t for t in emitted_tokens if not t.get("is_separator")])
 
         # 如果有新的数据，发送给前端（暂停时也显示，只是不记录）
-        if self._broadcast_token_update(
-            loop, outgoing_final_tokens, [], non_final_tokens + self._gemini_held_preview_tokens(),
-        ):
+        if self._broadcast_token_update(loop, outgoing_final_tokens, [], non_final_tokens):
             # 更新已发送的计数
             sent_count = len(all_final_tokens)
             self.last_sent_count = sent_count

@@ -754,19 +754,9 @@ def _gemini_emitted_lines(updates):
     return lines
 
 
-@pytest.mark.parametrize("arrival", ["together", "source_first", "translation_first"])
-def test_gemini_batch_middle_boundaries_keep_sentence_pairs_aligned(gemini_segmentation_session, arrival):
+def test_gemini_batch_middle_boundaries_keep_sentence_pairs_aligned(gemini_segmentation_session):
     session, updates, feed = gemini_segmentation_session
-    source = "That was 2021. The world is different. Still changing"
-    translation = "那是2021年。世界不同了。仍在变化"
-    if arrival == "together":
-        feed(source, translation)
-    elif arrival == "source_first":
-        feed(source)
-        feed(translation=translation)
-    else:
-        feed(translation=translation)
-        feed(source)
+    feed("That was 2021. The world is different. Still changing", "那是2021年。世界不同了。仍在变化")
 
     assert _gemini_emitted_lines(updates) == [
         {"original": "That was 2021.", "translation": "那是2021年。"},
@@ -787,18 +777,44 @@ def test_gemini_batch_middle_boundaries_keep_sentence_pairs_aligned(gemini_segme
             assert token["text"].strip() in text
 
 
+def _gemini_emitted_text(updates, status):
+    return "".join(
+        t["text"] for u in updates for t in u.get("final_tokens", [])
+        if not t.get("is_separator") and t.get("translation_status") == status
+    )
+
+
+@pytest.mark.parametrize("arrival", ["source_first", "translation_first"])
+def test_gemini_side_running_ahead_shows_at_once_in_the_open_line(gemini_segmentation_session, arrival):
+    """Text is never held back for its pair: a side that runs ahead of the
+    other joins the open line right away, and nothing shown later moves."""
+    session, updates, feed = gemini_segmentation_session
+    source = "That was 2021. The world is different. Still changing"
+    translation = "那是2021年。世界不同了。仍在变化"
+    if arrival == "source_first":
+        feed(source)
+        assert _gemini_emitted_text(updates, "original") == source
+        feed(translation=translation)
+    else:
+        feed(translation=translation)
+        assert _gemini_emitted_text(updates, "translation") == translation
+        feed(source)
+    assert _gemini_emitted_lines(updates) == [{"original": source, "translation": translation}]
+
+
 @pytest.mark.parametrize("ahead", ["original", "translation"])
-def test_gemini_next_sentence_waits_for_late_current_sentence_tail(gemini_segmentation_session, ahead):
+def test_gemini_next_sentence_joins_line_waiting_for_late_tail(gemini_segmentation_session, ahead):
     session, updates, feed = gemini_segmentation_session
     if ahead == "original":
         feed("First sentence. Next sentence", "第一")
+        assert _gemini_emitted_text(updates, "original") == "First sentence. Next sentence"
         feed(translation="句。下一句")
     else:
         feed("First sen", "第一句。下一句")
+        assert _gemini_emitted_text(updates, "translation") == "第一句。下一句"
         feed("tence. Next sentence")
     assert _gemini_emitted_lines(updates) == [
-        {"original": "First sentence.", "translation": "第一句。"},
-        {"original": " Next sentence", "translation": "下一句"},
+        {"original": "First sentence. Next sentence", "translation": "第一句。下一句"},
     ]
 
 
@@ -822,21 +838,16 @@ def test_gemini_batch_splitting_preserves_context_and_text(gemini_segmentation_s
     assert "".join(line["original"] for line in lines) == "".join(chunks)
 
 
-def _gemini_preview_text(updates, status):
-    last = updates[-1].get("non_final_tokens", [])
-    return "".join(t["text"] for t in last if t["translation_status"] == status)
-
-
 def test_gemini_translation_split_keeps_streaming_and_stays_in_one_line(gemini_segmentation_session):
     """Gemini renders one Japanese sentence as two Chinese ones. The second
-    half must stay visible while the source sentence is still open, and land
-    on the same line instead of pushing every later pair out of step."""
+    half must show at once while the source sentence is still open, on the
+    same line, instead of pushing every later pair out of step."""
     session, updates, feed = gemini_segmentation_session
     session.translation_target_lang = "zh"
     feed("そうそう、それでね、最初は一緒に住んだら楽しいだろうなって思ってて", "对对，然后呢，一开始觉得住在一起应该会很开心，我是这么想的。",
          language="ja")
     feed("このまま", "然后呢，同居之后，", language="ja")
-    assert _gemini_preview_text(updates, "translation") == "然后呢，同居之后，"
+    assert _gemini_emitted_text(updates, "translation").endswith("我是这么想的。然后呢，同居之后，")
     feed("同棲してから一週間ぐらいで、もう無理かもって思うようになりました。", "大概一个星期就觉得可能不行了。",
          language="ja")
     feed("次の話です。", "下面是另一件事。", language="ja")
@@ -850,7 +861,6 @@ def test_gemini_translation_split_keeps_streaming_and_stays_in_one_line(gemini_s
         {"original": "次の話です。", "translation": "下面是另一件事。"},
         {"original": "", "translation": ""},
     ]
-    assert _gemini_preview_text(updates, "translation") == ""
 
 
 def test_gemini_cut_short_translation_waits_for_its_late_second_half(gemini_segmentation_session):
@@ -874,7 +884,7 @@ def test_gemini_source_split_joins_the_next_source_sentence(gemini_segmentation_
     session.translation_target_lang = "zh"
     feed("I moved in with him last spring. ", "去年春天我搬去和他住，")
     feed("Within a week I was already tired of it.", language="en")
-    assert _gemini_preview_text(updates, "original").strip() == "Within a week I was already tired of it."
+    assert _gemini_emitted_text(updates, "original").endswith("Within a week I was already tired of it.")
     feed(translation="结果一个星期我就已经厌倦了。")
     feed(" Next story.", "下一个故事。")
     lines = [{k: " ".join(v.split()) for k, v in line.items()} for line in _gemini_emitted_lines(updates)]
