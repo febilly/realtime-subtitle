@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlparse
-from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
+from urllib.request import Request, urlopen
 
 from . import LOCAL_INFERENCE_DISPLAY_NAMES, get_common_runtime_issues, get_engine_runtime_issues
 
@@ -94,10 +94,9 @@ LOCAL_RUNTIME_REVISION = "dc80402dfe3d6be8d90c93c60bd67a77a4c36115"
 LLAMA_RUNTIME_ZIP = f"llama-{LLAMA_CPP_TAG}-bin-win-vulkan-x64-min.zip"
 LLAMA_RUNTIME_ZIP_SHA256 = "b007fea086a8a788cc9e266b236cb27b750fa76e20fc45453f995a10d3856f25"
 HF_ENDPOINT_OFFICIAL = "https://huggingface.co"
-# Same resolve/ layout as HF. Used first when it serves files itself.
+# Same resolve/ layout as HF. In mainland China huggingface.co is blocked but
+# HF's file CDNs are not, and the mirror redirects there: it resolves, the CDN serves.
 HF_ENDPOINT_MIRROR = "https://hf-mirror.com"
-# Hosts owned by HuggingFace, including its LFS/Xet storage CDNs.
-HF_OWNED_DOMAINS = ("huggingface.co", "hf.co", "hf.space", "xethub.com")
 HF_PROBE_TIMEOUT_SECONDS = 5.0
 
 
@@ -379,40 +378,18 @@ def _hf_file_url(endpoint: str, repo_id: str, filename: str, revision: str = "ma
     return f"{endpoint}/{repo_id}/resolve/{revision}/{filename}"
 
 
-def _is_hf_owned(url: str) -> bool:
-    host = (urlparse(url).hostname or "").lower().rstrip(".")
-    return any(host == domain or host.endswith("." + domain) for domain in HF_OWNED_DOMAINS)
-
-
 class HFUnreachable(OSError):
     """The source probe reached neither HuggingFace nor the mirror."""
 
 
-class _RedirectedToHF(Exception):
-    pass
-
-
-class _RedirectGuard(HTTPRedirectHandler):
-    """Refuses a redirect to a HuggingFace-owned host: a mirror that only
-    forwards there is no better than HF itself."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if _is_hf_owned(newurl):
-            raise _RedirectedToHF(newurl)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-def _probe_endpoint(url: str, timeout: float, *, reject_hf_redirect: bool = False) -> bool:
-    """Fetch one byte: proves both the site and the CDN it redirects to
-    (in mainland China often only the latter is blocked)."""
+def _probe_endpoint(url: str, timeout: float) -> bool:
+    """Fetch one byte through every redirect: proves the whole chain, from the
+    site that resolves the file to the CDN that serves it, is reachable."""
     request = Request(url, headers={"User-Agent": "RealtimeSubtitle", "Range": "bytes=0-0"})
     host = urlparse(url).netloc
     started = time.monotonic()
     try:
-        if reject_hf_redirect:
-            response = build_opener(_RedirectGuard()).open(request, timeout=timeout)
-        else:
-            response = urlopen(request, timeout=timeout)
+        response = urlopen(request, timeout=timeout)
         with response:
             response.read(1)
             final_host = urlparse(response.geturl()).netloc
@@ -420,9 +397,6 @@ def _probe_endpoint(url: str, timeout: float, *, reject_hf_redirect: bool = Fals
         logger.warning("Download source probe: %s OK in %.1fs (served by %s)",
                        host, time.monotonic() - started, final_host)
         return True
-    except _RedirectedToHF as exc:
-        logger.warning("Download source probe: %s rejected, redirects to HuggingFace (%s)", host, exc)
-        return False
     except Exception as exc:
         logger.warning("Download source probe: %s failed after %.1fs: %s", host, time.monotonic() - started, exc)
         return False
@@ -434,15 +408,15 @@ _hf_endpoint_choice: list[str] | None = None
 
 
 def _probe_hf_endpoints(repo_id: str, filename: str) -> list[str] | None:
-    """Probe HF and the mirror at the same time. The mirror goes first only when
-    it serves the file itself (no redirect back to an HF host); otherwise HF
-    does. None when neither answered, so the next download probes again."""
+    """Probe HF and the mirror at the same time. HF goes first when it works,
+    the mirror when only it does. None when neither answered, so the next
+    download probes again."""
     official_url = _hf_file_url(HF_ENDPOINT_OFFICIAL, repo_id, filename)
     mirror_url = _hf_file_url(HF_ENDPOINT_MIRROR, repo_id, filename)
     pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="hf-probe")
     try:
         official = pool.submit(_probe_endpoint, official_url, HF_PROBE_TIMEOUT_SECONDS)
-        mirror = pool.submit(_probe_endpoint, mirror_url, HF_PROBE_TIMEOUT_SECONDS, reject_hf_redirect=True)
+        mirror = pool.submit(_probe_endpoint, mirror_url, HF_PROBE_TIMEOUT_SECONDS)
         done, _ = wait((official, mirror), timeout=HF_PROBE_TIMEOUT_SECONDS)
     finally:
         # A probe stuck past the deadline finishes on its own socket timeout.
@@ -453,10 +427,11 @@ def _probe_hf_endpoints(repo_id: str, filename: str) -> list[str] | None:
 
     official_ok, mirror_ok = ok(official), ok(mirror)
     logger.warning("Download source probe: huggingface.co=%s hf-mirror.com=%s", official_ok, mirror_ok)
+    if official_ok:
+        return [HF_ENDPOINT_OFFICIAL, HF_ENDPOINT_MIRROR]
     if mirror_ok:
         return [HF_ENDPOINT_MIRROR, HF_ENDPOINT_OFFICIAL]
-    order = [HF_ENDPOINT_OFFICIAL, HF_ENDPOINT_MIRROR]
-    return order if official_ok else None
+    return None
 
 
 def _ordered_hf_endpoints(repo_id: str, filename: str, progress_callback=None) -> list[str]:

@@ -58,16 +58,17 @@ MIRROR_HYMT2_URL = (
 def _probe_results(monkeypatch, *, official, mirror):
     calls = []
 
-    def fake_probe(url, timeout, *, reject_hf_redirect=False):
-        calls.append((url, timeout, reject_hf_redirect))
+    def fake_probe(url, timeout):
+        calls.append((url, timeout))
         return mirror if url.startswith("https://hf-mirror.com/") else official
 
     monkeypatch.setattr(model_manager, "_probe_endpoint", fake_probe)
     return calls
 
 
-def test_hymt2_uses_the_mirror_when_it_serves_the_file_itself(models_dir, monkeypatch):
-    calls = _probe_results(monkeypatch, official=True, mirror=True)
+def test_hymt2_uses_the_mirror_when_only_it_gets_through(models_dir, monkeypatch):
+    # Mainland China: huggingface.co times out, hf-mirror resolves and the HF CDN serves.
+    calls = _probe_results(monkeypatch, official=False, mirror=True)
     requested = []
 
     def fake_urlopen(request, timeout=None):
@@ -82,7 +83,7 @@ def test_hymt2_uses_the_mirror_when_it_serves_the_file_itself(models_dir, monkey
     dest = models_dir / "hymt2" / model_manager.HYMT2_MODEL_FILE
     assert dest.read_bytes().startswith(b"GGUF")
     assert requested == [MIRROR_HYMT2_URL]
-    assert sorted((timeout, guard) for _, timeout, guard in calls) == [(5.0, False), (5.0, True)]
+    assert sorted(timeout for _, timeout in calls) == [5.0, 5.0]
     assert progress[0] == ("source-probe", 0, None)
     assert progress[-1] == ("hymt2", 104, 104)
 
@@ -96,6 +97,11 @@ def test_official_hf_is_used_when_the_mirror_fails_and_neither_fails_fast(models
     assert model_manager._hf_endpoint_choice is None
 
     _probe_results(monkeypatch, official=True, mirror=False)
+    assert model_manager._ordered_hf_endpoints("a/b", "c") == ["https://huggingface.co", "https://hf-mirror.com"]
+
+
+def test_official_hf_goes_first_when_both_get_through(models_dir, monkeypatch):
+    _probe_results(monkeypatch, official=True, mirror=True)
     assert model_manager._ordered_hf_endpoints("a/b", "c") == ["https://huggingface.co", "https://hf-mirror.com"]
 
 
@@ -118,7 +124,7 @@ def test_hymt2_falls_back_to_the_other_endpoint_when_a_download_fails(models_dir
 
 
 def test_the_probe_runs_once_per_run(models_dir, monkeypatch):
-    calls = _probe_results(monkeypatch, official=True, mirror=True)
+    calls = _probe_results(monkeypatch, official=False, mirror=True)
     first = model_manager._ordered_hf_endpoints("a/b", "c")
     second = model_manager._ordered_hf_endpoints("x/y", "z", lambda *a: pytest.fail("probed again"))
 
@@ -133,22 +139,6 @@ def test_a_hand_set_endpoint_goes_first_without_probing(models_dir, monkeypatch)
     assert model_manager._ordered_hf_endpoints("a/b", "c") == [
         "https://my-mirror.example", "https://huggingface.co", "https://hf-mirror.com",
     ]
-
-
-def test_hf_owned_hosts_include_its_cdns():
-    for url in (
-        "https://huggingface.co/a", "https://hf.co/a", "https://cdn-lfs.huggingface.co/x",
-        "https://cas-bridge.xethub.hf.co/x", "https://cdn-lfs-us-1.hf.co/x", "https://HF.CO./x",
-    ):
-        assert model_manager._is_hf_owned(url), url
-    for url in ("https://hf-mirror.com/a", "https://cdn-lfs.hf-mirror.com/x", "https://nothf.co/x"):
-        assert not model_manager._is_hf_owned(url), url
-
-
-def test_the_mirror_probe_refuses_a_redirect_to_hf(monkeypatch):
-    guard = model_manager._RedirectGuard()
-    with pytest.raises(model_manager._RedirectedToHF):
-        guard.redirect_request(None, None, 302, "Found", Message(), "https://cas-bridge.xethub.hf.co/x")
 
 
 def test_download_rejects_a_gateway_page_and_keeps_no_model(models_dir, monkeypatch):
