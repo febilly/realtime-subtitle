@@ -1313,8 +1313,14 @@ body.dark-theme .local-model-dialog-row {
 .local-model-dialog-row-head {
     display: flex;
     justify-content: space-between;
+    align-items: baseline;
     gap: 8px;
     font-size: 14px;
+}
+
+/* .field-hint's negative top margin would lift the size line above the name. */
+.local-model-dialog-row-head .field-hint {
+    margin: 0;
 }
 
 .local-model-dialog-actions {
