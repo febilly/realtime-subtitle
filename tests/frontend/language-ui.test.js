@@ -1,6 +1,7 @@
 const { JSDOM } = require('jsdom');
 const LanguageCatalog = require('../../static/js/language-catalog');
 const LanguageUI = require('../../static/js/language-ui');
+const SettingsUI = require('../../static/js/settings-ui');
 
 function setup(overrides = {}) {
     const dom = new JSDOM('<!doctype html><body><button id="languages"></button></body>', { url: 'http://localhost/' });
@@ -22,6 +23,7 @@ function setup(overrides = {}) {
     const renderSubtitles = vi.fn();
     const catalog = LanguageCatalog.create(['en', 'zh', 'ja']);
     const controller = LanguageUI.create({
+        settingsUI: SettingsUI,
         document: dom.window.document,
         window: dom.window,
         storage: dom.window.localStorage,
@@ -54,7 +56,7 @@ describe('LanguageUI', () => {
         controller.hide();
         expect(storage.getItem('translationLanguagePreferences.v1')).toBeNull();
         controller.show();
-        expect(dom.window.document.getElementById('rememberLanguageSettings').checked).toBe(false);
+        expect(dom.window.document.getElementById('rememberLanguageSettings').getAttribute('aria-checked')).toBe('false');
         controller.setDraft({ mode: 'one_way', targetLang: 'ja', remember: true });
         controller.applyDraft();
         expect(JSON.parse(storage.getItem('translationLanguagePreferences.v1'))).toMatchObject({ targetLang: 'ja', remember: true });

@@ -15,6 +15,7 @@
         const documentRef = options.document || root.document;
         const windowRef = options.window || root;
         const storage = options.storage || root.localStorage;
+        const ui = (options.settingsUI || root.SettingsUI).create({ document: documentRef, window: windowRef, storage });
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const catalog = options.catalog;
         if (!catalog
@@ -398,13 +399,17 @@
                 makeField('language_b', 'langB', 'zh', 'targetLang2'),
             );
             popover.appendChild(twoWayBox);
-            const rememberLabel = documentRef.createElement('label');
-            rememberLabel.className = 'form-field checkbox-field audio-source-remember';
-            const remember = documentRef.createElement('input');
-            remember.type = 'checkbox';
+            const rememberLabel = documentRef.createElement('div');
+            rememberLabel.className = 'settings-row popover-remember';
+            const rememberText = documentRef.createElement('span');
+            rememberText.className = 'settings-row-text';
+            rememberText.id = 'rememberLanguageSettingsLabel';
+            rememberText.textContent = t('remember_my_settings');
+            const remember = ui.buildToggleSwitch({ value: String(currentDraft().remember),
+                onChange: (value) => { currentDraft().remember = value === 'true'; } });
             remember.id = 'rememberLanguageSettings';
-            remember.addEventListener('change', () => { currentDraft().remember = remember.checked; });
-            rememberLabel.append(remember, documentRef.createTextNode(t('remember_my_settings')));
+            remember.setAttribute('aria-labelledby', rememberText.id);
+            rememberLabel.append(rememberText, remember);
             popover.appendChild(rememberLabel);
             const actions = documentRef.createElement('div');
             actions.className = 'lang-popover-actions';
@@ -426,7 +431,7 @@
 
         function updateSelection() {
             if (!popover) return;
-            popover.querySelector('#rememberLanguageSettings').checked = !!currentDraft().remember;
+            popover.querySelector('#rememberLanguageSettings').value = String(!!currentDraft().remember);
             for (const modeButton of popover.querySelectorAll('.translation-mode-control .segmented-option')) {
                 const selected = modeButton.dataset.mode === currentDraft().mode;
                 modeButton.classList.toggle('selected', selected);
@@ -537,6 +542,14 @@
             return true;
         }
 
+        function position() {
+            if (!popoverOpen) return;
+            ui.positionPopoverAtBaseline(popover, (baseline) => {
+                baseline.querySelector('.lang-popover-oneway').hidden = false;
+                baseline.querySelector('.lang-popover-twoway').hidden = true;
+            });
+        }
+
         function show() {
             if (!button) return false;
             if (getState().translationDisabled) return false;
@@ -546,6 +559,7 @@
             updateSelection();
             element.style.display = 'block';
             popoverOpen = true;
+            position();
             const onMouseDown = (event) => {
                 const target = event.target;
                 if (!target || (popover && popover.contains(target))
@@ -559,9 +573,11 @@
             };
             documentRef.addEventListener('mousedown', onMouseDown, true);
             documentRef.addEventListener('keydown', onKeyDown, true);
+            windowRef.addEventListener('resize', position, true);
             popoverCleanup = () => {
                 documentRef.removeEventListener('mousedown', onMouseDown, true);
                 documentRef.removeEventListener('keydown', onKeyDown, true);
+                windowRef.removeEventListener('resize', position, true);
             };
             return true;
         }

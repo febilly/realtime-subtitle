@@ -49,7 +49,7 @@ Click the audio source button to open the capture panel. Desktop audio and micro
 
 Window capture uses Windows application loopback and requires **Windows build 20348 or later** (including Windows 11). It captures the selected application's process tree, including its other windows; individual browser tabs cannot be isolated. If the selected window closes, desktop capture becomes silent rather than capturing other applications. Other platforms retain output-device and microphone capture.
 
-The audio and translation-language panels each have their own **Remember my settings** checkbox. Changes, including the checkbox, take effect only after **Apply**. Remembered audio settings load before capture starts. A remembered window is restored only when its executable and title identify a unique open window; otherwise, select it again in the panel. Without remembering, the next launch uses the configured defaults.
+The audio and translation-language panels each have their own **Remember my settings** switch. Changes, including the switch, take effect only after **Apply**. Remembered audio settings load before capture starts. A remembered window is restored only when its executable and title identify a unique open window; otherwise, select it again in the panel. Without remembering, the next launch uses the configured defaults.
 
 ### API keys
 

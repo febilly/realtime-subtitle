@@ -44,7 +44,7 @@ describe('audio source selector', () => {
         page.dom.window.close();
     });
 
-    it('cancels all draft changes, including the remember checkbox', async () => {
+    it('cancels all draft changes, including the remember switch', async () => {
         const page = setup();
         await page.controller.show();
         page.document.getElementById('audio-microphone_enabled').click();
@@ -84,14 +84,14 @@ describe('audio source selector', () => {
         page.dom.window.close();
     });
 
-    it('keeps a rejected draft open without applying the remember checkbox', async () => {
+    it('keeps a rejected draft open without applying the remember switch', async () => {
         const page = setup({ reject: true });
         await page.controller.show();
         page.document.getElementById('rememberAudioSettings').click();
         page.onApplied.mockClear();
         expect(await page.controller.applyDraft()).toBe(false);
         expect(page.controller.isOpen()).toBe(true);
-        expect(page.document.getElementById('rememberAudioSettings').checked).toBe(true);
+        expect(page.document.getElementById('rememberAudioSettings').getAttribute('aria-checked')).toBe('true');
         expect(page.document.querySelector('[role="alert"]').textContent).toBe('audio_window_missing');
         expect(page.saved().remember).toBe(false);
         expect(page.onApplied).not.toHaveBeenCalled();

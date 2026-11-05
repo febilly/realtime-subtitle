@@ -66,6 +66,7 @@
             draft = null;
             document.removeEventListener('mousedown', outside, true);
             document.removeEventListener('keydown', escape, true);
+            window.removeEventListener('resize', position, true);
             button.setAttribute('aria-expanded', 'false');
             button.focus();
             return true;
@@ -81,6 +82,19 @@
                 if (document.querySelector('.lang-select-menu')) closePickers();
                 else hide();
             }
+        }
+
+        function position() {
+            if (!panel) return;
+            ui.positionPopoverAtBaseline(panel, (baseline) => {
+                const contents = baseline.querySelectorAll('.audio-source-options');
+                contents[0].hidden = false;
+                contents[1].hidden = true;
+                // Reference: desktop output capture on, microphone off.
+                // The window-mode explanation and validation are extra content.
+                contents[0].querySelectorAll('.field-hint').forEach((hint) => hint.remove());
+                baseline.querySelector('.audio-source-error').hidden = true;
+            });
         }
 
         function error(key) {
@@ -158,13 +172,14 @@
             panel.appendChild(section('audio_microphone_capture', 'microphone_enabled', (content) => {
                 devicePicker(content, 'microphone_device_id', lists.microphones);
             }));
-            const remember = node('label', 'form-field checkbox-field audio-source-remember');
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.id = 'rememberAudioSettings';
-            checkbox.checked = draft.remember;
-            checkbox.addEventListener('change', () => { draft.remember = checkbox.checked; });
-            remember.append(checkbox, document.createTextNode(t('remember_my_settings')));
+            const remember = node('div', 'settings-row popover-remember');
+            const rememberText = node('span', 'settings-row-text', t('remember_my_settings'));
+            rememberText.id = 'rememberAudioSettingsLabel';
+            const rememberSwitch = ui.buildToggleSwitch({ value: String(draft.remember),
+                onChange: (value) => { draft.remember = value === 'true'; } });
+            rememberSwitch.id = 'rememberAudioSettings';
+            rememberSwitch.setAttribute('aria-labelledby', rememberText.id);
+            remember.append(rememberText, rememberSwitch);
             panel.appendChild(remember);
             const message = node('p', 'field-hint audio-source-error');
             message.setAttribute('role', 'alert');
@@ -214,9 +229,11 @@
             lists = { outputs: {}, microphones: {}, windows: { available: false, windows: [] } };
             document.body.appendChild(panel);
             render();
+            position();
             button.setAttribute('aria-expanded', 'true');
             document.addEventListener('mousedown', outside, true);
             document.addEventListener('keydown', escape, true);
+            window.addEventListener('resize', position, true);
             panel.querySelector('button').focus();
             await refreshLists();
             return true;

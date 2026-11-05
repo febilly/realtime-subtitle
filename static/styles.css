@@ -234,7 +234,8 @@ body.dark-theme .lang-popover {
 .audio-source-options { margin-top: 12px; }
 .audio-source-options[hidden] { display: none; }
 .audio-source-options .translation-mode-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.audio-source-remember { margin: 14px 0 8px; font-size: 13px; }
+.popover-remember { margin: 14px 0 8px; color: #374151; }
+body.dark-theme .popover-remember { color: #e5e7eb; }
 .audio-source-error { color: #b45309; margin: 8px 0; }
 body.dark-theme .audio-source-error { color: #fbbf24; }
 

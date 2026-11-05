@@ -40,6 +40,28 @@
             if (overlay) overlay.hidden = !open;
         }
 
+        function positionPopoverAtBaseline(panel, prepareBaseline) {
+            // Measure the reference state without changing the live draft or
+            // moving the panel when its visible contents expand/collapse.
+            const baseline = panel.cloneNode(true);
+            baseline.removeAttribute('id');
+            baseline.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'));
+            baseline.setAttribute('aria-hidden', 'true');
+            baseline.inert = true;
+            Object.assign(baseline.style, {
+                display: 'block', visibility: 'hidden', pointerEvents: 'none',
+                top: '0px', maxHeight: 'none', height: 'auto', overflow: 'visible',
+            });
+            prepareBaseline(baseline);
+            documentRef.body.appendChild(baseline);
+            try {
+                const top = Math.max(18, Math.round((windowRef.innerHeight - baseline.getBoundingClientRect().height) / 2));
+                panel.style.setProperty('--lang-popover-top', `${top}px`);
+            } finally {
+                baseline.remove();
+            }
+        }
+
         function positionDropdownMenu(trigger, menu) {
             const rect = trigger.getBoundingClientRect();
             const gap = 6;
@@ -225,6 +247,7 @@
             getAvailableThemes,
             applyTheme,
             setPanelOpen,
+            positionPopoverAtBaseline,
             positionDropdownMenu,
             buildCustomSelect,
             buildToggleSwitch,
