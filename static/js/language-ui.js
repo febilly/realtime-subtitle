@@ -9,6 +9,8 @@
         return ['none', 'one_way', 'two_way'].includes(value) ? value : 'one_way';
     }
 
+    const PREFERENCE_KEY = 'translationLanguagePreferences.v1';
+
     function create(options = {}) {
         const documentRef = options.document || root.document;
         const windowRef = options.window || root;
@@ -34,6 +36,22 @@
         let activePicker = null;
         let initialized = false;
         let buttonHandler = null;
+
+        function savedPreferences() {
+            try {
+                const value = JSON.parse(storage.getItem(PREFERENCE_KEY));
+                return value && value.remember === true ? value : null;
+            } catch (_) { return null; }
+        }
+
+        function persistDraft() {
+            try {
+                if (currentDraft().remember) storage.setItem(PREFERENCE_KEY, JSON.stringify(currentDraft()));
+                else storage.removeItem(PREFERENCE_KEY);
+            } catch (error) {
+                if (root.console) root.console.warn('Failed to save language preferences:', error);
+            }
+        }
 
         function languages() {
             const value = catalog.getLanguages();
@@ -290,6 +308,7 @@
                 ),
                 targetLang1: coerceSupportedLanguageCode(state.backendTargetLang1, 'en'),
                 targetLang2: coerceSupportedLanguageCode(state.backendTargetLang2, 'zh'),
+                remember: !!savedPreferences(),
             };
         }
 
@@ -379,6 +398,14 @@
                 makeField('language_b', 'langB', 'zh', 'targetLang2'),
             );
             popover.appendChild(twoWayBox);
+            const rememberLabel = documentRef.createElement('label');
+            rememberLabel.className = 'form-field checkbox-field audio-source-remember';
+            const remember = documentRef.createElement('input');
+            remember.type = 'checkbox';
+            remember.id = 'rememberLanguageSettings';
+            remember.addEventListener('change', () => { currentDraft().remember = remember.checked; });
+            rememberLabel.append(remember, documentRef.createTextNode(t('remember_my_settings')));
+            popover.appendChild(rememberLabel);
             const actions = documentRef.createElement('div');
             actions.className = 'lang-popover-actions';
             const cancel = documentRef.createElement('button');
@@ -399,6 +426,7 @@
 
         function updateSelection() {
             if (!popover) return;
+            popover.querySelector('#rememberLanguageSettings').checked = !!currentDraft().remember;
             for (const modeButton of popover.querySelectorAll('.translation-mode-control .segmented-option')) {
                 const selected = modeButton.dataset.mode === currentDraft().mode;
                 modeButton.classList.toggle('selected', selected);
@@ -428,6 +456,7 @@
                     || state.suppressTranslationDisplay
                     || backendDiffers(state, 'none');
                 options.setUiTranslationMode('none');
+                persistDraft();
                 hide();
                 if (state.translationProvider === 'gemini') options.renderSubtitles();
                 else if (changed) void restartWithMode({ translationMode: 'none' });
@@ -444,6 +473,7 @@
                     || second !== state.backendTargetLang2;
                 updateState({ backendTargetLang1: first, backendTargetLang2: second });
                 options.setUiTranslationMode('two_way');
+                persistDraft();
                 hide();
                 if (changed) void restartWithMode({
                     translationMode: 'two_way', targetLang1: first, targetLang2: second,
@@ -457,6 +487,7 @@
                 || selected !== state.currentTranslationTargetLang;
             updateState({ currentTranslationTargetLang: selected });
             options.setUiTranslationMode('one_way');
+            persistDraft();
             hide();
             if (changed) void restartWithMode({ translationMode: 'one_way', targetLang: selected });
             return true;
@@ -466,22 +497,41 @@
         // different one (e.g. UI says 关闭 but the session still translates).
         // Soniox and local only: Gemini's 关闭 is display-only and never reaches the backend.
         let lastBackendSyncKey = '';
+        let restoredFor = null;
         function syncBackendMode() {
             const state = getState();
-            if (!['soniox', 'local'].includes(state.translationProvider)) return false;
             if (state.lockManualControls || state.setupRequired) return false;
-            const mode = state.uiTranslationMode;
+            const restoreKey = `${state.backendBootId || ''}|${state.translationProvider}`;
+            const saved = restoredFor !== restoreKey ? savedPreferences() : null;
+            restoredFor = restoreKey;
+            let restoreLanguages = false;
+            if (saved) {
+                const mode = saved.mode === 'two_way' && !state.twoWaySupported ? 'one_way' : normalizeTranslationMode(saved.mode);
+                const target = coerceSupportedLanguageCode(saved.targetLang, state.defaultTranslationTargetLang);
+                const first = coerceSupportedLanguageCode(saved.targetLang1, 'en');
+                const second = coerceSupportedLanguageCode(saved.targetLang2, 'zh');
+                restoreLanguages = mode === 'one_way' ? target !== state.currentTranslationTargetLang
+                    : mode === 'two_way' && (first !== state.backendTargetLang1 || second !== state.backendTargetLang2);
+                updateState({ currentTranslationTargetLang: target, backendTargetLang1: first, backendTargetLang2: second });
+                options.setUiTranslationMode(mode);
+                if (state.translationProvider === 'gemini' && mode === 'none') options.renderSubtitles();
+            }
+            if (!['soniox', 'local', 'gemini'].includes(state.translationProvider)) return false;
+            const mode = getState().uiTranslationMode;
+            if (state.translationProvider === 'gemini' && (!saved || mode === 'none')) return false;
             if (!['none', 'one_way', 'two_way'].includes(mode)) return false;
             if (mode === 'two_way' && !state.twoWaySupported) return false;
-            if (!backendDiffers(state, mode)) return false;
+            if (!backendDiffers(state, mode) && !restoreLanguages) return false;
             // One attempt per boot + mode, so a refused restart cannot loop.
-            const key = `${state.backendBootId || ''}|${mode}`;
+            const key = `${restoreKey}|${mode}`;
             if (key === lastBackendSyncKey) return false;
             lastBackendSyncKey = key;
             const restartOptions = { auto: true, translationMode: mode };
             if (mode === 'two_way') {
-                restartOptions.targetLang1 = state.backendTargetLang1;
-                restartOptions.targetLang2 = state.backendTargetLang2;
+                restartOptions.targetLang1 = getState().backendTargetLang1;
+                restartOptions.targetLang2 = getState().backendTargetLang2;
+            } else if (mode === 'one_way') {
+                restartOptions.targetLang = getState().currentTranslationTargetLang;
             }
             void restartWithMode(restartOptions);
             return true;

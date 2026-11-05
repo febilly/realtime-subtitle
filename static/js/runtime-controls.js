@@ -93,24 +93,19 @@
             if (!audioSourceButton || !audioSourceIcon) return;
             const audioSource = normalizeAudioSource(state().audioSource);
             updateState({ audioSource });
-            let nextKey;
             let currentKey;
             if (audioSource === 'microphone') {
                 setControlIcon(audioSourceIcon, 'mic');
-                nextKey = 'audio_to_mix_val';
                 currentKey = 'audio_source_microphone';
             } else if (audioSource === 'mix') {
                 setControlIcon(audioSourceIcon, 'blend');
-                nextKey = 'audio_to_system_val';
                 currentKey = 'audio_source_mix';
             } else {
                 setControlIcon(audioSourceIcon, 'volume-2');
-                nextKey = 'audio_to_mic_val';
                 currentKey = 'audio_source_system';
             }
             const currentName = t(currentKey);
-            const nextName = t(nextKey);
-            audioSourceButton.title = t('audio_source_format', { current: currentName, next: nextName });
+            audioSourceButton.title = t('audio_capture_tooltip', { current: currentName });
         }
 
         function updateOverlayButton() {
@@ -285,28 +280,14 @@
         }
 
         async function fetchInitialAudioSource() {
-            try {
-                const stored = storage.getItem('audioSource');
-                updateState({ audioSource: normalizeAudioSource(stored) });
-                updateAudioSourceButton();
-            } catch (storageError) {
-                consoleRef.warn('Unable to access stored audio source preference:', storageError);
-            }
-
             if (!fetchRef) return false;
             try {
                 const response = await fetchRef('/audio-source');
                 if (!response.ok) return false;
                 const data = await response.json();
                 if (data && typeof data.source === 'string') {
-                    const audioSource = normalizeAudioSource(data.source);
-                    updateState({ audioSource });
+                    updateState({ audioSource: normalizeAudioSource(data.source) });
                     updateAudioSourceButton();
-                    try {
-                        storage.setItem('audioSource', audioSource);
-                    } catch (persistError) {
-                        consoleRef.warn('Unable to persist audio source preference:', persistError);
-                    }
                 }
                 return true;
             } catch (error) {
@@ -316,39 +297,8 @@
         }
 
         async function switchAudioSource() {
-            const current = state();
-            if (current.lockManualControls || !fetchRef) return false;
-            const nextSource = getNextAudioSource(current.audioSource);
-            try {
-                const response = await fetchRef('/audio-source', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ source: nextSource }),
-                });
-                let result = null;
-                try {
-                    result = await response.json();
-                } catch (parseError) {
-                    consoleRef.error('Failed to parse audio source response:', parseError);
-                }
-                if (response.ok && result && result.source) {
-                    const audioSource = normalizeAudioSource(result.source);
-                    updateState({ audioSource });
-                    updateAudioSourceButton();
-                    storage.setItem('audioSource', audioSource);
-                    if (result.message) {
-                        consoleRef.log(result.message);
-                    } else {
-                        consoleRef.log(`Audio source switched to ${audioSource}`);
-                    }
-                    return true;
-                }
-                const message = (result && result.message) || `Server responded with status ${response.status}`;
-                consoleRef.error('Failed to switch audio source:', message);
-            } catch (error) {
-                consoleRef.error('Error switching audio source:', error);
-            }
-            return false;
+            if (state().lockManualControls || typeof options.showAudioSource !== 'function') return false;
+            return options.showAudioSource();
         }
 
         async function refreshOverlayState() {

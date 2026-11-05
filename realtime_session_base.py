@@ -54,6 +54,7 @@ from config import (
     normalize_language_code,
 )
 from audio_capture import AudioStreamer
+import audio_preferences
 from audio_router import AudioSendRouter
 from hosted_llm import HostedLlmTransport
 from llm_client import LlmConfig, chat_completion
@@ -132,6 +133,11 @@ class RealtimeSessionBase:
         self.output_device_id = str(OUTPUT_DEVICE_ID or "").strip()
         self.audio_streamer: Optional[object] = None
         self.audio_lock = threading.Lock()
+        self._audio_capture_settings = audio_preferences.load()
+        if not USE_TWITCH_AUDIO_STREAM:
+            self.audio_source = audio_preferences.source(self._audio_capture_settings)
+            self.microphone_device_id = self._audio_capture_settings["microphone_device_id"]
+            self.output_device_id = self._audio_capture_settings["output_device_id"]
         self._stream_close_lock = threading.Lock()
         self._vrchat_self_muted = False
         self.osc_translation_enabled = False
@@ -445,6 +451,33 @@ class RealtimeSessionBase:
         with self.audio_lock:
             return self.audio_source
 
+    def get_audio_capture_settings(self):
+        with self.audio_lock:
+            settings = dict(self._audio_capture_settings)
+            settings.update(desktop_enabled=self.audio_source in ("system", "mix"),
+                            microphone_enabled=self.audio_source in ("microphone", "mix"),
+                            output_device_id=self.output_device_id,
+                            microphone_device_id=self.microphone_device_id)
+            return settings
+
+    def set_audio_capture_settings(self, value, *, persist=False, validate_window=True):
+        if USE_TWITCH_AUDIO_STREAM:
+            return False, "Twitch streaming mode is enabled; audio source switching is disabled."
+        try:
+            settings = audio_preferences.normalize(value, validate_window=validate_window)
+            if persist:
+                audio_preferences.save(settings)
+        except (ValueError, OSError) as error:
+            return False, str(error)
+        with self.audio_lock:
+            self._audio_capture_settings = settings
+            self.audio_source = audio_preferences.source(settings)
+            self.microphone_device_id = settings["microphone_device_id"]
+            self.output_device_id = settings["output_device_id"]
+            if self.audio_streamer:
+                self.audio_streamer.configure_capture(settings)
+        return True, "Audio capture settings applied"
+
     def set_audio_source(self, source: str) -> Tuple[bool, str]:
         """切换音频源。
 
@@ -549,10 +582,21 @@ class RealtimeSessionBase:
                 mute_mic_when_vrchat_muted=bool(MUTE_MIC_WHEN_VRCHAT_SELF_MUTED),
                 microphone_device_id=self.get_microphone_device_id(),
                 output_device_id=self.get_output_device_id(),
+                desktop_mode=self._audio_capture_settings["desktop_mode"],
+                window=self._audio_capture_settings["window"],
             )
             streamer.set_vrchat_mic_muted(self._vrchat_self_muted)
 
         with self.audio_lock:
+            if not USE_TWITCH_AUDIO_STREAM:
+                # An Apply can arrive while the replacement recorder is being
+                # constructed. Install the latest complete selection atomically.
+                latest = dict(self._audio_capture_settings)
+                latest.update(desktop_enabled=self.audio_source in ("system", "mix"),
+                              microphone_enabled=self.audio_source in ("microphone", "mix"),
+                              output_device_id=self.output_device_id,
+                              microphone_device_id=self.microphone_device_id)
+                streamer.configure_capture(latest)
             self.audio_streamer = streamer
 
         streamer.start()

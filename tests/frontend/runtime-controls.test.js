@@ -44,6 +44,7 @@ function setup(overrides = {}) {
         getState: () => state,
         updateState: (patch) => Object.assign(state, patch),
         fetch,
+        showAudioSource: overrides.showAudioSource,
         storage: dom.window.localStorage,
         t: (key, params) => params ? `${key}:${params.current}>${params.next}` : key,
         setControlIcon,
@@ -115,31 +116,33 @@ describe('RuntimeControls', () => {
         page.dom.window.close();
     });
 
-    it('updates audio source only when the endpoint returns an accepted source', async () => {
-        const fetch = vi.fn()
-            .mockResolvedValueOnce(jsonResponse({ source: 'microphone', message: 'changed' }))
-            .mockResolvedValueOnce(jsonResponse({ message: 'rejected' }, { ok: false, status: 409 }));
-        const page = setup({ fetch });
+    it('opens the selector without cycling or changing live capture', async () => {
+        const showAudioSource = vi.fn().mockResolvedValue(true);
+        const page = setup({ showAudioSource });
         expect(await page.controller.switchAudioSource()).toBe(true);
-        expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ source: 'microphone' });
-        expect(page.state.audioSource).toBe('microphone');
-        expect(page.dom.window.localStorage.getItem('audioSource')).toBe('microphone');
-        expect(page.setControlIcon).toHaveBeenLastCalledWith(page.document.getElementById('audioIcon'), 'mic');
-        expect(await page.controller.switchAudioSource()).toBe(false);
-        expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ source: 'mix' });
-        expect(page.state.audioSource).toBe('microphone');
-        expect(page.logger.error).toHaveBeenCalledWith('Failed to switch audio source:', 'rejected');
+        expect(showAudioSource).toHaveBeenCalledOnce();
+        expect(page.fetch).not.toHaveBeenCalled();
+        expect(page.state.audioSource).toBe('system');
         page.dom.window.close();
     });
 
-    it('loads stored audio source first and then synchronizes the server value', async () => {
+    it.each([['system', 'volume-2'], ['microphone', 'mic'], ['mix', 'blend']])(
+        'keeps the existing %s toolbar icon', (audioSource, icon) => {
+            const page = setup({ state: { audioSource } });
+            page.controller.updateAudioSourceButton();
+            expect(page.setControlIcon).toHaveBeenLastCalledWith(page.document.getElementById('audioIcon'), icon);
+            page.dom.window.close();
+        },
+    );
+
+    it('uses backend capture settings and ignores legacy automatic persistence', async () => {
         const fetch = vi.fn().mockResolvedValue(jsonResponse({ source: 'mix' }));
         const page = setup({ fetch });
         page.dom.window.localStorage.setItem('audioSource', 'microphone');
         expect(await page.controller.fetchInitialAudioSource()).toBe(true);
         expect(fetch).toHaveBeenCalledWith('/audio-source');
         expect(page.state.audioSource).toBe('mix');
-        expect(page.dom.window.localStorage.getItem('audioSource')).toBe('mix');
+        expect(page.dom.window.localStorage.getItem('audioSource')).toBe('microphone');
         page.dom.window.close();
     });
 
