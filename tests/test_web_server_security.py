@@ -94,6 +94,45 @@ class TestWebServerSecurity:
         return MagicMock()
 
     @async_test
+    async def test_audio_capture_settings_apply_atomically_and_update_provider_snapshot(self):
+        with patch.dict(sys.modules, {"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+                                      "config": MagicMock(), "llm_client": MagicMock()}):
+            import web_server as module
+            module.LOCK_MANUAL_CONTROLS = False
+            session = self.mock_session()
+            session.set_audio_capture_settings.return_value = (True, "ok")
+            settings = {"desktop_enabled": True, "microphone_enabled": True, "remember": True}
+            session.get_audio_capture_settings.return_value = settings
+            server = module.WebServer(session, self.mock_logger())
+            server.provider_manager = MagicMock()
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            request.json.return_value = {"settings": settings}
+            module.web.json_response.side_effect = lambda data, status=200: (data, status)
+            data, status = await server.set_audio_source_handler(request)
+            assert status == 200
+            assert data["settings"] == settings
+            session.set_audio_capture_settings.assert_called_once_with(settings, persist=True)
+            server.provider_manager._capture_audio_preferences.assert_called_once_with(session)
+
+    @async_test
+    async def test_audio_capture_details_and_window_list_are_localhost_only(self):
+        with patch.dict(sys.modules, {"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+                                      "config": MagicMock(), "llm_client": MagicMock()}):
+            import web_server as module
+            session = self.mock_session()
+            server = module.WebServer(session, self.mock_logger())
+            request = AsyncMock()
+            request.remote = "192.168.1.5"
+            module.web.json_response.side_effect = lambda data, status=200: (data, status)
+            data, status = await server.get_audio_source_handler(request)
+            assert status == 200
+            assert "settings" not in data
+            session.get_audio_capture_settings.assert_not_called()
+            _, status = await server.audio_windows_handler(request)
+            assert status == 403
+
+    @async_test
     async def test_set_audio_source_valid(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),

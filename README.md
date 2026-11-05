@@ -43,6 +43,14 @@ TRANSLATION_PROVIDER="soniox"   # or "gemini"
 
 If `TRANSLATION_PROVIDER` is not set, the app uses whichever provider already has a key in the environment, falling back to `soniox`.
 
+### Choosing audio sources
+
+Click the audio source button to open the capture panel. Desktop audio and microphone capture can be enabled independently or mixed; **Apply** requires at least one source. Desktop audio can capture a selected output device or a selected application window. Device selection now lives in this panel.
+
+Window capture uses Windows application loopback and requires **Windows build 20348 or later** (including Windows 11). It captures the selected application's process tree, including its other windows; individual browser tabs cannot be isolated. If the selected window closes, desktop capture becomes silent rather than capturing other applications. Other platforms retain output-device and microphone capture.
+
+The audio and translation-language panels each have their own **Remember my settings** switch. Changes, including the switch, take effect only after **Apply**. Remembered audio settings load before capture starts. A remembered window is restored only when its executable and title identify a unique open window; otherwise, select it again in the panel. Without remembering, the next launch uses the configured defaults.
+
 ### API keys
 
 Enter your key in the Settings panel for the provider you use. Get a key from [Soniox](https://console.soniox.com/) or [Google AI Studio](https://aistudio.google.com/apikey).

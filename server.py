@@ -379,6 +379,9 @@ class ProviderManager:
         if session is None:
             return
 
+        if hasattr(session, "get_audio_capture_settings"):
+            self._audio_capture_settings = session.get_audio_capture_settings()
+
         if hasattr(session, "get_audio_source"):
             try:
                 source = str(session.get_audio_source() or "").strip().lower()
@@ -402,6 +405,15 @@ class ProviderManager:
     def _apply_audio_preferences(self, session) -> None:
         """Apply remembered audio choices to a freshly-created session."""
         if session is None:
+            return
+
+        capture = getattr(self, "_audio_capture_settings", None)
+        if capture is None and hasattr(session, "get_audio_capture_settings"):
+            # The session loaded the opt-in preferences before capture starts.
+            self._capture_audio_preferences(session)
+            return
+        if capture is not None and hasattr(session, "set_audio_capture_settings"):
+            session.set_audio_capture_settings(capture, validate_window=False)
             return
 
         if hasattr(session, "set_microphone_device_id"):

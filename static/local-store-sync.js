@@ -49,6 +49,7 @@
         'clientUpdateReminderLastShown': true,
         'clientUpdateLastCheckedVersion': true,
         'useBundledCjkFont': true,
+        'translationLanguagePreferences.v1': true,
     };
 
     function isShared(key) {

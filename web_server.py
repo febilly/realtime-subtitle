@@ -2147,7 +2147,19 @@ class WebServer:
     async def get_audio_source_handler(self, request):
         """获取当前音频源"""
         source = self.session.get_audio_source()
-        return web.json_response({"status": "ok", "source": source})
+        payload = {"status": "ok", "source": source}
+        if self._is_loopback_request(request) and hasattr(self.session, "get_audio_capture_settings"):
+            payload["settings"] = self.session.get_audio_capture_settings()
+            streamer = getattr(self.session, "audio_streamer", None)
+            payload["capture_error"] = getattr(streamer, "capture_error", "")
+        return web.json_response(payload)
+
+    async def audio_windows_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        import window_audio
+        return web.json_response({"available": window_audio.supported(),
+                                  "windows": await asyncio.to_thread(window_audio.list_windows)})
 
     async def set_audio_source_handler(self, request):
         """切换音频源"""
@@ -2167,6 +2179,15 @@ class WebServer:
             payload = await request.json()
         except Exception:
             return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if isinstance(payload, dict) and "settings" in payload:
+            success, message = self.session.set_audio_capture_settings(payload["settings"], persist=True)
+            if success and self.provider_manager is not None:
+                self.provider_manager._capture_audio_preferences(self.session)
+            return web.json_response({"status": "ok" if success else "error", "message": message,
+                                      "source": self.session.get_audio_source(),
+                                      "settings": self.session.get_audio_capture_settings()},
+                                     status=200 if success else 400)
 
         if not isinstance(payload, dict) or "source" not in payload:
             return web.json_response({"status": "error", "message": "Missing 'source' field"}, status=400)
@@ -2780,6 +2801,7 @@ class WebServer:
         app.router.add_post('/osc-sensitive-filter-notice', self.osc_sensitive_filter_notice_set_handler)
         app.router.add_get('/audio-source', self.get_audio_source_handler)
         app.router.add_post('/audio-source', self.set_audio_source_handler)
+        app.router.add_get('/audio-windows', self.audio_windows_handler)
         app.router.add_get('/microphones', self.microphones_handler)
         app.router.add_get('/output-devices', self.output_devices_handler)
         app.router.add_post('/output-device', self.output_device_set_handler)

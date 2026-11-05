@@ -1,6 +1,7 @@
 const { JSDOM } = require('jsdom');
 const LanguageCatalog = require('../../static/js/language-catalog');
 const LanguageUI = require('../../static/js/language-ui');
+const SettingsUI = require('../../static/js/settings-ui');
 
 function setup(overrides = {}) {
     const dom = new JSDOM('<!doctype html><body><button id="languages"></button></body>', { url: 'http://localhost/' });
@@ -22,6 +23,7 @@ function setup(overrides = {}) {
     const renderSubtitles = vi.fn();
     const catalog = LanguageCatalog.create(['en', 'zh', 'ja']);
     const controller = LanguageUI.create({
+        settingsUI: SettingsUI,
         document: dom.window.document,
         window: dom.window,
         storage: dom.window.localStorage,
@@ -45,6 +47,46 @@ function setup(overrides = {}) {
 }
 
 describe('LanguageUI', () => {
+    it('persists languages only after applying an opted-in draft, independently of audio', () => {
+        const { dom, controller } = setup();
+        const storage = dom.window.localStorage;
+        storage.setItem('audioCapturePreferences.v1', 'untouched');
+        controller.show();
+        dom.window.document.getElementById('rememberLanguageSettings').click();
+        controller.hide();
+        expect(storage.getItem('translationLanguagePreferences.v1')).toBeNull();
+        controller.show();
+        expect(dom.window.document.getElementById('rememberLanguageSettings').getAttribute('aria-checked')).toBe('false');
+        controller.setDraft({ mode: 'one_way', targetLang: 'ja', remember: true });
+        controller.applyDraft();
+        expect(JSON.parse(storage.getItem('translationLanguagePreferences.v1'))).toMatchObject({ targetLang: 'ja', remember: true });
+        controller.setDraft({ remember: false });
+        controller.applyDraft();
+        expect(storage.getItem('translationLanguagePreferences.v1')).toBeNull();
+        expect(storage.getItem('audioCapturePreferences.v1')).toBe('untouched');
+        dom.window.close();
+    });
+
+    it('restores a remembered target even when the backend already has the same translation mode', () => {
+        const { dom, controller, state, restartRecognition } = setup({ backendBootId: 'boot-1' });
+        dom.window.localStorage.setItem('translationLanguagePreferences.v1', JSON.stringify({
+            mode: 'one_way', targetLang: 'ja', targetLang1: 'en', targetLang2: 'zh', remember: true,
+        }));
+        expect(controller.syncBackendMode()).toBe(true);
+        expect(state.currentTranslationTargetLang).toBe('ja');
+        expect(restartRecognition).toHaveBeenCalledWith({ auto: true, translationMode: 'one_way', targetLang: 'ja' });
+        expect(controller.syncBackendMode()).toBe(false);
+        dom.window.close();
+    });
+
+    it('does not restore old language values without an applied remember preference', () => {
+        const { dom, controller, state, restartRecognition } = setup();
+        dom.window.localStorage.setItem('uiTranslationMode', 'two_way');
+        expect(controller.syncBackendMode()).toBe(false);
+        expect(state.currentTranslationTargetLang).toBe('en');
+        expect(restartRecognition).not.toHaveBeenCalled();
+        dom.window.close();
+    });
     it('disables the target picker and shows the settings hint while translation is off', () => {
         const page = setup({ translationDisabled: true });
         page.controller.init();

@@ -228,6 +228,20 @@ body.dark-theme .lang-popover {
     box-shadow: 0 18px 46px rgba(0, 0, 0, 0.38);
 }
 
+.audio-source-popover { width: min(440px, calc(100vw - 36px)); }
+.audio-source-popover .audio-source-section { margin-bottom: 14px; padding: 14px; }
+.audio-source-section .settings-row { padding: 0; }
+.audio-source-options { margin-top: 12px; }
+.audio-source-options[hidden] { display: none; }
+.audio-source-options .translation-mode-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.popover-remember { margin: 14px 0 8px; color: #374151; }
+body.dark-theme .popover-remember { color: #e5e7eb; }
+.audio-source-popover .audio-source-error { margin: 8px 0; }
+.audio-source-popover .audio-source-error,
+.audio-source-popover .audio-window-placeholder .lang-picker-label { color: #c2410c; }
+body.dark-theme .audio-source-popover .audio-source-error,
+body.dark-theme .audio-source-popover .audio-window-placeholder .lang-picker-label { color: #fb923c; }
+
 body.dark-theme .control-button {
     background: rgba(255, 255, 255, 0.1);
     color: #f3f4f6;

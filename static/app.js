@@ -427,7 +427,7 @@ const hostedPorts = {
 };
 const { safeHttpUrl } = SettingsStore;
 
-let uiTranslationMode = settingsStore.loadUiTranslationMode();
+let uiTranslationMode = null;
 
 const speakerLabelController = SpeakerLabelController.create({
     fetch,
@@ -806,6 +806,7 @@ const webSocketController = WebSocketController.create({
 });
 
 const runtimeControls = RuntimeControls.create({
+    showAudioSource: () => audioSourceUi.show(),
     elements: {
         displayModeButton,
         pauseButton,
@@ -834,6 +835,15 @@ const runtimeControls = RuntimeControls.create({
         if (Object.prototype.hasOwnProperty.call(patch, 'isPaused')) isPaused = patch.isPaused;
         if (Object.prototype.hasOwnProperty.call(patch, 'audioSource')) audioSource = patch.audioSource;
         if (Object.prototype.hasOwnProperty.call(patch, 'overlayOpen')) overlayOpen = patch.overlayOpen;
+    },
+});
+
+const audioSourceUi = AudioSourceUI.create({
+    document, window, fetch, t, button: audioSourceButton,
+    isLocked: () => lockManualControls,
+    onApplied: (source) => {
+        audioSource = source;
+        runtimeControls.updateAudioSourceButton();
     },
 });
 
@@ -1342,7 +1352,6 @@ function setUiTranslationMode(mode, { persistOnly = false } = {}) {
         return;
     }
     uiTranslationMode = mode;
-    settingsStore.saveUiTranslationMode(mode);
     if (persistOnly) {
         return;
     }
@@ -1829,10 +1838,7 @@ const hostedController = Hosted.createController({
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-    void Promise.all([
-        settingsRuntime.fetchOutputDevices(),
-        settingsRuntime.fetchMicrophoneDevices(),
-    ]).then(() => settingsRuntime.saveMicrophoneDeviceSelection());
+    void audioSourceUi.fetchState();
     void hostedController.startup().then(() => timedNotifications.start());
 });
 

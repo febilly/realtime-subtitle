@@ -160,6 +160,8 @@ class AudioStreamer:
         microphone_device_id: str = MICROPHONE_DEVICE_ID,
         output_device_id: str = OUTPUT_DEVICE_ID,
         mix_starvation_threshold: float = 0.08,
+        desktop_mode: str = "output",
+        window: Optional[dict] = None,
     ):
         self.ws = ws
         self.sample_rate = sample_rate
@@ -173,6 +175,9 @@ class AudioStreamer:
         self._current_source = initial_source
         self._microphone_device_id = normalize_microphone_device_id(microphone_device_id)
         self._output_device_id = normalize_output_device_id(output_device_id)
+        self._desktop_mode = desktop_mode
+        self._window = window
+        self.capture_error = ""
         self._thread: Optional[threading.Thread] = None
         self.mix_mic_gain = float(MIX_OWN_VOLUME)
         self.mix_system_gain = float(MIX_OTHER_VOLUME)
@@ -261,6 +266,18 @@ class AudioStreamer:
         with self._source_lock:
             return self._output_device_id
 
+    def configure_capture(self, settings) -> None:
+        """Switch all recorders together, so drafts never leak into live capture."""
+        import audio_preferences
+        with self._source_lock:
+            self._current_source = audio_preferences.source(settings)
+            self._output_device_id = settings["output_device_id"]
+            self._microphone_device_id = settings["microphone_device_id"]
+            self._desktop_mode = settings["desktop_mode"]
+            self._window = settings["window"]
+            self.capture_error = ""
+        self._source_changed_event.set()
+
     def _run(self) -> None:
         """音频线程主循环"""
         while not self._stop_event.is_set():
@@ -308,6 +325,7 @@ class AudioStreamer:
                         self._stop_event.set()
                         return
         except Exception as capture_error:
+            self.capture_error = str(capture_error)
             print(f"Error capturing audio from {source}: {capture_error}")
             time.sleep(0.5)
 
@@ -393,6 +411,7 @@ class AudioStreamer:
                         except queue.Full:
                             pass
         except Exception as capture_error:
+            self.capture_error = str(capture_error)
             print(f"Error capturing audio from {source}: {capture_error}")
             local_stop_event.set()
 
@@ -591,6 +610,16 @@ class AudioStreamer:
     def _create_recorder(self, source: str):
         """根据音频源创建对应的recorder上下文"""
         try:
+            if source == "system" and self._desktop_mode == "window":
+                import window_audio
+                if not window_audio.resolve_window(self._window):
+                    self.capture_error = "Selected audio window is unavailable"
+                    return _SilentRecorder(self.sample_rate)
+                self.capture_error = ""
+                return window_audio.ProcessRecorder(
+                    self._window, self.sample_rate,
+                    stop=lambda: self._stop_event.is_set() or self._source_changed_event.is_set(),
+                )
             global _warned_missing_soundcard
             if sc is None:
                 if not _warned_missing_soundcard:
@@ -626,6 +655,7 @@ class AudioStreamer:
             return microphone.recorder(samplerate=self.sample_rate, channels=1)
 
         except Exception as init_error:
+            self.capture_error = str(init_error)
             print(f"Error initializing audio source '{source}': {init_error}")
             return None
 
@@ -667,6 +697,12 @@ class AudioStreamer:
 
     def _device_signature(self, source: str) -> str:
         """Resolve the actual endpoint so hot-plug/default changes restart capture."""
+        if source == "system" and self._desktop_mode == "window":
+            import window_audio
+            target = window_audio.resolve_window(self._window)
+            if not target:
+                self.capture_error = "Selected audio window is unavailable"
+            return str(target.get("created")) if target else "missing-window"
         if sc is None:
             return ""
         try:
@@ -674,3 +710,19 @@ class AudioStreamer:
             return self._device_id(device)
         except Exception:
             return ""
+
+
+class _SilentRecorder:
+    """Keep mixed microphone capture running when a selected window closes."""
+    def __init__(self, sample_rate):
+        self.sample_rate = sample_rate
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def record(self, numframes):
+        time.sleep(numframes / self.sample_rate)
+        return np.zeros(numframes, dtype=np.float32)
