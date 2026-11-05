@@ -236,8 +236,11 @@ body.dark-theme .lang-popover {
 .audio-source-options .translation-mode-control { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .popover-remember { margin: 14px 0 8px; color: #374151; }
 body.dark-theme .popover-remember { color: #e5e7eb; }
-.audio-source-error { color: #b45309; margin: 8px 0; }
-body.dark-theme .audio-source-error { color: #fbbf24; }
+.audio-source-popover .audio-source-error { margin: 8px 0; }
+.audio-source-popover .audio-source-error,
+.audio-source-popover .audio-window-placeholder .lang-picker-label { color: #c2410c; }
+body.dark-theme .audio-source-popover .audio-source-error,
+body.dark-theme .audio-source-popover .audio-window-placeholder .lang-picker-label { color: #fb923c; }
 
 body.dark-theme .control-button {
     background: rgba(255, 255, 255, 0.1);

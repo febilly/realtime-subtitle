@@ -107,6 +107,7 @@
             const select = ui.buildCustomSelect(entries, { value, onChange, disabled });
             pickers.push(select);
             host.appendChild(select);
+            return select;
         }
 
         function devicePicker(host, key, data) {
@@ -166,9 +167,11 @@
                         })).sort((first, second) => first.label.toLowerCase().localeCompare(second.label.toLowerCase()))];
                     const selected = lists.windows.windows.findIndex((item) => item.hwnd === draft.window?.hwnd
                         && item.created === draft.window?.created);
-                    picker(content, entries, selected < 0 ? '' : String(selected), (value) => {
+                    const windowPicker = picker(content, entries, selected < 0 ? '' : String(selected), (value) => {
                         draft.window = value === '' ? null : lists.windows.windows[Number(value)];
+                        windowPicker.classList.toggle('audio-window-placeholder', value === '');
                     }, !lists.windows.available);
+                    windowPicker.classList.toggle('audio-window-placeholder', selected < 0);
                     if (!lists.windows.available) content.appendChild(node('p', 'field-hint', t('audio_window_unsupported')));
                 }
             }));
@@ -249,7 +252,7 @@
                 return false;
             }
             if (draft.desktop_enabled && draft.desktop_mode === 'window' && !draft.window) {
-                error('audio_choose_window');
+                error('audio_window_required');
                 return false;
             }
             busy = true;
