@@ -91,7 +91,7 @@
                 contents[0].hidden = false;
                 contents[1].hidden = true;
                 // Reference: desktop output capture on, microphone off.
-                // The window-mode explanation and validation are extra content.
+                // Availability warnings and validation are extra content.
                 contents[0].querySelectorAll('.field-hint').forEach((hint) => hint.remove());
                 baseline.querySelector('.audio-source-error').hidden = true;
             });
@@ -160,13 +160,16 @@
                 if (draft.desktop_mode === 'output') devicePicker(content, 'output_device_id', lists.outputs);
                 else {
                     const entries = [{ value: '', label: t('audio_choose_window') },
-                        ...lists.windows.windows.map((item, index) => ({ value: String(index), label: item.title }))];
+                        ...lists.windows.windows.map((item, index) => ({
+                            value: String(index),
+                            label: `[${String(item.executable || '').split(/[\\/]/).pop()}] ${item.title}`,
+                        }))];
                     const selected = lists.windows.windows.findIndex((item) => item.hwnd === draft.window?.hwnd
                         && item.created === draft.window?.created);
                     picker(content, entries, selected < 0 ? '' : String(selected), (value) => {
                         draft.window = value === '' ? null : lists.windows.windows[Number(value)];
                     }, !lists.windows.available);
-                    content.appendChild(node('p', 'field-hint', t(lists.windows.available ? 'audio_window_hint' : 'audio_window_unsupported')));
+                    if (!lists.windows.available) content.appendChild(node('p', 'field-hint', t('audio_window_unsupported')));
                 }
             }));
             panel.appendChild(section('audio_microphone_capture', 'microphone_enabled', (content) => {

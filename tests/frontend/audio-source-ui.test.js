@@ -78,7 +78,7 @@ describe('audio source selector', () => {
         expect(await page.controller.applyDraft()).toBe(false);
         const trigger = page.document.querySelector('.audio-source-options .lang-picker-button');
         trigger.click();
-        [...page.document.querySelectorAll('[role="option"]')].find((item) => item.textContent === 'Player').click();
+        [...page.document.querySelectorAll('[role="option"]')].find((item) => item.textContent === '[player.exe] Player').click();
         expect(await page.controller.applyDraft()).toBe(true);
         expect(page.saved()).toMatchObject({ desktop_mode: 'window', window: target });
         page.dom.window.close();
