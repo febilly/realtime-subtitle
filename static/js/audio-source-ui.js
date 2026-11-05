@@ -163,7 +163,7 @@
                         ...lists.windows.windows.map((item, index) => ({
                             value: String(index),
                             label: `[${String(item.executable || '').split(/[\\/]/).pop()}] ${item.title}`,
-                        }))];
+                        })).sort((first, second) => first.label.toLowerCase().localeCompare(second.label.toLowerCase()))];
                     const selected = lists.windows.windows.findIndex((item) => item.hwnd === draft.window?.hwnd
                         && item.created === draft.window?.created);
                     picker(content, entries, selected < 0 ? '' : String(selected), (value) => {
