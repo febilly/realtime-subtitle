@@ -20,6 +20,32 @@
         const cancel = options.clearTimeout || ((...args) => root.clearTimeout(...args));
         const activeToasts = new Map();
 
+        // Anchor panel notifications to the actual sticky footer, so button
+        // wrapping and the form's scrollbar are both accounted for by layout.
+        if (toastContainer) {
+            const dockParent = toastContainer.parentNode;
+            const dockNextSibling = toastContainer.nextSibling;
+            const panels = [...documentRef.querySelectorAll('.settings-panel')];
+            const syncToastHost = () => {
+                const panel = panels.findLast((item) => !item.hidden);
+                const footer = panel?.querySelector('.settings-actions');
+                if (footer) {
+                    if (toastContainer.parentNode !== footer) footer.appendChild(toastContainer);
+                } else if (dockParent && toastContainer.parentNode !== dockParent) {
+                    dockParent.insertBefore(toastContainer, dockNextSibling);
+                }
+            };
+            const Observer = documentRef.defaultView?.MutationObserver;
+            if (Observer && panels.length) {
+                const observer = new Observer(syncToastHost);
+                panels.forEach((panel) => observer.observe(panel, {
+                    attributes: true,
+                    attributeFilter: ['hidden'],
+                }));
+            }
+            syncToastHost();
+        }
+
         function hideToast() {
             if (!toastContainer) return;
             for (const entry of activeToasts.values()) {

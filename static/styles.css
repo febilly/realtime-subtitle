@@ -1455,14 +1455,15 @@ body.chroma-theme .toast-container {
 
 /*
  * While a settings/login panel covers the subtitles, the docked notifications
- * would be hidden underneath it; float them over the panel instead.
+ * would be hidden underneath it; the controller moves them into the sticky
+ * action footer. Float above its buttons, inside the form's scrollbar.
  */
 body:has(.settings-panel:not([hidden])) .toast-container {
-    position: fixed;
-    top: env(safe-area-inset-top, 0px);
+    position: absolute;
+    bottom: 100%;
     right: 0;
     z-index: 9500;
-    width: min(420px, 100vw);
+    width: 100%;
     box-sizing: border-box;
     flex-direction: column;
     padding: 12px;
@@ -1473,7 +1474,7 @@ body:has(.settings-panel:not([hidden])) .toast-container {
 
 body:has(.settings-panel:not([hidden])) .toast-container .toast {
     pointer-events: auto;
-    animation-name: toast-in;
+    animation-name: toast-in-up;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
 }
 
