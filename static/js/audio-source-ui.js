@@ -16,6 +16,10 @@
         let pickers = [];
         let lists = {};
         let captureError = '';
+        let stateRequest = 0;
+        let pendingStateRequests = 0;
+        let monitorTimer = null;
+        let monitorBusy = false;
 
         const clone = (value) => JSON.parse(JSON.stringify(value));
         const locked = () => options.isLocked && options.isLocked();
@@ -39,17 +43,46 @@
                 desktop_enabled: data.source !== 'microphone', microphone_enabled: ['microphone', 'mix'].includes(data.source),
                 desktop_mode: 'output', output_device_id: '', microphone_device_id: '', window: null, remember: false,
             };
+            button.classList.toggle('audio-window-waiting', !!(settings.desktop_enabled
+                && settings.desktop_mode === 'window' && settings.window
+                && captureError === 'Selected audio window is unavailable'));
             if (typeof options.onApplied === 'function') options.onApplied(data.source);
         }
 
         async function fetchState() {
+            const token = ++stateRequest;
+            pendingStateRequests += 1;
             try {
-                accept(await request('/audio-source'));
+                const data = await request('/audio-source', { cache: 'no-store' });
+                if (token !== stateRequest || busy) return false;
+                accept(data);
                 return true;
             } catch (error) {
                 (options.console || root.console).error('Failed to fetch audio capture settings:', error);
                 return false;
+            } finally {
+                pendingStateRequests -= 1;
             }
+        }
+
+        function startMonitoring() {
+            if (monitorTimer !== null) return;
+            monitorTimer = window.setInterval(async () => {
+                if (monitorBusy || pendingStateRequests || busy || !settings?.desktop_enabled || settings.desktop_mode !== 'window') return;
+                monitorBusy = true;
+                try {
+                    await fetchState();
+                } finally {
+                    monitorBusy = false;
+                }
+            }, 1000);
+        }
+
+        async function promptMissingWindow() {
+            if (settings?.desktop_enabled && settings.desktop_mode === 'window' && !settings.window && !panel) {
+                return show();
+            }
+            return false;
         }
 
         function closePickers() {
@@ -261,6 +294,7 @@
                 return false;
             }
             busy = true;
+            stateRequest += 1;
             panel.querySelectorAll('button, input').forEach((element) => { element.disabled = true; });
             try {
                 accept(await request('/audio-source', {
@@ -278,7 +312,7 @@
             }
         }
 
-        return { show, hide, fetchState, applyDraft, getDraft: () => draft, isOpen: () => !!panel };
+        return { show, hide, fetchState, startMonitoring, promptMissingWindow, applyDraft, getDraft: () => draft, isOpen: () => !!panel };
     }
 
     root.AudioSourceUI = { create };

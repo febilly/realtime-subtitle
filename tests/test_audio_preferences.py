@@ -1,3 +1,4 @@
+import itertools
 import json
 import threading
 from types import SimpleNamespace
@@ -26,18 +27,112 @@ def test_only_opted_in_settings_survive_restart_and_uncheck_removes_them(store):
     assert prefs.STORE_KEY not in local_store.load()
 
 
-def test_window_restore_requires_unique_executable_and_title_not_old_pid(monkeypatch, store):
+def test_window_restore_prefers_title_then_path_and_takes_first_match(monkeypatch, store):
     target = dict(hwnd="11", pid=12, created="100", executable="C:\\player.exe", title="Player")
     prefs.save(prefs.defaults() | {"desktop_mode": "window", "window": target, "remember": True})
     next_window = target | dict(hwnd="22", pid=24, created="200")
     monkeypatch.setattr(window_audio, "list_windows", lambda: [next_window])
     assert prefs.load()["window"] == next_window
     assert window_audio.resolve_window(target) is None
-    monkeypatch.setattr(window_audio, "list_windows", lambda: [next_window, next_window | dict(hwnd="33")])
-    assert window_audio.resolve_window(target, restore=True) is None
-    # Keep the unavailable window target so capture stays isolated, never full desktop.
+    changed_title = next_window | dict(hwnd="33", title="Another title", executable="c:\\PLAYER.EXE")
+    monkeypatch.setattr(window_audio, "list_windows", lambda: [changed_title, next_window, next_window | dict(hwnd="44")])
+    assert prefs.load()["window"] == next_window
+    monkeypatch.setattr(window_audio, "list_windows", lambda: [changed_title, changed_title | dict(hwnd="55")])
+    assert prefs.load()["window"] == changed_title
+    monkeypatch.setattr(window_audio, "list_windows", lambda: [next_window | dict(executable="C:\\other.exe")])
     assert prefs.load()["desktop_mode"] == "window"
-    assert prefs.load()["window"] == target
+    assert prefs.load()["window"] is None
+    # Opening the selection prompt does not discard the remembered preference.
+    assert json.loads(local_store.load()[prefs.STORE_KEY])["window"] == target
+
+
+def test_live_window_title_change_keeps_same_process_before_restore_candidates(monkeypatch):
+    target = dict(hwnd="11", pid=12, created="100", executable="C:\\player.exe", title="Player")
+    renamed = target | dict(title="New title")
+    other = target | dict(hwnd="22", pid=24, created="200")
+    monkeypatch.setattr(window_audio, "list_windows", lambda: [other, renamed])
+    streamer = audio_capture.AudioStreamer(SimpleNamespace(), desktop_mode="window", window=target)
+    assert streamer._device_signature("system") == "12:100"
+    assert streamer.get_window() == renamed
+
+
+def test_missing_live_window_waits_then_recovers_by_path_and_refreshes_session(monkeypatch):
+    target = dict(hwnd="11", pid=12, created="100", executable="C:\\player.exe", title="Player")
+    windows = []
+    monkeypatch.setattr(window_audio, "list_windows", lambda: windows)
+    streamer = audio_capture.AudioStreamer(SimpleNamespace(), desktop_mode="window", window=target)
+    assert streamer._device_signature("system") == "missing-window"
+    assert streamer.get_window() == target
+    assert streamer.capture_error
+    next_window = target | dict(hwnd="22", pid=24, created="200", title="New title")
+    windows.extend([next_window, next_window | dict(hwnd="33", pid=36, created="300")])
+    assert streamer._device_signature("system") == "24:200"
+    assert streamer.get_window() == next_window
+    assert streamer.capture_error == ""
+    recorders = []
+    monkeypatch.setattr(window_audio, "ProcessRecorder", lambda selection, *args, **kwargs: recorders.append(selection))
+    streamer._create_recorder("system")
+    assert recorders == [next_window]
+
+    session = RealtimeSessionBase.__new__(RealtimeSessionBase)
+    session.audio_lock = threading.Lock()
+    session._audio_capture_settings = prefs.defaults() | {"desktop_mode": "window", "window": target}
+    session.audio_source = "system"
+    session.output_device_id = session.microphone_device_id = ""
+    session.audio_streamer = streamer
+    assert session.get_audio_capture_settings()["window"] == next_window
+
+
+def test_capture_recovery_does_not_overwrite_a_concurrent_manual_selection(monkeypatch):
+    target = dict(hwnd="11", pid=12, created="100", executable="C:\\player.exe", title="Player")
+    manual = target | dict(hwnd="22", pid=24, created="200", executable="C:\\other.exe")
+    streamer = audio_capture.AudioStreamer(SimpleNamespace(), desktop_mode="window", window=target)
+
+    def resolve(selection, **kwargs):
+        streamer.configure_capture(prefs.defaults() | {"desktop_mode": "window", "window": manual})
+        return target
+
+    monkeypatch.setattr(window_audio, "resolve_window", resolve)
+    assert streamer._resolve_capture_window() is None
+    assert streamer.get_window() == manual
+
+
+def test_capture_loop_reopens_recorder_when_the_missing_process_returns(monkeypatch):
+    target = dict(hwnd="11", pid=12, created="100", executable="C:\\player.exe", title="Player")
+    returned = target | dict(hwnd="22", pid=24, created="200", title="New title")
+    windows, payloads = [], []
+    monkeypatch.setattr(window_audio, "list_windows", lambda: windows)
+    clock = itertools.count(step=0.6)
+    monkeypatch.setattr(audio_capture, "time", SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda _: None))
+
+    def send(payload):
+        payloads.append(payload)
+        windows[:] = [returned]
+
+    streamer = audio_capture.AudioStreamer(SimpleNamespace(send=send), desktop_mode="window", window=target)
+    streamer._run_single_source_mode("system")
+    assert payloads and not np.frombuffer(payloads[0], dtype=np.int16).any()
+    assert streamer._source_changed_event.is_set()
+
+    class Recorder:
+        def __init__(self, selection, *args, **kwargs):
+            assert selection == returned
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def record(self, numframes):
+            streamer._stop_event.set()
+            return np.ones(numframes, dtype=np.float32)
+
+    monkeypatch.setattr(window_audio, "ProcessRecorder", Recorder)
+    streamer._source_changed_event.clear()
+    streamer._run_single_source_mode("system")
+    assert np.frombuffer(payloads[-1], dtype=np.int16).any()
+    assert streamer.capture_error == ""
 
 
 def test_rejects_all_disabled_and_stale_window_before_persisting(monkeypatch, store):

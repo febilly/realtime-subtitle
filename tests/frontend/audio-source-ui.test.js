@@ -6,10 +6,10 @@ const initial = () => ({ desktop_enabled: true, microphone_enabled: false, deskt
     output_device_id: '', microphone_device_id: '', window: null, remember: false });
 const target = { pid: 42, hwnd: '84', created: '100', executable: 'C:\\player.exe', title: 'Player' };
 
-function setup({ reject = false, unavailable = false } = {}) {
+function setup({ reject = false, unavailable = false, settings = initial(), captureError = '' } = {}) {
     const dom = new JSDOM('<button id="audio"></button>', { url: 'http://localhost' });
     const document = dom.window.document;
-    let saved = initial();
+    let saved = settings;
     const onApplied = vi.fn();
     const fetch = vi.fn(async (url, init = {}) => {
         let body;
@@ -17,7 +17,7 @@ function setup({ reject = false, unavailable = false } = {}) {
             if (reject) return { ok: false, status: 400, json: async () => ({ message: 'Selected audio window is unavailable' }) };
             saved = JSON.parse(init.body).settings;
             body = { status: 'ok', source: saved.desktop_enabled ? (saved.microphone_enabled ? 'mix' : 'system') : 'microphone', settings: saved };
-        } else if (url === '/audio-source') body = { source: 'system', settings: saved };
+        } else if (url === '/audio-source') body = { source: 'system', settings: saved, capture_error: captureError };
         else if (url === '/audio-windows') body = { available: !unavailable, windows: unavailable ? [] : [target] };
         else body = { available: true, devices: [{ id: 'usb', name: 'USB' }] };
         return { ok: true, json: async () => body };
@@ -25,10 +25,116 @@ function setup({ reject = false, unavailable = false } = {}) {
     const controller = AudioSourceUI.create({ document, window: dom.window, fetch,
         settingsUI: SettingsUI, t: (key) => key, button: document.querySelector('button'), onApplied });
     return { dom, document, controller, fetch, onApplied, saved: () => saved,
+        setCaptureError: (value) => { captureError = value; },
         posts: () => fetch.mock.calls.filter(([, init]) => init?.method === 'POST') };
 }
 
 describe('audio source selector', () => {
+    it('monitors a missing runtime window, flashes only the button, and clears it after recovery', async () => {
+        const page = setup({ settings: { ...initial(), desktop_mode: 'window', window: target },
+            captureError: 'Selected audio window is unavailable' });
+        let tick;
+        const interval = vi.spyOn(page.dom.window, 'setInterval').mockImplementation((callback) => {
+            tick = callback;
+            return 1;
+        });
+        try {
+            await page.controller.fetchState();
+            const button = page.document.getElementById('audio');
+            expect(button.classList.contains('audio-window-waiting')).toBe(true);
+            page.controller.startMonitoring();
+            page.controller.startMonitoring();
+            expect(interval).toHaveBeenCalledTimes(1);
+            expect(interval).toHaveBeenCalledWith(expect.any(Function), 1000);
+            await tick();
+            expect(page.controller.isOpen()).toBe(false);
+            expect(button.classList.contains('audio-window-waiting')).toBe(true);
+            page.setCaptureError('');
+            await tick();
+            expect(button.classList.contains('audio-window-waiting')).toBe(false);
+            expect(page.controller.isOpen()).toBe(false);
+            expect(page.posts()).toHaveLength(0);
+        } finally {
+            page.dom.window.close();
+        }
+    });
+
+    it('does not flash the runtime warning for an empty startup selection or a disabled desktop source', async () => {
+        for (const settings of [
+            { ...initial(), desktop_mode: 'window' },
+            { ...initial(), desktop_enabled: false, microphone_enabled: true, desktop_mode: 'window', window: target },
+            initial(),
+        ]) {
+            const page = setup({ settings, captureError: 'Selected audio window is unavailable' });
+            try {
+                await page.controller.fetchState();
+                expect(page.document.getElementById('audio').classList.contains('audio-window-waiting')).toBe(false);
+            } finally {
+                page.dom.window.close();
+            }
+        }
+    });
+
+    it('ignores an old monitoring response after the user applies a different capture mode', async () => {
+        const settings = { ...initial(), desktop_mode: 'window', window: target };
+        const page = setup({ settings });
+        try {
+            await page.controller.show();
+            page.document.querySelector('[data-desktop-mode="output"]').click();
+            let release;
+            const gate = new Promise(resolve => { release = resolve; });
+            page.fetch.mockImplementationOnce(async () => {
+                await gate;
+                return { ok: true, json: async () => ({ source: 'system', settings,
+                    capture_error: 'Selected audio window is unavailable' }) };
+            });
+            const oldRequest = page.controller.fetchState();
+            expect(await page.controller.applyDraft()).toBe(true);
+            release();
+            expect(await oldRequest).toBe(false);
+            expect(page.document.getElementById('audio').classList.contains('audio-window-waiting')).toBe(false);
+            expect(page.saved().desktop_mode).toBe('output');
+        } finally {
+            page.dom.window.close();
+        }
+    });
+
+    it('opens the startup prompt with the placeholder when the remembered window could not be restored', async () => {
+        const page = setup({ settings: { ...initial(), desktop_mode: 'window', remember: true } });
+        try {
+            await page.controller.fetchState();
+            expect(await page.controller.promptMissingWindow()).toBe(true);
+            expect(page.controller.isOpen()).toBe(true);
+            expect(page.controller.getDraft().window).toBeNull();
+            expect(page.document.querySelector('.audio-window-placeholder .lang-picker-label').textContent)
+                .toBe('audio_choose_window');
+            expect(page.document.querySelector('[role="alert"]').textContent).toBe('audio_window_missing');
+            expect(await page.controller.promptMissingWindow()).toBe(false);
+            expect(page.controller.isOpen()).toBe(true);
+            expect(page.posts()).toHaveLength(0);
+        } finally {
+            page.controller.hide();
+            page.dom.window.close();
+        }
+    });
+
+    it('does not prompt for a runtime target awaiting recovery, output capture, or disabled desktop capture', async () => {
+        for (const settings of [
+            { ...initial(), desktop_mode: 'window', window: target },
+            initial(),
+            { ...initial(), desktop_enabled: false, microphone_enabled: true, desktop_mode: 'window' },
+        ]) {
+            const page = setup({ settings });
+            try {
+                await page.controller.fetchState();
+                expect(await page.controller.promptMissingWindow()).toBe(false);
+                expect(page.controller.isOpen()).toBe(false);
+            } finally {
+                page.dom.window.close();
+            }
+        }
+    });
+
     it('lets both switches turn off, then validates on Apply without changing the backend', async () => {
         const page = setup();
         await page.controller.show();

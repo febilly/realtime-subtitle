@@ -88,20 +88,20 @@ def list_windows() -> list[dict]:
 
 
 def resolve_window(selection, *, restore=False):
-    """Never bind a recycled PID, or guess between multiple matching windows."""
+    """Validate a live identity, or restore by path/title then by path alone."""
     if not isinstance(selection, dict):
         return None
-    candidates = []
-    for item in list_windows():
-        if restore:
-            matches = (item["executable"].casefold() == str(selection.get("executable", "")).casefold()
-                       and item["title"] == selection.get("title"))
-        else:
-            matches = all(str(item[key]) == str(selection.get(key, ""))
-                          for key in ("hwnd", "pid", "created", "executable"))
-        if matches:
-            candidates.append(item)
-    return candidates[0] if len(candidates) == 1 else None
+    windows = list_windows()
+    if restore:
+        executable = str(selection.get("executable", "")).casefold()
+        if not executable:
+            return None
+        candidates = [item for item in windows if item["executable"].casefold() == executable]
+        return next((item for item in candidates if item["title"] == selection.get("title")),
+                    candidates[0] if candidates else None)
+    return next((item for item in windows
+                 if all(str(item[key]) == str(selection.get(key, ""))
+                        for key in ("hwnd", "pid", "created", "executable"))), None)
 
 
 class GUID(C.Structure):

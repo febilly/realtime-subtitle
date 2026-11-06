@@ -278,6 +278,25 @@ class AudioStreamer:
             self.capture_error = ""
         self._source_changed_event.set()
 
+    def get_window(self):
+        with self._source_lock:
+            return dict(self._window) if self._window else None
+
+    def _resolve_capture_window(self):
+        import window_audio
+        with self._source_lock:
+            selection = self._window
+        # Keep the live process through title changes. Only rebind when its
+        # identity is gone, using the same fallback order as startup restore.
+        target = (window_audio.resolve_window(selection)
+                  or window_audio.resolve_window(selection, restore=True))
+        with self._source_lock:
+            if self._window is not selection or self._desktop_mode != "window":
+                return None
+            if target:
+                self._window = target
+            return target
+
     def _run(self) -> None:
         """音频线程主循环"""
         while not self._stop_event.is_set():
@@ -612,12 +631,13 @@ class AudioStreamer:
         try:
             if source == "system" and self._desktop_mode == "window":
                 import window_audio
-                if not window_audio.resolve_window(self._window):
+                target = self._resolve_capture_window()
+                if not target:
                     self.capture_error = "Selected audio window is unavailable"
                     return _SilentRecorder(self.sample_rate)
                 self.capture_error = ""
                 return window_audio.ProcessRecorder(
-                    self._window, self.sample_rate,
+                    target, self.sample_rate,
                     stop=lambda: self._stop_event.is_set() or self._source_changed_event.is_set(),
                 )
             global _warned_missing_soundcard
@@ -698,11 +718,9 @@ class AudioStreamer:
     def _device_signature(self, source: str) -> str:
         """Resolve the actual endpoint so hot-plug/default changes restart capture."""
         if source == "system" and self._desktop_mode == "window":
-            import window_audio
-            target = window_audio.resolve_window(self._window)
-            if not target:
-                self.capture_error = "Selected audio window is unavailable"
-            return str(target.get("created")) if target else "missing-window"
+            target = self._resolve_capture_window()
+            self.capture_error = "" if target else "Selected audio window is unavailable"
+            return f'{target["pid"]}:{target["created"]}' if target else "missing-window"
         if sc is None:
             return ""
         try:

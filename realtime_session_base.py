@@ -454,6 +454,9 @@ class RealtimeSessionBase:
     def get_audio_capture_settings(self):
         with self.audio_lock:
             settings = dict(self._audio_capture_settings)
+            if settings["desktop_mode"] == "window" and self.audio_streamer and hasattr(self.audio_streamer, "get_window"):
+                settings["window"] = self.audio_streamer.get_window()
+                self._audio_capture_settings["window"] = settings["window"]
             settings.update(desktop_enabled=self.audio_source in ("system", "mix"),
                             microphone_enabled=self.audio_source in ("microphone", "mix"),
                             output_device_id=self.output_device_id,
