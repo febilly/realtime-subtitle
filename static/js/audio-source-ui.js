@@ -161,10 +161,15 @@
                 if (draft.desktop_mode === 'output') devicePicker(content, 'output_device_id', lists.outputs);
                 else {
                     const entries = [{ value: '', label: t('audio_choose_window') },
-                        ...lists.windows.windows.map((item, index) => ({
-                            value: String(index),
-                            label: `[${String(item.executable || '').split(/[\\/]/).pop()}] ${item.title}`,
-                        })).sort((first, second) => first.label.toLowerCase().localeCompare(second.label.toLowerCase()))];
+                        ...lists.windows.windows.map((item, index) => {
+                            const executable = String(item.executable || '').split(/[\\/]/).pop();
+                            return {
+                                value: String(index),
+                                label: `[${executable}] ${item.title}`,
+                                priority: executable.toLowerCase() === 'vrchat.exe' ? 0 : 1,
+                            };
+                        }).sort((first, second) => first.priority - second.priority
+                            || first.label.toLowerCase().localeCompare(second.label.toLowerCase()))];
                     const selected = lists.windows.windows.findIndex((item) => item.hwnd === draft.window?.hwnd
                         && item.created === draft.window?.created);
                     const windowPicker = picker(content, entries, selected < 0 ? '' : String(selected), (value) => {
