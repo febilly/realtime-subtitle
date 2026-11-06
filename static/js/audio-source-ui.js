@@ -78,13 +78,6 @@
             }, 1000);
         }
 
-        async function promptMissingWindow() {
-            if (settings?.desktop_enabled && settings.desktop_mode === 'window' && !settings.window && !panel) {
-                return show();
-            }
-            return false;
-        }
-
         function closePickers() {
             pickers.forEach((picker) => picker.close());
             pickers = [];
@@ -205,9 +198,16 @@
                             || first.label.toLowerCase().localeCompare(second.label.toLowerCase()))];
                     const selected = lists.windows.windows.findIndex((item) => item.hwnd === draft.window?.hwnd
                         && item.created === draft.window?.created);
-                    const windowPicker = picker(content, entries, selected < 0 ? '' : String(selected), (value) => {
-                        draft.window = value === '' ? null : lists.windows.windows[Number(value)];
-                        windowPicker.classList.toggle('audio-window-placeholder', value === '');
+                    const missingWindow = selected < 0 ? draft.window : null;
+                    if (missingWindow) {
+                        const executable = String(missingWindow.executable || '').split(/[\\/]/).pop();
+                        entries.splice(1, 0, { value: 'missing', label: `[${executable}] ${missingWindow.title}` });
+                    }
+                    const value = selected >= 0 ? String(selected) : (missingWindow ? 'missing' : '');
+                    const windowPicker = picker(content, entries, value, (value) => {
+                        draft.window = value === 'missing' ? missingWindow
+                            : (value === '' ? null : lists.windows.windows[Number(value)]);
+                        windowPicker.classList.toggle('audio-window-placeholder', value === '' || value === 'missing');
                     }, !lists.windows.available);
                     windowPicker.classList.toggle('audio-window-placeholder', selected < 0);
                     if (!lists.windows.available) content.appendChild(node('p', 'field-hint', t('audio_window_unsupported')));
@@ -312,7 +312,7 @@
             }
         }
 
-        return { show, hide, fetchState, startMonitoring, promptMissingWindow, applyDraft, getDraft: () => draft, isOpen: () => !!panel };
+        return { show, hide, fetchState, startMonitoring, applyDraft, getDraft: () => draft, isOpen: () => !!panel };
     }
 
     root.AudioSourceUI = { create };

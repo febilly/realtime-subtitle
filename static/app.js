@@ -1838,13 +1838,9 @@ const hostedController = Hosted.createController({
 });
 
 document.addEventListener('DOMContentLoaded', () => {
-    const audioStateReady = audioSourceUi.fetchState();
+    void audioSourceUi.fetchState();
     audioSourceUi.startMonitoring();
-    void hostedController.startup().then(async () => {
-        await audioStateReady;
-        await audioSourceUi.promptMissingWindow();
-        timedNotifications.start();
-    });
+    void hostedController.startup().then(() => timedNotifications.start());
 });
 
 timedNotifications.addUngated('update', () => hostedUpdate.ensure({ background: true }));

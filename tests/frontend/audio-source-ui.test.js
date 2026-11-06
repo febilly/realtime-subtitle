@@ -6,7 +6,7 @@ const initial = () => ({ desktop_enabled: true, microphone_enabled: false, deskt
     output_device_id: '', microphone_device_id: '', window: null, remember: false });
 const target = { pid: 42, hwnd: '84', created: '100', executable: 'C:\\player.exe', title: 'Player' };
 
-function setup({ reject = false, unavailable = false, settings = initial(), captureError = '' } = {}) {
+function setup({ reject = false, unavailable = false, settings = initial(), captureError = '', windows = [target] } = {}) {
     const dom = new JSDOM('<button id="audio"></button>', { url: 'http://localhost' });
     const document = dom.window.document;
     let saved = settings;
@@ -18,7 +18,7 @@ function setup({ reject = false, unavailable = false, settings = initial(), capt
             saved = JSON.parse(init.body).settings;
             body = { status: 'ok', source: saved.desktop_enabled ? (saved.microphone_enabled ? 'mix' : 'system') : 'microphone', settings: saved };
         } else if (url === '/audio-source') body = { source: 'system', settings: saved, capture_error: captureError };
-        else if (url === '/audio-windows') body = { available: !unavailable, windows: unavailable ? [] : [target] };
+        else if (url === '/audio-windows') body = { available: !unavailable, windows: unavailable ? [] : windows };
         else body = { available: true, devices: [{ id: 'usb', name: 'USB' }] };
         return { ok: true, json: async () => body };
     });
@@ -99,18 +99,31 @@ describe('audio source selector', () => {
         }
     });
 
-    it('opens the startup prompt with the placeholder when the remembered window could not be restored', async () => {
-        const page = setup({ settings: { ...initial(), desktop_mode: 'window', remember: true } });
+    it('shows the missing window name in orange while keeping the placeholder first in the dropdown', async () => {
+        const page = setup({ windows: [],
+            settings: { ...initial(), desktop_mode: 'window', window: target, remember: true },
+            captureError: 'Selected audio window is unavailable' });
         try {
             await page.controller.fetchState();
-            expect(await page.controller.promptMissingWindow()).toBe(true);
+            expect(page.controller.isOpen()).toBe(false);
+            await page.controller.show();
             expect(page.controller.isOpen()).toBe(true);
+            expect(page.controller.getDraft().window).toEqual(target);
+            expect(page.document.querySelector('.audio-window-placeholder .lang-picker-label').textContent)
+                .toBe('[player.exe] Player');
+            expect(page.document.querySelector('[role="alert"]').textContent).toBe('audio_window_missing');
+            const trigger = page.document.querySelector('.audio-window-placeholder .lang-picker-button');
+            trigger.click();
+            const choices = [...page.document.querySelectorAll('[role="option"]')];
+            expect(choices.map(item => item.textContent)).toEqual(['audio_choose_window', '[player.exe] Player']);
+            expect(choices[1].getAttribute('aria-selected')).toBe('true');
+            choices[0].click();
             expect(page.controller.getDraft().window).toBeNull();
             expect(page.document.querySelector('.audio-window-placeholder .lang-picker-label').textContent)
                 .toBe('audio_choose_window');
-            expect(page.document.querySelector('[role="alert"]').textContent).toBe('audio_window_missing');
-            expect(await page.controller.promptMissingWindow()).toBe(false);
-            expect(page.controller.isOpen()).toBe(true);
+            trigger.click();
+            page.document.querySelectorAll('[role="option"]')[1].click();
+            expect(page.controller.getDraft().window).toEqual(target);
             expect(page.posts()).toHaveLength(0);
         } finally {
             page.controller.hide();
@@ -118,7 +131,7 @@ describe('audio source selector', () => {
         }
     });
 
-    it('does not prompt for a runtime target awaiting recovery, output capture, or disabled desktop capture', async () => {
+    it('does not prompt while fetching audio state for any source', async () => {
         for (const settings of [
             { ...initial(), desktop_mode: 'window', window: target },
             initial(),
@@ -127,7 +140,6 @@ describe('audio source selector', () => {
             const page = setup({ settings });
             try {
                 await page.controller.fetchState();
-                expect(await page.controller.promptMissingWindow()).toBe(false);
                 expect(page.controller.isOpen()).toBe(false);
             } finally {
                 page.dom.window.close();

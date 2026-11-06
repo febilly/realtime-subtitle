@@ -2152,6 +2152,14 @@ class WebServer:
             payload["settings"] = self.session.get_audio_capture_settings()
             streamer = getattr(self.session, "audio_streamer", None)
             payload["capture_error"] = getattr(streamer, "capture_error", "")
+            settings = payload["settings"]
+            if (streamer is None and settings.get("desktop_enabled")
+                    and settings.get("desktop_mode") == "window" and settings.get("window")):
+                # Report a missing saved target even before recognition starts.
+                import window_audio
+                target = await asyncio.to_thread(window_audio.resolve_window, settings["window"], restore=True)
+                if not target:
+                    payload["capture_error"] = "Selected audio window is unavailable"
         return web.json_response(payload)
 
     async def audio_windows_handler(self, request):

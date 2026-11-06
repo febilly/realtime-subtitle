@@ -41,8 +41,8 @@ def test_window_restore_prefers_title_then_path_and_takes_first_match(monkeypatc
     assert prefs.load()["window"] == changed_title
     monkeypatch.setattr(window_audio, "list_windows", lambda: [next_window | dict(executable="C:\\other.exe")])
     assert prefs.load()["desktop_mode"] == "window"
-    assert prefs.load()["window"] is None
-    # Opening the selection prompt does not discard the remembered preference.
+    assert prefs.load()["window"] == target
+    # Keep the target in memory and on disk so a later launch can be detected.
     assert json.loads(local_store.load()[prefs.STORE_KEY])["window"] == target
 
 
@@ -56,11 +56,14 @@ def test_live_window_title_change_keeps_same_process_before_restore_candidates(m
     assert streamer.get_window() == renamed
 
 
-def test_missing_live_window_waits_then_recovers_by_path_and_refreshes_session(monkeypatch):
+def test_missing_saved_window_waits_then_recovers_by_path_and_refreshes_session(monkeypatch, store):
     target = dict(hwnd="11", pid=12, created="100", executable="C:\\player.exe", title="Player")
     windows = []
     monkeypatch.setattr(window_audio, "list_windows", lambda: windows)
-    streamer = audio_capture.AudioStreamer(SimpleNamespace(), desktop_mode="window", window=target)
+    prefs.save(prefs.defaults() | {"desktop_mode": "window", "window": target, "remember": True})
+    settings = prefs.load()
+    assert settings["window"] == target
+    streamer = audio_capture.AudioStreamer(SimpleNamespace(), desktop_mode=settings["desktop_mode"], window=settings["window"])
     assert streamer._device_signature("system") == "missing-window"
     assert streamer.get_window() == target
     assert streamer.capture_error

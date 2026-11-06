@@ -59,7 +59,7 @@ def load():
             return defaults()
         if saved["desktop_mode"] == "window":
             # Persist executable/title, never trust a PID from a previous boot.
-            saved["window"] = window_audio.resolve_window(saved["window"], restore=True)
+            saved["window"] = window_audio.resolve_window(saved["window"], restore=True) or saved["window"]
         return saved
     except (OSError, ValueError, TypeError):
         return defaults()

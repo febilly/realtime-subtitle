@@ -116,6 +116,31 @@ class TestWebServerSecurity:
             server.provider_manager._capture_audio_preferences.assert_called_once_with(session)
 
     @async_test
+    async def test_missing_saved_window_status_is_reported_before_capture_starts(self):
+        with patch.dict(sys.modules, {"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+                                      "config": MagicMock(), "llm_client": MagicMock()}):
+            import web_server as module
+            target = {"executable": "C:\\player.exe", "title": "Player"}
+            settings = {"desktop_enabled": True, "desktop_mode": "window", "window": target}
+            session = self.mock_session()
+            session.audio_streamer = None
+            session.get_audio_capture_settings.return_value = settings
+            server = module.WebServer.__new__(module.WebServer)
+            server.session = session
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            module.web.json_response.side_effect = lambda data, status=200: (data, status)
+            with patch("window_audio.resolve_window", side_effect=[None, target]) as resolve:
+                missing, status = await server.get_audio_source_handler(request)
+                assert status == 200
+                assert missing["capture_error"] == "Selected audio window is unavailable"
+                assert missing["settings"]["window"] == target
+                available, _ = await server.get_audio_source_handler(request)
+                assert available["capture_error"] == ""
+                assert resolve.call_args_list == [call(target, restore=True), call(target, restore=True)]
+            session.set_audio_capture_settings.assert_not_called()
+
+    @async_test
     async def test_audio_capture_details_and_window_list_are_localhost_only(self):
         with patch.dict(sys.modules, {"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
                                       "config": MagicMock(), "llm_client": MagicMock()}):
