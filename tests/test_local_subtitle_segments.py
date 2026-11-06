@@ -1,4 +1,18 @@
+import json
+from pathlib import Path
+
+import pytest
+
 from local_inference.subtitle_segments import StickySubtitleSegments
+
+
+SHARED_SPLIT_CASES = [
+    case
+    for case in json.loads(
+        (Path(__file__).parent / "fixtures" / "segmentation-cases.json").read_text(encoding="utf-8")
+    )["cases"]
+    if case["function"] in {"split_text_at_sentence_boundaries", "split_into_sentence_lines"}
+]
 
 
 def texts(segments):
@@ -42,6 +56,50 @@ def test_decimal_and_abbreviation_rules_are_shared_with_sentence_splitter():
     state = StickySubtitleSegments(max_spaced_chars=200)
     segments = state.update("Value 3.14 is e.g. useful. Next.")
     assert texts(segments) == ["Value 3.14 is e.g. useful.", " Next."]
+
+
+@pytest.mark.parametrize("case", SHARED_SPLIT_CASES, ids=lambda case: case["id"])
+def test_local_rows_follow_shared_sentence_exceptions(case):
+    state = StickySubtitleSegments()
+    actual = texts(state.update(case["args"][0]))
+    # Display rows merge separator-only spans; the shared exact splitter
+    # deliberately preserves those as separate pieces.
+    assert [piece.strip() for piece in actual if piece.strip()] == [
+        piece.strip() for piece in case["expected"] if piece.strip()
+    ]
+    assert "".join(actual) == case["args"][0]
+
+
+@pytest.mark.parametrize(
+    "old,new,expected",
+    [
+        ("Growth is 5. Percent", "Growth is 5.3 percent. Next.",
+         ["Growth is 5.3 percent.", " Next."]),
+        ("Growth is 5. Percent", "Growth is 5. 3 percent. Next.",
+         ["Growth is 5. 3 percent.", " Next."]),
+        ("Ask Doctor. Smith", "Ask Dr. Smith. Next.",
+         ["Ask Dr. Smith.", " Next."]),
+        ("Use example. This", "Use e.g. this. Next.",
+         ["Use e.g. this.", " Next."]),
+        ("Meet at nine. Today", "Meet at 9 a.m. today. Next.",
+         ["Meet at 9 a.m. today.", " Next."]),
+        ("Use SNS. Today", "Use S.N.S. today. Next.",
+         ["Use S.N.S. today.", " Next."]),
+        ("Wait. More", "Wait... More. Done.",
+         ["Wait... More.", " Done."]),
+        ("等等。继续", "等等…继续。下一句。", ["等等…继续。", "下一句。"]),
+        ("甲。乙", "「甲。乙」と言った。次。", ["「甲。乙」と言った。", "次。"]),
+        ('She said "Done. Next', 'She said "Done." Next.',
+         ['She said "Done."', ' Next.']),
+    ],
+)
+def test_asr_revisions_cannot_keep_old_cuts_at_shared_punctuation_exceptions(old, new, expected):
+    state = StickySubtitleSegments()
+    assert len(state.update(old)) > 1
+    revised = state.update(new)
+    assert texts(revised) == expected
+    assert "".join(texts(revised)) == new
+    assert texts(state.update(new)) == expected
 
 
 def test_unpunctuated_text_uses_comma_or_whitespace_without_breaking_words():

@@ -51,6 +51,8 @@ class StickySubtitleSegments:
     Safe sentence boundaries found in an update are displayed immediately.
     Existing displayed boundaries are projected through a ``SequenceMatcher``
     edit map and remain rows when an ASR revision changes the punctuation.
+    Shared punctuation exceptions override these retained boundaries when a
+    revision reveals a decimal, abbreviation, ellipsis, or quoted passage.
     This favours prompt presentation and low reflow; the returned rows always
     concatenate exactly to the newest full hypothesis.
 
@@ -101,8 +103,8 @@ class StickySubtitleSegments:
             return []
 
         previous_text = "".join(segment.text for segment in self._segments)
-        sticky = self._project_old_boundaries(previous_text, newest)
         cuts = self._sentence_cuts(newest)
+        sticky = self._project_old_boundaries(previous_text, newest, cuts)
         cuts.update(sticky)
         cuts = self._add_fallback_cuts(newest, cuts)
         ranges = self._ranges_from_cuts(len(newest), cuts)
@@ -174,7 +176,9 @@ class StickySubtitleSegments:
                 cuts.add(offset)
         return cuts
 
-    def _project_old_boundaries(self, old: str, new: str) -> set[int]:
+    def _project_old_boundaries(
+        self, old: str, new: str, sentence_cuts: set[int]
+    ) -> set[int]:
         if not old or not new or len(self._segments) < 2:
             return set()
         mapper = _OffsetMapper(old, new)
@@ -184,6 +188,18 @@ class StickySubtitleSegments:
             offset += len(segment.text)
             projected = mapper.position(offset)
             if 0 < projected < len(new):
+                left = new[:projected].rstrip()
+                punctuation = left.rstrip(sentence_segmentation.CLOSING_QUOTE_CHARS)
+                # Reuse the shared splitter's verdict rather than letting an
+                # old display cut turn a newly recognized decimal/abbreviation
+                # (or punctuation inside a quote) back into a sentence end.
+                # A period revised to a comma still keeps its display row.
+                if (
+                    punctuation
+                    and punctuation[-1] in sentence_segmentation.SENTENCE_END_CHARS
+                    and len(left) not in sentence_cuts
+                ):
+                    continue
                 boundaries.add(projected)
         return boundaries
 

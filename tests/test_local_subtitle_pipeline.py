@@ -296,6 +296,34 @@ def test_removed_row_cannot_resurrect_stale_translation_output():
         pipeline.close()
 
 
+def test_decimal_revision_merges_rows_and_discards_inflight_translation_for_old_split():
+    factory = FakeTranslatorFactory(block_first=True)
+    recorder = Recorder()
+    pipeline = make_pipeline(factory, recorder)
+    try:
+        pipeline.update("Growth is 5. Percent", False, "en", "ja")
+        initial = recorder.updates[0]["local_segments"]
+        assert factory.blocked_started.wait(1.0)
+
+        pipeline.update("Growth is 5.3 percent.", True, "en", "ja")
+        revised = recorder.updates[-1]
+        assert [row["source"] for row in revised["local_segments"]] == ["Growth is 5.3 percent."]
+        assert revised["local_removed_segment_ids"] == [initial[1]["id"]]
+        assert revised["local_segments"][0]["id"] == initial[0]["id"]
+
+        factory.release.set()
+        wait_until(lambda: len(recorder.finals) == 1)
+        assert recorder.finals[0]["source"] == "Growth is 5.3 percent."
+        assert recorder.finals[0]["translation"] == "MT:Growth is 5.3 percent."
+        assert [row["translation"] for row in recorder.rows() if row["translation"]] == [
+            "MT:Growth is 5.3 percent.",
+        ]
+        assert not recorder.errors
+    finally:
+        factory.release.set()
+        pipeline.close()
+
+
 def test_translation_can_be_disabled_or_skipped_for_the_same_language():
     for enabled, target_language in ((False, "ja"), (True, "en")):
         factory = FakeTranslatorFactory()
