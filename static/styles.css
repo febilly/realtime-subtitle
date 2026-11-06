@@ -1088,7 +1088,8 @@ body.dark-theme .local-model-card {
     color: #dc2626;
 }
 
-/* Timing sliders: value on the right of the label, a tick for the default. */
+/* Timing sliders: label + value on one line, a slim track drawn like the
+   settings switch, and a small tick under the track for the default value. */
 .range-field-header {
     display: flex;
     align-items: baseline;
@@ -1097,53 +1098,120 @@ body.dark-theme .local-model-card {
 }
 
 .range-field-header output {
+    color: #6b7280;
+    font-size: 13px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-    opacity: 0.8;
+}
+
+body.dark-theme .range-field-header output {
+    color: #9ca3af;
 }
 
 .range-track {
     --thumb-size: 16px;
+    --track-color: rgba(0, 0, 0, 0.12);
+    --fill-color: #3b82f6;
+    --fill: 0%;
     position: relative;
     display: block;
-    height: 24px;
+    height: 26px;
+    /* Keep the slider's layers inside its own box so the sticky footer covers it. */
+    isolation: isolate;
+}
+
+body.dark-theme .range-track {
+    --track-color: rgba(255, 255, 255, 0.16);
 }
 
 .form-field .range-track input[type="range"] {
-    position: relative;
-    z-index: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    display: block;
     width: 100%;
     min-height: 0;
-    height: 24px;
+    height: 20px;
     margin: 0;
     padding: 0;
     border: none;
+    border-radius: 0;
     background: transparent;
     box-shadow: none;
-    accent-color: #3b82f6;
     cursor: pointer;
 }
 
 body.dark-theme .form-field .range-track input[type="range"] {
     background: transparent;
-    color-scheme: dark;
+}
+
+.form-field .range-track input[type="range"]:focus {
+    box-shadow: none;
+}
+
+.range-track input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(to right,
+        var(--fill-color) 0 var(--fill), var(--track-color) var(--fill) 100%);
+}
+
+.range-track input[type="range"]::-moz-range-track {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--track-color);
+}
+
+.range-track input[type="range"]::-moz-range-progress {
+    height: 4px;
+    border-radius: 999px;
+    background: var(--fill-color);
+}
+
+.range-track input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: var(--thumb-size);
+    height: var(--thumb-size);
+    margin-top: calc((4px - var(--thumb-size)) / 2);
+    border: none;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    transition: box-shadow 0.15s ease;
+}
+
+.range-track input[type="range"]::-moz-range-thumb {
+    width: var(--thumb-size);
+    height: var(--thumb-size);
+    border: none;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+.range-track input[type="range"]:focus-visible::-webkit-slider-thumb {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 0 0 3px rgba(96, 165, 250, 0.45);
 }
 
 .range-default-mark {
     position: absolute;
-    top: 3px;
-    bottom: 3px;
+    top: 20px;
     left: calc(var(--thumb-size) / 2 + (100% - var(--thumb-size)) * var(--default-frac));
-    width: 2px;
-    margin-left: -1px;
-    border-radius: 1px;
-    background: rgba(0, 0, 0, 0.35);
+    width: 4px;
+    height: 4px;
+    margin-left: -2px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.28);
     pointer-events: none;
-    z-index: 2;
+    transition: background-color 0.15s ease;
 }
 
 body.dark-theme .range-default-mark {
-    background: rgba(255, 255, 255, 0.45);
+    background: rgba(255, 255, 255, 0.32);
+}
+
+.range-default-mark.is-current,
+body.dark-theme .range-default-mark.is-current {
+    background: #3b82f6;
 }
 
 .local-model-card .secondary-button {
@@ -1208,6 +1276,7 @@ body.dark-theme .field-hint a {
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+    z-index: 1;
     margin-top: auto;
     margin-right: calc(-1 * var(--settings-pad-x));
     margin-left: calc(-1 * var(--settings-pad-x));

@@ -322,7 +322,14 @@
         function renderTimingSlider(slider, output, mark) {
             if (!slider) return;
             if (output) output.textContent = formatSeconds(slider.value);
-            if (mark) mark.title = t('local_slider_default', { value: formatSeconds(slider.dataset.default) });
+            const min = Number(slider.min);
+            const span = Number(slider.max) - min;
+            const fill = span > 0 ? ((Number(slider.value) - min) / span) * 100 : 0;
+            if (slider.parentElement) slider.parentElement.style.setProperty('--fill', `${fill}%`);
+            if (mark) {
+                mark.classList.toggle('is-current', Number(slider.value) === Number(slider.dataset.default));
+            }
+            slider.title = t('local_slider_default', { value: formatSeconds(slider.dataset.default) });
         }
 
         function applyLocalTimingConfig(config = {}) {
