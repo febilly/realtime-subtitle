@@ -375,6 +375,35 @@ class TestWebServerSecurity:
             ws.provider_manager._sync_ipc.assert_awaited_once_with(True)
 
     @async_test
+    async def test_resume_keeps_the_applied_two_way_mode(self):
+        with patch.dict(sys.modules, {
+            "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+            "config": MagicMock(), "llm_client": MagicMock(),
+        }):
+            import web_server as ws_module
+            from web_server import WebServer
+            import aiohttp.web as web
+
+            ws_module.LOCK_MANUAL_CONTROLS = False
+            ws_module.TRANSLATION_MODE = "one_way"
+            session = self.mock_session()
+            session.is_paused = True
+            session.resume.return_value = True
+            ws = WebServer(session, self.mock_logger())
+            ws.get_api_key = lambda: "local-on-device"
+            ws.provider_manager = self.mock_manager()
+            ws.provider_manager.translation_mode = "two_way"
+            ws.provider_manager._sync_ipc = AsyncMock()
+            ws.broadcast_to_clients = AsyncMock()
+            request = AsyncMock()
+            request.remote = "127.0.0.1"
+            web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            _, status = await ws.resume_handler(request)
+            assert status == 200
+            assert session.resume.call_args.kwargs["translation"] == "two_way"
+
+    @async_test
     async def test_setup_invalid_provider(self):
         with patch.dict(sys.modules, {
             "aiohttp": MagicMock(),

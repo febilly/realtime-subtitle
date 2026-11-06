@@ -67,6 +67,12 @@
             return catalog.coerce(code, fallback);
         }
 
+        function twoWayLanguages(primary, secondary) {
+            const first = coerceSupportedLanguageCode(primary, getState().backendTargetLang1 || 'en');
+            const second = coerceSupportedLanguageCode(secondary, first === 'en' ? 'ja' : 'en');
+            return [first, second];
+        }
+
         function ensureSelectMenu() {
             if (selectMenu) return selectMenu;
             selectMenu = documentRef.createElement('div');
@@ -297,6 +303,7 @@
 
         function createDraft() {
             const state = getState();
+            const [first, second] = twoWayLanguages(state.backendTargetLang1, state.backendTargetLang2);
             let mode = normalizeTranslationMode(
                 state.uiTranslationMode || state.backendTranslationMode || 'one_way',
             );
@@ -307,8 +314,8 @@
                     state.currentTranslationTargetLang,
                     state.defaultTranslationTargetLang,
                 ),
-                targetLang1: coerceSupportedLanguageCode(state.backendTargetLang1, 'en'),
-                targetLang2: coerceSupportedLanguageCode(state.backendTargetLang2, 'zh'),
+                targetLang1: first,
+                targetLang2: second,
                 remember: !!savedPreferences(),
             };
         }
@@ -339,9 +346,10 @@
             const target = popover.querySelector('.lang-picker[data-role="target"]');
             if (target) target.value = coerceSupportedLanguageCode(value.targetLang, state.defaultTranslationTargetLang);
             const first = popover.querySelector('.lang-picker[data-role="langA"]');
-            if (first) first.value = coerceSupportedLanguageCode(value.targetLang1, 'en');
+            const [primary, secondary] = twoWayLanguages(value.targetLang1, value.targetLang2);
+            if (first) first.value = primary;
             const second = popover.querySelector('.lang-picker[data-role="langB"]');
-            if (second) second.value = coerceSupportedLanguageCode(value.targetLang2, 'zh');
+            if (second) second.value = secondary;
         }
 
         function ensurePopover() {
@@ -394,9 +402,10 @@
                 field.append(label, picker);
                 return field;
             };
+            const [primary, secondary] = twoWayLanguages(currentDraft().targetLang1, currentDraft().targetLang2);
             twoWayBox.append(
-                makeField('language_a', 'langA', 'en', 'targetLang1'),
-                makeField('language_b', 'langB', 'zh', 'targetLang2'),
+                makeField('language_a', 'langA', primary, 'targetLang1'),
+                makeField('language_b', 'langB', secondary, 'targetLang2'),
             );
             popover.appendChild(twoWayBox);
             const rememberLabel = documentRef.createElement('div');
@@ -447,9 +456,23 @@
             return !!state.backendTranslationMode && state.backendTranslationMode !== mode;
         }
 
-        function restartWithMode(restartOptions) {
-            updateState({ backendTranslationMode: restartOptions.translationMode });
-            return options.restartRecognition(restartOptions);
+        // Optimistically records the backend state the restart will produce.
+        // A restart that is refused (another one in flight) or fails leaves
+        // the backend unchanged, so roll the record back; otherwise the next
+        // Apply would compare against a mode the backend never ran and skip
+        // the restart entirely.
+        function restartWithMode(restartOptions, statePatch = {}) {
+            const patch = { ...statePatch, backendTranslationMode: restartOptions.translationMode };
+            const before = getState();
+            const previous = {};
+            for (const key of Object.keys(patch)) previous[key] = before[key];
+            updateState(patch);
+            return Promise.resolve(options.restartRecognition(restartOptions)).then((ok) => {
+                if (ok !== false) return ok;
+                const now = getState();
+                if (Object.keys(patch).every((key) => now[key] === patch[key])) updateState(previous);
+                return ok;
+            });
         }
 
         function applyDraft() {
@@ -468,21 +491,19 @@
                 return true;
             }
             if (nextMode === 'two_way') {
-                const first = coerceSupportedLanguageCode(value.targetLang1, 'en');
-                const second = coerceSupportedLanguageCode(value.targetLang2, 'zh');
+                const [first, second] = twoWayLanguages(value.targetLang1, value.targetLang2);
                 if (!first || !second || first === second) return false;
                 const changed = state.uiTranslationMode !== 'two_way'
                     || state.suppressTranslationDisplay
                     || backendDiffers(state, 'two_way')
                     || first !== state.backendTargetLang1
                     || second !== state.backendTargetLang2;
-                updateState({ backendTargetLang1: first, backendTargetLang2: second });
                 options.setUiTranslationMode('two_way');
                 persistDraft();
                 hide();
                 if (changed) void restartWithMode({
                     translationMode: 'two_way', targetLang1: first, targetLang2: second,
-                });
+                }, { backendTargetLang1: first, backendTargetLang2: second });
                 return true;
             }
             const selected = coerceSupportedLanguageCode(value.targetLang, state.defaultTranslationTargetLang);
@@ -513,8 +534,7 @@
             if (saved) {
                 const mode = saved.mode === 'two_way' && !state.twoWaySupported ? 'one_way' : normalizeTranslationMode(saved.mode);
                 const target = coerceSupportedLanguageCode(saved.targetLang, state.defaultTranslationTargetLang);
-                const first = coerceSupportedLanguageCode(saved.targetLang1, 'en');
-                const second = coerceSupportedLanguageCode(saved.targetLang2, 'zh');
+                const [first, second] = twoWayLanguages(saved.targetLang1, saved.targetLang2);
                 restoreLanguages = mode === 'one_way' ? target !== state.currentTranslationTargetLang
                     : mode === 'two_way' && (first !== state.backendTargetLang1 || second !== state.backendTargetLang2);
                 updateState({ currentTranslationTargetLang: target, backendTargetLang1: first, backendTargetLang2: second });

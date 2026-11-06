@@ -47,6 +47,38 @@ function setup(overrides = {}) {
 }
 
 describe('LanguageUI', () => {
+    it.each([['zh', 'en'], ['en', 'ja']])('uses backend primary %s and secondary %s without remembered settings', (primary, secondary) => {
+        const { dom, controller, restartRecognition } = setup({
+            translationProvider: 'local', backendTargetLang1: primary, backendTargetLang2: secondary,
+        });
+        controller.show();
+        expect(dom.window.document.querySelector('[data-role="langA"]').value).toBe(primary);
+        expect(dom.window.document.querySelector('[data-role="langB"]').value).toBe(secondary);
+        controller.setDraft({ mode: 'two_way' });
+        controller.applyDraft();
+        expect(restartRecognition).toHaveBeenCalledWith({
+            translationMode: 'two_way', targetLang1: primary, targetLang2: secondary,
+        });
+        dom.window.close();
+    });
+
+    it('restores remembered two-way languages ahead of new backend system defaults', () => {
+        const { dom, controller, state, restartRecognition } = setup({
+            translationProvider: 'local', backendBootId: 'new-boot',
+            backendTargetLang1: 'zh', backendTargetLang2: 'en',
+        });
+        dom.window.localStorage.setItem('translationLanguagePreferences.v1', JSON.stringify({
+            mode: 'two_way', targetLang: 'zh', targetLang1: 'en', targetLang2: 'ja', remember: true,
+        }));
+        expect(controller.syncBackendMode()).toBe(true);
+        expect(state).toMatchObject({ backendTargetLang1: 'en', backendTargetLang2: 'ja' });
+        expect(restartRecognition).toHaveBeenCalledWith({
+            auto: true, translationMode: 'two_way', targetLang1: 'en', targetLang2: 'ja',
+        });
+        expect(controller.syncBackendMode()).toBe(false);
+        dom.window.close();
+    });
+
     it('persists languages only after applying an opted-in draft, independently of audio', () => {
         const { dom, controller } = setup();
         const storage = dom.window.localStorage;
@@ -152,6 +184,23 @@ describe('LanguageUI', () => {
         expect(restartRecognition).toHaveBeenLastCalledWith({
             translationMode: 'two_way', targetLang1: 'ja', targetLang2: 'zh',
         });
+        dom.window.close();
+    });
+
+    it('rolls back the recorded backend mode when the restart is refused', async () => {
+        const { dom, controller, state, restartRecognition } = setup({ translationProvider: 'local' });
+        restartRecognition.mockResolvedValueOnce(false);
+        controller.setDraft({ mode: 'two_way', targetLang1: 'ja', targetLang2: 'zh' });
+        expect(controller.applyDraft()).toBe(true);
+        await vi.waitFor(() => expect(state.backendTranslationMode).toBe('one_way'));
+        expect(state).toMatchObject({ backendTargetLang1: 'en', backendTargetLang2: 'zh' });
+
+        // The next Apply must retry instead of treating two-way as already active.
+        restartRecognition.mockResolvedValueOnce(true);
+        controller.setDraft({ mode: 'two_way', targetLang1: 'ja', targetLang2: 'zh' });
+        expect(controller.applyDraft()).toBe(true);
+        expect(restartRecognition).toHaveBeenCalledTimes(2);
+        await vi.waitFor(() => expect(state.backendTranslationMode).toBe('two_way'));
         dom.window.close();
     });
 

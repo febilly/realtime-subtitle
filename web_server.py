@@ -583,8 +583,8 @@ class WebServer:
                 "mode": "direct",
                 "logged_in": False,
                 "translation_mode": str(getattr(self.session, "translation", None) or TRANSLATION_MODE),
-                "target_lang_1": "en",
-                "target_lang_2": "zh",
+                "target_lang_1": self.session.get_target_langs()[0],
+                "target_lang_2": self.session.get_target_langs()[1],
             })
 
         # Segment mode is a Soniox-only capability.
@@ -2123,10 +2123,16 @@ class WebServer:
                 return web.json_response({"status": "error", "message": str(error)}, status=500)
 
             loop = asyncio.get_event_loop()
+            # Resume in the mode the user last applied (e.g. two_way via
+            # /restart), not the boot-time env default.
+            if self.provider_manager is not None:
+                resume_translation = self.provider_manager.translation_mode
+            else:
+                resume_translation = getattr(self.session, "translation", None) or TRANSLATION_MODE
             resumed = self.session.resume(
                 api_key=api_key,
                 audio_format="pcm_s16le",
-                translation=TRANSLATION_MODE,
+                translation=resume_translation,
                 loop=loop
             )
             if resumed and self.provider_manager is not None:

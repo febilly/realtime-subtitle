@@ -169,3 +169,36 @@ def test_local_system_language_preserves_hymt_target_variants(
     monkeypatch.setattr(config, "_system_default_locale", lambda: locale_name)
     assert config.get_system_language("local") == expected
 
+
+@pytest.mark.parametrize("locale_name,expected", [
+    ("zh_CN", ("zh", "en")),
+    ("zh_TW", ("zh-hant", "en")),
+    ("en_US", ("en", "ja")),
+    ("en_GB", ("en", "ja")),
+    ("ja_JP", ("ja", "en")),
+    ("xx_XX", ("en", "ja")),
+])
+def test_two_way_defaults_follow_system_independently_of_one_way_target(
+    monkeypatch, restore_config_module, locale_name, expected,
+):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
+    monkeypatch.setenv("LC_ALL", locale_name)
+    monkeypatch.setenv("USE_SYSTEM_LANGUAGE", "False")
+    monkeypatch.setenv("TARGET_LANG", "ko")
+    monkeypatch.delenv("TARGET_LANG_1", raising=False)
+    monkeypatch.delenv("TARGET_LANG_2", raising=False)
+    config = _reload_config(monkeypatch, "smart")
+    assert (config.TARGET_LANG_1, config.TARGET_LANG_2) == expected
+    assert config.TRANSLATION_TARGET_LANG == "ko"
+
+
+def test_explicit_two_way_language_configuration_still_overrides_defaults(
+    monkeypatch, restore_config_module,
+):
+    monkeypatch.setenv("TRANSLATION_PROVIDER", "local")
+    monkeypatch.setenv("LC_ALL", "zh_CN")
+    monkeypatch.setenv("TARGET_LANG_1", "ja")
+    monkeypatch.setenv("TARGET_LANG_2", "ko")
+    config = _reload_config(monkeypatch, "smart")
+    assert (config.TARGET_LANG_1, config.TARGET_LANG_2) == ("ja", "ko")
+

@@ -193,7 +193,7 @@ let backendSonioxRegion = 'us';
 let backendSonioxCustomUrl = false;
 let backendTranslationMode = 'one_way';
 let backendTargetLang1 = 'en';
-let backendTargetLang2 = 'zh';
+let backendTargetLang2 = 'ja';
 let suppressTranslationDisplay = false;
 // How refine edits are visualized (backend LLM_REFINE_DIFF_MODE): off | additions | additions_deletions | two_lines
 let llmRefineDiffMode = 'off';

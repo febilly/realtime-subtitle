@@ -40,7 +40,7 @@ class LocalInferenceSession(SonioxSession):
     def __init__(self, logger_obj, broadcast_callback):
         super().__init__(logger_obj, broadcast_callback)
         self.target_lang_1 = config.canonicalize_target_lang(config.TARGET_LANG_1, "local") or "en"
-        self.target_lang_2 = config.canonicalize_target_lang(config.TARGET_LANG_2, "local") or "zh"
+        self.target_lang_2 = config.canonicalize_target_lang(config.TARGET_LANG_2, "local") or ("ja" if self.target_lang_1 == "en" else "en")
         self._recognizer: LocalQwenRecognizer | None = None
         self._translator: HyMT2API | None = None
         self._subtitle_pipeline: LocalSubtitlePipeline | None = None
@@ -98,7 +98,7 @@ class LocalInferenceSession(SonioxSession):
             return second
         if source == config.normalize_language_code(second):
             return first
-        return target if target in (first, second) else second
+        return first
 
     def set_translation_mode(self, mode: str) -> tuple[bool, str, bool]:
         # Same mapping as soniox; the local switch never needs a restart because

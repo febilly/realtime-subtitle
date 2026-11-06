@@ -104,7 +104,7 @@ class SonioxSession(RealtimeSessionBase):
         # Two-way translation language pair (instance-level so it can be changed
         # at runtime from the UI without restarting the process).
         self.target_lang_1: str = normalize_language_code(config.TARGET_LANG_1) or "en"
-        self.target_lang_2: str = normalize_language_code(config.TARGET_LANG_2) or "zh"
+        self.target_lang_2: str = normalize_language_code(config.TARGET_LANG_2) or ("ja" if self.target_lang_1 == "en" else "en")
 
     # --- RealtimeSessionBase hooks ---
 
@@ -159,7 +159,8 @@ class SonioxSession(RealtimeSessionBase):
         return True, "ok"
 
     def get_target_langs(self) -> tuple[str, str]:
-        return (str(self.target_lang_1 or "en"), str(self.target_lang_2 or "zh"))
+        primary = str(self.target_lang_1 or "en")
+        return primary, str(self.target_lang_2 or ("ja" if primary == "en" else "en"))
 
     def set_target_langs(self, lang_a: str, lang_b: str) -> tuple[bool, str]:
         """Set the two-way translation language pair (validated)."""

@@ -124,13 +124,15 @@ def test_local_two_way_rejects_invalid_pair_without_mutating_selection(pair):
     assert session.get_target_langs() == ("ja", "ko")
 
 
-@pytest.mark.parametrize("fixed_target,expected", [("ja", "zh-hant"), ("en", "en")])
-def test_local_two_way_outside_pair_uses_consistent_fallback(fixed_target, expected):
+@pytest.mark.parametrize("fixed_target", ["ja", "en", "zh-hant"])
+@pytest.mark.parametrize("source", ["fr", ""])
+@pytest.mark.parametrize("pair", [("en", "zh-hant"), ("zh-hant", "en")])
+def test_local_two_way_outside_pair_uses_primary_language(fixed_target, source, pair):
     session = _session()
-    session.set_target_langs("en", "zh-hant")
+    session.set_target_langs(*pair)
     session.set_translation_target_lang(fixed_target)
     session.translation = "two_way"
-    assert session._osc_translation_language_for_comparison([{"language": "fr"}]) == expected
+    assert session._osc_translation_language_for_comparison([{"language": source}]) == pair[0]
 
 
 def test_local_start_and_resume_preserve_two_way_mode(monkeypatch):
@@ -166,6 +168,7 @@ def test_local_two_way_pipeline_llm_and_osc_share_direction(monkeypatch, mode):
     session._perform_translate = AsyncMock(side_effect=[
         {"status": "ok", "translation": "你好。"},
         {"status": "ok", "translation": "Hello."},
+        {"status": "ok", "translation": "Thank you."},
     ])
     mt_calls, finalized = [], []
 
@@ -173,6 +176,8 @@ def test_local_two_way_pipeline_llm_and_osc_share_direction(monkeypatch, mode):
         translator = Mock()
         def translate(source, **kwargs):
             mt_calls.append((source, kwargs["target_language"]))
+            if source == "Merci.":
+                return "Thank you."
             return "你好。" if kwargs["target_language"] == "zh-hant" else "Hello."
         translator.translate.side_effect = translate
         return translator
@@ -190,20 +195,21 @@ def test_local_two_way_pipeline_llm_and_osc_share_direction(monkeypatch, mode):
     try:
         session._present_recognition("Hello.", True, "en")
         session._present_recognition("你好。", True, "zh")
+        session._present_recognition("Merci.", True, "fr")
         pipeline.close()
         assert [(row["source_language"], row["target_language"]) for row in finalized] == [
-            ("en", "zh-hant"), ("zh", "en"),
+            ("en", "zh-hant"), ("zh", "en"), ("fr", "en"),
         ]
         assert all(row["requires_translation"] for row in finalized)
-        expected = [("Hello.", "zh-hant"), ("你好。", "en")]
+        expected = [("Hello.", "zh-hant"), ("你好。", "en"), ("Merci.", "en")]
         assert mt_calls == ([] if mode == "accurate" else expected)
         llm = session._perform_translate if mode == "accurate" else session._perform_refine
         assert [call.kwargs["target_lang"] for call in llm.await_args_list] == (
-            [] if mode == "fast" else ["zh-hant", "en"]
+            [] if mode == "fast" else ["zh-hant", "en", "en"]
         )
-        assert [call.args[0] for call in send_osc.call_args_list] == ["你好。", "Hello."]
+        assert [call.args[0] for call in send_osc.call_args_list] == ["你好。", "Hello.", "Thank you."]
         frames = [call.args[0] for call in session.broadcast_callback.await_args_list]
-        assert [frame["target_lang"] for frame in frames if frame["type"] == "refine_result"] == ["zh-hant", "en"]
+        assert [frame["target_lang"] for frame in frames if frame["type"] == "refine_result"] == ["zh-hant", "en", "en"]
     finally:
         pipeline.close()
         session.loop.close()

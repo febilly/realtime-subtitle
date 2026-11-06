@@ -814,8 +814,9 @@ USE_SYSTEM_LANGUAGE = _env_bool("USE_SYSTEM_LANGUAGE", True)
 
 # Manually specified target language (used when USE_SYSTEM_LANGUAGE=False)
 TARGET_LANG = _env_str("TARGET_LANG", "ja")
-TARGET_LANG_1 = _env_str("TARGET_LANG_1", "en")
-TARGET_LANG_2 = _env_str("TARGET_LANG_2", "zh")
+# Optional explicit overrides for the primary and secondary two-way languages.
+_TARGET_LANG_1_RAW = _env_str("TARGET_LANG_1", "")
+_TARGET_LANG_2_RAW = _env_str("TARGET_LANG_2", "")
 
 # Translation mode: none | one_way | two_way
 # - none: disable translation
@@ -1188,6 +1189,22 @@ def get_system_language(provider: str | None = None) -> str:
         return "en"
 
 
+def _compute_two_way_languages(provider: str | None = None) -> tuple[str, str]:
+    """Default to the backend system language, paired with English or Japanese."""
+    p = provider or TRANSLATION_PROVIDER
+    primary = canonicalize_target_lang(_TARGET_LANG_1_RAW, p)
+    if not is_supported_language_code(primary, p):
+        primary = get_system_language(p)
+    secondary = canonicalize_target_lang(_TARGET_LANG_2_RAW, p)
+    if (not is_supported_language_code(secondary, p)
+            or normalize_language_code(secondary) == normalize_language_code(primary)):
+        secondary = "ja" if normalize_language_code(primary) == "en" else "en"
+    return primary, secondary
+
+
+TARGET_LANG_1, TARGET_LANG_2 = _compute_two_way_languages()
+
+
 # Decide translation target language based on configuration
 if USE_SYSTEM_LANGUAGE:
     TRANSLATION_TARGET_LANG = get_system_language()
@@ -1259,6 +1276,7 @@ def set_active_provider(provider: str) -> str:
     """
     global TRANSLATION_PROVIDER, SUPPORTED_LANGUAGE_CODES
     global ENABLE_SPEAKER_DIARIZATION, TRANSLATION_TARGET_LANG
+    global TARGET_LANG_1, TARGET_LANG_2
 
     p = str(provider or "").strip().lower()
     if p not in ("soniox", "gemini", "local"):
@@ -1269,6 +1287,7 @@ def set_active_provider(provider: str) -> str:
     SUPPORTED_LANGUAGE_CODES = get_supported_language_codes(p)
     ENABLE_SPEAKER_DIARIZATION = _compute_enable_speaker_diarization(p)
     TRANSLATION_TARGET_LANG = _compute_translation_target_lang(p)
+    TARGET_LANG_1, TARGET_LANG_2 = _compute_two_way_languages(p)
     return p
 
 

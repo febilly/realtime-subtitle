@@ -749,7 +749,7 @@ class RealtimeSessionBase:
 
         - one_way / none / etc.: fixed session translation target (TRANSLATION_TARGET_LANG).
         - two_way: per-utterance target is the partner of the detected source within
-          TARGET_LANG_1/TARGET_LANG_2; if source is outside the pair, fall back to session target.
+          TARGET_LANG_1/TARGET_LANG_2; if source is outside the pair, use the primary language.
         """
         mode = (self.translation or "").strip().lower()
         t_sess = normalize_language_code(self.get_translation_target_lang())
@@ -760,7 +760,7 @@ class RealtimeSessionBase:
         pair = self._two_way_pair()
         l1 = normalize_language_code(pair[0])
         l2 = normalize_language_code(pair[1])
-        fallback = t_sess if t_sess in (l1, l2) else (l2 or l1 or t_sess)
+        fallback = l1 or t_sess
 
         source_lang = self._infer_source_language(source_tokens)
         if not (l1 and l2) or not source_lang:
