@@ -329,7 +329,6 @@
             if (mark) {
                 mark.classList.toggle('is-current', Number(slider.value) === Number(slider.dataset.default));
             }
-            slider.title = t('local_slider_default', { value: formatSeconds(slider.dataset.default) });
         }
 
         function applyLocalTimingConfig(config = {}) {
