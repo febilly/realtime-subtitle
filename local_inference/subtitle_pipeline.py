@@ -118,16 +118,20 @@ class LocalSubtitlePipeline:
                 previous_source = max(preceding, key=lambda row: row.order).source
             for index, segment in enumerate(segments):
                 row_id = self._id(segment.id)
+                # Keep exact ASR spacing in the segment model for revision and
+                # semantic-prefix matching; independent subtitle rows do not
+                # need the whitespace that separated them from the prior row.
+                source = segment.text.lstrip()
                 requires = translation_enabled and source_language != target_language
                 row = self._rows.get(row_id)
                 if row is None:
-                    row = _Row(row_id, segment.text, source_language, target_language,
+                    row = _Row(row_id, source, source_language, target_language,
                                self._order(self._base_order + index), requires)
                     self._rows[row_id] = row
                     source_changed = True
                 else:
                     source_changed = (
-                        row.source != segment.text or row.source_language != source_language
+                        row.source != source or row.source_language != source_language
                         or row.target_language != target_language or row.requires_translation != requires
                     )
                     direction_changed = (row.source_language, row.target_language, row.requires_translation) != (
@@ -135,11 +139,11 @@ class LocalSubtitlePipeline:
                     )
                     # An old whole-row translation cannot land after that row
                     # has been repartitioned into different subtitle units.
-                    if direction_changed or (old_ids != new_ids and row.source != segment.text):
+                    if direction_changed or (old_ids != new_ids and row.source != source):
                         row.epoch += 1
                     if direction_changed:
                         row.translation = ""
-                    row.source = segment.text
+                    row.source = source
                     row.source_language = source_language
                     row.target_language = target_language
                     row.requires_translation = requires

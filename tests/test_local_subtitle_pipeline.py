@@ -103,7 +103,7 @@ def test_source_rows_publish_before_a_blocked_translation_starts():
         assert len(recorder.updates) == 1
         first = recorder.updates[0]
         assert [row["source"] for row in first["local_segments"]] == [
-            "First sentence.", " Second sentence",
+            "First sentence.", "Second sentence",
         ]
         assert all(not row["translation"] for row in first["local_segments"])
     finally:
@@ -118,13 +118,29 @@ def test_multi_sentence_rows_upsert_immediately_and_period_to_comma_keeps_ids():
     try:
         pipeline.update("Alpha. Beta. Gamma", False, "en", "en")
         first = recorder.updates[-1]["local_segments"]
-        assert [row["source"] for row in first] == ["Alpha.", " Beta.", " Gamma"]
+        assert [row["source"] for row in first] == ["Alpha.", "Beta.", "Gamma"]
         ids = [row["id"] for row in first]
 
         pipeline.update("Alpha, Beta. Gamma", False, "en", "en")
         changed = recorder.updates[-1]["local_segments"]
         assert [row["source"] for row in changed] == ["Alpha,"]
         assert [row["id"] for row in changed] == ids[:1]
+    finally:
+        pipeline.close()
+
+
+def test_split_rows_trim_leading_whitespace_for_display_translation_and_final_output():
+    factory = FakeTranslatorFactory()
+    recorder = Recorder()
+    pipeline = make_pipeline(factory, recorder)
+    expected = ["First  sentence.", "Second  sentence.", "第三  句。  "]
+    try:
+        pipeline.update("First  sentence. \tSecond  sentence.\u3000第三  句。  ", True, "en", "ja")
+        assert [row["source"] for row in recorder.updates[0]["local_segments"]] == expected
+        wait_until(lambda: len(recorder.finals) == 3)
+        assert [call["source"] for call in factory.calls] == expected
+        assert [row["source"] for row in recorder.finals] == expected
+        assert not recorder.errors
     finally:
         pipeline.close()
 
@@ -173,7 +189,7 @@ def test_semantic_cut_finalizes_prefix_and_retains_suffix_identity_and_text():
         pipeline.update(" Retained suffix revised", False, "en", "en")
         tail_update = recorder.updates[-1]["local_segments"]
         assert tail_update[0]["id"] == suffix_id
-        assert tail_update[0]["source"] == " Retained suffix revised"
+        assert tail_update[0]["source"] == "Retained suffix revised"
     finally:
         pipeline.close()
 
@@ -196,7 +212,7 @@ def test_multi_sentence_audio_cut_preserves_separate_rows_and_tail_identity():
         wait_until(lambda: len(recorder.finals) == 3)
         assert [row["id"] for row in recorder.finals] == ids
         assert [row["source"] for row in recorder.finals] == [
-            "First sentence.", " Second sentence.", " Retained tail revised",
+            "First sentence.", "Second sentence.", "Retained tail revised",
         ]
         assert not recorder.errors
         assert not any(update.get("local_removed_segment_ids") for update in recorder.updates)
@@ -257,7 +273,7 @@ def test_close_marks_tail_final_and_drains_then_closes_translator():
 
 
 def test_removed_row_cannot_resurrect_stale_translation_output():
-    factory = FakeTranslatorFactory(blocked_sources={" Keep"})
+    factory = FakeTranslatorFactory(blocked_sources={"Keep"})
     recorder = Recorder()
     pipeline = make_pipeline(factory, recorder)
     try:
