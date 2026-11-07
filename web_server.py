@@ -1261,8 +1261,8 @@ class WebServer:
     async def account_announcements_handler(self, request):
         if not self._is_loopback_request(request):
             return web.json_response({"detail": "localhost only"}, status=403)
-        # format=rich: this client renders size and color; older ones get bold instead.
-        status, data = await self._server_request("GET", "/public/announcements?format=rich")
+        # Announcement format version 2 (size, color); the server rewrites anything newer.
+        status, data = await self._server_request("GET", "/public/announcements?format=2")
         return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
 
     async def account_registration_info_handler(self, request):

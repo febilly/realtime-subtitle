@@ -23,7 +23,7 @@ def test_announcements_proxy_public_route_and_preserves_error_status():
     assert response.status == 200
     assert json.loads(response.text) == {'announcements': []}
     assert response.headers['Cache-Control'] == 'no-store'
-    server._server_request.assert_awaited_once_with('GET', '/public/announcements?format=rich')
+    server._server_request.assert_awaited_once_with('GET', '/public/announcements?format=2')
     server._server_request = AsyncMock(return_value=(503, {'detail': 'unavailable'}))
     response = asyncio.run(server.account_announcements_handler(SimpleNamespace(remote='127.0.0.1')))
     assert response.status == 503
