@@ -10,6 +10,20 @@ function setup() {
     const client = Announcements.create({ fetch, storage: dom.window.localStorage, getDocument: () => dom.window.document, getLanguage: () => 'zh' });
     return { dom, doc: dom.window.document, fetch, client, setRows: next => { rows = next; }, getRows: () => rows };
 }
+describe('announcement size and color', () => {
+    it('renders size and color spans and leaves unknown values as text', () => {
+        const dom = new JSDOM('<!doctype html><body><div id="x"></div></body>');
+        const el = dom.window.document.getElementById('x');
+        Announcements.renderContent(el, '[size=large]大[color=red]红[/color]\n二[/size] [color=url(x)]坏[/color] [size=huge]未闭合');
+        const spans = el.querySelectorAll('span');
+        expect(spans).toHaveLength(2);
+        expect(spans[0].style.fontSize).toBe('1.25em');
+        expect(spans[1].style.color).toBe('rgb(229, 72, 77)');
+        expect(spans[0].textContent).toBe('大红\n二');
+        expect(el.textContent).toContain('[color=url(x)]坏[/color] [size=huge]未闭合');
+        dom.window.close();
+    });
+});
 describe('announcement list, local unread state and rich text', () => {
     it('shows a dot without auto-opening a non-popup announcement; opening clears it persistently', async () => {
         const page = setup();

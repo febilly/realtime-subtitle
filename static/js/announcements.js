@@ -10,32 +10,60 @@
         en: { title: 'Announcements', unread: 'Unread announcements', loading: 'Loading announcements…', empty: 'No announcements', error: 'Unable to load announcements. Please retry.', retry: 'Retry', close: 'Close', refresh: 'Refresh' },
         ja: { title: 'お知らせ', unread: '未読のお知らせ', loading: '読み込み中…', empty: 'お知らせはありません', error: 'お知らせを読み込めませんでした。再試行してください。', retry: '再試行', close: '閉じる', refresh: '更新' },
     };
+    // Same markup as the server's shared/announcement-format.ts: **bold**, ==highlight==,
+    // [text](https://url), [size=small|large|huge]…[/size], [color=name]…[/color].
+    const COLORS = { red: '#e5484d', orange: '#f76b15', green: '#30a46c', blue: '#3e7bfa', purple: '#8e4ec6', gray: '#8b8d98' };
+    const SIZES = { small: '0.875em', large: '1.25em', huge: '1.5em' };
+    const TOKEN = /\*\*([^*\n]+)\*\*|==([^=\n]+)==|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\[(size|color)=([a-z]+)\]/g;
+    function closingTag(text, name, from) {
+        const tags = new RegExp(`\\[${name}=[a-z]+\\]|\\[/${name}\\]`, 'g');
+        tags.lastIndex = from;
+        let open = 1;
+        for (let match = tags.exec(text); match; match = tags.exec(text)) {
+            open += match[0][1] === '/' ? -1 : 1;
+            if (!open) return match.index;
+        }
+        return -1;
+    }
     function renderContent(element, content, depth = 0) {
         const doc = element.ownerDocument;
         const text = String(content || '');
-        const pattern = /\*\*([^*\n]+)\*\*|==([^=\n]+)==|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
         element.replaceChildren();
-        element.style.whiteSpace = 'pre-wrap';
-        if (depth > 4) { element.textContent = text; return; }
+        if (depth === 0) element.style.whiteSpace = 'pre-wrap';
+        if (depth > 6) { element.textContent = text; return; }
+        const token = new RegExp(TOKEN.source, 'g');
         let offset = 0;
-        for (const match of text.matchAll(pattern)) {
-            element.append(doc.createTextNode(text.slice(offset, match.index)));
-            let node;
+        for (let match = token.exec(text); match; match = token.exec(text)) {
+            let node = null, inner = null, end = token.lastIndex;
             if (match[1] || match[2]) {
-                node = doc.createElement(match[1] ? 'strong' : 'mark');
-                renderContent(node, match[1] || match[2], depth + 1);
-            } else {
+                node = doc.createElement(match[1] ? 'strong' : 'mark'); inner = match[1] || match[2];
+            } else if (match[3]) {
                 try {
                     const url = new URL(match[4]);
                     node = doc.createElement('a');
                     node.href = url.href;
                     node.target = '_blank';
                     node.rel = 'noopener noreferrer';
-                    renderContent(node, match[3], depth + 1);
-                } catch { node = doc.createTextNode(match[0]); }
+                    inner = match[3];
+                } catch { node = null; }
+            } else {
+                const name = match[5], value = match[6];
+                const table = name === 'size' ? SIZES : COLORS;
+                const close = Object.prototype.hasOwnProperty.call(table, value) ? closingTag(text, name, token.lastIndex) : -1;
+                if (close >= 0) {
+                    node = doc.createElement('span');
+                    if (name === 'size') { node.style.fontSize = SIZES[value]; node.style.lineHeight = '1.4'; }
+                    else node.style.color = COLORS[value];
+                    inner = text.slice(token.lastIndex, close);
+                    end = close + name.length + 3;
+                }
             }
+            if (!node) continue;
+            element.append(doc.createTextNode(text.slice(offset, match.index)));
+            renderContent(node, inner, depth + 1);
             element.append(node);
-            offset = match.index + match[0].length;
+            offset = end;
+            token.lastIndex = end;
         }
         element.append(doc.createTextNode(text.slice(offset)));
     }
