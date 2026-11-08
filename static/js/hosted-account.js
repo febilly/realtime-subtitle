@@ -326,7 +326,7 @@
                             credits: formatCredits(data.granted_credits),
                             balance: formatCredits(data.new_balance),
                         });
-                    call('showToast', message, false, { timeoutMs: 5000 });
+                    call('showToast', message, false, { persistent: true });
                     balanceCall('resetFirstRedeemBonus', data.first_redeem_bonus_credits);
                     updateSection();
                     void balanceCall('fetchBalance');

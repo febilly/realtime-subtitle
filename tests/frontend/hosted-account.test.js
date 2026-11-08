@@ -259,7 +259,7 @@ describe('HostedAccount actions', () => {
         expect(page.actions.showToast).toHaveBeenCalledWith(
             'account_redeem_success|credits=C10|balance=C130',
             false,
-            { timeoutMs: 5000 },
+            { persistent: true },
         );
         expect(page.balance.resetFirstRedeemBonus).toHaveBeenCalledWith(5);
         expect(page.balance.fetchBalance).toHaveBeenCalledOnce();
