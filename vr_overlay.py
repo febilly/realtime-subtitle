@@ -13,8 +13,8 @@ QSettings("RealtimeSubtitle", "VROverlay")，与桌面悬浮窗互不影响。
 
 交互：SteamVR 把手柄射线在悬浮层上的落点当作鼠标事件发给我们（只有打开 SteamVR
 菜单/仪表盘时射线才会出现）。射线指向悬浮层时显示按钮条；扳机按住背景、或按住握持键
-（任何位置，不会点到按钮）即「抓住」悬浮层，它会随手柄在 VR 空间中移动/旋转（俯仰、
-翻滚接近竖直时轻微吸附），抓着时推拉摇杆调远近；扳机按住边缘拖动调整大小。
+（任何位置，不会点到按钮）即「抓住」悬浮层，它会随手柄在 VR 空间中移动/旋转（俯仰
+接近正对头显、翻滚接近水平时轻微吸附），抓着时推拉摇杆调远近；扳机按住边缘拖动调整大小。
 菜单打开时 SteamVR 不给任何程序读手柄（实测），这些都只能靠菜单激光转发来的鼠标/滚动
 事件：扳机=左键，握持键=中键（Touch 系手柄的默认菜单绑定），摇杆=平滑滚动。
 桌面版的「鼠标穿透」在 VR 里没有意义，已去掉，换成整体缩放按钮。
@@ -89,7 +89,7 @@ BODY_YAW_FAST_RATE = 6.0               # 快速回正的收敛速率（1/秒，�
 BODY_YAW_RISE_SECONDS = 0.12           # 进入快速回正的过渡时间常数
 BODY_YAW_FALL_SECONDS = 0.25           # 降回慢跟的过渡时间常数
 BODY_YAW_SMOOTHING_SECONDS = 0.03      # 角速度的平滑时间常数（让加减速连续；再大会冲过头）
-# 拖动时俯仰/翻滚在竖直附近的吸附角度。
+# 拖动时俯仰接近正对头显、翻滚接近水平时的吸附角度。
 SNAP_DEGREES = 5.0
 
 # 抓住时用摇杆前后推拉调整距离：推到底时距离每秒变化 e^GRAB_PUSH_MAX_RATE 倍（按比例
@@ -204,25 +204,29 @@ def decompose_ypr(m):
     return math.atan2(m[0][2], m[2][2]), pitch, math.atan2(m[1][0], m[1][1])
 
 
-def snap_upright_axes(m, degrees=SNAP_DEGREES):
-    """俯仰、翻滚在竖直附近（±degrees）时吸附为 0，偏航与位置不变。
+def snap_to_viewer_axes(m, viewer_position, degrees=SNAP_DEGREES):
+    """俯仰接近正对头显、翻滚接近水平（±degrees）时吸附，偏航与位置不变。
 
+    viewer_position 与 m 使用同一参考系；缺少头显位置时仅做翻滚吸附。
     返回 (新姿态, 俯仰是否吸附上, 翻滚是否吸附上)。
     """
     yaw, pitch, roll = decompose_ypr(m)
     limit = math.radians(degrees)
-    snap_pitch, snap_roll = abs(pitch) < limit, abs(roll) < limit
+    snap_pitch, snap_roll = False, abs(roll) < limit
+    if viewer_position is not None:
+        dx, dy, dz = (viewer_position[i] - m[i][3] for i in range(3))
+        # 将头显方向投影到当前偏航的竖直平面，只调整俯仰，不牵动水平朝向。
+        depth = math.sin(yaw) * dx + math.cos(yaw) * dz
+        if depth > 1e-6:  # 头显在正面；重合、侧面或背面时不吸附俯仰。
+            target_pitch = math.atan2(-dy, depth)
+            snap_pitch = abs(pitch - target_pitch) < limit
+            if snap_pitch:
+                pitch = target_pitch
     if not (snap_pitch or snap_roll):
         return m, False, False
-    if snap_pitch:
-        pitch = 0.0
     if snap_roll:
         roll = 0.0
     return rotation_ypr(yaw, pitch, roll, (m[0][3], m[1][3], m[2][3])), snap_pitch, snap_roll
-
-
-def snap_upright(m, degrees=SNAP_DEGREES):
-    return snap_upright_axes(m, degrees)[0]
 
 
 def scroll_push_rate(value, peak):
@@ -1044,7 +1048,7 @@ class VrOverlayWindow(ow.OverlayWindow):
         for alpha, lines in (
             # 翻滚吸附：上下两条边（水平了）
             (ends_alpha, ((r, inset, w - r, inset), (r, h - inset, w - r, h - inset))),
-            # 俯仰吸附：左右两条边（竖直了）
+            # 俯仰吸附：左右两条边（正对头显了）
             (sides_alpha, ((inset, r, inset, h - r), (w - inset, r, w - inset, h - r))),
         ):
             if alpha <= 0:
@@ -1453,10 +1457,13 @@ class VrOverlayWindow(ow.OverlayWindow):
         if controller is None or (self.attach_mode != ATTACH_WORLD and hmd is None):
             return
         world = mat_mul(controller, grab["relative"])
+        viewer_position = _point(hmd) if hmd is not None else None
         if self.attach_mode != ATTACH_WORLD:
-            # 在模式参考系里吸附：世界/身体跟随相对重力竖直，跟随头部相对视野竖直
-            world = mat_mul(mat_inv(self._frame(hmd)), world)
-        self.pose, snap_pitch, snap_roll = snap_upright_axes(world)
+            # 悬浮窗和头显转到同一参考系；翻滚仍按当前模式的水平线吸附。
+            inverse_frame = mat_inv(self._frame(hmd))
+            world = mat_mul(inverse_frame, world)
+            viewer_position = _point(mat_mul(inverse_frame, hmd))
+        self.pose, snap_pitch, snap_roll = snap_to_viewer_axes(world, viewer_position)
         self._snap_axes = (snap_pitch, snap_roll)
         self._apply_placement(poses)
 

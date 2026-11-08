@@ -44,13 +44,40 @@ def test_ypr_round_trip_and_inverse():
     assert all(close(identity[i], vo.IDENTITY[i]) for i in range(3))
 
 
-def test_snap_upright_only_near_vertical():
-    snapped = vo.snap_upright(vo.rotation_ypr(0.7, math.radians(2), math.radians(-2.5), (1, 2, 3)))
-    assert close(vo.decompose_ypr(snapped), (0.7, 0.0, 0.0))
+@pytest.mark.parametrize("height", [-0.6, 0.0, 0.6])
+@pytest.mark.parametrize("yaw", [-2.5, 0.0, 0.7])
+def test_pitch_snap_faces_viewer_above_or_below_and_preserves_position(height, yaw):
+    viewer = (1 + math.sin(yaw) * 1.4, 2 + height, 3 + math.cos(yaw) * 1.4)
+    target_pitch = math.atan2(-height, 1.4)
+    m = vo.rotation_ypr(yaw, target_pitch + math.radians(2), math.radians(-2.5), (1, 2, 3))
+    snapped, pitch, roll = vo.snap_to_viewer_axes(m, viewer)
+    assert (pitch, roll) == (True, True)
+    assert close(vo.decompose_ypr(snapped), (yaw, target_pitch, 0.0))
     assert close([r[3] for r in snapped], (1, 2, 3))
+    to_viewer = [viewer[i] - snapped[i][3] for i in range(3)]
+    length = math.sqrt(sum(v * v for v in to_viewer))
+    # The panel normal points directly at the viewer, including when below eye level.
+    assert [snapped[i][2] for i in range(3)] == pytest.approx([v / length for v in to_viewer])
 
-    tilted = vo.snap_upright(vo.rotation_ypr(0.7, math.radians(20), math.radians(1)))
-    assert close(degrees(*vo.decompose_ypr(tilted))[1:], (20.0, 0.0), 1e-6)
+    tilted = vo.rotation_ypr(yaw, target_pitch + math.radians(20), math.radians(1), (1, 2, 3))
+    snapped, pitch, roll = vo.snap_to_viewer_axes(tilted, viewer)
+    assert (pitch, roll) == (False, True)
+    assert close(vo.decompose_ypr(snapped), (yaw, target_pitch + math.radians(20), 0.0))
+
+
+def test_pitch_snap_no_longer_snaps_to_ground_vertical():
+    m = vo.rotation_ypr(0.0, math.radians(2), math.radians(1), (0.0, 1.0, -1.4))
+    snapped, pitch, roll = vo.snap_to_viewer_axes(m, (0.0, 1.6, 0.0))
+    assert (pitch, roll) == (False, True)
+    assert close(vo.decompose_ypr(snapped), (0.0, math.radians(2), 0.0))
+
+
+@pytest.mark.parametrize("viewer", [None, (0, 0, 0), (1, 0, 0), (0, 0, -1)])
+def test_pitch_snap_skips_missing_or_degenerate_viewer(viewer):
+    m = vo.rotation_ypr(0.0, math.radians(2), math.radians(1))
+    snapped, pitch, roll = vo.snap_to_viewer_axes(m, viewer)
+    assert (pitch, roll) == (False, True)
+    assert close(vo.decompose_ypr(snapped), (0.0, math.radians(2), 0.0))
 
 
 def test_default_poses_face_user_slightly_below_eye_level():
@@ -576,13 +603,14 @@ def test_push_relative_moves_along_the_controller_ray_and_clamps():
     assert -farthest[2][3] == pytest.approx(vo.GRAB_MAX_DISTANCE)
 
 
-def test_snap_upright_axes_reports_which_axis_snapped():
+def test_snap_to_viewer_axes_reports_which_axis_snapped():
     m = vo.rotation_ypr(0.5, math.radians(4.0), math.radians(12.0), (1, 2, 3))
-    snapped, pitch, roll = vo.snap_upright_axes(m)
+    viewer = (1 + math.sin(0.5), 2, 3 + math.cos(0.5))
+    snapped, pitch, roll = vo.snap_to_viewer_axes(m, viewer)
     assert (pitch, roll) == (True, False)
     assert degrees(*vo.decompose_ypr(snapped)) == pytest.approx(
         [math.degrees(0.5), 0.0, 12.0], abs=1e-6)
-    _, pitch, roll = vo.snap_upright_axes(vo.rotation_ypr(0.0, 0.3, 0.3))
+    _, pitch, roll = vo.snap_to_viewer_axes(vo.rotation_ypr(0.0, 0.3, 0.3), (0, 0, 1))
     assert (pitch, roll) == (False, False)
 
 
@@ -610,6 +638,41 @@ def grabbable(window):
     assert fake.connected
     window._tick()                                    # places the panel in front of the headset
     return window, fake
+
+
+@pytest.mark.parametrize("mode", vo.ATTACH_MODES)
+def test_grab_pitch_snap_faces_headset_in_each_attachment_mode(grabbable, mode):
+    window, fake = grabbable
+    fake.poses[0] = vo.rotation_ypr(0.6, 0.3, 0.2, (1.0, 1.7, -2.0))
+    window.attach_mode = mode
+    window._yaw_follower.reset(0.6)
+    frame = vo.mode_frame(mode, fake.poses[0], body_yaw=0.6)
+    viewer = vo._point(vo.mat_mul(vo.mat_inv(frame), fake.poses[0]))
+    yaw, pitch = 0.4, -0.35
+    normal = [row[2] for row in vo.rotation_ypr(yaw, pitch, 0.0)]
+    position = tuple(viewer[i] - normal[i] * 1.4 for i in range(3))
+    window.pose = vo.rotation_ypr(yaw, pitch + math.radians(2), math.radians(1), position)
+    window._begin_move_grab(3, fake.poses, via="grip")
+    window._continue_grab()
+
+    assert window._snap_axes == (True, True)
+    assert vo._point(window.pose) == pytest.approx(position)
+    assert vo.decompose_ypr(window.pose) == pytest.approx((yaw, pitch, 0.0))
+    world = window._world_pose(fake.poses)
+    to_viewer = [fake.poses[0][i][3] - world[i][3] for i in range(3)]
+    length = math.sqrt(sum(v * v for v in to_viewer))
+    assert [world[i][2] for i in range(3)] == pytest.approx([v / length for v in to_viewer])
+
+
+def test_world_grab_without_headset_only_snaps_roll(grabbable):
+    window, fake = grabbable
+    window.set_attach_mode(vo.ATTACH_WORLD)
+    window.pose = vo.rotation_ypr(0.0, math.radians(2), math.radians(1), (0, 1, -1.4))
+    del fake.poses[0]
+    window._begin_move_grab(3, fake.poses, via="grip")
+    window._continue_grab()
+    assert window._snap_axes == (False, True)
+    assert vo.decompose_ypr(window.pose) == pytest.approx((0.0, math.radians(2), 0.0))
 
 
 def button_center(window, button):
@@ -697,11 +760,12 @@ def test_scroll_push_rate_normalises_by_the_peak():
 
 def test_snap_highlight_holds_after_release_then_fades(grabbable, monkeypatch):
     window, fake = grabbable
+    window.pose = vo.rotation_ypr(0.0, math.atan2(-0.25, 1.4), 0.0, vo._point(window.pose))
     clock = [1000.0]
     monkeypatch.setattr(vo.time, "monotonic", lambda: clock[0])
     fake.events.append(("grip_down", 200.0, 100.0, 3))
     window._tick()
-    assert window._snap_axes == (True, True)      # panel was placed upright
+    assert window._snap_axes == (True, True)      # panel faces the headset and is level
     assert window._snap_highlight() == (1.0, 1.0)
     window._push_frame()
     assert window._frame_timer.interval() == vo.FRAME_PUSH_FAST_MS
