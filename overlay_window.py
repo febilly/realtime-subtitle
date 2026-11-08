@@ -981,6 +981,47 @@ class SubtitleModel:
             self.non_final_tokens = [dict(tk, _overlay_position=self._ordinary_position) for tk in incoming_live]
         self._apply_local_segments(data)
 
+    def retract(self, sentence_id) -> bool:
+        """Drop a retracted sentence (e.g. short-interrupt repair) from the
+        final buffer, matching the browser session's removal semantics."""
+        identifier = str(sentence_id or "").strip()
+        if not identifier:
+            return False
+
+        kept = []
+        removed = False
+        for token in self.final_tokens:
+            token_sid = token.get("llm_sentence_id") if isinstance(token, dict) else None
+            if token_sid is not None and str(token_sid) == identifier:
+                removed = True
+                continue
+            kept.append(token)
+        if not removed:
+            return False
+
+        # Only separators left invalid by the removal are discarded; other
+        # token objects and their order stay untouched (same as the browser).
+        for index in range(len(kept) - 1, -1, -1):
+            token = kept[index]
+            if not isinstance(token, dict) or not token.get("is_separator"):
+                continue
+            previous = kept[index - 1] if index > 0 else None
+            following = kept[index + 1] if index + 1 < len(kept) else None
+            if (
+                not previous
+                or not following
+                or (
+                    isinstance(previous, dict)
+                    and isinstance(following, dict)
+                    and previous.get("is_separator")
+                    and following.get("is_separator")
+                )
+            ):
+                kept.pop(index)
+
+        self.final_tokens = kept
+        return True
+
     @staticmethod
     def _normalise_local_segment(value):
         if not isinstance(value, dict):
@@ -2113,6 +2154,16 @@ class OverlayWindow(QWidget):
                 self._render()
         elif mtype == "refine_result":
             self._apply_refine_result(data)
+        elif mtype == "subtitle_retract":
+            sid = str(data.get("sentence_id") or "").strip()
+            if sid:
+                # A late refine/speculative translation must not revive the
+                # retracted sentence or leak into the merged replacement.
+                self._refined_by_sid.pop(sid, None)
+                self._refined_lang_by_sid.pop(sid, None)
+                if self.model.retract(sid):
+                    self._last_html = None
+                    self._render()
         elif mtype == "clear":
             preserve = bool(data.get("preserve_existing"))
             self.model.clear(preserve_existing=preserve)
