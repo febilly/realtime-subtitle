@@ -124,7 +124,7 @@ function setup(overrides = {}) {
 }
 
 describe('HostedAccount invite reward reminder', () => {
-    it('retries a due invite without resetting its weekly cadence when the shared slot is occupied', async () => {
+    it('retries a due invite without resetting its 8-day cadence when the shared slot is occupied', async () => {
         const gate = { canShow: () => true, tryShow: vi.fn()
             .mockResolvedValueOnce(false)
             .mockImplementationOnce(async (_kind, display) => { display(); return true; }) };
@@ -134,12 +134,39 @@ describe('HostedAccount invite reward reminder', () => {
             now: () => 1_000_000_000,
             fetch: vi.fn().mockResolvedValue(response({ successful_invite_count: 0 })),
         });
+        page.storage.setItem(
+            HostedAccount.INVITE_REMINDER_FIRST_SEEN_KEY,
+            String(1_000_000_000 - HostedAccount.INVITE_REMINDER_FIRST_DELAY_MS - 1),
+        );
         await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(false);
         expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_STORAGE_KEY)).toBeNull();
         expect(page.actions.showToast).not.toHaveBeenCalled();
         await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(true);
         expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_STORAGE_KEY)).toBe('1000000000');
         expect(page.actions.showToast).toHaveBeenCalledOnce();
+        page.dom.window.close();
+    });
+
+    it('waits three days after the first eligible launch before the first invite reminder', async () => {
+        let clock = 1_000_000_000;
+        const page = setup({
+            signedInAtLaunch: true,
+            now: () => clock,
+            fetch: vi.fn().mockResolvedValue(response({ successful_invite_count: 0 })),
+        });
+
+        await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(false);
+        expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_FIRST_SEEN_KEY)).toBe('1000000000');
+        expect(page.fetch).not.toHaveBeenCalled();
+
+        clock += HostedAccount.INVITE_REMINDER_FIRST_DELAY_MS - 1;
+        await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(false);
+        expect(page.fetch).not.toHaveBeenCalled();
+
+        clock += 1;
+        await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(true);
+        expect(page.actions.showToast).toHaveBeenCalledOnce();
+        expect(page.storage.getItem(HostedAccount.INVITE_REMINDER_STORAGE_KEY)).toBe(String(clock));
         page.dom.window.close();
     });
 
@@ -153,6 +180,7 @@ describe('HostedAccount invite reward reminder', () => {
                 url: 'https://account.example/app/#/login?web_login_code=WEB-123&next=%2Finvite',
             }));
         const page = setup({ fetch, signedInAtLaunch: true, now: () => 1_000_000_000 });
+        page.storage.setItem(HostedAccount.INVITE_REMINDER_FIRST_SEEN_KEY, '1');
 
         await expect(page.controller.maybeShowInviteReminder()).resolves.toBe(true);
         expect(page.actions.showToast).toHaveBeenCalledWith(
@@ -192,6 +220,7 @@ describe('HostedAccount invite reward reminder', () => {
             signedInAtLaunch: true,
             fetch: vi.fn().mockResolvedValue(response({ successful_invite_count: 1 })),
         });
+        invited.storage.setItem(HostedAccount.INVITE_REMINDER_FIRST_SEEN_KEY, '1');
         await expect(invited.controller.maybeShowInviteReminder()).resolves.toBe(false);
         expect(invited.actions.showToast).not.toHaveBeenCalled();
         invited.dom.window.close();

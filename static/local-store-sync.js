@@ -45,6 +45,7 @@
         'sleepOnSilenceEnabled': true,
         'oscSensitiveFilterEnabled': true,
         'oscSensitiveFilterNoticeDisabled': true,
+        'inviteRewardReminderFirstSeen': true,
         'inviteRewardReminderLastShown': true,
         'clientUpdateReminderLastShown': true,
         'clientUpdateLastCheckedVersion': true,

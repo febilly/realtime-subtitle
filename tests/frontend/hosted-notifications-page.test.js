@@ -534,7 +534,7 @@ describe('hosted notification flows', () => {
         }
     });
 
-    it('shows the weekly invite reward reminder during startup for zero invites', async () => {
+    it('shows the 8-day invite reward reminder during startup for zero invites', async () => {
         const fetch = async (url, request = {}) => {
             const parsed = new URL(String(url), 'http://localhost/');
             if (parsed.pathname === '/account/invite') {
@@ -546,12 +546,15 @@ describe('hosted notification flows', () => {
             fetch,
             initialUiConfig: hostedConfig,
             uiConfig: hostedConfig,
-            localStorage: storedHostedLogin(),
+            localStorage: {
+                ...storedHostedLogin(),
+                inviteRewardReminderFirstSeen: '1',
+            },
         });
         try {
             const toast = page.document.getElementById('toast');
             expect(toast.textContent).toContain('Invite a friend and you both receive rewards');
-            expect(toast.textContent).toContain('only once per week');
+            expect(toast.textContent).toContain('once every 8 days');
             expect(page.window.localStorage.getItem('inviteRewardReminderLastShown')).not.toBeNull();
             const cadenceWrite = page.fetchCalls.find(([url, request]) => (
                 new URL(String(url), 'http://localhost/').pathname === '/local-store'

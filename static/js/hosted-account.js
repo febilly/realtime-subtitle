@@ -1,8 +1,10 @@
 (function (root) {
     'use strict';
 
-    const INVITE_REMINDER_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+    const INVITE_REMINDER_COOLDOWN_MS = 8 * 24 * 60 * 60 * 1000;
+    const INVITE_REMINDER_FIRST_DELAY_MS = 3 * 24 * 60 * 60 * 1000;
     const INVITE_REMINDER_STORAGE_KEY = 'inviteRewardReminderLastShown';
+    const INVITE_REMINDER_FIRST_SEEN_KEY = 'inviteRewardReminderFirstSeen';
 
     function create(options = {}) {
         const documentRef = options.document || root.document;
@@ -43,6 +45,7 @@
         let initialized = false;
         let ticketUnreadCheckPromise = null;
         let lastNotifiedTicketUnreadSignature = '';
+        let firstSeenFallback = 0;
         const listeners = [];
 
         function runtimeState() {
@@ -100,14 +103,32 @@
 
         async function maybeShowInviteReminder() {
             if (!signedInAtLaunch || !isSignedIn()) return false;
-            if (options.timedNotifications && !options.timedNotifications.canShow()) return false;
             let lastShown = 0;
+            let firstSeen = firstSeenFallback;
             try {
                 lastShown = Number(storage && storage.getItem(INVITE_REMINDER_STORAGE_KEY)) || 0;
+                firstSeen = Number(storage && storage.getItem(INVITE_REMINDER_FIRST_SEEN_KEY))
+                    || firstSeen;
             } catch (error) {
                 lastShown = 0;
             }
-            if (now() - lastShown < INVITE_REMINDER_COOLDOWN_MS) return false;
+            if (lastShown) {
+                if (now() - lastShown < INVITE_REMINDER_COOLDOWN_MS) return false;
+            } else {
+                if (!firstSeen) {
+                    firstSeenFallback = now();
+                    try {
+                        if (storage) {
+                            storage.setItem(INVITE_REMINDER_FIRST_SEEN_KEY, String(firstSeenFallback));
+                        }
+                    } catch (error) {
+                        // The in-memory clock still applies for this launch.
+                    }
+                    return false;
+                }
+                if (now() - firstSeen < INVITE_REMINDER_FIRST_DELAY_MS) return false;
+            }
+            if (options.timedNotifications && !options.timedNotifications.canShow()) return false;
             try {
                 const response = await fetchRef('/account/invite');
                 if (!response.ok) return false;
@@ -466,6 +487,8 @@
 
     const api = {
         INVITE_REMINDER_COOLDOWN_MS,
+        INVITE_REMINDER_FIRST_DELAY_MS,
+        INVITE_REMINDER_FIRST_SEEN_KEY,
         INVITE_REMINDER_STORAGE_KEY,
         create,
     };
