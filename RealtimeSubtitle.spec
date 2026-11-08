@@ -140,10 +140,6 @@ _drop_substr = (
     '__pyinstaller/',
 )
 _drop_basename = (
-    # Qt on Windows uses the OS ICU API (unversioned ucnv_* exports).
-    # PATH may contain Poppler/Conda's incompatible ICU with the same filename;
-    # bundling it shadows System32 and makes PySide6.QtCore fail to import.
-    'icuuc.dll',
     'qt6quick.dll', 'qt6qml.dll', 'qt6qmlmodels.dll', 'qt6qmlworkerscript.dll',
     'qt6qmlmeta.dll', 'qt6virtualkeyboard.dll', 'qt6pdf.dll',
     # Qt 的软件 OpenGL 回退渲染器（~20MB）。字幕悬浮窗是纯 QWidget + QPainter
@@ -156,7 +152,15 @@ def _keep_qt(entry):
     dest = str(entry[0]).replace('\\', '/').lower()
     if any(s in dest for s in _drop_substr):
         return False
-    if dest.rsplit('/', 1)[-1] in _drop_basename:
+    base = dest.rsplit('/', 1)[-1]
+    if base in _drop_basename:
+        return False
+    # Qt on Windows uses the OS ICU API (System32\icu.dll). PATH may contain
+    # Poppler/Conda's incompatible ICU 78 (icuuc.dll, icudt78.dll, ...);
+    # bundling it shadows System32 and makes PySide6.QtCore fail to import,
+    # while its data file alone is ~33 MB uncompressed and nothing in the
+    # bundle links against it once the Poppler icuuc.dll is dropped.
+    if base.startswith('icu') and base.endswith('.dll'):
         return False
     return True
 
