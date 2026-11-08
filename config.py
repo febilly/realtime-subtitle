@@ -783,7 +783,7 @@ SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
 # Test the hosted startup retry/offline flow without changing the server URL.
 SIMULATE_HOSTED_OFFLINE = _env_bool("SIMULATE_HOSTED_OFFLINE", False)
-CLIENT_VERSION = "4.13.0"
+CLIENT_VERSION = "5.0.0"
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
