@@ -544,6 +544,9 @@
         }
 
         function translationModeLabel(mode) {
+            if (selectedProvider() === 'local' && ['fast', 'accurate', 'hybrid'].includes(mode)) {
+                return t(`translation_mode_local_${mode}`) || mode;
+            }
             return t(`translation_mode_${mode}`) || mode;
         }
 
