@@ -237,4 +237,13 @@ describe('settings-store typed preferences', () => {
         expect(store.saveSegmentMode('bogus')).toBe(false);
         expect(store.saveSubtitleFlowDirection('sideways')).toBe(false);
     });
+
+    it('round-trips the local translation-off mode', () => {
+        const storage = createMemoryStorage();
+        const store = SettingsStore.create({ storage });
+
+        expect(store.saveTranslationUiMode('off')).toBe(true);
+        expect(store.readTranslationUiMode()).toBe('off');
+        expect(store.loadTranslationUiMode()).toBe('off');
+    });
 });

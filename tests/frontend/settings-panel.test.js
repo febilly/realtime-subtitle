@@ -360,6 +360,23 @@ describe('SettingsPanel local model confirmation', () => {
         expect(checkedProvider(page)).toBe('local');
         page.dom.window.close();
     });
+
+    it('normalizes the translation mode when leaving local mode', () => {
+        const normalizeProviderTranslationMode = vi.fn();
+        const page = setup({
+            providerSettings: { providerOverride: 'local', keys: {} },
+            actions: { normalizeProviderTranslationMode },
+        });
+        page.controller.init();
+        page.controller.populate();
+
+        const soniox = page.document.querySelector('input[name="provider"][value="soniox"]');
+        soniox.checked = true;
+        soniox.dispatchEvent(new page.dom.window.Event('change', { bubbles: true }));
+
+        expect(normalizeProviderTranslationMode).toHaveBeenCalledWith('soniox', 'local');
+        page.dom.window.close();
+    });
 });
 
 describe('SettingsPanel pricing and lifecycle', () => {

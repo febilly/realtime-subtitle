@@ -822,7 +822,7 @@
             ) {
                 const ok = await actionSucceeded('setTranslationUiMode', requestedTranslationMode, {
                     restartIfNeeded: true,
-                    ...(currentProvider === 'local' ? { provider: currentProvider } : {}),
+                    provider: currentProvider,
                 });
                 if (!ok) return { ok: false, message: t('validation_error') };
             }

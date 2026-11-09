@@ -1796,11 +1796,19 @@ class WebServer:
             from local_inference.model_manager import get_all_local_models_status
             if not get_all_local_models_status()["translation"]["hymt2"]["ready"]:
                 return web.json_response({"status": "error", "message": "Local translation model unavailable"}, status=400)
-        # A settings save can select the local provider and its mode together.
-        # Keep that mode for the upcoming rebuild without changing the old stream.
-        if payload.get("provider") == "local" and config.TRANSLATION_PROVIDER != "local":
+        # A settings save can change provider and translation mode together.
+        # Keep the mode for the upcoming rebuild without touching the old
+        # provider's stream. This matters when leaving local mode, whose "off"
+        # mode has no equivalent in the other providers.
+        requested_provider = str((payload or {}).get("provider") or "").strip().lower()
+        if (
+            requested_provider in ("soniox", "gemini", "local")
+            and requested_provider != config.TRANSLATION_PROVIDER
+        ):
             if mode not in ("off", "fast", "accurate", "hybrid"):
                 return web.json_response({"status": "error", "message": "Invalid translation mode"}, status=400)
+            if requested_provider != "local" and mode == "off":
+                mode = "hybrid"
             if self.provider_manager is not None:
                 self.provider_manager.ui_translation_mode = mode
             return web.json_response({"status": "ok", "mode": mode, "needs_restart": False})

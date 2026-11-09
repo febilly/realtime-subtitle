@@ -748,6 +748,10 @@
             const provider = getSelectedProvider();
             const previous = lastProvider;
             const seq = ++providerChangeSeq;
+            if (previous && previous !== provider
+                && typeof actions.normalizeProviderTranslationMode === 'function') {
+                actions.normalizeProviderTranslationMode(provider, previous);
+            }
             updateProviderFields(provider);
             if (provider === 'local' && previous && previous !== 'local'
                 && getLocalBackend() === 'local'

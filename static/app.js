@@ -1045,9 +1045,20 @@ async function switchHostedProvider(provider) {
     if (provider === 'gemini') {
         const fastModeApplied = await translationModeController.setTranslationUiMode('fast', {
             restartIfNeeded: false,
+            provider,
         });
         settingsPorts.renderTranslationModePicker();
         if (!fastModeApplied) {
+            showToast(t('connection_error_try_again'), true);
+            return false;
+        }
+    } else if (translationModeController.getTranslationUiMode() === 'off') {
+        const hybridModeApplied = await translationModeController.setTranslationUiMode('hybrid', {
+            restartIfNeeded: false,
+            provider,
+        });
+        settingsPorts.renderTranslationModePicker();
+        if (!hybridModeApplied) {
             showToast(t('connection_error_try_again'), true);
             return false;
         }
@@ -1411,6 +1422,11 @@ const settingsPanelController = SettingsPanel.create({
         fetchBalance: hostedPorts.fetchBalance,
         updateAccountSection: hostedPorts.updateAccountSection,
         confirmLocalProvider: (args) => confirmLocalProviderSwitch(args),
+        normalizeProviderTranslationMode: (provider, previousProvider) => {
+            if (previousProvider !== 'local' || provider === 'local') return;
+            if (settingsRuntime.getDraft().translationUiMode !== 'off') return;
+            settingsRuntime.setDraft({ translationUiMode: 'hybrid' });
+        },
     },
     elements: {
         settingsButton,
@@ -1516,6 +1532,14 @@ async function fallbackToSonioxAfterLocalStartupFailure() {
     saved.providerOverride = 'soniox';
     settingsPorts.saveProviderSettings(saved);
 
+    // Local "off" has no equivalent on the other providers; land on hybrid.
+    if (settingsStore.readTranslationUiMode() === 'off') {
+        await translationModeController.setTranslationUiMode('hybrid', {
+            restartIfNeeded: false,
+            provider: 'soniox',
+        });
+    }
+
     const mode = settingsPorts.getConnectionMode() === 'relay' ? 'relay' : 'direct';
     const serverSettings = settingsPorts.loadServerSettings();
     const apiKey = saved.keys && saved.keys.soniox ? saved.keys.soniox : null;
@@ -1550,10 +1574,19 @@ async function ensureStartupLocalModels() {
     const localConfig = saved.localConfig || {};
     if (localConfig.backend === 'remote') return true;
 
+    const llmAvailable = translationModeController.isAvailable();
+    const savedTranslationMode = settingsStore.readTranslationUiMode();
+    // Mirror the local-provider normalization: accurate/hybrid without an
+    // LLM lands on fast, which needs Hy-MT2. "off" never does.
+    const effectiveSavedMode = (
+        savedTranslationMode
+        && !['fast', 'off'].includes(savedTranslationMode)
+        && !llmAvailable
+    ) ? 'fast' : savedTranslationMode;
     const needsTranslation = LocalModelDialog.needsMachineTranslation({
         uiTranslationMode: settingsStore.loadUiTranslationMode(),
-        translationUiMode: translationModeController.getTranslationUiMode(),
-        llmAvailable: translationModeController.isAvailable(),
+        translationUiMode: effectiveSavedMode,
+        llmAvailable,
     });
     const result = await localModelDialog.confirmStartupModels({ needsTranslation });
     if (result.ok) {

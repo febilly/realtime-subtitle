@@ -365,6 +365,7 @@ describe('SettingsRuntime save orchestration', () => {
         ]);
         expect(page.actions.setTranslationUiMode).toHaveBeenCalledWith('accurate', {
             restartIfNeeded: true,
+            provider: 'soniox',
         });
         page.dom.window.close();
     });

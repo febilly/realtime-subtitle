@@ -126,6 +126,22 @@ def test_offline_translation_rejects_llm_modes(server):
     instance.session.set_translation_mode.assert_not_called()
 
 
+def test_translation_mode_switch_to_another_provider_waits_for_rebuild(server, monkeypatch):
+    instance, module = server
+    monkeypatch.setattr(module.config, "TRANSLATION_PROVIDER", "local")
+    instance.session = Mock()
+    request = SimpleNamespace(remote="127.0.0.1", json=AsyncMock(return_value={
+        "mode": "off", "provider": "soniox",
+    }))
+
+    data, status = asyncio.run(instance.translation_mode_set_handler(request))
+
+    assert status == 200 and data["needs_restart"] is False
+    assert instance.provider_manager.ui_translation_mode == "hybrid"
+    assert data["mode"] == "hybrid"
+    instance.session.set_translation_mode.assert_not_called()
+
+
 def test_offline_fast_translation_requires_a_downloaded_model(server, monkeypatch):
     instance, _ = server
     instance.offline_mode = True

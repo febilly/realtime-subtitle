@@ -47,7 +47,7 @@ class FakeXMLHttpRequest {
 
 function normalizeTranslationUiMode(value) {
     const mode = String(value || 'hybrid').trim().toLowerCase();
-    if (!['fast', 'hybrid', 'accurate'].includes(mode)) {
+    if (!['fast', 'hybrid', 'accurate', 'off'].includes(mode)) {
         throw new Error(`Unsupported harness translationUiMode: ${value}`);
     }
     return mode;

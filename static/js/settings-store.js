@@ -22,7 +22,7 @@
     });
 
     const UI_TRANSLATION_MODES = ['none', 'one_way', 'two_way'];
-    const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid'];
+    const TRANSLATION_UI_MODES = ['fast', 'accurate', 'hybrid', 'off'];
     const SEGMENT_MODES = ['translation', 'endpoint', 'punctuation'];
     const AUDIO_SOURCES = ['system', 'microphone', 'mix'];
     const SUBTITLE_FLOW_DIRECTIONS = ['up', 'down'];

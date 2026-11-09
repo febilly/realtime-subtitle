@@ -49,6 +49,7 @@ it('returns to Soniox paused when startup local models are not downloaded', asyn
     const page = await createPageHarness({
         initialUiConfig: { provider: 'local' },
         uiConfig: { provider: 'local' },
+        translationUiMode: 'off',
         localStorage: {
             'providerSettings.v1': JSON.stringify({
                 providerOverride: 'local',
@@ -63,6 +64,9 @@ it('returns to Soniox paused when startup local models are not downloaded', asyn
         await vi.waitFor(() => {
             expect(page.document.querySelector('.local-model-dialog')).not.toBeNull();
         });
+        const firstDialogText = page.document.querySelector('.local-model-dialog').textContent;
+        expect(firstDialogText).toContain('Qwen3-ASR');
+        expect(firstDialogText).not.toContain('Hy-MT2');
         const dialogButtons = [...page.document.querySelectorAll('.local-model-dialog-actions button')];
         expect(dialogButtons).toHaveLength(2);
         dialogButtons[0].click();
@@ -75,6 +79,16 @@ it('returns to Soniox paused when startup local models are not downloaded', asyn
         expect(setupBodies.at(-1)).toMatchObject({
             provider: 'soniox', mode: 'direct', start_paused: true,
         });
+        const translationModeCall = page.fetchCalls.find(([url, options]) => (
+            new URL(String(url), 'http://localhost/').pathname === '/translation-mode'
+            && options && options.body
+            && JSON.parse(options.body).mode === 'hybrid'
+        ));
+        expect(translationModeCall).toBeTruthy();
+        expect(JSON.parse(translationModeCall[1].body)).toMatchObject({
+            mode: 'hybrid', provider: 'soniox',
+        });
+        expect(page.window.localStorage.getItem('translationUiMode')).toBe('hybrid');
         expect(page.fetchCalls.some(([url]) => String(url).endsWith('/resume'))).toBe(false);
     } finally {
         page.close();
