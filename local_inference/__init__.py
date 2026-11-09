@@ -13,6 +13,7 @@ LOCAL_INFERENCE_DISPLAY_NAMES: Dict[str, str] = {
 COMMON_RUNTIME_MODULES = (
     "numpy",
     "onnxruntime",
+    "kaldi_native_fbank",
 )
 ENGINE_RUNTIME_MODULES = {"qwen3-asr": ("gguf",)}
 

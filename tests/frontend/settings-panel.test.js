@@ -446,6 +446,16 @@ describe('SettingsPanel pricing and lifecycle', () => {
         page.dom.window.close();
     });
 
+    it('scrolls the settings form back to the top when requested', () => {
+        const page = setup();
+        const form = page.document.getElementById('settingsForm');
+        form.scrollTop = 240;
+
+        expect(page.controller.open({ scrollTop: true })).toBe(true);
+        expect(form.scrollTop).toBe(0);
+        page.dom.window.close();
+    });
+
     it('rebuilds localized region choices without losing the current draft', () => {
         const page = setup();
         page.controller.renderSonioxRegionPicker('eu');

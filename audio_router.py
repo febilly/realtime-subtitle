@@ -10,18 +10,18 @@ from typing import Any
 import numpy as np
 
 try:
-    # Bundled Silero VAD (local_inference/models/silero_vad), run on onnxruntime.
-    from local_inference.model_manager import silero_onnx_path
-    from local_inference.vad_processor import SileroOnnxVAD as SileroVadBackend
+    # Bundled FireRed VAD (local_inference/models/firered_vad), run on onnxruntime.
+    from local_inference.model_manager import firered_vad_cmvn_path, firered_vad_onnx_path
+    from local_inference.vad_processor import FireRedStreamVAD as FireRedVadBackend
 except Exception as exc:  # noqa: BLE001 - optional at import time for tests/dev envs
-    SileroVadBackend = None
-    SileroVadImportError = exc
+    FireRedVadBackend = None
+    FireRedVadImportError = exc
 else:
-    SileroVadImportError = None
+    FireRedVadImportError = None
 
 
-class SileroSilenceDetector:
-    """Silero VAD backed PCM_s16le detector used to find speech/silence."""
+class FireRedSilenceDetector:
+    """FireRed VAD backed PCM_s16le detector used to find speech/silence."""
 
     def __init__(
         self,
@@ -32,18 +32,21 @@ class SileroSilenceDetector:
         hop_size: int = 512,
         speech_threshold: float = 0.5,
     ):
-        if SileroVadBackend is None:
-            raise RuntimeError(f"Silero VAD is unavailable: {SileroVadImportError}")
+        if FireRedVadBackend is None:
+            raise RuntimeError(f"FireRed VAD is unavailable: {FireRedVadImportError}")
         if int(sample_rate) != 16000:
-            raise RuntimeError(f"Silero VAD here expects 16 kHz audio, got {sample_rate}")
+            raise RuntimeError(f"FireRed VAD here expects 16 kHz audio, got {sample_rate}")
 
         self.sample_rate = int(sample_rate)
         self.sample_width_bytes = max(1, int(sample_width_bytes))
         self.silence_hold_seconds = max(0.0, float(silence_hold_seconds))
         self.speech_threshold = min(1.0, max(0.0, float(speech_threshold)))
-        # The 16 kHz model takes 512-sample (32 ms) windows.
+        # Feed 512-sample (32 ms) hops; FireRed runs 10 ms frames internally.
         self.hop_size = max(1, int(hop_size))
-        self._vad = SileroVadBackend(str(silero_onnx_path()))
+        self._vad = FireRedVadBackend(
+            str(firered_vad_onnx_path()),
+            str(firered_vad_cmvn_path()),
+        )
         self._pending = bytearray()
         self.consecutive_silence_seconds = 0.0
         self.last_audio_at: float | None = None
@@ -371,15 +374,15 @@ class AudioSendRouter:
         silence_hold_seconds: float,
         vad_speech_threshold: float,
     ):
-        """Build the Silero VAD detector, falling back to energy on failure."""
+        """Build the FireRed VAD detector, falling back to energy on failure."""
         try:
-            return SileroSilenceDetector(
+            return FireRedSilenceDetector(
                 sample_rate=sample_rate,
                 silence_hold_seconds=silence_hold_seconds,
                 speech_threshold=vad_speech_threshold,
             )
         except Exception as error:
-            print(f"⚠️  Silero VAD unavailable for stream rollover, using energy silence detector: {error}")
+            print(f"⚠️  FireRed VAD unavailable for stream rollover, using energy silence detector: {error}")
             return EnergySilenceDetector(
                 sample_rate=sample_rate,
                 silence_hold_seconds=silence_hold_seconds,

@@ -689,7 +689,7 @@
             }
         }
 
-        function open({ forced = false } = {}) {
+        function open({ forced = false, scrollTop = false } = {}) {
             const current = state();
             if (current.lockManualControls) return false;
             forcedOpen = !!forced;
@@ -704,6 +704,11 @@
             void call('fetchOutputDevices');
             if (elements.overlay) elements.overlay.hidden = false;
             if (elements.panel) elements.panel.hidden = false;
+            if (scrollTop && elements.form && typeof elements.form.scrollTo === 'function') {
+                elements.form.scrollTo({ top: 0 });
+            } else if (scrollTop && elements.form) {
+                elements.form.scrollTop = 0;
+            }
             const hideClose = forcedOpen ? 'none' : '';
             if (elements.cancelButton) elements.cancelButton.style.display = hideClose;
             if (elements.closeButton) elements.closeButton.style.display = hideClose;

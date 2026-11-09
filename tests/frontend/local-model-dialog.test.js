@@ -17,7 +17,7 @@ function status({
             models_dir: 'D:/models',
             disk_free_bytes: diskFree,
             asr: { 'qwen3-asr': { ready: asrReady, estimated_bytes: 1.5e9, estimated_vram_bytes: 2e9 } },
-            translation: { hymt2: { model_ready: mtReady, estimated_bytes: 1.1e9, estimated_vram_bytes: 1.5e9 } },
+            translation: { hymt2: { ready: mtReady, model_ready: mtReady, estimated_bytes: 1.1e9, estimated_vram_bytes: 1.5e9 } },
         },
         devices: [gpu],
         selected_device: gpu,
@@ -80,6 +80,57 @@ describe('LocalModelDialog', () => {
         const page = setup({ '/local-inference/status': response(status({ asrReady: true, mtReady: true })) });
         const result = await page.dialog.confirmLocalProvider({ previousProvider: 'Soniox', llmAvailable: true });
         expect(result).toEqual({ ok: true, skippedTranslation: false });
+        expect(page.dialog.isOpen()).toBe(false);
+        page.dom.window.close();
+    });
+
+    it('prompts for each missing model separately when restoring local mode', async () => {
+        const page = setup({
+            '/local-inference/status': response(status({ asrReady: false, mtReady: false })),
+            '/local-inference/download': response({ status: 'ok' }),
+        });
+        const pending = page.dialog.confirmStartupModels({ needsTranslation: true });
+        await vi.waitFor(() => expect(page.dialog.isOpen()).toBe(true));
+        let text = page.document.querySelector('.local-model-dialog').textContent;
+        expect(text).toContain('local_startup_download_required');
+        expect(text).toContain('local_dialog_asr_name');
+        expect(text).not.toContain('local_dialog_mt_name');
+
+        await clickButton(page.document, 'local_dialog_download');
+        await vi.waitFor(() => {
+            const current = page.document.querySelector('.local-model-dialog');
+            expect(current && current.textContent).toContain('local_dialog_mt_name');
+        });
+        text = page.document.querySelector('.local-model-dialog').textContent;
+        expect(text).not.toContain('local_dialog_asr_name');
+
+        await clickButton(page.document, 'local_dialog_cancel');
+        await expect(pending).resolves.toEqual({ ok: false, missing: 'hymt2' });
+        expect(page.calls.filter((call) => call.url === '/local-inference/download').map((call) => call.body))
+            .toEqual([{ component: 'qwen3-asr' }]);
+        page.dom.window.close();
+    });
+
+    it('skips the translation prompt when translation is off', async () => {
+        const page = setup({
+            '/local-inference/status': response(status({ asrReady: false, mtReady: false })),
+        });
+        const pending = page.dialog.confirmStartupModels({ needsTranslation: false });
+        await vi.waitFor(() => expect(page.dialog.isOpen()).toBe(true));
+        const text = page.document.querySelector('.local-model-dialog').textContent;
+        expect(text).toContain('local_dialog_asr_name');
+        expect(text).not.toContain('local_dialog_mt_name');
+        await clickButton(page.document, 'local_dialog_cancel');
+        await expect(pending).resolves.toEqual({ ok: false, missing: 'qwen3-asr' });
+        page.dom.window.close();
+    });
+
+    it('does not block startup when the model status cannot be read', async () => {
+        const page = setup({
+            '/local-inference/status': () => { throw new Error('offline'); },
+        });
+        await expect(page.dialog.confirmStartupModels({ needsTranslation: true }))
+            .resolves.toEqual({ ok: true, statusUnavailable: true });
         expect(page.dialog.isOpen()).toBe(false);
         page.dom.window.close();
     });

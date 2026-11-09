@@ -2,14 +2,14 @@ import audio_router as audio_router_module
 from audio_router import (
     AudioSendRouter,
     EnergySilenceDetector,
-    SileroSilenceDetector,
+    FireRedSilenceDetector,
 )
 
 
 def _force_energy_backend(monkeypatch):
     """Make the VAD backend unavailable so the router falls back to energy."""
-    monkeypatch.setattr(audio_router_module, "SileroVadBackend", None)
-    monkeypatch.setattr(audio_router_module, "SileroVadImportError", RuntimeError("missing"))
+    monkeypatch.setattr(audio_router_module, "FireRedVadBackend", None)
+    monkeypatch.setattr(audio_router_module, "FireRedVadImportError", RuntimeError("missing"))
 
 
 class RecordingTarget:
@@ -259,18 +259,19 @@ def test_energy_silence_detector_waits_for_hold_duration():
     assert detector.is_ready() is True
 
 
-def test_silero_silence_detector_waits_for_non_speech_hold(monkeypatch):
-    class FakeSileroVAD:
-        def __init__(self, model_path):
+def test_firered_silence_detector_waits_for_non_speech_hold(monkeypatch):
+    class FakeFireRedVAD:
+        def __init__(self, model_path, cmvn_path):
             self.model_path = model_path
+            self.cmvn_path = cmvn_path
 
         def probability(self, audio_frame, sample_rate):
             return 1.0 if float(audio_frame[0]) > 0.0 else 0.0
 
-    monkeypatch.setattr(audio_router_module, "SileroVadBackend", FakeSileroVAD)
-    monkeypatch.setattr(audio_router_module, "SileroVadImportError", None)
+    monkeypatch.setattr(audio_router_module, "FireRedVadBackend", FakeFireRedVAD)
+    monkeypatch.setattr(audio_router_module, "FireRedVadImportError", None)
 
-    detector = SileroSilenceDetector(sample_rate=16000, silence_hold_seconds=0.06)
+    detector = FireRedSilenceDetector(sample_rate=16000, silence_hold_seconds=0.06)
     silence_frame = b"\0" * 1024
     speech_frame = (1000).to_bytes(2, "little", signed=True) + (b"\0" * 1022)
 

@@ -230,6 +230,16 @@ it('keeps explicit local settings activation immediate', async () => {
     expect(JSON.parse(env.fetch.mock.calls[0][1].body)).not.toHaveProperty('start_paused');
 });
 
+it('can restore Soniox paused when local startup falls back', async () => {
+    const env = setup();
+    await env.controller.push('soniox', 'restored-key', {
+        mode: 'direct', startPaused: true,
+    });
+    expect(JSON.parse(env.fetch.mock.calls[0][1].body)).toMatchObject({
+        provider: 'soniox', mode: 'direct', api_key: 'restored-key', start_paused: true,
+    });
+});
+
 it('opens the connection fallback when hosted startup validation is unreachable', async () => {
     const env = setup({ state: {
         connectionMode: 'relay', serverSettings: { token: 'saved-token' },

@@ -414,7 +414,13 @@ if TRANSLATION_PROVIDER not in ("soniox", "gemini", "local"):
 # Web UI can update them without restarting the HTTP server.  Models and native
 # runtimes are resolved lazily by local_inference.model_manager.
 VAD_ENABLED = _env_bool("LOCAL_VAD_ENABLED", True)
-LOCAL_VAD_MODE = _env_str("LOCAL_VAD_MODE", "silero").strip().lower() or "silero"
+_LOCAL_VAD_MODE_RAW = _env_str("LOCAL_VAD_MODE", "firered").strip().lower()
+if _LOCAL_VAD_MODE_RAW in ("firered", "energy", "disabled"):
+    LOCAL_VAD_MODE = _LOCAL_VAD_MODE_RAW
+else:
+    if _LOCAL_VAD_MODE_RAW:
+        print(f"⚠️  Invalid LOCAL_VAD_MODE: {_LOCAL_VAD_MODE_RAW}, fallback to: firered")
+    LOCAL_VAD_MODE = "firered"
 LOCAL_VAD_THRESHOLD = min(1.0, max(0.0, _env_float("LOCAL_VAD_THRESHOLD", 0.5)))
 LOCAL_VAD_MIN_SPEECH_DURATION = max(0.05, _env_float("LOCAL_VAD_MIN_SPEECH_DURATION", 1.0))
 LOCAL_VAD_MAX_SPEECH_DURATION = max(
@@ -783,7 +789,7 @@ SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
 # Test the hosted startup retry/offline flow without changing the server URL.
 SIMULATE_HOSTED_OFFLINE = _env_bool("SIMULATE_HOSTED_OFFLINE", False)
-CLIENT_VERSION = "5.0.0"
+CLIENT_VERSION = "5.1.0"
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;

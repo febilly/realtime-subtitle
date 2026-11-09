@@ -81,6 +81,15 @@ function defaultFetchResponse(url, options = {}) {
             ? { shown: true, retry_after_seconds: 14400, star_shown_count: 1 }
             : { notices: [], star_mode: 'auto', usage_days: 0, retry_after_seconds: 0 },
         '/local-store': { store: {} },
+        '/local-inference/status': {
+            status: 'ok',
+            models: {
+                asr: { 'qwen3-asr': { ready: true } },
+                translation: { hymt2: { ready: true, model_ready: true } },
+            },
+            devices: [],
+            selected_device: null,
+        },
         '/ui-config': uiConfig,
         '/api-key-status': { status: 'ok' },
         '/osc-translation': { enabled: false },

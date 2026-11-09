@@ -1501,6 +1501,78 @@ function confirmLocalTranslationModel(args = {}) {
     if (localConfig.backend === 'remote') return Promise.resolve(true);
     return localModelDialog.confirmTranslationModel(args);
 }
+
+function shouldCheckStartupLocalModels() {
+    if (lockManualControls || offlineMode) return false;
+    const saved = settingsPorts.loadProviderSettings();
+    if (saved.providerOverride) return saved.providerOverride === 'local';
+    // No explicit override: the backend may have been seeded with local mode
+    // from the environment.
+    return translationProvider === 'local';
+}
+
+async function fallbackToSonioxAfterLocalStartupFailure() {
+    const saved = settingsPorts.loadProviderSettings();
+    saved.providerOverride = 'soniox';
+    settingsPorts.saveProviderSettings(saved);
+
+    const mode = settingsPorts.getConnectionMode() === 'relay' ? 'relay' : 'direct';
+    const serverSettings = settingsPorts.loadServerSettings();
+    const apiKey = saved.keys && saved.keys.soniox ? saved.keys.soniox : null;
+    const region = saved.sonioxRegion || null;
+    const pushOptions = {
+        silent: true,
+        mode,
+        region,
+        token: serverSettings.token || null,
+        startPaused: true,
+    };
+    let result = await settingsSetup.push('soniox', apiKey, pushOptions);
+    if (!result.ok && mode === 'relay') {
+        // The hosted token may be stale; the user asked for Soniox, so fall
+        // back to direct mode rather than leaving the backend on local.
+        result = await settingsSetup.push('soniox', apiKey, {
+            ...pushOptions, mode: 'direct', token: null,
+        });
+    }
+
+    // Show the provider selector at the top, and leave recognition paused.
+    settingsFlowController.open({ scrollTop: true });
+}
+
+// Startup restore: local mode must not silently proceed when its models are
+// gone. Each missing model gets its own prompt; cancelling or failing any
+// download returns to Soniox without starting recognition.
+async function ensureStartupLocalModels() {
+    if (!shouldCheckStartupLocalModels()) return true;
+
+    const saved = settingsPorts.loadProviderSettings();
+    const localConfig = saved.localConfig || {};
+    if (localConfig.backend === 'remote') return true;
+
+    const needsTranslation = LocalModelDialog.needsMachineTranslation({
+        uiTranslationMode: settingsStore.loadUiTranslationMode(),
+        translationUiMode: translationModeController.getTranslationUiMode(),
+        llmAvailable: translationModeController.isAvailable(),
+    });
+    const result = await localModelDialog.confirmStartupModels({ needsTranslation });
+    if (result.ok) {
+        const connectionMode = settingsPorts.getConnectionMode();
+        const serverSettings = settingsPorts.loadServerSettings();
+        const pushed = await settingsSetup.push('local', null, {
+            silent: true,
+            mode: connectionMode === 'relay' ? 'relay' : 'direct',
+            token: serverSettings.token || null,
+            localConfig,
+            startPaused: true,
+        });
+        if (pushed.ok) return true;
+    }
+
+    await fallbackToSonioxAfterLocalStartupFailure();
+    return false;
+}
+
 const settingsFlowController = SettingsFlowController.create({
     panel: settingsPanelController,
     policy: SettingsPolicy,
@@ -1823,6 +1895,7 @@ const hostedController = Hosted.createController({
     refreshPreopenedHostedLogin: hostedPorts.refreshPreopenedHostedLogin,
     maybeRunFirstLaunchFlow: hostedPorts.maybeRunFirstLaunchFlow,
     ensureHostedVersionAllowed: hostedPorts.ensureHostedVersionAllowed,
+    ensureStartupLocalModels,
     syncProviderFromStorage: settingsPorts.syncProviderFromStorage,
     fetchLlmRefineStatus: settingsPorts.fetchLlmRefineStatus,
     fetchApiKeyStatus,

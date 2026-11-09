@@ -310,6 +310,56 @@
             return { ok: true, skippedTranslation: mtMissing && !choice.includes('hymt2') };
         }
 
+        // Restoring local mode at startup: every missing model gets its own
+        // prompt, and cancelling any one of them abandons local mode.
+        async function confirmStartupModel(status, { component, title, model }) {
+            const view = open(title);
+            view.body.replaceChildren(
+                element('p', 'confirm-message', t('local_startup_download_required')),
+                modelRow(
+                    t(component === 'qwen3-asr' ? 'local_dialog_asr_name' : 'local_dialog_mt_name'),
+                    model,
+                ),
+                ...resourceWarnings(status, Number(model.estimated_bytes) || 0),
+            );
+            const confirmed = await new Promise((resolve) => {
+                view.actions.replaceChildren(
+                    button(t('local_dialog_cancel'), 'secondary-button', () => resolve(false)),
+                    button(t('local_dialog_download'), 'primary-button', () => resolve(true)),
+                );
+            });
+            if (!confirmed) {
+                close();
+                return false;
+            }
+            const finished = await runDownloads(view, [component]);
+            close();
+            return finished;
+        }
+
+        async function confirmStartupModels({ needsTranslation = true } = {}) {
+            let status;
+            try {
+                status = await fetchStatus();
+            } catch (error) {
+                // A status failure must not block the normal startup path.
+                return { ok: true, statusUnavailable: true };
+            }
+            const { asr, mt } = modelInfo(status);
+            const missing = [];
+            if (!asr.ready) {
+                missing.push({ component: 'qwen3-asr', title: t('local_dialog_title'), model: asr });
+            }
+            if (needsTranslation && !mt.ready) {
+                missing.push({ component: 'hymt2', title: t('local_dialog_mt_title'), model: mt });
+            }
+            for (const requirement of missing) {
+                const ok = await confirmStartupModel(status, requirement);
+                if (!ok) return { ok: false, missing: requirement.component };
+            }
+            return { ok: true };
+        }
+
         // Before selecting 快速 / 混合 on the local provider. Resolves true when
         // Hy-MT2 is (now) downloaded.
         async function confirmTranslationModel() {
@@ -339,6 +389,7 @@
         return {
             close,
             confirmLocalProvider,
+            confirmStartupModels,
             confirmTranslationModel,
             isOpen: () => !!dialog,
         };

@@ -299,11 +299,16 @@ def test_runtime_comes_from_the_pinned_hf_repo(models_dir, monkeypatch):
     assert not (models_dir / model_manager.LLAMA_RUNTIME_ZIP).exists()
 
 
-def test_silero_vad_ships_with_the_app():
-    path = model_manager.silero_onnx_path()
-    assert path.is_file() and model_manager.is_silero_cached()
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == (
-        "7ed98ddbad84ccac4cd0aeb3099049280713df825c610a8ed34543318f1b2c49"
+def test_firered_vad_ships_with_the_app():
+    model_path = model_manager.firered_vad_onnx_path()
+    cmvn_path = model_manager.firered_vad_cmvn_path()
+    assert model_path.is_file() and cmvn_path.is_file()
+    assert model_manager.is_firered_vad_cached()
+    assert hashlib.sha256(model_path.read_bytes()).hexdigest() == (
+        "b3c97836130dc34fc32d56fab551e88cf9454511de2b3c250a5e6578dee74b93"
+    )
+    assert hashlib.sha256(cmvn_path.read_bytes()).hexdigest() == (
+        "c87f6f13edf0f0ec7535ddfc9cc3387d9268cb234b70182d566c5e2edf3ca473"
     )
 
 

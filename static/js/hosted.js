@@ -264,7 +264,10 @@
             await call('maybeRunFirstLaunchFlow');
             await call('ensureHostedVersionAllowed');
             call('refreshPreopenedHostedLogin');
-            await call('syncProviderFromStorage', { startup: true });
+            const startupLocalHandled = await call('ensureStartupLocalModels');
+            if (startupLocalHandled !== false) {
+                await call('syncProviderFromStorage', { startup: true });
+            }
             await call('fetchLlmRefineStatus');
             call('fetchApiKeyStatus');
             call('fetchOscTranslationStatus');

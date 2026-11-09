@@ -555,8 +555,9 @@ class ProviderManager:
             session_mod.bind_ipc_server(self.ipc_server)
         self.osc_manager.set_speaker_labels_enabled(bool(self.config.ENABLE_SPEAKER_DIARIZATION))
 
-        # Restoring local mode must not load weights until the user starts it.
-        start_paused = bool(start_paused and provider == "local" and not self.lock_manual_controls)
+        # A paused restore must not start any provider. For local mode this also
+        # avoids loading weights until the user starts it.
+        start_paused = bool(start_paused and not self.lock_manual_controls)
         new_session.is_paused = start_paused
         self.setup_required = False
 

@@ -222,3 +222,23 @@ async def test_restoring_local_settings_stays_paused_until_manual_start(monkeypa
     result = await manager.apply_provider("local", mode=mode)
     assert result["started"] is True
     assert manager.web_server.session.is_paused is False
+
+
+@pytest.mark.asyncio
+async def test_restoring_soniox_can_stay_paused(monkeypatch):
+    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
+    manager.loop = asyncio.get_running_loop()
+    manager.web_server = SimpleNamespace(session=None)
+    manager._sync_ipc = AsyncMock()
+    monkeypatch.setattr(manager, "_provider_modules", lambda _: (
+        SimpleNamespace(), FakeSession, lambda: "env-key",
+    ))
+
+    result = await manager.apply_provider("soniox", api_key="runtime-key", start_paused=True)
+
+    assert result["started"] is False
+    assert result["setup_required"] is False
+    assert manager.web_server.session.started is False
+    assert manager.web_server.session.is_paused is True
+    manager._sync_ipc.assert_awaited_once_with(False)

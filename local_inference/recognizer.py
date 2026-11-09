@@ -1,6 +1,6 @@
 """Streaming local Qwen3-ASR recognizer for RealtimeSubtitle.
 
-It keeps the proven 512-sample Silero VAD path, bounded audio queue, serialized inference, partial
+It keeps the proven 512-sample FireRed VAD path, bounded audio queue, serialized inference, partial
 refresh policy and final-result reuse, while exposing a small callback API that
 fits this application's Provider/AudioStreamer lifecycle.
 """
@@ -30,7 +30,7 @@ from .model_manager import (
     get_semantic_boundary_model_path,
     is_asr_cached,
     is_asr_models_ready,
-    is_silero_cached,
+    is_firered_vad_cached,
 )
 from .semantic_boundary import (
     BoundaryCommit,
@@ -196,8 +196,8 @@ class LocalQwenRecognizer:
             self._engine = engine
             return engine
         if not is_asr_cached("qwen3-asr"):
-            if not is_silero_cached():
-                raise RuntimeError("Silero VAD 文件缺失，安装可能不完整，请重新安装。")
+            if not is_firered_vad_cached():
+                raise RuntimeError("FireRed VAD 文件缺失，安装可能不完整，请重新安装。")
             issues = get_engine_runtime_issues("qwen3-asr")
             if is_asr_models_ready("qwen3-asr") and issues:
                 raise RuntimeError(

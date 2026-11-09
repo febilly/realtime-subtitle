@@ -37,8 +37,10 @@ LEGACY_QWEN3_ASR_FILES = (
 )
 LEGACY_RUNTIME_DIR_NAME = "qwen_llama_vulkan_bin"
 LEGACY_ARCHIVE_PATTERNS = ("qwen3-asr-1.7b-gguf.zip*", "llama-cpp-vulkan-*.zip*")
-SILERO_VAD_DIR_NAME = "silero_vad"
-SILERO_VAD_ONNX_NAME = "silero_vad_16k_op15.onnx"
+FIRERED_VAD_DIR_NAME = "firered_vad"
+FIRERED_VAD_MODEL_DIR_NAME = "Stream-VAD"
+FIRERED_VAD_ONNX_NAME = "fireredvad_stream_vad_with_cache.onnx"
+FIRERED_VAD_CMVN_NAME = "cmvn.ark"
 HYMT2_DIR_NAME = "hymt2"
 NEMOTRON_BOUNDARY_DIR_NAME = (
     "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
@@ -267,17 +269,28 @@ def get_semantic_boundary_model_path(explicit: str | None = None) -> Path | None
     return None
 
 
-def _silero_ready(path: Path) -> bool:
+def _firered_file_ready(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 100_000
 
 
-def silero_onnx_path() -> Path:
-    # Shipped with the app (1.3 MB): local ASR and silence sleep both use it.
-    return PACKAGE_DIR / "models" / SILERO_VAD_DIR_NAME / SILERO_VAD_ONNX_NAME
+def firered_vad_model_dir() -> Path:
+    # Shipped with the app (~2.3 MB): local ASR and silence sleep both use it.
+    return PACKAGE_DIR / "models" / FIRERED_VAD_DIR_NAME / FIRERED_VAD_MODEL_DIR_NAME
 
 
-def is_silero_cached() -> bool:
-    return _silero_ready(silero_onnx_path())
+def firered_vad_onnx_path() -> Path:
+    return firered_vad_model_dir() / FIRERED_VAD_ONNX_NAME
+
+
+def firered_vad_cmvn_path() -> Path:
+    return firered_vad_model_dir() / FIRERED_VAD_CMVN_NAME
+
+
+def is_firered_vad_cached() -> bool:
+    return (
+        _firered_file_ready(firered_vad_onnx_path())
+        and firered_vad_cmvn_path().is_file()
+    )
 
 
 def is_qwen3_asr_ready() -> bool:
@@ -291,7 +304,7 @@ def is_asr_models_ready(engine: str) -> bool:
 def is_asr_cached(engine: str) -> bool:
     return (
         engine == "qwen3-asr"
-        and is_silero_cached()
+        and is_firered_vad_cached()
         and is_qwen3_asr_ready()
         and not get_engine_runtime_issues(engine)
     )
@@ -722,8 +735,8 @@ def get_engine_status(engine: str) -> dict:
         "model_path": model_path,
         "runtime_ready": _runtime_ready(runtime_path),
         "runtime_path": str(runtime_path),
-        "vad_ready": is_silero_cached(),
-        "vad_path": str(silero_onnx_path()),
+        "vad_ready": is_firered_vad_cached(),
+        "vad_path": str(firered_vad_onnx_path()),
         "runtime_issues": get_engine_runtime_issues(engine),
         "estimated_bytes": _MODEL_SIZE_BYTES[engine],
         "estimated_vram_bytes": _MODEL_VRAM_BYTES[engine],

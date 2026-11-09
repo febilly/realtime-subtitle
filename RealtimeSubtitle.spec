@@ -13,11 +13,12 @@ from PyInstaller.utils.win32.versioninfo import (
     VSVersionInfo,
 )
 
-datas = [('static', 'static'), ('resources', 'resources'), ('ACKNOWLEDGMENTS.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.'),
+datas = [('static', 'static'), ('resources', 'resources'), ('licenses', 'licenses'), ('ACKNOWLEDGMENTS.md', '.'), ('THIRD_PARTY_NOTICES.md', '.'), ('LICENSE', '.'),
     # Vendored llama.cpp ctypes bindings (qwen_asr_gguf/inference/llama.py), kept as files.
     ('local_inference/vendor/qwen_asr_gguf', 'local_inference/vendor/qwen_asr_gguf'),
-    # Silero VAD (1.3 MB): silence sleep, stream rollover and local ASR segmentation.
-    ('local_inference/models/silero_vad', 'local_inference/models/silero_vad'),
+    # FireRed VAD streaming ONNX (~2.3 MB): silence sleep, stream rollover and
+    # local ASR segmentation.
+    ('local_inference/models/firered_vad', 'local_inference/models/firered_vad'),
 ]
 binaries = []
 # hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dotenv', 'locale', 'pythonosc', 'streamlink', 'webview']
@@ -32,7 +33,9 @@ hiddenimports = ['websockets.sync.client', 'aiohttp', 'soundcard', 'numpy', 'dot
                  'local_inference.gpu_devices', 'local_inference.spec_decode',
                  'local_inference.semantic_boundary', 'local_inference.boundary_scout',
                  'streaming_translation.api.hymt2',
-                 'onnxruntime', 'gguf', 'gguf.constants',
+                 'onnxruntime', 'kaldi_native_fbank',
+                 'kaldi_native_fbank.lib._kaldi_native_fbank',
+                 'gguf', 'gguf.constants',
                  'soniox_key_setup', 'gemini_key_setup',
                  'overlay_window', 'win_overlay_native', 'vr_overlay', 'openvr']
 tmp_ret = collect_all('soundcard')

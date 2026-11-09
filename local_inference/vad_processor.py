@@ -5,15 +5,55 @@ import logging
 import math
 import numpy as np
 
-from .model_manager import apply_cache_env, silero_onnx_path
+from .model_manager import firered_vad_cmvn_path, firered_vad_onnx_path
 
 logger = logging.getLogger(__name__)
 
+# Official FireRedVAD streaming ONNX export (Stream-VAD).
+_FIRERED_SAMPLE_RATE = 16000
+_FIRERED_FEATURE_DIM = 80
+_FIRERED_NUM_CACHES = 8
+_FIRERED_CACHE_DIM = 128
+_FIRERED_CACHE_LENGTH = 19
 
-class SileroOnnxVAD:
-    """Silero VAD via `silero_vad_16k_op15.onnx` (no PyTorch)."""
 
-    def __init__(self, model_path: str) -> None:
+def _load_kaldi_cmvn(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Read the Kaldi binary CMVN matrix shipped with FireRedVAD."""
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if len(data) < 15 or data[:2] != b"\x00B" or data[2:5] not in (b"DM ", b"FM "):
+        raise ValueError(f"Unsupported Kaldi CMVN file: {path}")
+
+    dtype = np.dtype("<f8") if data[2:5] == b"DM " else np.dtype("<f4")
+    offset = 5
+    dimensions = []
+    for _ in range(2):
+        if data[offset] in (0x20, 0x04):
+            offset += 1
+        dimensions.append(int.from_bytes(data[offset : offset + 4], "little", signed=True))
+        offset += 4
+    rows, columns = dimensions
+    stats = np.frombuffer(data, dtype=dtype, count=rows * columns, offset=offset)
+    stats = stats.reshape(rows, columns).astype(np.float64, copy=False)
+
+    count = max(1.0, float(stats[0, -1]))
+    means = stats[0, :-1] / count
+    variance = stats[1, :-1] / count - means * means
+    inverse_std = 1.0 / np.sqrt(np.maximum(variance, 1e-20))
+    return means.astype(np.float32), inverse_std.astype(np.float32)
+
+
+class FireRedStreamVAD:
+    """FireRedVAD streaming VAD via the official ONNX model (no PyTorch).
+
+    The model consumes 10 ms Kaldi fbank frames (25 ms window, 80 mel bins)
+    and keeps eight DFSMN cache tensors between calls.  Audio is accepted as
+    normalized float32 PCM in [-1, 1]; Kaldi fbank expects int16-scale values,
+    so the samples are scaled before feature extraction.
+    """
+
+    def __init__(self, model_path: str, cmvn_path: str) -> None:
+        import kaldi_native_fbank as knf
         import onnxruntime as ort
 
         opts = ort.SessionOptions()
@@ -24,53 +64,69 @@ class SileroOnnxVAD:
             providers=["CPUExecutionProvider"],
             sess_options=opts,
         )
+        self._means, self._inverse_std = _load_kaldi_cmvn(cmvn_path)
+        self._knf = knf
+        options = knf.FbankOptions()
+        options.frame_opts.samp_freq = _FIRERED_SAMPLE_RATE
+        options.frame_opts.frame_length_ms = 25
+        options.frame_opts.frame_shift_ms = 10
+        options.frame_opts.dither = 0
+        options.frame_opts.snip_edges = True
+        options.mel_opts.num_bins = _FIRERED_FEATURE_DIM
+        options.mel_opts.debug_mel = False
+        self._fbank_options = options
         self.reset_states()
 
-    def reset_states(self, batch_size: int = 1) -> None:
-        self._state = np.zeros((2, batch_size, 128), dtype=np.float32)
-        self._context: np.ndarray | None = None
-        self._last_sr = 0
-        self._last_batch_size = 0
+    def reset_states(self) -> None:
+        self._fbank = self._knf.OnlineFbank(self._fbank_options)
+        self._frames_read = 0
+        self._caches = np.zeros(
+            (
+                _FIRERED_NUM_CACHES,
+                1,
+                _FIRERED_CACHE_DIM,
+                _FIRERED_CACHE_LENGTH,
+            ),
+            dtype=np.float32,
+        )
+        self.last_probability = 0.0
+        self.last_frame_probabilities = np.zeros(0, dtype=np.float32)
 
     def probability(self, audio_chunk: np.ndarray, sample_rate: int) -> float:
-        batch_size = 1
-        num_samples = 512 if sample_rate == 16000 else 256
-        context_size = 64 if sample_rate == 16000 else 32
+        if int(sample_rate) != _FIRERED_SAMPLE_RATE:
+            raise ValueError(
+                f"FireRed VAD expects 16 kHz audio, got {sample_rate}"
+            )
 
-        x = np.asarray(audio_chunk, dtype=np.float32)
-        if x.ndim == 1:
-            x = x.reshape(1, -1)
-        if x.shape[0] != batch_size:
-            raise ValueError("Silero ONNX path supports batch size 1 only")
+        audio = np.asarray(audio_chunk, dtype=np.float32).reshape(-1)
+        if audio.size == 0:
+            return self.last_probability
 
-        if x.shape[1] < num_samples:
-            x = np.pad(x, ((0, 0), (0, num_samples - x.shape[1])))
-        elif x.shape[1] > num_samples:
-            x = x[:, :num_samples]
+        pcm = np.clip(audio, -1.0, 1.0) * 32768.0
+        self._fbank.accept_waveform(int(sample_rate), pcm)
 
-        if self._last_batch_size and self._last_batch_size != batch_size:
-            self.reset_states(batch_size)
-        if self._last_sr and self._last_sr != sample_rate:
-            self.reset_states(batch_size)
+        features = []
+        while self._frames_read < self._fbank.num_frames_ready:
+            feature = np.asarray(self._fbank.get_frame(self._frames_read), dtype=np.float32)
+            self._frames_read += 1
+            features.append((feature - self._means) * self._inverse_std)
+        if not features:
+            return self.last_probability
 
-        if self._context is None or self._context.shape != (batch_size, context_size):
-            self._context = np.zeros((batch_size, context_size), dtype=np.float32)
-
-        inp = np.concatenate([self._context, x], axis=1)
-        ort_inputs = {
-            "input": inp.astype(np.float32, copy=False),
-            "state": self._state,
-            "sr": np.array(sample_rate, dtype=np.int64),
-        }
-        prob_arr, self._state = self._session.run(None, ort_inputs)
-        self._context = inp[..., -context_size:]
-        self._last_sr = sample_rate
-        self._last_batch_size = batch_size
-        return float(prob_arr.reshape(-1)[0])
+        batch = np.stack(features, axis=0)[None, ...].astype(np.float32, copy=False)
+        probs, caches = self._session.run(
+            None,
+            {"feat": batch, "caches_in": self._caches},
+        )
+        self._caches = np.ascontiguousarray(caches, dtype=np.float32)
+        values = np.asarray(probs, dtype=np.float32).reshape(-1)
+        self.last_frame_probabilities = values
+        self.last_probability = float(values.mean())
+        return self.last_probability
 
 
 class VADProcessor:
-    """Voice activity detection with Silero (ONNX), energy, or disabled mode."""
+    """Voice activity detection with FireRed VAD (ONNX), energy, or disabled mode."""
 
     def __init__(
         self,
@@ -85,10 +141,9 @@ class VADProcessor:
         self.energy_threshold = 0.02
         self.min_speech_samples = int(min_speech_duration * sample_rate)
         self._chunk_duration = chunk_duration
-        self.mode = "silero"
+        self.mode = "firered"
 
-        apply_cache_env()
-        self._silero: SileroOnnxVAD | None = None
+        self._firered: FireRedStreamVAD | None = None
 
         self._speech_buffer: list[np.ndarray] = []
         self._confidence_history: list[float] = []
@@ -104,14 +159,17 @@ class VADProcessor:
         self._silence_limit = self._seconds_to_chunks(0.8)
         self.last_confidence = 0.0
 
-    def _ensure_silero(self) -> SileroOnnxVAD:
-        if self._silero is not None:
-            return self._silero
-        path = silero_onnx_path()
-        if not path.is_file():
-            raise FileNotFoundError(f"Silero VAD ONNX 未找到: {path}（随程序附带，安装可能不完整）")
-        self._silero = SileroOnnxVAD(str(path))
-        return self._silero
+    def _ensure_firered(self) -> FireRedStreamVAD:
+        if self._firered is not None:
+            return self._firered
+        model_path = firered_vad_onnx_path()
+        cmvn_path = firered_vad_cmvn_path()
+        if not model_path.is_file() or not cmvn_path.is_file():
+            raise FileNotFoundError(
+                f"FireRed VAD 模型未找到: {model_path}（随程序附带，安装可能不完整）"
+            )
+        self._firered = FireRedStreamVAD(str(model_path), str(cmvn_path))
+        return self._firered
 
     def _seconds_to_chunks(self, seconds: float) -> int:
         return max(1, round(seconds / self._chunk_duration))
@@ -137,7 +195,12 @@ class VADProcessor:
 
     def update_settings(self, settings: dict) -> None:
         if "vad_mode" in settings:
-            self.mode = settings["vad_mode"]
+            mode = str(settings["vad_mode"] or "").strip().lower()
+            if mode not in ("firered", "energy", "disabled"):
+                if mode:
+                    logger.warning("Unsupported VAD mode %r, using firered", mode)
+                mode = "firered"
+            self.mode = mode
         if "vad_threshold" in settings:
             self.threshold = settings["vad_threshold"]
         if "energy_threshold" in settings:
@@ -149,20 +212,17 @@ class VADProcessor:
         if "pre_speech_duration" in settings:
             self._update_pre_speech_chunks(float(settings["pre_speech_duration"]))
 
-    def _silero_confidence(self, audio_chunk: np.ndarray) -> float:
-        window_size = 512 if self.sample_rate == 16000 else 256
-        chunk = audio_chunk[:window_size]
-        if len(chunk) < window_size:
-            chunk = np.pad(chunk, (0, window_size - len(chunk)))
-        return self._ensure_silero().probability(chunk.astype(np.float32, copy=False), self.sample_rate)
+    def _firered_confidence(self, audio_chunk: np.ndarray) -> float:
+        chunk = np.asarray(audio_chunk, dtype=np.float32).reshape(-1)
+        return self._ensure_firered().probability(chunk, self.sample_rate)
 
     def _energy_confidence(self, audio_chunk: np.ndarray) -> float:
         rms = float(np.sqrt(np.mean(audio_chunk**2)))
         return min(1.0, rms / (self.energy_threshold * 2))
 
     def _get_confidence(self, audio_chunk: np.ndarray) -> float:
-        if self.mode == "silero":
-            return self._silero_confidence(audio_chunk)
+        if self.mode == "firered":
+            return self._firered_confidence(audio_chunk)
         if self.mode == "energy":
             return self._energy_confidence(audio_chunk)
         return 1.0
@@ -171,7 +231,7 @@ class VADProcessor:
         confidence = self._get_confidence(audio_chunk)
         self.last_confidence = confidence
 
-        effective_threshold = self.threshold if self.mode == "silero" else 0.5
+        effective_threshold = self.threshold if self.mode == "firered" else 0.5
 
         if confidence >= effective_threshold:
             if not self._is_speaking:
@@ -267,7 +327,7 @@ class VADProcessor:
         self._speech_samples = sum(len(chunk) for chunk in new_buffer)
         self._is_speaking = bool(new_buffer)
         if self._is_speaking:
-            effective_threshold = self.threshold if self.mode == "silero" else 0.5
+            effective_threshold = self.threshold if self.mode == "firered" else 0.5
             trailing_silence = 0
             for confidence in reversed(new_confidences):
                 if confidence >= effective_threshold:
@@ -300,7 +360,7 @@ class VADProcessor:
         if not self._speech_buffer:
             return None
         if len(self._confidence_history) >= 4:
-            effective_threshold = self.threshold if self.mode == "silero" else 0.5
+            effective_threshold = self.threshold if self.mode == "firered" else 0.5
             voiced = sum(1 for confidence in self._confidence_history if confidence >= effective_threshold)
             density = voiced / len(self._confidence_history)
             if density < 0.25:
@@ -325,9 +385,9 @@ class VADProcessor:
     def reset(self) -> None:
         self._reset()
         self.last_confidence = 0.0
-        if self._silero is not None:
+        if self._firered is not None:
             try:
-                self._silero.reset_states()
+                self._firered.reset_states()
             except Exception:
                 pass
         self._pre_buffer.clear()

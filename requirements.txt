@@ -5,9 +5,10 @@ websockets
 soundcard
 numpy<2.0.0
 # On-device Qwen3-ASR + Hy-MT2 runtime (models are downloaded/installed separately).
-# Runs the bundled Silero VAD (CPU) for silence sleep and local ASR; Qwen3-ASR
-# runs entirely on llama.cpp.
+# Runs the bundled FireRed VAD (streaming ONNX) for silence sleep and local ASR;
+# kaldi-native-fbank is its Kaldi fbank frontend. Qwen3-ASR runs on llama.cpp.
 onnxruntime>=1.19.0
+kaldi-native-fbank==1.23.0
 gguf>=0.18.0
 python-dotenv
 arabic-reshaper

@@ -52,7 +52,7 @@ Qwen 官方 streaming ASR 不直接返回 timestamp；官方的时间定位方�
 ## 运行时结构
 
 ```text
-16k PCM -> Silero VAD / live PCM buffer
+16k PCM -> FireRed VAD / live PCM buffer
                     |
                     +-> normal partial cadence -> existing subtitle/translation path
                     |

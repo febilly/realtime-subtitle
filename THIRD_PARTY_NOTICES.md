@@ -15,10 +15,13 @@ executable by PyInstaller) are listed with their licenses in
 | mecab-ipadic dictionary (prebuilt for kuromoji.js) | `static/kuromoji/dict/*.dat.gz` | 2.7.0-20070801, unmodified | IPADIC license (NAIST / ICOT) — [static/kuromoji/dict/LICENSE](static/kuromoji/dict/LICENSE) |
 | [Lucide](https://lucide.dev/) icons (subset of `lucide-static`) | `static/icons/lucide-sprite.svg` | 1.21.0 | ISC; Feather-derived icons also MIT — see below |
 | [libopus](https://opus-codec.org/) | `libopus/win64/opus.dll` | prebuilt Windows x64 DLL | BSD-3-Clause — see below |
+| [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) (code and model weights) | `local_inference/models/firered_vad`, `local_inference/vad_processor.py` | Stream-VAD ONNX export, unmodified | Apache-2.0 — `licenses/Apache-2.0.txt`, attribution in `licenses/THIRD_PARTY_VAD.md` |
+| [kaldi-native-fbank](https://github.com/csukuangfj/kaldi-native-fbank) | bundled Python extension | 1.23.0, unmodified | Apache-2.0 — `licenses/Apache-2.0.txt`, attribution in `licenses/THIRD_PARTY_VAD.md` |
+| [ONNX Runtime](https://github.com/microsoft/onnxruntime) | bundled Python package | 1.x | MIT — `licenses/MIT-ONNXRuntime.txt` |
 | llama.cpp ctypes bindings, from [Qwen3-ASR-GGUF](https://github.com/HaujetZhao/Qwen3-ASR-GGUF) via [Yakutan](https://github.com/KKTIME2024/Yakutan) | `local_inference/vendor/qwen_asr_gguf/inference/llama.py` | modified | Yakutan: MIT. The Qwen3-ASR-GGUF repository declares no license. |
 
 The full texts of the licenses that are not stored next to the component are
-reproduced below.
+kept in `licenses/` and, where applicable, reproduced below.
 
 ---
 

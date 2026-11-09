@@ -40,7 +40,7 @@
                     localConfig,
                     sleepOnSilence: state().sleepOnSilenceEnabled,
                 });
-                if (provider === 'local' && pushOptions.startPaused) body.start_paused = true;
+                if (pushOptions.startPaused) body.start_paused = true;
                 if (pushOptions.offlineMode) body.offline_mode = true;
                 if (pushOptions.startup) body.startup = true;
                 const response = await fetchRef('/setup', {
