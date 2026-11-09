@@ -1141,17 +1141,29 @@ class RealtimeSessionBase:
             pass
 
     def _on_hosted_llm_disabled(self, reason: str) -> None:
-        """Prepaid exhausted: drop to fast mode and tell the UI to lock there.
-        `needs_restart` is set when the provider's built-in translation must be
-        re-enabled."""
+        """Prepaid exhausted: disable LLM refinement and tell the UI where to land.
+
+        Accurate mode already runs without the provider's built-in translation,
+        so turning translation off needs no stream restart. Other modes return
+        to the provider's built-in fast translation, as before.
+        """
+        previous_mode = self.get_translation_mode()
+        if previous_mode == "off":
+            return
         self._llm_refine_mode = "off"
-        needs_restart = self._suppress_soniox_translation
-        self._suppress_soniox_translation = False
+        if previous_mode == "accurate" and self._suppress_soniox_translation:
+            fallback_mode = "off"
+            needs_restart = False
+        else:
+            fallback_mode = "fast"
+            needs_restart = self._suppress_soniox_translation
+            self._suppress_soniox_translation = False
         if not self.loop:
             return
         try:
             self.loop.create_task(self.broadcast_callback({
                 "type": "translation_mode_fallback",
+                "mode": fallback_mode,
                 "reason": str(reason or ""),
                 "needs_restart": bool(needs_restart),
             }))

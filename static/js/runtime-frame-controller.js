@@ -66,10 +66,15 @@
                 return true;
             }
             if (frame.type === 'translation_mode_fallback') {
-                call('setTranslationUiMode', 'fast', { restartIfNeeded: false });
+                const targetMode = frame.mode === 'off' ? 'off' : 'fast';
+                call('setTranslationUiMode', targetMode, { restartIfNeeded: false });
                 call('renderTranslationModePicker');
-                call('showToast', t('translation_mode_fallback_toast'), false);
-                if (frame.needs_restart) call('restartRecognition', { auto: true });
+                call('showToast', t(targetMode === 'off'
+                    ? 'translation_mode_fallback_off_toast'
+                    : 'translation_mode_fallback_toast'), false);
+                if (targetMode !== 'off' && frame.needs_restart) {
+                    call('restartRecognition', { auto: true });
+                }
                 return true;
             }
             if (frame.type === 'server_notice') {

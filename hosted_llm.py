@@ -37,7 +37,7 @@ class HostedLlmError(RuntimeError):
 
 
 class HostedLlmDisabled(HostedLlmError):
-    """The relay refused because prepaid balance is exhausted (fall back to fast)."""
+    """The relay refused because prepaid balance is exhausted (fall back to fast/off)."""
 
 
 # Reasons that must not be retried (retrying cannot help / would waste credits).

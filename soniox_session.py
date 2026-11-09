@@ -893,6 +893,7 @@ class SonioxSession(RealtimeSessionBase):
             "fast": ("off", False),
             "accurate": ("translate", True),
             "hybrid": ("refine", False),
+            "off": ("off", True),
         }
         if normalized not in mapping:
             return False, f"Invalid translation mode: {mode}", False
@@ -917,7 +918,7 @@ class SonioxSession(RealtimeSessionBase):
 
     def get_translation_mode(self) -> str:
         if self._suppress_soniox_translation:
-            return "accurate"
+            return "off" if self._llm_refine_mode == "off" else "accurate"
         if self._llm_refine_mode == "refine":
             return "hybrid"
         return "fast"

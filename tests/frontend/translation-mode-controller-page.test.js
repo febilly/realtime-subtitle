@@ -62,4 +62,28 @@ describe('full-page translation mode controller wiring', () => {
             page.close();
         }
     });
+
+    it('routes an accurate quota fallback to off without restarting recognition', async () => {
+        const page = await createPageHarness({ translationUiMode: 'accurate' });
+        try {
+            const before = page.fetchCalls.length;
+            await page.emitFrame({
+                type: 'translation_mode_fallback',
+                mode: 'off',
+                needs_restart: true,
+            });
+            await page.flush(4);
+
+            const fallbackCalls = page.fetchCalls.slice(before);
+            expect(fallbackCalls.some(([url, options]) => (
+                pathOf(url) === '/translation-mode'
+                && options
+                && JSON.parse(options.body).mode === 'off'
+            ))).toBe(true);
+            expect(page.window.localStorage.getItem('translationUiMode')).toBe('off');
+            expect(fallbackCalls.map(([url]) => pathOf(url))).not.toContain('/restart');
+        } finally {
+            page.close();
+        }
+    });
 });

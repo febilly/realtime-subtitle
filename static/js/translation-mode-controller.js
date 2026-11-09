@@ -164,10 +164,11 @@
             const local = data.provider === 'local';
             const waitingForHosted = !data.offline_mode && data.hosted_reachable === false
                 && getRuntimeState().connectionMode !== 'direct';
+            const backendOff = !data.offline_mode && data.translation_ui_mode === 'off';
             translationUiMode = normalizeTranslationUiMode(data.offline_mode
                 ? data.translation_ui_mode
-                : (settingsStore.readTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE));
-            if (!local && translationUiMode === 'off') translationUiMode = 'fast';
+                : (backendOff ? 'off' : (settingsStore.readTranslationUiMode() || DEFAULT_TRANSLATION_UI_MODE)));
+            if (!local && translationUiMode === 'off' && !backendOff) translationUiMode = 'fast';
             if (local && !llmRefineAvailable && !waitingForHosted && !['fast', 'off'].includes(translationUiMode)) translationUiMode = 'fast';
             renderTranslationModePicker();
 

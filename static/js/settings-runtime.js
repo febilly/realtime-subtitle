@@ -183,13 +183,14 @@
         }
 
         function getTranslationModes() {
-            const configured = state().translationUiModes;
+            const current = state();
+            const configured = current.translationUiModes;
             const modes = Array.isArray(configured) && configured.length
                 ? configured.filter((mode) => TRANSLATION_UI_MODES.includes(mode))
                 : [...TRANSLATION_UI_MODES];
             return modes.filter((mode) => selectedProvider() === 'local'
-                ? (state().llmRefineAvailable || ['fast', 'off'].includes(mode))
-                : mode !== 'off');
+                ? (current.llmRefineAvailable || ['fast', 'off'].includes(mode))
+                : (mode !== 'off' || current.translationUiMode === 'off'));
         }
 
         function getSegmentModes() {

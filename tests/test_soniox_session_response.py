@@ -1494,6 +1494,34 @@ def test_accurate_translation_mode_forces_punctuation_segmentation(monkeypatch):
     assert session.get_segment_mode() == "translation"
 
 
+def test_accurate_quota_exhaustion_turns_translation_off_without_restart(monkeypatch):
+    _install_soniox_session_import_mocks(monkeypatch)
+    import soniox_session as module
+
+    session = module.SonioxSession(MagicMock(), MagicMock())
+    assert session.set_translation_mode("accurate") == (True, "accurate", True)
+    session.loop = MagicMock()
+
+    session._on_hosted_llm_disabled("insufficient_prepaid")
+
+    assert session.get_translation_mode() == "off"
+    assert session.get_llm_refine_mode() == "off"
+    assert session._suppress_soniox_translation is True
+    frame = session.broadcast_callback.call_args[0][0]
+    assert frame == {
+        "type": "translation_mode_fallback",
+        "mode": "off",
+        "reason": "insufficient_prepaid",
+        "needs_restart": False,
+    }
+    # The frontend replays the fallback through /translation-mode. Off must be
+    # accepted without reopening the Soniox stream from accurate mode.
+    assert session.set_translation_mode("off") == (True, "off", False)
+    session.broadcast_callback.reset_mock()
+    session._on_hosted_llm_disabled("insufficient_prepaid")
+    session.broadcast_callback.assert_not_called()
+
+
 def test_outgoing_final_tokens_carry_llm_sentence_id_in_punctuation_mode(monkeypatch):
     """Regression: in interleaved punctuation mode the outgoing token copies are
     minified before finalization runs, so the sentence id must be assigned when

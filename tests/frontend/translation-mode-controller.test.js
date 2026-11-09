@@ -179,6 +179,22 @@ describe('TranslationModeController backend synchronization', () => {
         page.runtime.offlineTranslationAvailable = false;
         expect(page.controller.getAvailableTranslationModes()).toEqual(['off']);
     });
+    it('preserves a server-reported off mode for a non-local provider', async () => {
+        const page = createHarness({ storedUiMode: 'off' });
+
+        await page.controller.applyBackendConfig({
+            provider: 'soniox',
+            translation_ui_mode: 'off',
+            llm_refine_available: true,
+        });
+
+        expect(page.controller.getTranslationUiMode()).toBe('off');
+        expect(page.fetch).toHaveBeenCalledWith('/translation-mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'off' }),
+        });
+    });
     it('disables runtime LLM state without overwriting a saved preference', () => {
         const page = createHarness({ storedUiMode: 'accurate' });
 

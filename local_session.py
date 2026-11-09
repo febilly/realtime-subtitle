@@ -188,10 +188,16 @@ class LocalInferenceSession(SonioxSession):
     def _on_hosted_llm_disabled(self, reason: str) -> None:
         if self._translation_disabled:
             return
-        # Falling back to 快速 means Hy-MT2 again; it loads in place, so the
-        # UI must not be told to restart (that would reload the ASR model).
-        self._suppress_soniox_translation = False
+        was_accurate = self.get_translation_mode() == "accurate"
+        if not was_accurate:
+            # Falling back to 快速 means Hy-MT2 again; it loads in place, so the
+            # UI must not be told to restart (that would reload the ASR model).
+            self._suppress_soniox_translation = False
         super()._on_hosted_llm_disabled(reason)
+        if was_accurate:
+            # Accurate has no provider translation to fall back to. Disable
+            # translation in place instead of loading Hy-MT2.
+            self._translation_disabled = True
         self._apply_machine_translation()
 
     def _broadcast_local_error(self, error: Exception | str) -> None:

@@ -193,6 +193,24 @@ describe('RuntimeFrameController direct runtime delegation', () => {
         expect(noRestart.actions.restartRecognition).not.toHaveBeenCalled();
     });
 
+    it('switches accurate quota exhaustion to off without restarting recognition', () => {
+        const page = createHarness();
+
+        expect(page.controller.handle({
+            type: 'translation_mode_fallback',
+            mode: 'off',
+            needs_restart: true,
+        })).toBe(true);
+
+        expect(page.actions.setTranslationUiMode).toHaveBeenCalledWith(
+            'off', { restartIfNeeded: false },
+        );
+        expect(page.actions.showToast).toHaveBeenCalledWith(
+            'label:translation_mode_fallback_off_toast', false,
+        );
+        expect(page.actions.restartRecognition).not.toHaveBeenCalled();
+    });
+
     it('forwards segment and speaker label frames to their state owners', () => {
         const page = createHarness();
         const segmentFrame = { type: 'segment_mode_changed', mode: 'endpoint' };

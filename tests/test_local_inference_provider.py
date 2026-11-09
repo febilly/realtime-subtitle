@@ -979,12 +979,44 @@ def test_hosted_mode_opens_the_relay_link_and_routes_llm_frames_through_it(monke
         session._hosted_llm_send("frame")
 
 
-def test_prepaid_exhaustion_falls_back_to_hymt2_without_a_restart(monkeypatch):
+def test_accurate_prepaid_exhaustion_turns_translation_off_without_loading_hymt2(monkeypatch):
     session = _running_local_session("accurate")
     monkeypatch.setattr(session, "_load_machine_translation", Mock())
     session.loop = Mock()
     session._on_hosted_llm_disabled("insufficient_prepaid")
-    assert session.get_translation_mode() == "fast"
-    session._subtitle_pipeline.set_machine_translation.assert_called_with(True)
+    assert session.get_translation_mode() == "off"
+    assert session._translation_disabled is True
+    session._subtitle_pipeline.set_machine_translation.assert_called_with(False)
+    session._load_machine_translation.assert_not_called()
     frame = session.broadcast_callback.call_args[0][0]
-    assert frame == {"type": "translation_mode_fallback", "reason": "insufficient_prepaid", "needs_restart": False}
+    assert frame == {
+        "type": "translation_mode_fallback",
+        "mode": "off",
+        "reason": "insufficient_prepaid",
+        "needs_restart": False,
+    }
+
+
+def test_hybrid_prepaid_exhaustion_falls_back_to_hymt2_without_a_restart(monkeypatch):
+    session = _session()
+    session.translation = "one_way"
+    session._local_stop_event = threading.Event()
+    session._subtitle_pipeline = Mock()
+    session._translator = Mock()
+    monkeypatch.setattr(session, "_load_machine_translation", Mock())
+    assert session.set_translation_mode("hybrid") == (True, "hybrid", False)
+    session.loop = Mock()
+
+    session._on_hosted_llm_disabled("insufficient_prepaid")
+
+    assert session.get_translation_mode() == "fast"
+    assert session._translation_disabled is False
+    session._subtitle_pipeline.set_machine_translation.assert_called_with(True)
+    session._load_machine_translation.assert_not_called()
+    frame = session.broadcast_callback.call_args[0][0]
+    assert frame == {
+        "type": "translation_mode_fallback",
+        "mode": "fast",
+        "reason": "insufficient_prepaid",
+        "needs_restart": False,
+    }

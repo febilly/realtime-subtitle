@@ -101,7 +101,7 @@ describe('hosted notification flows', () => {
             expect(page.window.localStorage.getItem('translationUiMode')).toBe('fast');
 
             const toast = page.document.getElementById('toast');
-            expect(toast.textContent).toContain('Prepaid quota is insufficient');
+            expect(toast.textContent).toContain('Insufficient balance');
             expect(toast.querySelector('.toast').classList.contains('error')).toBe(false);
             expect(page.document.getElementById('settingsOverlay').hidden).toBe(true);
             expect(page.document.getElementById('settingsModeBackButton').hidden).toBe(true);

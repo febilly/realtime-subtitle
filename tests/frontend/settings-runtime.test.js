@@ -213,6 +213,20 @@ describe('SettingsRuntime picker state', () => {
         page.dom.window.close();
     });
 
+    it('shows off as selectable after the backend automatically turns translation off', () => {
+        const page = setup({
+            state: {
+                selectedProvider: 'soniox',
+                translationUiMode: 'off',
+                translationUiModes: ['fast', 'accurate', 'hybrid', 'off'],
+            },
+        });
+        const picker = page.controller.renderTranslationModePicker();
+        expect(picker.options.map((option) => option.value)).toContain('off');
+        expect(picker.value).toBe('off');
+        page.dom.window.close();
+    });
+
     it('declining the Hy-MT2 download never falls back to another mode that needs it', async () => {
         for (const [llm, expected] of [[true, 'accurate'], [false, 'off']]) {
             const confirmLocalTranslationModel = vi.fn().mockResolvedValue(false);
