@@ -257,11 +257,15 @@
             });
         }
 
-        // Before switching the provider to local. Resolves
+        // Before switching the provider to local, and when restoring local
+        // mode at startup (startup: only fully downloaded models count as
+        // ready). Resolves
         //   { ok: false }                          cancelled / failed: keep the old provider
         //   { ok: true, skippedTranslation: bool } switch; skippedTranslation means
         //                                          Hy-MT2 is still missing by choice
-        async function confirmLocalProvider({ llmAvailable, needsTranslation } = {}) {
+        async function confirmLocalProvider({
+            llmAvailable, needsTranslation, startup = false,
+        } = {}) {
             let status;
             try {
                 status = await fetchStatus();
@@ -270,7 +274,10 @@
             }
             const { asr, mt } = modelInfo(status);
             const asrMissing = !asr.ready;
-            const mtMissing = !mt.model_ready && needsTranslation !== false;
+            const mtMissing = startup
+                ? needsTranslation !== false && !mt.ready
+                : !mt.model_ready && needsTranslation !== false;
+            const missing = asrMissing && mtMissing ? 'both' : (asrMissing ? 'qwen3-asr' : 'hymt2');
             if (!asrMissing && !mtMissing) return { ok: true, skippedTranslation: false };
 
             const view = open(asrMissing ? t('local_dialog_title') : t('local_dialog_mt_title'));
@@ -302,62 +309,18 @@
             });
             if (choice === null) {
                 close();
-                return { ok: false };
+                return startup ? { ok: false, missing } : { ok: false };
             }
             const finished = choice.length ? await runDownloads(view, choice) : true;
             close();
-            if (!finished) return { ok: false };
+            if (!finished) return startup ? { ok: false, missing } : { ok: false };
             return { ok: true, skippedTranslation: mtMissing && !choice.includes('hymt2') };
         }
 
-        // Restoring local mode at startup: every missing model gets its own
-        // prompt, and cancelling any one of them abandons local mode.
-        async function confirmStartupModel(status, { component, title, model }) {
-            const view = open(title);
-            view.body.replaceChildren(
-                element('p', 'confirm-message', t('local_startup_download_required')),
-                modelRow(
-                    t(component === 'qwen3-asr' ? 'local_dialog_asr_name' : 'local_dialog_mt_name'),
-                    model,
-                ),
-                ...resourceWarnings(status, Number(model.estimated_bytes) || 0),
-            );
-            const confirmed = await new Promise((resolve) => {
-                view.actions.replaceChildren(
-                    button(t('local_dialog_cancel'), 'secondary-button', () => resolve(false)),
-                    button(t('local_dialog_download'), 'primary-button', () => resolve(true)),
-                );
-            });
-            if (!confirmed) {
-                close();
-                return false;
-            }
-            const finished = await runDownloads(view, [component]);
-            close();
-            return finished;
-        }
-
-        async function confirmStartupModels({ needsTranslation = true } = {}) {
-            let status;
-            try {
-                status = await fetchStatus();
-            } catch (error) {
-                // A status failure must not block the normal startup path.
-                return { ok: true, statusUnavailable: true };
-            }
-            const { asr, mt } = modelInfo(status);
-            const missing = [];
-            if (!asr.ready) {
-                missing.push({ component: 'qwen3-asr', title: t('local_dialog_title'), model: asr });
-            }
-            if (needsTranslation && !mt.ready) {
-                missing.push({ component: 'hymt2', title: t('local_dialog_mt_title'), model: mt });
-            }
-            for (const requirement of missing) {
-                const ok = await confirmStartupModel(status, requirement);
-                if (!ok) return { ok: false, missing: requirement.component };
-            }
-            return { ok: true };
+        // Restoring local mode at startup reuses the same model dialog as a
+        // switch to local. Picking ASR only leaves translation off.
+        function confirmStartupModels({ needsTranslation = true } = {}) {
+            return confirmLocalProvider({ needsTranslation, startup: true });
         }
 
         // Before selecting 快速 / 混合 on the local provider. Resolves true when

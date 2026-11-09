@@ -25,7 +25,12 @@ function missingModels() {
     };
 }
 
-it('returns to Soniox paused when startup local models are not downloaded', async () => {
+it.each([
+    { mode: 'off', buttonCount: 2, needsTranslationModel: false },
+    { mode: 'fast', buttonCount: 3, needsTranslationModel: true },
+])('returns to Soniox hybrid with settings open when startup local models are declined ($mode)', async ({
+    mode, buttonCount, needsTranslationModel,
+}) => {
     let provider = 'local';
     const setupBodies = [];
     const fetch = async (url, options = {}) => {
@@ -41,7 +46,7 @@ it('returns to Soniox paused when startup local models are not downloaded', asyn
             });
         }
         return defaultFetchResponse(url, {
-            translationUiMode: 'hybrid',
+            translationUiMode: mode,
             uiConfig: { provider, relay_available: false, lock_manual_controls: false },
         });
     };
@@ -49,7 +54,7 @@ it('returns to Soniox paused when startup local models are not downloaded', asyn
     const page = await createPageHarness({
         initialUiConfig: { provider: 'local' },
         uiConfig: { provider: 'local' },
-        translationUiMode: 'off',
+        translationUiMode: mode,
         localStorage: {
             'providerSettings.v1': JSON.stringify({
                 providerOverride: 'local',
@@ -66,9 +71,13 @@ it('returns to Soniox paused when startup local models are not downloaded', asyn
         });
         const firstDialogText = page.document.querySelector('.local-model-dialog').textContent;
         expect(firstDialogText).toContain('Qwen3-ASR');
-        expect(firstDialogText).not.toContain('Hy-MT2');
+        if (needsTranslationModel) {
+            expect(firstDialogText).toContain('Hy-MT2');
+        } else {
+            expect(firstDialogText).not.toContain('Hy-MT2');
+        }
         const dialogButtons = [...page.document.querySelectorAll('.local-model-dialog-actions button')];
-        expect(dialogButtons).toHaveLength(2);
+        expect(dialogButtons).toHaveLength(buttonCount);
         dialogButtons[0].click();
 
         await vi.waitFor(() => {
@@ -89,6 +98,69 @@ it('returns to Soniox paused when startup local models are not downloaded', asyn
             mode: 'hybrid', provider: 'soniox',
         });
         expect(page.window.localStorage.getItem('translationUiMode')).toBe('hybrid');
+        expect(page.fetchCalls.some(([url]) => String(url).endsWith('/resume'))).toBe(false);
+    } finally {
+        page.close();
+    }
+});
+
+it('downloads ASR only and turns translation off when restoring local mode', async () => {
+    let provider = 'local';
+    const setupBodies = [];
+    const fetch = async (url, options = {}) => {
+        const path = new URL(String(url), 'http://localhost/').pathname;
+        if (path === '/local-inference/status') return json(missingModels());
+        if (path === '/local-inference/download') return json({ status: 'ok' });
+        if (path === '/setup') {
+            const body = options.body ? JSON.parse(options.body) : {};
+            setupBodies.push(body);
+            provider = body.provider || provider;
+            return json({
+                status: 'ok', provider, boot_id: 'boot-local-asr-only',
+                setup_required: false, mode: body.mode || 'direct',
+            });
+        }
+        return defaultFetchResponse(url, {
+            translationUiMode: 'fast',
+            uiConfig: { provider, relay_available: false, lock_manual_controls: false },
+        });
+    };
+
+    const page = await createPageHarness({
+        initialUiConfig: { provider: 'local' },
+        uiConfig: { provider: 'local' },
+        translationUiMode: 'fast',
+        localStorage: {
+            'providerSettings.v1': JSON.stringify({
+                providerOverride: 'local',
+                localConfig: { backend: 'local' },
+                keys: {},
+            }),
+        },
+        fetch,
+    });
+
+    try {
+        await vi.waitFor(() => {
+            expect(page.document.querySelector('.local-model-dialog')).not.toBeNull();
+        });
+        const dialogButtons = [...page.document.querySelectorAll('.local-model-dialog-actions button')];
+        expect(dialogButtons).toHaveLength(3);
+        dialogButtons[1].click();
+
+        await vi.waitFor(() => {
+            const call = page.fetchCalls.find(([url, options]) => (
+                new URL(String(url), 'http://localhost/').pathname === '/translation-mode'
+                && options && options.body
+                && JSON.parse(options.body).mode === 'off'
+            ));
+            expect(call).toBeTruthy();
+        });
+        expect(setupBodies).toHaveLength(1);
+        expect(setupBodies[0]).toMatchObject({
+            provider: 'local', mode: 'direct', start_paused: true,
+        });
+        expect(page.window.localStorage.getItem('translationUiMode')).toBe('off');
         expect(page.fetchCalls.some(([url]) => String(url).endsWith('/resume'))).toBe(false);
     } finally {
         page.close();

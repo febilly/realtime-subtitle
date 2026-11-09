@@ -1532,13 +1532,13 @@ async function fallbackToSonioxAfterLocalStartupFailure() {
     saved.providerOverride = 'soniox';
     settingsPorts.saveProviderSettings(saved);
 
-    // Local "off" has no equivalent on the other providers; land on hybrid.
-    if (settingsStore.readTranslationUiMode() === 'off') {
-        await translationModeController.setTranslationUiMode('hybrid', {
-            restartIfNeeded: false,
-            provider: 'soniox',
-        });
-    }
+    // Local "off" has no equivalent on the other providers, and the other
+    // modes may depend on a model the user declined to download. Land on
+    // Soniox 混合 before the setup push and remember it for the rebuild.
+    await translationModeController.setTranslationUiMode('hybrid', {
+        restartIfNeeded: false,
+        provider: 'soniox',
+    });
 
     const mode = settingsPorts.getConnectionMode() === 'relay' ? 'relay' : 'direct';
     const serverSettings = settingsPorts.loadServerSettings();
@@ -1565,8 +1565,9 @@ async function fallbackToSonioxAfterLocalStartupFailure() {
 }
 
 // Startup restore: local mode must not silently proceed when its models are
-// gone. Each missing model gets its own prompt; cancelling or failing any
-// download returns to Soniox without starting recognition.
+// gone. One prompt covers whichever models are missing; ASR only turns
+// translation off, and cancelling or failing returns to Soniox without
+// starting recognition.
 async function ensureStartupLocalModels() {
     if (!shouldCheckStartupLocalModels()) return true;
 
@@ -1599,7 +1600,15 @@ async function ensureStartupLocalModels() {
             localConfig,
             startPaused: true,
         });
-        if (pushed.ok) return true;
+        if (pushed.ok) {
+            if (result.skippedTranslation) {
+                await translationModeController.setTranslationUiMode('off', {
+                    restartIfNeeded: false,
+                    provider: 'local',
+                });
+            }
+            return true;
+        }
     }
 
     await fallbackToSonioxAfterLocalStartupFailure();
