@@ -67,6 +67,19 @@ def test_get_api_key_fetches_temporary_key_with_headers(monkeypatch):
     response.raise_for_status.assert_called_once_with()
 
 
+def test_get_api_key_does_not_print_temporary_key(monkeypatch, capsys):
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.delenv("SONIOX_TEMP_KEY_HEADERS", raising=False)
+    response = MagicMock()
+    response.text = "temp-secret"
+    monkeypatch.setattr(soniox_client.requests, "get", MagicMock(return_value=response))
+
+    assert soniox_client.get_api_key() == "temp-secret"
+    captured = capsys.readouterr()
+    assert "temp-secret" not in captured.out
+    assert "temp-secret" not in captured.err
+
+
 def test_get_api_key_wraps_http_failure(monkeypatch):
     monkeypatch.delenv("SONIOX_API_KEY", raising=False)
     monkeypatch.delenv("SONIOX_TEMP_KEY_HEADERS", raising=False)

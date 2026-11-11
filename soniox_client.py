@@ -64,7 +64,6 @@ def get_api_key() -> str:
         
         if temp_key:
             print("✅ Successfully obtained temporary API Key")
-            print(f"   Key: {temp_key}")
             return temp_key
         else:
             raise RuntimeError("Temporary key response is empty")
