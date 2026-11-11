@@ -173,6 +173,7 @@ async def test_provider_switch_reapplies_ui_translation_mode(monkeypatch):
 @pytest.mark.parametrize("provider", ["soniox", "gemini", "local"])
 async def test_seed_start_defers_only_local_model_loading(monkeypatch, provider):
     monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    monkeypatch.setattr(sys.modules["config"], "RELAY_AVAILABLE", False)
     manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
     manager.provider = provider
     manager.loop = asyncio.get_running_loop()
@@ -199,6 +200,29 @@ async def test_seed_start_defers_only_local_model_loading(monkeypatch, provider)
         ) is True
         assert session.started is True
         assert session.start_args["api_key"] == "local-on-device"
+
+
+@pytest.mark.asyncio
+async def test_seed_start_waits_for_hosted_sign_in_before_fetching_temp_key(monkeypatch):
+    config = _get_real_config()
+    monkeypatch.setitem(sys.modules, "config", config)
+    monkeypatch.setattr(config, "RELAY_AVAILABLE", True)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
+    manager.provider = "soniox"
+    manager.relay_token = ""
+    manager.apply_provider = AsyncMock()
+
+    result = await manager.seed_start()
+
+    assert result == {
+        "started": False,
+        "setup_required": True,
+        "downgraded_two_way": False,
+        "error": None,
+    }
+    assert manager.setup_required is True
+    manager.apply_provider.assert_not_awaited()
 
 
 @pytest.mark.asyncio

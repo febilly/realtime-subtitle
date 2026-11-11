@@ -592,6 +592,41 @@ class ProviderManager:
 
     async def seed_start(self):
         """Start cloud providers; leave restored local recognition paused."""
+        if self.config.RELAY_AVAILABLE and self.provider != "local":
+            env_key = os.environ.get(
+                "GEMINI_API_KEY" if self.provider == "gemini" else "SONIOX_API_KEY",
+                "",
+            ).strip()
+            relay_token = str(self.relay_token or "").strip()
+            if relay_token:
+                result = await self.apply_provider(
+                    self.provider,
+                    mode="relay",
+                    relay_token=relay_token,
+                    start_paused=False,
+                )
+            elif not env_key:
+                # The hosted UI will restore the saved account or open login.
+                # Starting the temp-key direct fallback here would fetch a key,
+                # open an audio stream, and then be torn down moments later.
+                self.setup_required = True
+                print("ℹ️  Hosted account not loaded yet; waiting for the saved sign-in.")
+                return {
+                    "started": False,
+                    "setup_required": True,
+                    "downgraded_two_way": False,
+                    "error": None,
+                }
+            else:
+                result = await self.apply_provider(
+                    self.provider,
+                    use_env=True,
+                    start_paused=False,
+                )
+            if result["started"]:
+                print(f"✅ Session started with provider '{self.provider}'")
+            return result
+
         result = await self.apply_provider(
             self.provider, use_env=True, start_paused=self.provider == "local"
         )
