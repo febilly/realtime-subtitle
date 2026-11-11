@@ -85,6 +85,9 @@ class WebServer:
         self._ipc_polling_task = None
         # Lazy aiohttp client for proxying REST calls to the subtitle-server.
         self._http = None
+        self._public_settings_task = None
+        self._public_settings_result = None
+        self._public_settings_checked_at = 0.0
         self._ticket_notifications_task = None
         self._ticket_notifications_connected = False
         self._event_loop = None
@@ -521,9 +524,7 @@ class WebServer:
             payload["llm_refine_available"] = False
 
         if config.RELAY_AVAILABLE and not getattr(self, "offline_mode", False):
-            status, public_settings = await self._server_request(
-                "GET", "/public/settings", timeout=5
-            )
+            status, public_settings = await self._get_public_settings()
             payload["hosted_reachable"] = status == 200
             if status != 200:
                 from local_inference.model_manager import get_all_local_models_status
@@ -1118,6 +1119,45 @@ class WebServer:
     def _relay_token(self):
         manager = self.provider_manager
         return (manager.relay_token if manager else "") or ""
+
+    async def _fetch_public_settings(self):
+        status, data = await self._server_request(
+            "GET", "/public/settings", timeout=5
+        )
+        self._public_settings_result = (status, data)
+        self._public_settings_checked_at = time.monotonic()
+        return status, data
+
+    def _schedule_public_settings_refresh(self):
+        if not config.RELAY_AVAILABLE:
+            return None
+        task = getattr(self, "_public_settings_task", None)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                self._fetch_public_settings(),
+                name="hosted-public-settings",
+            )
+            self._public_settings_task = task
+        return task
+
+    async def _get_public_settings(self):
+        """Return hosted public settings, deduplicating startup requests.
+
+        The app startup hook starts this fetch while the WebView is still
+        loading, so the first /ui-config normally consumes an already-finished
+        request instead of starting a fresh network round trip on the UI path.
+        """
+        result = getattr(self, "_public_settings_result", None)
+        checked_at = getattr(self, "_public_settings_checked_at", 0.0)
+        if (
+            result is not None
+            and time.monotonic() - checked_at < 60
+        ):
+            return result
+        task = self._schedule_public_settings_refresh()
+        if task is None:
+            return 503, {"detail": "Subtitle server not configured"}
+        return await task
 
     async def account_login_code_handler(self, request):
         """Redeem a one-time login code generated on the user web page. On
@@ -2740,6 +2780,20 @@ class WebServer:
         """创建aiohttp应用"""
         app = web.Application(middlewares=[cache_bypass_middleware])
 
+        async def _prefetch_hosted_settings(app_instance):
+            self._schedule_public_settings_refresh()
+
+        async def _cleanup_hosted_settings(app_instance):
+            task = getattr(self, "_public_settings_task", None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        app.on_startup.append(_prefetch_hosted_settings)
+        app.on_cleanup.append(_cleanup_hosted_settings)
         app.on_startup.append(self._start_ipc_status_polling)
         app.on_cleanup.append(self._stop_ipc_status_polling)
         app.on_startup.append(self._start_osc_sensitive_filter_notifications)

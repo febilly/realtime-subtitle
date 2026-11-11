@@ -190,3 +190,25 @@ def test_ui_config_reports_cached_models_and_skips_hosted_calls_offline(server, 
         assert data["llm_refine_available"] is False
     else:
         assert data["hosted_reachable"] is False
+
+
+def test_public_settings_startup_fetch_is_deduplicated_and_cached(server, monkeypatch):
+    instance, module = server
+    monkeypatch.setattr(module.config, "RELAY_AVAILABLE", True)
+    instance._server_request = AsyncMock(return_value=(200, {
+        "client_latest_version": "1.4.0",
+    }))
+
+    async def fetch_twice():
+        first, second = await asyncio.gather(
+            instance._get_public_settings(),
+            instance._get_public_settings(),
+        )
+        third = await instance._get_public_settings()
+        return first, second, third
+
+    first, second, third = asyncio.run(fetch_twice())
+    assert first == second == third == (200, {"client_latest_version": "1.4.0"})
+    instance._server_request.assert_awaited_once_with(
+        "GET", "/public/settings", timeout=5
+    )
