@@ -96,6 +96,7 @@ class ServerRouter:
         rerace_min_interval_seconds: float = 30.0,
         probe: Callable[[str, float], dict] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        simulate_official_down: bool = False,
     ):
         self.official = _clean_base(official) or str(official or "").strip().rstrip("/")
         self.bundled = parse_bundled_mirrors(bundled_mirrors)
@@ -104,6 +105,7 @@ class ServerRouter:
         self.probe_timeout_seconds = max(0.5, float(probe_timeout_seconds))
         self.rerace_min_interval_seconds = max(0.0, float(rerace_min_interval_seconds))
         self._probe = probe or self._http_probe
+        self.simulate_official_down = bool(simulate_official_down)
         self._clock = clock
         self._lock = threading.Lock()
         self._ready = threading.Event()
@@ -199,6 +201,8 @@ class ServerRouter:
         def worker(route: Route) -> None:
             t0 = self._clock()
             try:
+                if route.official and self.simulate_official_down:
+                    raise ConnectionError("official site disabled by SIMULATE_OFFICIAL_UNREACHABLE")
                 data = self._probe(route.base, self.probe_timeout_seconds)
                 elapsed = self._clock() - t0
                 logger.info("Route probe %s ok in %.0f ms", route.label, elapsed * 1000)
