@@ -132,3 +132,8 @@ def test_no_mirrors_is_ready_immediately():
     assert r.wait_ready(5)
     assert time.monotonic() - start < 0.2
     assert r.active_base == OFFICIAL
+
+
+def test_simulated_official_outage_uses_mirror():
+    r = ServerRouter(OFFICIAL, BUNDLED, "", 0.2, 1.0, 0.0, probe=make_probe({OFFICIAL: 0.01, R4: 0.05}), simulate_official_down=True)
+    assert chosen(r) == R4

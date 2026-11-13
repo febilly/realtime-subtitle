@@ -799,6 +799,9 @@ SERVER_ROUTE_GRACE_SECONDS = 2.0
 SERVER_ROUTE_PROBE_TIMEOUT_SECONDS = 8.0
 # Minimum spacing between automatic re-races after network failures.
 SERVER_ROUTE_RERACE_MIN_INTERVAL_SECONDS = 30.0
+# Test the relay-mirror fallback: treat the official site as unreachable when
+# choosing the route (requests already sent to it are not blocked).
+SIMULATE_OFFICIAL_UNREACHABLE = _env_bool("SIMULATE_OFFICIAL_UNREACHABLE", False)
 CLIENT_VERSION = "5.1.0"
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
@@ -1520,6 +1523,7 @@ def server_router():
                 grace_seconds=SERVER_ROUTE_GRACE_SECONDS,
                 probe_timeout_seconds=SERVER_ROUTE_PROBE_TIMEOUT_SECONDS,
                 rerace_min_interval_seconds=SERVER_ROUTE_RERACE_MIN_INTERVAL_SECONDS,
+                simulate_official_down=SIMULATE_OFFICIAL_UNREACHABLE,
             )
         return _server_router
 
