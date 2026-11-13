@@ -789,6 +789,16 @@ SUBTITLE_SERVER_URL = _env_str("SUBTITLE_SERVER_URL", "").strip().rstrip("/")
 RELAY_AVAILABLE = bool(SUBTITLE_SERVER_URL)
 # Test the hosted startup retry/offline flow without changing the server URL.
 SIMULATE_HOSTED_OFFLINE = _env_bool("SIMULATE_HOSTED_OFFLINE", False)
+# Relay mirrors of the site (hosted build only). The bundled list is written at
+# packaging time and used only until the server has sent its own list once.
+SUBTITLE_SERVER_MIRRORS = _env_str("SUBTITLE_SERVER_MIRRORS", "").strip()
+# After the first route answers, how long to keep waiting for a better one
+# (the official site first, then mirrors by priority).
+SERVER_ROUTE_GRACE_SECONDS = 2.0
+# Per-route probe timeout; a route that has not answered by then is down.
+SERVER_ROUTE_PROBE_TIMEOUT_SECONDS = 8.0
+# Minimum spacing between automatic re-races after network failures.
+SERVER_ROUTE_RERACE_MIN_INTERVAL_SECONDS = 30.0
 CLIENT_VERSION = "5.1.0"
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
@@ -1447,6 +1457,8 @@ def relay_connect_info(
             timeout=10,
         )
     except requests.RequestException as exc:
+        if isinstance(exc, (requests.ConnectionError, requests.Timeout)):
+            report_server_network_failure()
         raise RuntimeError(f"Failed to request relay connection: {exc}") from exc
 
     if response.status_code != 200:
@@ -1489,12 +1501,71 @@ def relay_connect_info(
     return result
 
 
+_server_router = None
+_server_router_lock = threading.Lock()
+
+
+def server_router():
+    """The startup route chooser (official site vs relay mirrors); None when not hosted."""
+    global _server_router
+    if not SUBTITLE_SERVER_URL or SIMULATE_HOSTED_OFFLINE:
+        return None
+    with _server_router_lock:
+        if _server_router is None:
+            from server_route import ServerRouter
+            _server_router = ServerRouter(
+                SUBTITLE_SERVER_URL,
+                bundled_mirrors=SUBTITLE_SERVER_MIRRORS,
+                cache_path=os.path.join(get_app_data_dir(), "server_mirrors.json"),
+                grace_seconds=SERVER_ROUTE_GRACE_SECONDS,
+                probe_timeout_seconds=SERVER_ROUTE_PROBE_TIMEOUT_SECONDS,
+                rerace_min_interval_seconds=SERVER_ROUTE_RERACE_MIN_INTERVAL_SECONDS,
+            )
+        return _server_router
+
+
+def start_server_route() -> None:
+    router = server_router()
+    if router is not None:
+        router.start()
+
+
+def wait_server_route(timeout: float | None = None) -> None:
+    router = server_router()
+    if router is not None:
+        router.wait_ready(
+            SERVER_ROUTE_PROBE_TIMEOUT_SECONDS + SERVER_ROUTE_GRACE_SECONDS + 1.0
+            if timeout is None else timeout
+        )
+
+
+def report_server_network_failure() -> None:
+    router = server_router()
+    if router is not None:
+        router.report_network_failure()
+
+
+def current_server_url() -> str:
+    """Route chosen so far, without waiting for the startup race (UI hints)."""
+    router = server_router()
+    return SUBTITLE_SERVER_URL if router is None else router.active_base
+
+
+def active_server_url() -> str:
+    """Base URL of the route chosen this run (official site or a relay mirror)."""
+    router = server_router()
+    if router is None:
+        return SUBTITLE_SERVER_URL
+    wait_server_route()
+    return router.active_base
+
+
 def relay_rest_url(path: str = "") -> str:
-    """REST URL on the configured subtitle-server (path joined onto the base)."""
+    """REST URL on subtitle-server via the route chosen this run."""
     path = str(path or "")
     if path and not path.startswith("/"):
         path = "/" + path
-    return f"{SUBTITLE_SERVER_URL}{path}"
+    return f"{active_server_url()}{path}"
 
 # ============ IPC Configuration (realtime-subtitle <-> Yakutan) ============
 

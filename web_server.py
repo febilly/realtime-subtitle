@@ -458,6 +458,9 @@ class WebServer:
         provider = config.TRANSLATION_PROVIDER
         manager = self.provider_manager
         capabilities = get_capabilities(provider)
+        # The links the UI builds (login, dashboard) use the route chosen at startup.
+        if config.RELAY_AVAILABLE:
+            await self._await_server_route()
         # In hosted mode the LLM tuning (availability, context window, timeout) is
         # delivered by the server; refresh it so the fields below reflect it.
         if config.RELAY_MODE:
@@ -502,7 +505,8 @@ class WebServer:
             # Subtitle-server relay (hosted mode) availability. The server URL is
             # read only from .env and is never editable in the UI.
             "relay_available": bool(config.RELAY_AVAILABLE),
-            "server_url": config.SUBTITLE_SERVER_URL,
+            "server_url": config.current_server_url(),
+            "server_official_url": config.SUBTITLE_SERVER_URL,
             "credits_purchase_url": "",
             "first_redeem_bonus_credits": 0,
             "client_version": config.CLIENT_VERSION,
@@ -1011,6 +1015,7 @@ class WebServer:
                 await asyncio.sleep(1)
                 continue
 
+            await self._await_server_route()
             http_url = config.relay_rest_url("/me/tickets/events")
             ws_url = ("wss://" + http_url[len("https://"):]) if http_url.startswith("https://") else (
                 "ws://" + http_url[len("http://"):]
@@ -1071,6 +1076,7 @@ class WebServer:
             return 503, {"detail": "Subtitle server not configured"}
         if getattr(config, "SIMULATE_HOSTED_OFFLINE", False) is True:
             return 502, {"detail": "Hosted server connection unavailable (SIMULATE_HOSTED_OFFLINE)"}
+        await self._await_server_route()
         url = config.relay_rest_url(path)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         if include_client_version and token:
@@ -1087,7 +1093,15 @@ class WebServer:
                     data = {"detail": (await resp.text())[:500]}
                 return resp.status, data
         except Exception as e:
+            if isinstance(e, (aiohttp.ClientConnectionError, asyncio.TimeoutError)):
+                config.report_server_network_failure()
             return 502, {"detail": str(e)}
+
+    async def _await_server_route(self):
+        """Wait (off the event loop) for the startup official-vs-mirror race."""
+        if config.server_router() is None:
+            return
+        await asyncio.get_running_loop().run_in_executor(None, config.wait_server_route)
 
     async def _validate_relay_token(self, token):
         """Validate an ss_ account token via GET /me.
@@ -1266,7 +1280,7 @@ class WebServer:
 
     @staticmethod
     def _dashboard_url():
-        base = str(config.SUBTITLE_SERVER_URL or "").rstrip("/")
+        base = str(config.current_server_url() or "").rstrip("/")
         return (base + "/app/#/") if base else ""
 
     @staticmethod
@@ -1328,7 +1342,8 @@ class WebServer:
         token = self._relay_token()
         payload = {
             "relay_available": bool(config.RELAY_AVAILABLE),
-            "server_url": config.SUBTITLE_SERVER_URL,
+            "server_url": config.current_server_url(),
+            "server_official_url": config.SUBTITLE_SERVER_URL,
             "mode": manager.mode if manager else "direct",
             "logged_in": bool(token),
             "display_name": None,
@@ -1500,6 +1515,7 @@ class WebServer:
         status, data = await self._server_request("POST", "/me/web-login-code", token=token)
         if status != 200 or not isinstance(data, dict) or not data.get("web_login_code"):
             return web.json_response(data, status=status)
+        await self._await_server_route()
         base = config.relay_rest_url("/app/")
         from urllib.parse import quote
         url = f"{base}#/login?web_login_code={quote(str(data['web_login_code']))}"
@@ -2755,7 +2771,8 @@ class WebServer:
             html = f.read()
             initial_config = {
                 "relay_available": bool(config.RELAY_AVAILABLE),
-                "server_url": config.SUBTITLE_SERVER_URL,
+                "server_url": config.current_server_url(),
+                "server_official_url": config.SUBTITLE_SERVER_URL,
                 "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
             }
             boot_script = (
@@ -2781,6 +2798,8 @@ class WebServer:
         app = web.Application(middlewares=[cache_bypass_middleware])
 
         async def _prefetch_hosted_settings(app_instance):
+            # Race the official site against the relay mirrors right away.
+            config.start_server_route()
             self._schedule_public_settings_refresh()
 
         async def _cleanup_hosted_settings(app_instance):
