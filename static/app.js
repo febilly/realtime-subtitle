@@ -386,7 +386,9 @@ let relayAvailable = !!INITIAL_UI_CONFIG.relay_available;
 let relayServerUrl = typeof INITIAL_UI_CONFIG.server_url === 'string' ? INITIAL_UI_CONFIG.server_url : '';
 const settingsStore = SettingsStore.create({
     storage: localStorage,
-    getRelayServerUrl: () => relayServerUrl,
+    // Saved sign-ins are keyed by the official site, so they survive picking
+    // a relay mirror for this launch.
+    getRelayServerUrl: () => INITIAL_UI_CONFIG.server_official_url || relayServerUrl,
 });
 subtitleFlowDirection = settingsStore.loadSubtitleFlowDirection();
 subtitleScroll.setFlowDirection(subtitleFlowDirection);
