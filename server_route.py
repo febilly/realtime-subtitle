@@ -147,7 +147,7 @@ class ServerRouter:
             last = self._last_race_started
             if last is not None and self._clock() - last < self.rerace_min_interval_seconds:
                 return False
-            logger.info("Network failure on %s; choosing the server route again", self._active)
+            print(f"[server-route] network failure on {self._active}; choosing again", flush=True)
             self._begin_locked()
             return True
 
@@ -179,10 +179,11 @@ class ServerRouter:
             with self._lock:
                 if chosen is not None:
                     self._active = chosen.base
+            # print: the app does not configure logging, so INFO would be dropped.
             if chosen is None:
-                logger.warning("No server route answered; keeping %s", self.active_base)
+                print(f"[server-route] no route answered; keeping {self.active_base}", flush=True)
             else:
-                logger.info("Server route: %s", chosen.label)
+                print(f"[server-route] using {chosen.label}", flush=True)
         except Exception as exc:  # never leave waiters hanging
             logger.warning("Server route race failed: %s", exc)
         finally:
@@ -205,12 +206,12 @@ class ServerRouter:
                     raise ConnectionError("official site disabled by SIMULATE_OFFICIAL_UNREACHABLE")
                 data = self._probe(route.base, self.probe_timeout_seconds)
                 elapsed = self._clock() - t0
-                logger.info("Route probe %s ok in %.0f ms", route.label, elapsed * 1000)
+                print(f"[server-route] probe {route.label} ok in {elapsed * 1000:.0f} ms", flush=True)
                 with cond:
                     results[route] = data if isinstance(data, dict) else {}
             except Exception as exc:
                 elapsed = self._clock() - t0
-                logger.info("Route probe %s failed after %.0f ms: %s", route.label, elapsed * 1000, exc)
+                print(f"[server-route] probe {route.label} failed after {elapsed * 1000:.0f} ms: {exc}", flush=True)
             finally:
                 with cond:
                     finished["count"] += 1
