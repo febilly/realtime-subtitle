@@ -99,6 +99,37 @@ describe('subtitle rendering regressions', () => {
         expect(sentences[1].textContent).not.toContain('较早。');
     });
 
+    it.each(['fast', 'hybrid'])('keeps translations under successive speaker turns when the pairing id gets stuck (%s)', async (translationUiMode) => {
+        const page = await openPage({ translationUiMode });
+        await update(page, [
+            original('First.', 'old', 'ja', '2'),
+            translation('第一句。', 'old', 'zh', '2', 'ja'), separator(),
+        ]);
+        const firstRow = page.document.querySelector('.sentence-block');
+        for (let turn = 2; turn <= 4; turn += 1) {
+            await update(page, [
+                original(`Other ${turn}.`, `other-${turn}`),
+                translation(`其他${turn}。`, `other-${turn}`), separator(),
+                original(`Turn ${turn}.`, `turn-${turn}`, 'ja', '2'),
+            ]);
+            await update(page, [], [
+                translation(`第${turn}`, 'old', 'zh', '2', 'ja'),
+            ].map((token) => ({ ...token, is_final: false })));
+            let rows = [...page.document.querySelectorAll('.sentence-block')];
+            expect(rows.at(-1).textContent).toContain(`第${turn}`);
+            expect(firstRow.textContent).not.toContain(`第${turn}`);
+            await update(page, [
+                translation(`第${turn}`, 'old', 'zh', '2', 'ja'),
+                translation('句。', 'old', 'zh', '2', 'ja'), separator(),
+            ]);
+            rows = [...page.document.querySelectorAll('.sentence-block')];
+            expect(rows.at(-1).textContent).toContain(`第${turn}句。`);
+            expect(rows[0]).toBe(firstRow);
+            expect(firstRow.textContent).toContain('第一句。');
+            expect(firstRow.textContent).not.toContain(`第${turn}句。`);
+        }
+    });
+
     it('replaces a hybrid draft after applied refine and keeps the sentence DOM node', async () => {
         const page = await openPage();
         await update(page, [original('Hello.', 'refined'), translation('你好。', 'refined')]);

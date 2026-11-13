@@ -80,6 +80,55 @@ describe('RenderModel sentence construction', () => {
         expect(model.sentences[1].translationTokens).toEqual([]);
     });
 
+    it('does not funnel later turns into a completed row when translations carry its stale id', () => {
+        const tokens = [
+            original('First.', { speaker: '2', llm_sentence_id: 'old' }),
+            translation('第一句。', { speaker: '2', llm_sentence_id: 'old' }),
+            separator(),
+        ];
+        for (let turn = 2; turn <= 4; turn += 1) {
+            tokens.push(
+                original('Other speaker.', { llm_sentence_id: `other-${turn}` }),
+                translation('另一位说话人。', { llm_sentence_id: `other-${turn}` }),
+                separator(),
+                original(`Turn ${turn}.`, { speaker: '2', llm_sentence_id: `turn-${turn}` }),
+                translation(`第${turn}`, { speaker: '2', llm_sentence_id: 'old' }),
+                translation('句。', { speaker: '2', llm_sentence_id: 'old' }),
+                separator(),
+            );
+        }
+        const rows = RenderModel.buildSentences(tokens).filter((row) => row.speaker === '2');
+
+        expect(rows.map((row) => row.translationTokens.map((token) => token.text).join('')))
+            .toEqual(['第一句。', '第2句。', '第3句。', '第4句。']);
+        expect(rows.map((row) => row.llmSentenceId)).toEqual(['old', 'turn-2', 'turn-3', 'turn-4']);
+    });
+
+    it('keeps a delayed unfinished translation with its original row', () => {
+        const firstPart = translation('第一', { llm_sentence_id: 'first' });
+        const lastPart = translation('句。', { llm_sentence_id: 'first' });
+        const rows = RenderModel.buildSentences([
+            original('First.', { llm_sentence_id: 'first' }), firstPart, separator(),
+            original('Second.', { llm_sentence_id: 'second' }), lastPart,
+        ]);
+
+        expect(rows[0].translationTokens).toEqual([firstPart, lastPart]);
+        expect(rows[1].translationTokens).toEqual([]);
+    });
+
+    it('does not redirect an old translation tail into an already translated newer row', () => {
+        const tail = translation('补充。', { llm_sentence_id: 'first' });
+        const rows = RenderModel.buildSentences([
+            original('First.', { llm_sentence_id: 'first' }),
+            translation('第一句。', { llm_sentence_id: 'first' }), separator(),
+            original('Second.', { llm_sentence_id: 'second' }),
+            translation('第二句。', { llm_sentence_id: 'second' }), tail,
+        ]);
+
+        expect(rows[0].translationTokens.at(-1)).toBe(tail);
+        expect(rows[1].translationTokens.map((token) => token.text)).toEqual(['第二句。']);
+    });
+
     it('groups adjacent sentences into speaker blocks and splits on speaker change', () => {
         const model = RenderModel.buildRenderModel({
             tokens: [

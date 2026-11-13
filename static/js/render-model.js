@@ -234,6 +234,7 @@
 
             if (translationStatus === 'translation') {
                 let targetSentence = null;
+                const nearestSentence = findNearestOriginalSentenceForSpeaker(speaker);
                 const tokenSentenceId = token.llm_sentence_id ? String(token.llm_sentence_id) : '';
                 if (tokenSentenceId) {
                     for (let index = sentences.length - 1; index >= 0; index -= 1) {
@@ -247,7 +248,31 @@
                         }
                     }
                 }
-                if (!targetSentence) targetSentence = findNearestOriginalSentenceForSpeaker(speaker);
+                // Semantic pairing ids can lag behind display boundaries. Once
+                // an older row has a complete final translation, a stale id
+                // must not funnel every later turn back into that row. Keep
+                // id-based attachment for genuinely delayed/incomplete text.
+                if (
+                    targetSentence
+                    && nearestSentence
+                    && targetSentence !== nearestSentence
+                    && targetSentence.isClosed
+                    && targetSentence.translationTokens.length > 0
+                    && targetSentence.translationTokens.every((entry) => entry.is_final)
+                    && Segmentation.endsWithSentenceEnding(
+                        targetSentence.translationTokens.map((entry) => entry.text || '').join(''),
+                    )
+                    && nearestSentence.requiresTranslation !== false
+                    && sourceSentenceIds.get(nearestSentence)
+                    && sourceSentenceIds.get(nearestSentence) !== tokenSentenceId
+                    && nearestSentence.originalTokens.every((entry) => entry.is_final)
+                    && nearestSentence.translationTokens.every(
+                        (entry) => String(entry.llm_sentence_id || '') === tokenSentenceId,
+                    )
+                ) {
+                    targetSentence = nearestSentence;
+                }
+                if (!targetSentence) targetSentence = nearestSentence;
                 if (!targetSentence) {
                     targetSentence = startSentence(speaker, { translationOnly: true });
                 }
