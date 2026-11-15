@@ -154,3 +154,31 @@ def is_process_alive(pid: int) -> bool:
         return exit_code.value == STILL_ACTIVE
     finally:
         kernel32.CloseHandle(handle)
+
+
+def open_process_for_wait(pid: int):
+    """Open a handle to ``pid`` that later tells whether that exact process ended.
+
+    Holding the handle pins the process object, so a PID that Windows hands to
+    a new process after the parent exits can no longer pass for the parent.
+    Returns None when the process cannot be opened (for example it is gone).
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+    return handle or None
+
+
+def process_handle_exited(handle) -> bool:
+    """Whether the process behind a handle from open_process_for_wait has ended."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    return kernel32.WaitForSingleObject(handle, 0) == 0  # WAIT_OBJECT_0

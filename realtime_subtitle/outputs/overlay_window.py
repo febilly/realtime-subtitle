@@ -538,22 +538,65 @@ class WsBridge(QObject):
     status = Signal(bool)  # True=已连接
 
 
-def is_parent_alive():
-    import os
-    try:
-        ppid = os.getppid()
-        if ppid <= 1:
-            return False
-        if os.name == "nt":
-            return win_overlay_native.is_process_alive(ppid)
-        else:
+class ParentWatch:
+    """Tells whether the main app process that started this overlay still runs.
+
+    The main app passes its PID with --parent-pid. On Windows a handle to that
+    process is opened right away, so a PID recycled for an unrelated process
+    after the app exits cannot keep the overlay alive.
+    """
+
+    def __init__(self, pid: int | None = None):
+        import os
+        self.pid = int(pid) if pid else os.getppid()
+        self._handle = None
+        if os.name == "nt" and self.pid > 1:
             try:
-                os.kill(ppid, 0)
-                return True
-            except OSError:
-                return False
-    except Exception:
-        return True
+                self._handle = win_overlay_native.open_process_for_wait(self.pid)
+            except Exception:
+                self._handle = None
+        # The parent was already gone before the handle could be opened.
+        self._gone_at_start = os.name == "nt" and self._handle is None
+
+    def alive(self) -> bool:
+        import os
+        if self.pid <= 1 or self._gone_at_start:
+            return False
+        try:
+            if os.name == "nt":
+                return not win_overlay_native.process_handle_exited(self._handle)
+            os.kill(self.pid, 0)
+            return True
+        except OSError:
+            return False
+        except Exception:
+            return True
+
+
+PARENT_CHECK_INTERVAL_MS = 1000
+
+
+def install_parent_watchdog(app, parent_pid: int | None = None) -> "ParentWatch":
+    """Quit ``app`` once the main app process is gone, however it ended.
+
+    Runs on a GUI-thread timer, independent of the WebSocket: the overlay used
+    to check its parent only after a disconnect, from a worker thread, so a
+    main process that died without closing the socket cleanly could leave the
+    overlay running in the background.
+    """
+    watch = ParentWatch(parent_pid)
+    timer = QTimer(app)
+    timer.setInterval(PARENT_CHECK_INTERVAL_MS)
+
+    def check():
+        if not watch.alive():
+            timer.stop()
+            app.quit()
+
+    timer.timeout.connect(check)
+    timer.start()
+    app._parent_watch = (watch, timer)  # keep both alive with the app
+    return watch
 
 
 # 悬浮窗所有网络交互均指向本机 127.0.0.1 服务，必须显式绕过 Windows 系统代理（IE / WinINet 注册表代理），
@@ -612,9 +655,7 @@ class WsClient(threading.Thread):
             self.bridge.status.emit(False)
             if self._stop:
                 break
-            if not is_parent_alive():
-                QApplication.quit()
-                break
+            # Exit on a dead main app is handled by install_parent_watchdog.
             await asyncio.sleep(1.5)
 
     def stop(self):
@@ -2540,9 +2581,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Realtime subtitle native overlay")
     parser.add_argument("--url", required=True, help="服务器地址，如 http://127.0.0.1:8000")
     parser.add_argument("--hidden", action="store_true", help="Start the window hidden")
+    parser.add_argument("--parent-pid", type=int, default=None,
+                        help="PID of the main app; the overlay quits when it exits")
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
     app = QApplication.instance() or QApplication(sys.argv)
+    install_parent_watchdog(app, args.parent_pid)
     load_bundled_fonts()
     app.setStyle(InstantToolTipStyle(app.style()))
     app.setQuitOnLastWindowClosed(False)

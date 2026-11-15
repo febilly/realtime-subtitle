@@ -639,6 +639,10 @@ class ProviderManager:
         return result
 
 
+# graceful_shutdown 的总时限：超过就强制退出进程。
+SHUTDOWN_TIMEOUT_SECONDS = 8.0
+
+
 class OverlayManager:
     """管理原生（PySide6）字幕悬浮窗子进程。
 
@@ -659,7 +663,8 @@ class OverlayManager:
         return self._proc is not None and self._proc.poll() is None
 
     def _build_command(self, hidden: bool = True) -> list[str]:
-        args = [self.RUN_FLAG, "--url", self.server_url]
+        # 悬浮窗进程据此监视主程序，主程序没了就自己退出（见 install_parent_watchdog）。
+        args = [self.RUN_FLAG, "--url", self.server_url, "--parent-pid", str(os.getpid())]
         if hidden:
             args.append("--hidden")
         if getattr(sys, "frozen", False):
@@ -684,6 +689,10 @@ class OverlayManager:
             print(f"⚠️  Failed to launch subtitle overlay: {error}")
             self._proc = None
             raise
+        # 主程序无论怎么退出（正常关闭、崩溃、任务管理器结束），Windows 都会连带
+        # 结束悬浮窗进程，不会留在后台。
+        from realtime_subtitle.outputs.child_job import bind_to_app_lifetime
+        bind_to_app_lifetime(self._proc.pid)
         return True
 
     def prewarm(self):
@@ -912,6 +921,14 @@ def main():
 
     def graceful_shutdown() -> None:
         """优雅关闭所有连接和进程，防止遗留孤儿进程或断开异常。"""
+        # 0. 关闭流程里任何一步卡住（会话停不下来、事件循环无响应）都不能让
+        #    已经隐藏的主进程一直留在后台：超时后直接退出。悬浮窗先关掉，
+        #    它们不依赖后面的清理。
+        force_exit = threading.Timer(SHUTDOWN_TIMEOUT_SECONDS, lambda: os._exit(0))
+        force_exit.daemon = True
+        force_exit.start()
+        close_overlay()
+
         # 1. 停止当前 API 会话（优雅关闭 API 端的 WebSocket 连接并停止音频流）
         session = getattr(web_server, "session", None)
         if session is not None:
@@ -1153,6 +1170,7 @@ def main():
                 window_on_top_requests.put_nowait(None)
             except Exception:
                 pass
+            close_overlay()
             if window:
                 window.destroy()
             logger.close_log_file()
@@ -1166,6 +1184,7 @@ def main():
         except KeyboardInterrupt:
             print("\n👋 Server closed by user")
         finally:
+            close_overlay()
             logger.close_log_file()
             os._exit(0)
 

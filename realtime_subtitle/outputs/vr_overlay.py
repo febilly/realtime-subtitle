@@ -1576,10 +1576,13 @@ def _setup_log_file():
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Realtime subtitle SteamVR overlay")
     parser.add_argument("--url", required=True, help="服务器地址，如 http://127.0.0.1:8000")
+    parser.add_argument("--parent-pid", type=int, default=None,
+                        help="PID of the main app; the overlay quits when it exits")
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
     _setup_log_file()
     app = QApplication.instance() or QApplication(sys.argv)
+    ow.install_parent_watchdog(app, args.parent_pid)
     ow.load_bundled_fonts()
     app.setStyle(ow.InstantToolTipStyle(app.style()))
     app.setQuitOnLastWindowClosed(False)
