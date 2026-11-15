@@ -3,13 +3,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from local_inference.boundary_scout import (
+from realtime_subtitle.local_inference.boundary_scout import (
     BoundaryScoutUnavailableError,
     NemotronBoundaryScout,
     ScoutSnapshot,
     align_confirmed_prefix_to_scout,
 )
-from local_inference import model_manager
+from realtime_subtitle.local_inference import model_manager
 
 
 class _FakeResult:
@@ -82,7 +82,7 @@ def fake_sherpa(monkeypatch):
     _FakeOnlineRecognizer.default_result = _FakeResult()
     module = SimpleNamespace(OnlineRecognizer=_FakeOnlineRecognizer)
     monkeypatch.setattr(
-        "local_inference.boundary_scout.importlib.import_module",
+        "realtime_subtitle.local_inference.boundary_scout.importlib.import_module",
         lambda name: module if name == "sherpa_onnx" else None,
     )
     return module
@@ -106,7 +106,7 @@ def test_scout_reports_missing_sherpa_dependency_clearly(model_dir, monkeypatch)
         raise ModuleNotFoundError("sherpa_onnx")
 
     monkeypatch.setattr(
-        "local_inference.boundary_scout.importlib.import_module", unavailable
+        "realtime_subtitle.local_inference.boundary_scout.importlib.import_module", unavailable
     )
 
     with pytest.raises(BoundaryScoutUnavailableError, match="requires sherpa-onnx"):

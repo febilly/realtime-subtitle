@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 from websockets.sync.server import serve
 
-import local_relay
-from local_relay import LocalRelayLink
-from relay_errors import RelayConnectionRequestError
+import realtime_subtitle.hosted.local_relay as local_relay
+from realtime_subtitle.hosted.local_relay import LocalRelayLink
+from realtime_subtitle.hosted.relay_errors import RelayConnectionRequestError
 
 
 def _wait(event, timeout=5.0):

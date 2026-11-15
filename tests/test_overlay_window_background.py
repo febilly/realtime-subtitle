@@ -6,7 +6,7 @@ from PySide6.QtCore import QRect
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
-from overlay_window import (
+from realtime_subtitle.outputs.overlay_window import (
     BACKGROUND_MODE_TEXT,
     BACKGROUND_MODE_WINDOW,
     HIT_TEST_ALPHA,

@@ -15,7 +15,7 @@ Realtime Subtitle captures desktop audio, a single application window, your micr
 Subtitles can be shown in the main window, a desktop overlay, or a SteamVR overlay. VRChat players also get dedicated features, such as sending translations straight to the VRChat chatbox over OSC.
 
 <div align="center">
-    <img src="doc-images/screenshot-en.png" alt="Main window with live original text and translation" style="max-width: 100%; width: 512px; height: auto;">
+    <img src="docs/images/screenshot-en.png" alt="Main window with live original text and translation" style="max-width: 100%; width: 512px; height: auto;">
 </div>
 
 ## Features
@@ -76,7 +76,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Add `--debug` to enable WebView devtools and network logging. `python server.py --help` lists all command-line options. On Linux, see [LINUX_SETUP.md](LINUX_SETUP.md) for the extra GUI dependencies.
+Add `--debug` to enable WebView devtools and network logging. `python server.py --help` lists all command-line options. On Linux, see [LINUX_SETUP.md](docs/LINUX_SETUP.md) for the extra GUI dependencies.
 
 ### First launch
 
@@ -185,7 +185,7 @@ The builds published on this repository's Releases page are the open-source edit
 
 ```bash
 pip install pyinstaller
-python build_exe.py
+python packaging/build_exe.py
 ```
 
 The executable is written to `dist/RealtimeSubtitle.exe`.

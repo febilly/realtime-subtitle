@@ -1,0 +1,746 @@
+"""音频捕获模块 - 处理本机/网络音频的录制和流式传输"""
+import threading
+import time
+import queue
+import warnings
+from collections import deque
+from typing import Optional
+
+import numpy as np
+from realtime_subtitle.core.config import MICROPHONE_DEVICE_ID, OUTPUT_DEVICE_ID, MIX_OWN_VOLUME, MIX_OTHER_VOLUME
+
+try:
+    import soundcard as sc
+except Exception:
+    sc = None
+
+if sc is not None:
+    warnings.filterwarnings(
+        "once",
+        message=r"data discontinuity in recording",
+        category=Warning,
+    )
+
+_warned_missing_soundcard = False
+
+
+def _microphone_name(device) -> str:
+    return str(getattr(device, "name", "") or "").strip()
+
+
+def _microphone_id(device) -> str:
+    return str(getattr(device, "id", "") or "").strip()
+
+
+def _normalize_microphone_name(name: str) -> str:
+    return " ".join(str(name or "").strip().casefold().split())
+
+
+def list_microphone_devices() -> dict:
+    """Return de-duplicated microphone devices for the settings UI."""
+    if sc is None:
+        return {
+            "available": False,
+            "default": None,
+            "devices": [],
+            "message": "soundcard is not installed",
+        }
+
+    try:
+        default = sc.default_microphone()
+    except Exception:
+        default = None
+
+    default_id = _microphone_id(default) if default is not None else ""
+    default_name = _microphone_name(default) if default is not None else ""
+
+    try:
+        microphones = list(sc.all_microphones(include_loopback=False))
+    except Exception as error:
+        return {
+            "available": False,
+            "default": {"id": default_id, "name": default_name} if default_name else None,
+            "devices": [],
+            "message": str(error),
+        }
+
+    seen: set[str] = set()
+    devices: list[dict] = []
+    for microphone in microphones:
+        name = _microphone_name(microphone)
+        device_id = _microphone_id(microphone)
+        if not name or not device_id:
+            continue
+        key = _normalize_microphone_name(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        devices.append({
+            "id": device_id,
+            "name": name,
+            "is_default": bool(default_id and device_id == default_id),
+        })
+
+    if default_id and all(device["id"] != default_id for device in devices):
+        devices.insert(0, {"id": default_id, "name": default_name, "is_default": True})
+
+    devices.sort(key=lambda item: (not item.get("is_default"), str(item.get("name", "")).casefold()))
+    return {
+        "available": True,
+        "default": {"id": default_id, "name": default_name} if default_name else None,
+        "devices": devices,
+    }
+
+
+def normalize_microphone_device_id(device_id: object) -> str:
+    return str(device_id or "").strip()
+
+
+def normalize_output_device_id(device_id: object) -> str:
+    return str(device_id or "").strip()
+
+
+def list_output_devices() -> dict:
+    """Return speaker devices whose output can be captured through loopback."""
+    if sc is None:
+        return {"available": False, "default": None, "devices": [], "message": "soundcard is not installed"}
+
+    try:
+        default = sc.default_speaker()
+    except Exception:
+        default = None
+    default_id = str(getattr(default, "id", "") or "").strip() if default is not None else ""
+    default_name = str(getattr(default, "name", "") or "").strip() if default is not None else ""
+    try:
+        speakers = list(sc.all_speakers())
+    except Exception as error:
+        return {
+            "available": False,
+            "default": {"id": default_id, "name": default_name} if default_name else None,
+            "devices": [],
+            "message": str(error),
+        }
+
+    devices = []
+    seen = set()
+    for speaker in speakers:
+        device_id = str(getattr(speaker, "id", "") or "").strip()
+        name = str(getattr(speaker, "name", "") or "").strip()
+        if not device_id or not name or device_id in seen:
+            continue
+        seen.add(device_id)
+        devices.append({"id": device_id, "name": name, "is_default": bool(default_id and device_id == default_id)})
+    if default_id and default_id not in seen:
+        devices.append({"id": default_id, "name": default_name, "is_default": True})
+    devices.sort(key=lambda item: (not item.get("is_default"), str(item.get("name", "")).casefold()))
+    return {
+        "available": True,
+        "default": {"id": default_id, "name": default_name} if default_name else None,
+        "devices": devices,
+    }
+
+
+def _convert_float32_to_int16(channel_data: np.ndarray) -> bytes:
+    """将浮点音频数据转换为int16字节流"""
+    clipped = np.clip(channel_data, -1.0, 1.0)
+    data_int16 = (clipped * 32767).astype(np.int16)
+    return data_int16.tobytes()
+
+
+class AudioStreamer:
+    """音频流控制器 - 支持系统输出、麦克风与混合模式"""
+
+    def __init__(
+        self,
+        ws,
+        initial_source: str = "system",
+        sample_rate: int = 16000,
+        chunk_size: int = 3840,
+        mute_mic_when_vrchat_muted: bool = True,
+        microphone_device_id: str = MICROPHONE_DEVICE_ID,
+        output_device_id: str = OUTPUT_DEVICE_ID,
+        mix_starvation_threshold: float = 0.08,
+        desktop_mode: str = "output",
+        window: Optional[dict] = None,
+    ):
+        self.ws = ws
+        self.sample_rate = sample_rate
+        self.chunk_size = chunk_size
+        self.mix_capture_frames = max(320, min(self.chunk_size, 960))
+
+        self._stop_event = threading.Event()
+        self._source_changed_event = threading.Event()
+        self._source_lock = threading.Lock()
+
+        self._current_source = initial_source
+        self._microphone_device_id = normalize_microphone_device_id(microphone_device_id)
+        self._output_device_id = normalize_output_device_id(output_device_id)
+        self._desktop_mode = desktop_mode
+        self._window = window
+        self.capture_error = ""
+        self._thread: Optional[threading.Thread] = None
+        self.mix_mic_gain = float(MIX_OWN_VOLUME)
+        self.mix_system_gain = float(MIX_OTHER_VOLUME)
+        self._mute_state_lock = threading.Lock()
+        self._mute_mic_when_vrchat_muted = bool(mute_mic_when_vrchat_muted)
+        self._vrchat_mic_muted = False
+        self.mix_starvation_threshold = float(mix_starvation_threshold)
+
+    def set_vrchat_mic_muted(self, muted: bool) -> None:
+        with self._mute_state_lock:
+            self._vrchat_mic_muted = bool(muted)
+
+    def _should_mute_microphone_component(self) -> bool:
+        with self._mute_state_lock:
+            return self._mute_mic_when_vrchat_muted and self._vrchat_mic_muted
+
+    def start(self) -> None:
+        """启动音频流线程"""
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._source_changed_event.clear()
+
+        self._thread = threading.Thread(target=self._run, name="AudioStreamer", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """停止音频流线程"""
+        self._stop_event.set()
+        self._source_changed_event.set()
+
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=1.5)
+
+        self._thread = None
+
+    def set_source(self, source: str) -> bool:
+        """切换音频源。返回是否发生了实际切换"""
+        if source not in ("system", "microphone", "mix"):
+            raise ValueError("Invalid audio source. Expect 'system', 'microphone' or 'mix'.")
+
+        with self._source_lock:
+            if source == self._current_source:
+                return False
+            self._current_source = source
+
+        self._source_changed_event.set()
+        return True
+
+    def get_source(self) -> str:
+        """获取当前音频源"""
+        with self._source_lock:
+            return self._current_source
+
+    def set_microphone_device_id(self, device_id: str) -> bool:
+        """Set the microphone device. Returns whether the active recorder should restart."""
+        next_id = normalize_microphone_device_id(device_id)
+        with self._source_lock:
+            if next_id == self._microphone_device_id:
+                return False
+            self._microphone_device_id = next_id
+            restart_needed = self._current_source in ("microphone", "mix")
+
+        if restart_needed:
+            self._source_changed_event.set()
+        return True
+
+    def get_microphone_device_id(self) -> str:
+        with self._source_lock:
+            return self._microphone_device_id
+
+    def set_output_device_id(self, device_id: str) -> bool:
+        next_id = normalize_output_device_id(device_id)
+        with self._source_lock:
+            if next_id == self._output_device_id:
+                return False
+            self._output_device_id = next_id
+            restart_needed = self._current_source in ("system", "mix")
+        if restart_needed:
+            self._source_changed_event.set()
+        return True
+
+    def get_output_device_id(self) -> str:
+        with self._source_lock:
+            return self._output_device_id
+
+    def configure_capture(self, settings) -> None:
+        """Switch all recorders together, so drafts never leak into live capture."""
+        import realtime_subtitle.audio.audio_preferences as audio_preferences
+        with self._source_lock:
+            self._current_source = audio_preferences.source(settings)
+            self._output_device_id = settings["output_device_id"]
+            self._microphone_device_id = settings["microphone_device_id"]
+            self._desktop_mode = settings["desktop_mode"]
+            self._window = settings["window"]
+            self.capture_error = ""
+        self._source_changed_event.set()
+
+    def get_window(self):
+        with self._source_lock:
+            return dict(self._window) if self._window else None
+
+    def _resolve_capture_window(self):
+        import realtime_subtitle.audio.window_audio as window_audio
+        with self._source_lock:
+            selection = self._window
+        # Keep the live process through title changes. Only rebind when its
+        # identity is gone, using the same fallback order as startup restore.
+        target = (window_audio.resolve_window(selection)
+                  or window_audio.resolve_window(selection, restore=True))
+        with self._source_lock:
+            if self._window is not selection or self._desktop_mode != "window":
+                return None
+            if target:
+                self._window = target
+            return target
+
+    def _run(self) -> None:
+        """音频线程主循环"""
+        while not self._stop_event.is_set():
+            # 先清除切换信号再读取当前源：若 set_source() 恰好在"读取源"与
+            # "清除信号"之间执行，后清除会把切换信号抹掉，线程会带着旧源
+            # 继续运行，且再次设置同一源返回 False，卡死在错误源上。
+            self._source_changed_event.clear()
+            with self._source_lock:
+                source = self._current_source
+
+            if source == "mix":
+                self._run_mix_mode()
+            else:
+                self._run_single_source_mode(source)
+
+    def _run_single_source_mode(self, source: str) -> None:
+        initial_device = self._device_signature(source)
+        recorder_ctx = self._create_recorder(source)
+        if recorder_ctx is None:
+            time.sleep(1.0)
+            return
+
+        try:
+            with recorder_ctx as recorder:
+                next_device_check = time.monotonic() + 1.0
+                while not self._stop_event.is_set() and not self._source_changed_event.is_set():
+                    data = recorder.record(numframes=self.chunk_size)
+                    if time.monotonic() >= next_device_check:
+                        next_device_check = time.monotonic() + 1.0
+                        if self._device_signature(source) != initial_device:
+                            self._source_changed_event.set()
+                            break
+                    channel_data = self._extract_mono_channel(data)
+                    if channel_data.size == 0:
+                        continue
+
+                    normalized = self._resample_to_chunk(channel_data, self.chunk_size)
+                    if source == "microphone" and self._should_mute_microphone_component():
+                        normalized = np.zeros_like(normalized, dtype=np.float32)
+                    payload = _convert_float32_to_int16(normalized)
+                    try:
+                        self.ws.send(payload)
+                    except Exception as send_error:
+                        print(f"Error sending audio data: {send_error}")
+                        self._stop_event.set()
+                        return
+        except Exception as capture_error:
+            self.capture_error = str(capture_error)
+            print(f"Error capturing audio from {source}: {capture_error}")
+            time.sleep(0.5)
+
+    def _run_mix_mode(self) -> None:
+        system_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=4)
+        microphone_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=4)
+        local_stop_event = threading.Event()
+
+        system_thread = threading.Thread(
+            target=self._capture_worker,
+            args=("system", system_queue, local_stop_event, self.mix_capture_frames),
+            name="AudioCaptureSystem",
+            daemon=True,
+        )
+        microphone_thread = threading.Thread(
+            target=self._capture_worker,
+            args=("microphone", microphone_queue, local_stop_event, self.mix_capture_frames),
+            name="AudioCaptureMicrophone",
+            daemon=True,
+        )
+        mixer_thread = threading.Thread(
+            target=self._mix_and_send_worker,
+            args=(system_queue, microphone_queue, local_stop_event),
+            name="AudioMixSender",
+            daemon=True,
+        )
+
+        print("🎛️  Capturing mixed audio: system + microphone")
+        print(f"🎚️  Mix gains -> microphone(self): {self.mix_mic_gain:.2f}, system(other): {self.mix_system_gain:.2f}")
+
+        system_thread.start()
+        microphone_thread.start()
+        mixer_thread.start()
+
+        while not self._stop_event.is_set() and not self._source_changed_event.is_set():
+            if not mixer_thread.is_alive():
+                break
+            time.sleep(0.05)
+
+        local_stop_event.set()
+
+        for thread in (system_thread, microphone_thread, mixer_thread):
+            if thread.is_alive():
+                thread.join(timeout=1.0)
+
+    def _capture_worker(
+        self,
+        source: str,
+        out_queue: "queue.Queue[np.ndarray]",
+        local_stop_event: threading.Event,
+        capture_frames: int,
+    ) -> None:
+        initial_device = self._device_signature(source)
+        recorder_ctx = self._create_recorder(source)
+        if recorder_ctx is None:
+            local_stop_event.set()
+            return
+
+        try:
+            with recorder_ctx as recorder:
+                next_device_check = time.monotonic() + 1.0
+                while not self._stop_event.is_set() and not self._source_changed_event.is_set() and not local_stop_event.is_set():
+                    data = recorder.record(numframes=max(1, int(capture_frames)))
+                    if time.monotonic() >= next_device_check:
+                        next_device_check = time.monotonic() + 1.0
+                        if self._device_signature(source) != initial_device:
+                            self._source_changed_event.set()
+                            break
+                    channel_data = self._extract_mono_channel(data)
+                    if channel_data.size == 0:
+                        continue
+
+                    payload = channel_data.astype(np.float32, copy=False)
+                    try:
+                        out_queue.put_nowait(payload)
+                    except queue.Full:
+                        try:
+                            out_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                        try:
+                            out_queue.put_nowait(payload)
+                        except queue.Full:
+                            pass
+        except Exception as capture_error:
+            self.capture_error = str(capture_error)
+            print(f"Error capturing audio from {source}: {capture_error}")
+            local_stop_event.set()
+
+    def _mix_and_send_worker(
+        self,
+        system_queue: "queue.Queue[np.ndarray]",
+        microphone_queue: "queue.Queue[np.ndarray]",
+        local_stop_event: threading.Event,
+    ) -> None:
+        system_segments: deque[np.ndarray] = deque()
+        microphone_segments: deque[np.ndarray] = deque()
+        system_available = 0
+        microphone_available = 0
+        min_mix_frames = max(1, int(self.chunk_size))
+        max_buffer_frames = min_mix_frames * 3
+        max_source_skew_frames = min_mix_frames
+        starvation_threshold = max(0.01, float(getattr(self, "mix_starvation_threshold", 0.08)))
+
+        last_system_rx = time.monotonic()
+        last_mic_rx = time.monotonic()
+
+        while not self._stop_event.is_set() and not self._source_changed_event.is_set() and not local_stop_event.is_set():
+            try:
+                captured_system = system_queue.get(timeout=0.02)
+                if captured_system is not None and captured_system.size > 0:
+                    normalized = captured_system.astype(np.float32, copy=False)
+                    system_segments.append(normalized)
+                    system_available += int(normalized.size)
+                    last_system_rx = time.monotonic()
+            except queue.Empty:
+                pass
+
+            try:
+                captured_microphone = microphone_queue.get(timeout=0.02)
+                if captured_microphone is not None and captured_microphone.size > 0:
+                    normalized = captured_microphone.astype(np.float32, copy=False)
+                    microphone_segments.append(normalized)
+                    microphone_available += int(normalized.size)
+                    last_mic_rx = time.monotonic()
+            except queue.Empty:
+                pass
+
+            now = time.monotonic()
+            system_starved = (now - last_system_rx) >= starvation_threshold
+            mic_starved = (now - last_mic_rx) >= starvation_threshold
+
+            mic_active = (not mic_starved) or (microphone_available > 0)
+            system_active = (not system_starved) or (system_available > 0)
+
+            if system_available < min_mix_frames and system_starved and mic_active:
+                pad_frames = min_mix_frames - system_available
+                pad = np.zeros(pad_frames, dtype=np.float32)
+                system_segments.append(pad)
+                system_available += pad_frames
+
+            if microphone_available < min_mix_frames and mic_starved and system_active:
+                pad_frames = min_mix_frames - microphone_available
+                pad = np.zeros(pad_frames, dtype=np.float32)
+                microphone_segments.append(pad)
+                microphone_available += pad_frames
+
+            if system_available > max_buffer_frames:
+                drop_len = system_available - max_buffer_frames
+                system_segments, system_available = self._drop_old_frames(system_segments, system_available, drop_len)
+
+            if microphone_available > max_buffer_frames:
+                drop_len = microphone_available - max_buffer_frames
+                microphone_segments, microphone_available = self._drop_old_frames(microphone_segments, microphone_available, drop_len)
+
+            if system_available - microphone_available > max_source_skew_frames:
+                drop_len = (system_available - microphone_available) - max_source_skew_frames
+                system_segments, system_available = self._drop_old_frames(system_segments, system_available, drop_len)
+            elif microphone_available - system_available > max_source_skew_frames:
+                drop_len = (microphone_available - system_available) - max_source_skew_frames
+                microphone_segments, microphone_available = self._drop_old_frames(microphone_segments, microphone_available, drop_len)
+
+            if system_available < min_mix_frames or microphone_available < min_mix_frames:
+                continue
+
+            mix_len = min(min_mix_frames, system_available, microphone_available)
+            system_data, system_segments, system_available = self._consume_segments(system_segments, system_available, mix_len)
+            microphone_data, microphone_segments, microphone_available = self._consume_segments(microphone_segments, microphone_available, mix_len)
+
+            if self._should_mute_microphone_component():
+                microphone_data = np.zeros_like(microphone_data, dtype=np.float32)
+
+            mixed = (system_data * self.mix_system_gain) + (microphone_data * self.mix_mic_gain)
+            peak = float(np.max(np.abs(mixed))) if mixed.size else 0.0
+            if peak > 0.98:
+                mixed = mixed * (0.98 / peak)
+
+            payload = _convert_float32_to_int16(mixed)
+            try:
+                self.ws.send(payload)
+            except Exception as send_error:
+                print(f"Error sending mixed audio data: {send_error}")
+                local_stop_event.set()
+                self._stop_event.set()
+                return
+
+    def _consume_segments(
+        self,
+        segments: "deque[np.ndarray]",
+        available: int,
+        length: int,
+    ) -> tuple[np.ndarray, "deque[np.ndarray]", int]:
+        if length <= 0:
+            return np.zeros(0, dtype=np.float32), segments, available
+
+        remaining = int(length)
+        parts: list[np.ndarray] = []
+
+        while remaining > 0 and segments:
+            head = segments[0]
+            head_len = int(head.size)
+
+            if head_len <= remaining:
+                parts.append(head)
+                segments.popleft()
+                remaining -= head_len
+                available -= head_len
+                continue
+
+            parts.append(head[:remaining])
+            segments[0] = head[remaining:]
+            available -= remaining
+            remaining = 0
+
+        if not parts:
+            return np.zeros(0, dtype=np.float32), segments, available
+
+        if len(parts) == 1:
+            return parts[0], segments, available
+
+        return np.concatenate(parts), segments, available
+
+    def _drop_old_frames(
+        self,
+        segments: "deque[np.ndarray]",
+        available: int,
+        length: int,
+    ) -> tuple["deque[np.ndarray]", int]:
+        remaining = max(0, int(length))
+        if remaining <= 0:
+            return segments, available
+
+        while remaining > 0 and segments:
+            head = segments[0]
+            head_len = int(head.size)
+            if head_len <= remaining:
+                segments.popleft()
+                available -= head_len
+                remaining -= head_len
+                continue
+
+            segments[0] = head[remaining:]
+            available -= remaining
+            remaining = 0
+
+        return segments, max(0, available)
+
+    def _extract_mono_channel(self, data: np.ndarray) -> np.ndarray:
+        if data is None:
+            return np.zeros(0, dtype=np.float32)
+
+        arr = np.asarray(data, dtype=np.float32)
+        if arr.size == 0:
+            return np.zeros(0, dtype=np.float32)
+
+        if arr.ndim == 1:
+            return arr
+
+        # 多声道下混取均值而不是只取左声道：环回采集设备常给立体声，
+        # 只取 arr[:, 0] 会让仅存在于右声道的内容（部分游戏/音频路由）
+        # 变成静音。单声道时 mean(axis=1) 等价于原数据。
+        return np.mean(arr, axis=1)
+
+    def _resample_to_chunk(self, data: Optional[np.ndarray], target_length: int) -> np.ndarray:
+        if data is None:
+            return np.zeros(target_length, dtype=np.float32)
+
+        arr = np.asarray(data, dtype=np.float32)
+        current_length = int(arr.shape[0])
+
+        if current_length == target_length:
+            return arr
+
+        if current_length <= 1:
+            value = float(arr[0]) if current_length == 1 else 0.0
+            return np.full(target_length, value, dtype=np.float32)
+
+        source_axis = np.linspace(0.0, 1.0, num=current_length, dtype=np.float32)
+        target_axis = np.linspace(0.0, 1.0, num=target_length, dtype=np.float32)
+        return np.interp(target_axis, source_axis, arr).astype(np.float32)
+
+    def _create_recorder(self, source: str):
+        """根据音频源创建对应的recorder上下文"""
+        try:
+            if source == "system" and self._desktop_mode == "window":
+                import realtime_subtitle.audio.window_audio as window_audio
+                target = self._resolve_capture_window()
+                if not target:
+                    self.capture_error = "Selected audio window is unavailable"
+                    return _SilentRecorder(self.sample_rate)
+                self.capture_error = ""
+                return window_audio.ProcessRecorder(
+                    target, self.sample_rate,
+                    stop=lambda: self._stop_event.is_set() or self._source_changed_event.is_set(),
+                )
+            global _warned_missing_soundcard
+            if sc is None:
+                if not _warned_missing_soundcard:
+                    print("❌ soundcard is not installed; audio capture is unavailable in this environment")
+                    print("   Install with: pip install soundcard")
+                    _warned_missing_soundcard = True
+                return None
+
+            if source == "system":
+                speaker = self._resolve_output_device()
+                if speaker is None:
+                    print("⚠️  No default speaker available for system audio capture")
+                    return None
+
+                # WASAPI loopback microphones share the output endpoint's id.
+                # Do not use the display name: soundcard treats it as a fuzzy
+                # match, so overlapping endpoint names can select a silent
+                # loopback from a different output device.
+                loopback = sc.get_microphone(id=str(speaker.id), include_loopback=True)
+                if loopback is None:
+                    print("⚠️  Loopback capture is not available on this device")
+                    return None
+
+                print(f"🔊 Capturing system audio from: {speaker.name}")
+                return loopback.recorder(samplerate=self.sample_rate, channels=1)
+
+            microphone = self._resolve_microphone_device()
+            if microphone is None:
+                print("⚠️  No default microphone available")
+                return None
+
+            print(f"🎤 Capturing from microphone: {microphone.name}")
+            return microphone.recorder(samplerate=self.sample_rate, channels=1)
+
+        except Exception as init_error:
+            self.capture_error = str(init_error)
+            print(f"Error initializing audio source '{source}': {init_error}")
+            return None
+
+    @staticmethod
+    def _device_id(device) -> str:
+        return str(getattr(device, "id", "") or "").strip() if device is not None else ""
+
+    def _resolve_output_device(self):
+        with self._source_lock:
+            selected_id = self._output_device_id
+        speaker = None
+        if selected_id:
+            try:
+                speaker = sc.get_speaker(id=selected_id)
+            except Exception as error:
+                print(f"⚠️  Selected output device lookup failed: {error}")
+            if speaker is None:
+                print(f"⚠️  Selected output device is unavailable; falling back to default: {selected_id}")
+                with self._source_lock:
+                    if self._output_device_id == selected_id:
+                        self._output_device_id = ""
+        return speaker if speaker is not None else sc.default_speaker()
+
+    def _resolve_microphone_device(self):
+        with self._source_lock:
+            selected_id = self._microphone_device_id
+        microphone = None
+        if selected_id:
+            try:
+                microphone = sc.get_microphone(id=selected_id, include_loopback=False)
+            except Exception as error:
+                print(f"⚠️  Selected microphone lookup failed: {error}")
+            if microphone is None:
+                print(f"⚠️  Selected microphone is unavailable; falling back to default: {selected_id}")
+                with self._source_lock:
+                    if self._microphone_device_id == selected_id:
+                        self._microphone_device_id = ""
+        return microphone if microphone is not None else sc.default_microphone()
+
+    def _device_signature(self, source: str) -> str:
+        """Resolve the actual endpoint so hot-plug/default changes restart capture."""
+        if source == "system" and self._desktop_mode == "window":
+            target = self._resolve_capture_window()
+            self.capture_error = "" if target else "Selected audio window is unavailable"
+            return f'{target["pid"]}:{target["created"]}' if target else "missing-window"
+        if sc is None:
+            return ""
+        try:
+            device = self._resolve_output_device() if source == "system" else self._resolve_microphone_device()
+            return self._device_id(device)
+        except Exception:
+            return ""
+
+
+class _SilentRecorder:
+    """Keep mixed microphone capture running when a selected window closes."""
+    def __init__(self, sample_rate):
+        self.sample_rate = sample_rate
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def record(self, numframes):
+        time.sleep(numframes / self.sample_rate)
+        return np.zeros(numframes, dtype=np.float32)

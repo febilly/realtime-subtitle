@@ -56,7 +56,7 @@ def _parse_semantic_json(value: dict, draft: str, source: str) -> str:
 
 
 def parse_refine_response(raw_content: str, draft: str, source: str = "") -> dict:
-    import llm_refine
+    import realtime_subtitle.llm.llm_refine as llm_refine
 
     answer = llm_refine._strip_code_fence(raw_content)
     if answer.startswith('{'):

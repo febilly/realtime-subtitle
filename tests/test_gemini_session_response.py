@@ -5,15 +5,16 @@ from types import ModuleType
 from unittest.mock import MagicMock
 
 import pytest
+from module_stubs import monkeypatch_module
 
 def _install_gemini_session_import_mocks(monkeypatch):
-    monkeypatch.delitem(sys.modules, "gemini_session", raising=False)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.sessions.gemini_session", None)
     # The shared base binds osc_manager/config at import: reload it with the stubs.
-    monkeypatch.delitem(sys.modules, "realtime_session_base", raising=False)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.sessions.realtime_session_base", None)
     # Re-import the shared LLM helper fresh so it binds to this test's mocked
     # config / llm_client rather than a version cached by an earlier test.
-    monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
-    config = ModuleType("config")
+    monkeypatch_module(monkeypatch, "realtime_subtitle.llm.llm_refine", None)
+    config = ModuleType("realtime_subtitle.core.config")
     config.GEMINI_STREAM_DURATION_SECONDS = None
     config.GEMINI_USES_TEMP_API_KEY = False
     config.GEMINI_TEMP_KEY_URL = None
@@ -59,31 +60,31 @@ def _install_gemini_session_import_mocks(monkeypatch):
     config.TARGET_LANG_2 = "zh"
     config.TRANSLATION_TARGET_LANG = "zh"
     config.describe_target_language = lambda lang: lang
-    monkeypatch.setitem(sys.modules, "config", config)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", config)
 
-    gemini_client = ModuleType("gemini_client")
+    gemini_client = ModuleType("realtime_subtitle.sessions.gemini_client")
     gemini_client.connect_live = MagicMock()
     gemini_client.get_api_key = MagicMock(return_value="key")
-    monkeypatch.setitem(sys.modules, "gemini_client", gemini_client)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.sessions.gemini_client", gemini_client)
 
-    audio_capture = ModuleType("audio_capture")
+    audio_capture = ModuleType("realtime_subtitle.audio.audio_capture")
     audio_capture.AudioStreamer = MagicMock()
-    monkeypatch.setitem(sys.modules, "audio_capture", audio_capture)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.audio.audio_capture", audio_capture)
 
-    osc_manager = ModuleType("osc_manager")
+    osc_manager = ModuleType("realtime_subtitle.outputs.osc_manager")
     osc_manager.osc_manager = MagicMock()
-    monkeypatch.setitem(sys.modules, "osc_manager", osc_manager)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.outputs.osc_manager", osc_manager)
 
-    timed_notifications = ModuleType("timed_notifications")
+    timed_notifications = ModuleType("realtime_subtitle.core.timed_notifications")
     timed_notifications.record_usage = MagicMock()
-    monkeypatch.setitem(sys.modules, "timed_notifications", timed_notifications)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.timed_notifications", timed_notifications)
 
-    llm_client = ModuleType("llm_client")
+    llm_client = ModuleType("realtime_subtitle.llm.llm_client")
     llm_client.LlmConfig = MagicMock()
     llm_client.chat_completion = MagicMock()
     llm_client.extract_answer_tag = lambda text: text
     llm_client.LlmError = RuntimeError
-    monkeypatch.setitem(sys.modules, "llm_client", llm_client)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.llm.llm_client", llm_client)
 
 
 def _run_immediately_factory():
@@ -98,9 +99,9 @@ def _run_immediately_factory():
 
 def test_stream_key_refresh_skips_temp_key_fetch_in_relay_mode(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
-    get_api_key = sys.modules["gemini_client"].get_api_key
+    get_api_key = sys.modules["realtime_subtitle.sessions.gemini_client"].get_api_key
     get_api_key.side_effect = AssertionError("should not fetch temp key")
     module.config.RELAY_MODE = True
     module.config.GEMINI_USES_TEMP_API_KEY = True
@@ -113,9 +114,9 @@ def test_stream_key_refresh_skips_temp_key_fetch_in_relay_mode(monkeypatch):
 
 def test_stream_key_refresh_skips_permanent_and_missing_temp_key_sources(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
-    get_api_key = sys.modules["gemini_client"].get_api_key
+    get_api_key = sys.modules["realtime_subtitle.sessions.gemini_client"].get_api_key
     get_api_key.side_effect = AssertionError("should not fetch temp key")
     session = module.GeminiSession(MagicMock(), MagicMock())
 
@@ -131,9 +132,9 @@ def test_stream_key_refresh_skips_permanent_and_missing_temp_key_sources(monkeyp
 
 def test_stream_key_refresh_fetches_configured_temporary_key(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
-    get_api_key = sys.modules["gemini_client"].get_api_key
+    get_api_key = sys.modules["realtime_subtitle.sessions.gemini_client"].get_api_key
     get_api_key.return_value = "next-key"
     module.config.GEMINI_USES_TEMP_API_KEY = True
     module.config.GEMINI_TEMP_KEY_URL = "https://keys.example"
@@ -146,7 +147,7 @@ def test_stream_key_refresh_fetches_configured_temporary_key(monkeypatch):
 
 def test_gemini_input_transcription_becomes_original_token(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -181,7 +182,7 @@ def test_gemini_input_transcription_becomes_original_token(monkeypatch):
 
 def test_gemini_output_transcription_becomes_translation_token(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -216,7 +217,7 @@ def test_gemini_output_transcription_becomes_translation_token(monkeypatch):
 
 def test_gemini_turn_complete_emits_internal_end_marker_not_displayed(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -251,7 +252,7 @@ def test_gemini_turn_complete_emits_internal_end_marker_not_displayed(monkeypatc
 
 def test_split_into_sentence_lines(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     session = module.GeminiSession(MagicMock(), lambda *_: None)
     split = session._split_into_sentence_lines
@@ -269,7 +270,7 @@ def test_split_into_sentence_lines(monkeypatch):
 
 def test_gemini_go_away_requests_stream_end(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     async def broadcast(_data):
         return None
@@ -292,8 +293,8 @@ def test_gemini_go_away_requests_stream_end(monkeypatch):
 @pytest.mark.parametrize("relay_mode", [False, True])
 def test_gemini_go_away_switches_to_replacement_stream_in_direct_and_relay_modes(monkeypatch, relay_mode):
     _install_gemini_session_import_mocks(monkeypatch)
-    import config
-    import gemini_session as module
+    import realtime_subtitle.core.config as config
+    import realtime_subtitle.sessions.gemini_session as module
 
     config.RELAY_MODE = relay_mode
     monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", _run_immediately_factory())
@@ -369,7 +370,7 @@ def test_gemini_go_away_switches_to_replacement_stream_in_direct_and_relay_modes
 
 def test_translation_none_mode_drops_output_transcription(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -393,7 +394,7 @@ def test_translation_none_mode_drops_output_transcription(monkeypatch):
 
 def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     async def broadcast(_data):
         return None
@@ -410,7 +411,7 @@ def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
 
 def test_close_stream_state_forwards_reason_to_ws(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     close_calls = []
 
@@ -440,7 +441,7 @@ def test_close_stream_state_forwards_reason_to_ws(monkeypatch):
 
 def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     close_calls = []
 
@@ -486,7 +487,7 @@ def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
 
 def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     monkeypatch.setattr(module, "GEMINI_STREAM_DURATION_SECONDS", 30.0)
 
@@ -569,7 +570,7 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
 
 def test_fix_fullwidth_punctuation_after_cjk_ja(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     fix = module.fix_fullwidth_punctuation_after_cjk_ja
 
@@ -599,7 +600,7 @@ def test_fix_fullwidth_punctuation_after_cjk_ja(monkeypatch):
 
 def test_fix_fullwidth_punctuation_disabled_is_noop(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     monkeypatch.setattr(module, "GEMINI_FULLWIDTH_PUNCT_FIX", False)
     assert module.fix_fullwidth_punctuation_after_cjk_ja("你好,世界") == "你好,世界"
@@ -607,7 +608,7 @@ def test_fix_fullwidth_punctuation_disabled_is_noop(monkeypatch):
 
 def test_boundary_punctuation_conversion_success_streaming(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
     async def broadcast(data):
@@ -646,7 +647,7 @@ def test_boundary_punctuation_conversion_success_streaming(monkeypatch):
 
 def test_strip_space_before_east_asian_punctuation(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     strip = module.strip_space_before_east_asian_punctuation
 
@@ -667,7 +668,7 @@ def test_strip_space_before_east_asian_punctuation(monkeypatch):
 
 def test_normalize_gemini_text_combines_both_fixes(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     # Space-before-punct strip and half-width->full-width fix both apply.
     assert module.normalize_gemini_text("ごめん 。") == "ごめん。"
@@ -680,7 +681,7 @@ def test_normalize_gemini_text_combines_both_fixes(monkeypatch):
 
 def test_input_transcription_applies_fullwidth_punct_fix(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -715,7 +716,7 @@ def _separator_in_updates(updates):
 @pytest.fixture
 def gemini_segmentation_session(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -921,7 +922,7 @@ def test_gemini_reset_discards_queued_next_sentence(gemini_segmentation_session)
 
 def test_same_language_source_punctuation_triggers_segmentation(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -947,7 +948,7 @@ def test_same_language_source_punctuation_triggers_segmentation(monkeypatch):
 
 def test_same_language_decimal_does_not_segment_across_gemini_batches(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -988,7 +989,7 @@ def test_same_language_decimal_does_not_segment_across_gemini_batches(monkeypatc
 
 def test_same_language_am_pm_does_not_segment_across_gemini_batches(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -1029,7 +1030,7 @@ def test_same_language_am_pm_does_not_segment_across_gemini_batches(monkeypatch)
 
 def test_same_language_closing_quote_stays_with_previous_gemini_sentence(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -1080,7 +1081,7 @@ def test_translation_ahead_of_source_keeps_full_source_together(monkeypatch):
     own sentence end, otherwise the trailing source characters spill onto the
     next line (and the LLM gets a truncated source)."""
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -1130,7 +1131,7 @@ def test_translation_ahead_of_source_keeps_full_source_together(monkeypatch):
 
 def test_cross_language_source_punctuation_does_not_segment(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -1156,7 +1157,7 @@ def test_cross_language_source_punctuation_does_not_segment(monkeypatch):
 
 def test_output_transcription_applies_fullwidth_punct_fix(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -1182,7 +1183,7 @@ def test_output_transcription_applies_fullwidth_punct_fix(monkeypatch):
 def test_gemini_translation_mode_maps_onto_internal_llm_mode(monkeypatch):
     # Gemini mirrors soniox's 3-mode model: 混合→refine, 准确→translate, 快速→off.
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     session = module.GeminiSession(MagicMock(), MagicMock())
 
@@ -1205,7 +1206,7 @@ def test_gemini_translation_mode_maps_onto_internal_llm_mode(monkeypatch):
 
 def test_gemini_hybrid_finalize_refines_draft_and_updates_osc(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 
@@ -1247,7 +1248,7 @@ def test_gemini_hybrid_finalize_refines_draft_and_updates_osc(monkeypatch):
 
 def test_gemini_hybrid_finalize_keeps_draft_when_refine_no_change(monkeypatch):
     _install_gemini_session_import_mocks(monkeypatch)
-    import gemini_session as module
+    import realtime_subtitle.sessions.gemini_session as module
 
     updates = []
 

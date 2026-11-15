@@ -4,6 +4,7 @@ import os
 import asyncio
 from unittest.mock import MagicMock, AsyncMock, call, patch
 import pytest
+from module_stubs import patch_modules, pop_module, set_module
 
 try:
     import numpy
@@ -11,14 +12,14 @@ except ImportError:
     pass
 
 def ensure_real_config():
-    if "config" not in sys.modules or not hasattr(sys.modules["config"], "get_resource_path"):
+    if "realtime_subtitle.core.config" not in sys.modules or not hasattr(sys.modules["realtime_subtitle.core.config"], "get_resource_path"):
         import importlib.util
-        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.py")
-        spec = importlib.util.spec_from_file_location("config", config_path)
+        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "realtime_subtitle", "core", "config.py")
+        spec = importlib.util.spec_from_file_location("realtime_subtitle.core.config", config_path)
         real_config = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(real_config)
-        sys.modules["config"] = real_config
-    return sys.modules["config"]
+        set_module("realtime_subtitle.core.config", real_config)
+    return sys.modules["realtime_subtitle.core.config"]
 
 # Add root to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -36,19 +37,19 @@ def async_test(coro):
 class TestWebServerSecurity:
     @pytest.fixture(autouse=True)
     def restore_sys_modules(self):
-        orig_config = sys.modules.get("config")
+        orig_config = sys.modules.get("realtime_subtitle.core.config")
         # These tests patch aiohttp in sys.modules and expect web_server to bind
         # the mock, so a copy cached by an earlier test module must not be reused.
-        orig_web_server = sys.modules.pop("web_server", None)
+        orig_web_server = pop_module("realtime_subtitle.web.web_server")
         yield
         if orig_config is not None:
-            sys.modules["config"] = orig_config
+            set_module("realtime_subtitle.core.config", orig_config)
         else:
-            sys.modules.pop("config", None)
+            pop_module("realtime_subtitle.core.config")
         if orig_web_server is not None:
-            sys.modules["web_server"] = orig_web_server
+            set_module("realtime_subtitle.web.web_server", orig_web_server)
         else:
-            sys.modules.pop("web_server", None)
+            pop_module("realtime_subtitle.web.web_server")
 
     def mock_session(self):
         session = MagicMock()
@@ -62,12 +63,12 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_output_device_updates_provider_manager_preference(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-            "config": MagicMock(), "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
-            from web_server import WebServer
+            import realtime_subtitle.web.web_server as ws_module
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws_module.LOCK_MANUAL_CONTROLS = False
@@ -95,9 +96,9 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_audio_capture_settings_apply_atomically_and_update_provider_snapshot(self):
-        with patch.dict(sys.modules, {"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-                                      "config": MagicMock(), "llm_client": MagicMock()}):
-            import web_server as module
+        with patch_modules({"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+                                      "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock()}):
+            import realtime_subtitle.web.web_server as module
             module.LOCK_MANUAL_CONTROLS = False
             session = self.mock_session()
             session.set_audio_capture_settings.return_value = (True, "ok")
@@ -117,9 +118,9 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_missing_saved_window_status_is_reported_before_capture_starts(self):
-        with patch.dict(sys.modules, {"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-                                      "config": MagicMock(), "llm_client": MagicMock()}):
-            import web_server as module
+        with patch_modules({"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+                                      "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock()}):
+            import realtime_subtitle.web.web_server as module
             target = {"executable": "C:\\player.exe", "title": "Player"}
             settings = {"desktop_enabled": True, "desktop_mode": "window", "window": target}
             session = self.mock_session()
@@ -130,7 +131,7 @@ class TestWebServerSecurity:
             request = AsyncMock()
             request.remote = "127.0.0.1"
             module.web.json_response.side_effect = lambda data, status=200: (data, status)
-            with patch("window_audio.resolve_window", side_effect=[None, target]) as resolve:
+            with patch("realtime_subtitle.audio.window_audio.resolve_window", side_effect=[None, target]) as resolve:
                 missing, status = await server.get_audio_source_handler(request)
                 assert status == 200
                 assert missing["capture_error"] == "Selected audio window is unavailable"
@@ -142,9 +143,9 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_audio_capture_details_and_window_list_are_localhost_only(self):
-        with patch.dict(sys.modules, {"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-                                      "config": MagicMock(), "llm_client": MagicMock()}):
-            import web_server as module
+        with patch_modules({"aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
+                                      "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock()}):
+            import realtime_subtitle.web.web_server as module
             session = self.mock_session()
             server = module.WebServer(session, self.mock_logger())
             request = AsyncMock()
@@ -159,15 +160,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_set_audio_source_valid(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import config
+            import realtime_subtitle.core.config as config
             config.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             m_session = self.mock_session()
@@ -193,15 +194,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_set_audio_source_updates_provider_manager_preference(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             m_session = self.mock_session()
@@ -237,15 +238,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_setup_rejected_from_non_loopback(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws = WebServer(self.mock_session(), self.mock_logger())
@@ -264,15 +265,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_setup_rejected_when_locked(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = True
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws = WebServer(self.mock_session(), self.mock_logger())
@@ -291,15 +292,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_setup_applies_provider_from_loopback(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws = WebServer(self.mock_session(), self.mock_logger())
@@ -321,12 +322,12 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_local_startup_setup_stays_paused_in_both_connection_modes(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-            "config": MagicMock(), "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
-            from web_server import WebServer
+            import realtime_subtitle.web.web_server as ws_module
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws_module.LOCK_MANUAL_CONTROLS = False
@@ -348,12 +349,12 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_first_resume_starts_ipc_for_deferred_local_session(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-            "config": MagicMock(), "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
-            from web_server import WebServer
+            import realtime_subtitle.web.web_server as ws_module
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws_module.LOCK_MANUAL_CONTROLS = False
@@ -376,12 +377,12 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_resume_keeps_the_applied_two_way_mode(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-            "config": MagicMock(), "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
-            from web_server import WebServer
+            import realtime_subtitle.web.web_server as ws_module
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws_module.LOCK_MANUAL_CONTROLS = False
@@ -405,15 +406,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_setup_invalid_provider(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws = WebServer(self.mock_session(), self.mock_logger())
@@ -431,15 +432,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_restart_reports_conflict_when_session_start_is_ignored(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             session = self.mock_session()
@@ -475,15 +476,15 @@ class TestWebServerSecurity:
         overlapped; each started a stream and both stayed live, so the UI
         flickered between two interleaved hypotheses. /restart must not touch
         the session while the provider manager holds the lifecycle lock."""
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             session = self.mock_session()
@@ -520,17 +521,17 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_account_web_login_url_uses_short_web_login_code(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import config
+            import realtime_subtitle.core.config as config
             config.RELAY_AVAILABLE = True
             config.SUBTITLE_SERVER_URL = "https://subtitle.example"
             config.relay_rest_url.side_effect = lambda path="": "https://subtitle.example" + (path if str(path).startswith("/") else "/" + str(path))
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws = WebServer(self.mock_session(), self.mock_logger())
@@ -555,17 +556,17 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_account_web_login_url_can_open_allowed_pages_after_login(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import config
+            import realtime_subtitle.core.config as config
             config.RELAY_AVAILABLE = True
             config.SUBTITLE_SERVER_URL = "https://subtitle.example"
             config.relay_rest_url.side_effect = lambda path="": "https://subtitle.example" + (path if str(path).startswith("/") else "/" + str(path))
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws = WebServer(self.mock_session(), self.mock_logger())
@@ -594,15 +595,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_account_ticket_proxies_use_the_saved_relay_token(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import config
+            import realtime_subtitle.core.config as config
             config.RELAY_AVAILABLE = True
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             ws = WebServer(self.mock_session(), self.mock_logger())
@@ -640,13 +641,13 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_ui_config_exposes_client_version_policy(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import config
+            import realtime_subtitle.core.config as config
             config.RELAY_AVAILABLE = True
             config.SUBTITLE_SERVER_URL = "https://subtitle.example"
             config.CLIENT_VERSION = "1.2.3"
@@ -654,7 +655,7 @@ class TestWebServerSecurity:
             config.SONIOX_REGION = "us"
             config.SONIOX_CUSTOM_URL = ""
             config.ENABLE_SPEAKER_DIARIZATION = True
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             session = self.mock_session()
@@ -680,15 +681,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_set_audio_source_invalid(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import config
+            import realtime_subtitle.core.config as config
             config.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             m_session = self.mock_session()
@@ -718,15 +719,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_overlay_rejected_when_locked(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = True
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             manager = MagicMock()
@@ -748,15 +749,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_microphone_device_rejected_when_locked(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = True
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             session = self.mock_session()
@@ -776,15 +777,15 @@ class TestWebServerSecurity:
 
     @async_test
     async def test_microphone_device_updates_provider_manager_preference(self):
-        with patch.dict(sys.modules, {
+        with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
-            "config": MagicMock(),
-            "llm_client": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
         }):
-            import web_server as ws_module
+            import realtime_subtitle.web.web_server as ws_module
             ws_module.LOCK_MANUAL_CONTROLS = False
-            from web_server import WebServer
+            from realtime_subtitle.web.web_server import WebServer
             import aiohttp.web as web
 
             session = self.mock_session()
@@ -818,7 +819,7 @@ class TestWebServerSecurity:
         ensure_real_config()
         from aiohttp.test_utils import TestClient, TestServer
         from aiohttp import web
-        import web_server as ws_module
+        import realtime_subtitle.web.web_server as ws_module
 
         session = self.mock_session()
         logger = self.mock_logger()
@@ -872,8 +873,8 @@ class TestWebServerSecurity:
         mock would mask a crash on that path.
         """
         ensure_real_config()
-        import web_server as ws_module
-        import logger as logger_module
+        import realtime_subtitle.web.web_server as ws_module
+        import realtime_subtitle.core.logger as logger_module
 
         session = self.mock_session()
         ws = ws_module.WebServer(session, logger_module.TranscriptLogger(enabled=False))

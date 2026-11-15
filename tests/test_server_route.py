@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from server_route import ServerRouter, normalize_mirrors, parse_bundled_mirrors
+from realtime_subtitle.hosted.server_route import ServerRouter, normalize_mirrors, parse_bundled_mirrors
 
 OFFICIAL = "https://official.example"
 R4 = "https://relay-4.example"

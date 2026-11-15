@@ -2,6 +2,7 @@ import importlib
 import sys
 
 import pytest
+from module_stubs import pop_module, set_module
 
 
 @pytest.fixture
@@ -15,19 +16,19 @@ def gemini_client():
     active, import a fresh gemini_client bound to it, and restore the previous
     config module afterward.
     """
-    original_config = sys.modules.get("config")
-    sys.modules.pop("config", None)
-    import config  # fresh real config
+    original_config = sys.modules.get("realtime_subtitle.core.config")
+    pop_module("realtime_subtitle.core.config")
+    import realtime_subtitle.core.config as config  # fresh real config
     importlib.reload(config)
-    import gemini_client as module
+    import realtime_subtitle.sessions.gemini_client as module
     importlib.reload(module)
     try:
         yield module
     finally:
         if original_config is not None:
-            sys.modules["config"] = original_config
+            set_module("realtime_subtitle.core.config", original_config)
         else:
-            sys.modules.pop("config", None)
+            pop_module("realtime_subtitle.core.config")
 
 
 def _translation_config(message):
@@ -35,7 +36,7 @@ def _translation_config(message):
 
 
 def _gemini_lang(code):
-    from config import to_gemini_language_code
+    from realtime_subtitle.core.config import to_gemini_language_code
     return to_gemini_language_code(code)
 
 
@@ -90,7 +91,7 @@ def test_two_way_warns_once(gemini_client, monkeypatch, capsys):
 
 
 def test_relay_connect_live_uses_server_minted_ws_url(gemini_client, monkeypatch):
-    import config
+    import realtime_subtitle.core.config as config
 
     connect_calls = []
     sent_payloads = []
@@ -219,7 +220,7 @@ def test_hosted_stream_sends_one_binary_batch_per_100ms(gemini_client):
 def test_hosted_connection_falls_back_to_json_for_old_decoder(gemini_client, monkeypatch):
     import base64
     import json
-    import config
+    import realtime_subtitle.core.config as config
 
     class Socket:
         def __init__(self): self.sent = []
@@ -265,7 +266,7 @@ def test_own_key_stream_keeps_original_pcm(gemini_client):
 
 def test_raw_opus_rejects_invalid_input_and_frees_on_finish():
     import pytest
-    from opus_audio import RawOpusEncoder
+    from realtime_subtitle.audio.opus_audio import RawOpusEncoder
 
     with pytest.raises(ValueError, match="16000"):
         RawOpusEncoder(48000)
@@ -284,7 +285,7 @@ def test_raw_opus_rejects_invalid_input_and_frees_on_finish():
 def test_own_key_connection_uses_google_pcm_even_with_direct_temporary_key_mode(gemini_client, monkeypatch):
     import base64
     import json
-    import config
+    import realtime_subtitle.core.config as config
 
     class Socket:
         def __init__(self): self.sent = []

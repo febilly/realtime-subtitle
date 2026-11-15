@@ -1,7 +1,7 @@
 import importlib
 import json
 
-import soniox_response_log
+import realtime_subtitle.sessions.soniox_response_log as soniox_response_log
 
 
 def fresh_module():

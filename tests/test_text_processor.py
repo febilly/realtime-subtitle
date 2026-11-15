@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import text_processor
+import realtime_subtitle.text.text_processor as text_processor
 
 
 @pytest.fixture(autouse=True)

@@ -170,7 +170,7 @@ def test_optional_verifier_only_checks_changed_candidates(tmp_path, monkeypatch,
 
 def test_build_freezes_named_prompts_and_rejects_missing_references(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    import llm_refine
+    import realtime_subtitle.llm.llm_refine as llm_refine
 
     sample = {'id': 'a', 'source_lang': 'en', 'source': 'Hello.', 'draft_translation': '你好。',
               'context': [], 'log_path': 'fixture', 'length_bin': 'short'}

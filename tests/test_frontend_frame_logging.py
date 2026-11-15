@@ -4,25 +4,26 @@ import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from module_stubs import pop_module, set_module
 
 
 @pytest.fixture
 def web_server_class():
-    previous_config = sys.modules.pop("config", None)
-    previous_web_server = sys.modules.pop("web_server", None)
+    previous_config = pop_module("realtime_subtitle.core.config")
+    previous_web_server = pop_module("realtime_subtitle.web.web_server")
     try:
         # Several legacy unit modules install a minimal top-level `config` stub.
         # This integration fixture needs the real module regardless of test order.
-        importlib.import_module("config")
-        WebServer = importlib.import_module("web_server").WebServer
+        importlib.import_module("realtime_subtitle.core.config")
+        WebServer = importlib.import_module("realtime_subtitle.web.web_server").WebServer
         yield WebServer
     finally:
-        sys.modules.pop("web_server", None)
-        sys.modules.pop("config", None)
+        pop_module("realtime_subtitle.web.web_server")
+        pop_module("realtime_subtitle.core.config")
         if previous_web_server is not None:
-            sys.modules["web_server"] = previous_web_server
+            set_module("realtime_subtitle.web.web_server", previous_web_server)
         if previous_config is not None:
-            sys.modules["config"] = previous_config
+            set_module("realtime_subtitle.core.config", previous_config)
 
 
 @pytest.mark.asyncio

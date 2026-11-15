@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PySide6.QtCore import QPoint, QSettings
 from PySide6.QtWidgets import QApplication
 
-import vr_overlay as vo
+import realtime_subtitle.outputs.vr_overlay as vo
+from module_stubs import patch_modules, pop_module
 
 
 APP = QApplication.instance() or QApplication([])
@@ -500,16 +501,16 @@ class FakeVrManager:
 
 @pytest.fixture
 def web_server_module():
-    with patch.dict(sys.modules, {
+    with patch_modules({
         "aiohttp": MagicMock(), "aiohttp.web": MagicMock(),
-        "config": MagicMock(), "llm_client": MagicMock(),
+        "realtime_subtitle.core.config": MagicMock(), "realtime_subtitle.llm.llm_client": MagicMock(),
     }):
-        sys.modules.pop("web_server", None)
-        import web_server as module
+        pop_module("realtime_subtitle.web.web_server")
+        import realtime_subtitle.web.web_server as module
         module.LOCK_MANUAL_CONTROLS = False
         module.web.json_response.side_effect = lambda data, status=200: (data, status)
         yield module
-        sys.modules.pop("web_server", None)
+        pop_module("realtime_subtitle.web.web_server")
 
 
 def make_server(module):

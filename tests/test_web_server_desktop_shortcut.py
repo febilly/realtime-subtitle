@@ -3,19 +3,20 @@ from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from module_stubs import patch_modules
 
 
 @contextmanager
 def loaded_web_server():
     # Several legacy tests replace config at collection time. Match the existing
     # web-server test isolation pattern and avoid importing this module globally.
-    with patch.dict(sys.modules, {
+    with patch_modules({
         "aiohttp": MagicMock(),
         "aiohttp.web": MagicMock(),
-        "config": MagicMock(),
-        "llm_client": MagicMock(),
+        "realtime_subtitle.core.config": MagicMock(),
+        "realtime_subtitle.llm.llm_client": MagicMock(),
     }):
-        import web_server
+        import realtime_subtitle.web.web_server as web_server
 
         yield web_server
 

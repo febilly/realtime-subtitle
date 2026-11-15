@@ -7,7 +7,7 @@ from typing import List, Optional
 
 import pytest
 
-from twitch_audio_streamer import TwitchAudioStreamer
+from realtime_subtitle.audio.twitch_audio_streamer import TwitchAudioStreamer
 
 
 class MockWs:

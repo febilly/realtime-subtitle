@@ -214,7 +214,7 @@ class ProviderManager:
     """
 
     def __init__(self, logger, ipc_server, osc_manager_obj, broadcast_callback):
-        import config
+        import realtime_subtitle.core.config as config
 
         self.config = config
         self.logger = logger
@@ -269,22 +269,22 @@ class ProviderManager:
     # ----- provider module wiring -----
     def _provider_modules(self, provider):
         if provider == "local":
-            import local_session as session_mod
-            from local_session import LocalInferenceSession as SessionClass
-            from local_client import get_api_key
+            import realtime_subtitle.sessions.local_session as session_mod
+            from realtime_subtitle.sessions.local_session import LocalInferenceSession as SessionClass
+            from realtime_subtitle.sessions.local_client import get_api_key
         elif provider == "gemini":
-            import gemini_session as session_mod
-            from gemini_session import GeminiSession as SessionClass
-            from gemini_client import get_api_key
+            import realtime_subtitle.sessions.gemini_session as session_mod
+            from realtime_subtitle.sessions.gemini_session import GeminiSession as SessionClass
+            from realtime_subtitle.sessions.gemini_client import get_api_key
         else:
-            import soniox_session as session_mod
-            from soniox_session import SonioxSession as SessionClass
-            from soniox_client import get_api_key
+            import realtime_subtitle.sessions.soniox_session as session_mod
+            from realtime_subtitle.sessions.soniox_session import SonioxSession as SessionClass
+            from realtime_subtitle.sessions.soniox_client import get_api_key
         return session_mod, SessionClass, get_api_key
 
     # ----- key helpers -----
     def env_key_present(self, provider) -> bool:
-        from provider_setup import provider_has_env_key
+        from realtime_subtitle.core.provider_setup import provider_has_env_key
         return provider_has_env_key(provider)
 
     def key_source(self) -> str:
@@ -357,7 +357,7 @@ class ProviderManager:
 
     # ----- IPC lifecycle -----
     async def _sync_ipc(self, session_running: bool):
-        from config import IPC_ENABLED
+        from realtime_subtitle.core.config import IPC_ENABLED
         want = bool(IPC_ENABLED) and self.translation_mode != "none" and session_running
         if want and not self._ipc_started:
             try:
@@ -549,7 +549,7 @@ class ProviderManager:
             self.web_server.session = new_session
             self.web_server.get_api_key = self.get_api_key
         self.ipc_server.set_session(new_session)
-        import realtime_session_base
+        import realtime_subtitle.sessions.realtime_session_base as realtime_session_base
         realtime_session_base.ipc_server = self.ipc_server
         if hasattr(session_mod, "bind_ipc_server"):
             session_mod.bind_ipc_server(self.ipc_server)
@@ -647,7 +647,7 @@ class OverlayManager:
     """
 
     RUN_FLAG = "--run-overlay"
-    SCRIPT = "overlay_window.py"
+    MODULE = "realtime_subtitle.outputs.overlay_window"
 
     def __init__(self, server_url: str, web_server=None):
         self.server_url = server_url
@@ -665,8 +665,7 @@ class OverlayManager:
         if getattr(sys, "frozen", False):
             # PyInstaller：重新拉起自身可执行文件，由 main() 顶部分发到 overlay。
             return [sys.executable, *args]
-        overlay_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.SCRIPT)
-        return [sys.executable, overlay_script, *args]
+        return [sys.executable, "-m", self.MODULE, *args]
 
     def open(self, hidden: bool = False) -> bool:
         if self.is_open():
@@ -678,6 +677,8 @@ class OverlayManager:
             # 不为悬浮窗弹出额外的控制台窗口。
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         try:
+            # 源码模式用 -m 启动，子进程需要以仓库根目录为 cwd 才能 import realtime_subtitle。
+            kwargs.setdefault("cwd", os.path.dirname(os.path.abspath(__file__)))
             self._proc = subprocess.Popen(self._build_command(hidden=hidden), **kwargs)
         except Exception as error:
             print(f"⚠️  Failed to launch subtitle overlay: {error}")
@@ -712,7 +713,7 @@ class VrOverlayManager(OverlayManager):
     """
 
     RUN_FLAG = "--run-vr-overlay"
-    SCRIPT = "vr_overlay.py"
+    MODULE = "realtime_subtitle.outputs.vr_overlay"
 
     def __init__(self, server_url: str, web_server=None):
         super().__init__(server_url, web_server=web_server)
@@ -747,24 +748,24 @@ def main():
     # stays isolated from the long-running subtitle server in frozen builds.
     if "--probe-local-gpus" in sys.argv:
         import json
-        from local_inference.gpu_devices import enumerate_gpu_devices
+        from realtime_subtitle.local_inference.gpu_devices import enumerate_gpu_devices
 
         print(json.dumps(enumerate_gpu_devices(), ensure_ascii=False))
         return
 
     # 当以 `--run-overlay` 启动时，进入原生字幕悬浮窗（独立 GUI 进程）。
-    # 冻结成 exe 后由主程序重新拉起自身走到这里；源码模式下则直接拉起 overlay_window.py。
+    # 冻结成 exe 后由主程序重新拉起自身走到这里；源码模式下则用 -m 拉起 realtime_subtitle.outputs.overlay_window。
     if "--run-overlay" in sys.argv:
-        from overlay_window import main as overlay_main
+        from realtime_subtitle.outputs.overlay_window import main as overlay_main
         sys.exit(overlay_main())
     if "--run-vr-overlay" in sys.argv:
-        from vr_overlay import main as vr_overlay_main
+        from realtime_subtitle.outputs.vr_overlay import main as vr_overlay_main
         sys.exit(vr_overlay_main())
 
     # Existing desktop shortcuts follow the currently running downloaded version.
     # This never creates a shortcut; creation remains an explicit post-login choice.
     try:
-        from desktop_shortcut import repair_existing_shortcuts
+        from realtime_subtitle.core.desktop_shortcut import repair_existing_shortcuts
         shortcut_result = repair_existing_shortcuts()
         if shortcut_result.get("updated"):
             print(f"✅ Updated {shortcut_result['updated']} desktop shortcut(s) to this version")
@@ -775,25 +776,25 @@ def main():
     apply_cli_overrides_to_env(args)
 
     if args.debug:
-        from network_debug import enable as enable_network_debug
+        from realtime_subtitle.core.network_debug import enable as enable_network_debug
         enable_network_debug()
 
     # 非交互式解析翻译 provider（soniox|gemini|local）。必须在导入 config 之前完成，
     # 以便 config 在求值时能读到 TRANSLATION_PROVIDER。
-    from provider_setup import resolve_provider
+    from realtime_subtitle.core.provider_setup import resolve_provider
     provider = resolve_provider()
 
-    import config
-    from config import (
+    import realtime_subtitle.core.config as config
+    from realtime_subtitle.core.config import (
         SERVER_HOST, SERVER_PORT, AUTO_OPEN_WEBVIEW,
     )
     # After config has loaded .env, so both sources are checked.
-    from legacy_env import warn_legacy_settings
+    from realtime_subtitle.core.legacy_env import warn_legacy_settings
     warn_legacy_settings(sys.argv[1:])
-    from logger import TranscriptLogger
-    from web_server import WebServer
-    from ipc_server import IPCServer
-    from osc_manager import osc_manager
+    from realtime_subtitle.core.logger import TranscriptLogger
+    from realtime_subtitle.web.web_server import WebServer
+    from realtime_subtitle.web.ipc_server import IPCServer
+    from realtime_subtitle.outputs.osc_manager import osc_manager
 
     # 创建日志记录器
     logger = TranscriptLogger()
@@ -841,7 +842,7 @@ def main():
     web_server.provider_manager = provider_manager
 
     ipc_server.set_session(session)
-    import realtime_session_base
+    import realtime_subtitle.sessions.realtime_session_base as realtime_session_base
     realtime_session_base.ipc_server = ipc_server
     if hasattr(_seed_mod, "bind_ipc_server"):
         _seed_mod.bind_ipc_server(ipc_server)

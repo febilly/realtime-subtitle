@@ -1,4 +1,4 @@
-from streaming_translation.api.hymt2 import HyMT2API, HyMT2LocalEngine
+from realtime_subtitle.streaming_translation.api.hymt2 import HyMT2API, HyMT2LocalEngine
 import pytest
 
 

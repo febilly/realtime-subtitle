@@ -23,8 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import config
-from local_inference.recognizer import LocalQwenRecognizer
+import realtime_subtitle.core.config as config
+from realtime_subtitle.local_inference.recognizer import LocalQwenRecognizer
 
 
 def load_wav_16k(path: Path) -> np.ndarray:

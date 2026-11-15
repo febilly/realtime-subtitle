@@ -4,8 +4,8 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
-import overlay_window
-from overlay_window import OverlayWindow, SubtitleModel
+import realtime_subtitle.outputs.overlay_window as overlay_window
+from realtime_subtitle.outputs.overlay_window import OverlayWindow, SubtitleModel
 
 
 def row(identifier, source, *, translation="", revision=1, order=0, final=False):

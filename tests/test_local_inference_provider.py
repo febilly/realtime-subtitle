@@ -9,31 +9,32 @@ from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
+from module_stubs import pop_module, set_module
 
 # Some legacy test modules install a deliberately minimal ``config`` stub at
 # collection time. Load this integration test against the real application
 # config without changing the module seen by those tests.
-_previous_config = sys.modules.pop("config", None)
+_previous_config = pop_module("realtime_subtitle.core.config")
 try:
-    config = importlib.import_module("config")
+    config = importlib.import_module("realtime_subtitle.core.config")
     # A preceding collection module may already have imported these modules
     # against its own temporary real-config instance. Bind their runtime
     # globals to this test module's deliberately retained config object so
     # per-test monkeypatches affect the code under test.
-    from local_inference import asr_qwen3 as _asr_qwen3_module
-    from local_inference import recognizer as _recognizer_module
+    from realtime_subtitle.local_inference import asr_qwen3 as _asr_qwen3_module
+    from realtime_subtitle.local_inference import recognizer as _recognizer_module
     _asr_qwen3_module.config = config
     _recognizer_module.config = config
-    from local_inference.asr_qwen3 import Qwen3ASREngine
-    from local_inference.recognizer import LocalQwenRecognizer
-    from local_inference.semantic_boundary import BoundaryCommit
-    from local_session import LocalInferenceSession
-    from local_inference.subtitle_pipeline import LocalSubtitlePipeline
+    from realtime_subtitle.local_inference.asr_qwen3 import Qwen3ASREngine
+    from realtime_subtitle.local_inference.recognizer import LocalQwenRecognizer
+    from realtime_subtitle.local_inference.semantic_boundary import BoundaryCommit
+    from realtime_subtitle.sessions.local_session import LocalInferenceSession
+    from realtime_subtitle.local_inference.subtitle_pipeline import LocalSubtitlePipeline
 finally:
     if _previous_config is None:
-        sys.modules.pop("config", None)
+        pop_module("realtime_subtitle.core.config")
     else:
-        sys.modules["config"] = _previous_config
+        set_module("realtime_subtitle.core.config", _previous_config)
 
 
 def _session():
@@ -50,7 +51,7 @@ def test_local_provider_language_and_capability_matrix():
     ordered = config.get_language_codes_ordered("local")
     assert ordered[:4] == ["en", "zh", "ja", "ko"]
     assert len(ordered) == len(set(ordered)) == 38
-    from shared.hymt_languages import HYMT2_LANGUAGE_NAMES
+    from realtime_subtitle.shared.hymt_languages import HYMT2_LANGUAGE_NAMES
     assert ordered[4:] == sorted(ordered[4:], key=lambda code: HYMT2_LANGUAGE_NAMES[code].casefold())
     # A target need not be recognizable as ASR input.
     assert "bo" in ordered and "bo" not in _asr_qwen3_module._LANG_MAP
@@ -139,7 +140,7 @@ def test_local_start_and_resume_preserve_two_way_mode(monkeypatch):
     session = _session()
     session._check_models = Mock()
     session._start_relay_link = Mock()
-    monkeypatch.setattr("local_session.threading.Thread", Mock())
+    monkeypatch.setattr("realtime_subtitle.sessions.local_session.threading.Thread", Mock())
 
     assert session.start(None, "pcm_s16le", "two_way", object(), "zh")
     assert session.translation == "two_way"
@@ -151,7 +152,7 @@ def test_local_start_and_resume_preserve_two_way_mode(monkeypatch):
 
 @pytest.mark.parametrize("mode", ["fast", "hybrid", "accurate"])
 def test_local_two_way_pipeline_llm_and_osc_share_direction(monkeypatch, mode):
-    import soniox_session
+    import realtime_subtitle.sessions.soniox_session as soniox_session
 
     monkeypatch.setattr(soniox_session, "is_llm_refine_available", lambda: True)
     send_osc = Mock(return_value=1)
@@ -334,7 +335,7 @@ def test_reused_partial_keeps_detected_language_metadata():
 
 
 def test_frozen_gpu_probe_uses_executable_helper(monkeypatch):
-    from local_inference import gpu_devices
+    from realtime_subtitle.local_inference import gpu_devices
 
     gpu_devices._probe_cache = None
     monkeypatch.setattr(gpu_devices.sys, "frozen", True, raising=False)
@@ -416,7 +417,7 @@ def test_qwen_forced_language_keeps_plain_transcription_including_literal_langua
 
 @pytest.mark.parametrize("language", [None, "Vietnamese"])
 def test_qwen_prompt_requests_metadata_only_in_auto_mode(language):
-    from local_inference.qwen3_asr_mtmd import MtmdQwenASR
+    from realtime_subtitle.local_inference.qwen3_asr_mtmd import MtmdQwenASR
 
     engine = object.__new__(MtmdQwenASR)
     engine.ID_IM_START, engine.ID_IM_END = 512, 513
@@ -931,7 +932,7 @@ def test_translation_off_at_start_does_not_require_the_translation_model(monkeyp
     session = _session()
     session._check_models = Mock()
     session._start_relay_link = Mock()
-    monkeypatch.setattr("local_session.threading.Thread", Mock())
+    monkeypatch.setattr("realtime_subtitle.sessions.local_session.threading.Thread", Mock())
     assert session.set_translation_mode("off") == (True, "off", False)
     assert session.start(None, "pcm_s16le", "one_way", object(), "zh")
     session._check_models.assert_called_once_with(False)
@@ -940,7 +941,7 @@ def test_translation_off_at_start_does_not_require_the_translation_model(monkeyp
 
 
 def test_hosted_mode_opens_the_relay_link_and_routes_llm_frames_through_it(monkeypatch):
-    import local_session
+    import realtime_subtitle.sessions.local_session as local_session
     session = _session()
     links = []
 

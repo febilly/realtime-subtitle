@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import sentence_segmentation as seg
+import realtime_subtitle.text.sentence_segmentation as seg
 
 
 SHARED_CASES = json.loads(

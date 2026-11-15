@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import config  # noqa: E402
+import realtime_subtitle.core.config as config  # noqa: E402
 
 LEGACY_SETTINGS = {
     "LOCAL_QWEN_ASR_TEMPERATURE": 0.4,
@@ -75,8 +75,8 @@ def run(args: argparse.Namespace) -> None:
         format="%(asctime)s %(name)s %(message)s",
         handlers=[logging.FileHandler(args.out.with_suffix(".log"), "w", "utf-8")],
     )
-    from local_inference.recognizer import LocalQwenRecognizer
-    from local_inference.subtitle_pipeline import LocalSubtitlePipeline
+    from realtime_subtitle.local_inference.recognizer import LocalQwenRecognizer
+    from realtime_subtitle.local_inference.subtitle_pipeline import LocalSubtitlePipeline
 
     audio = load_wav(args.wav, args.start, args.duration)
     lock = threading.Lock()
@@ -107,7 +107,7 @@ def run(args: argparse.Namespace) -> None:
     translator_factory = None
     warm = None
     if args.mt:
-        from streaming_translation import HyMT2API
+        from realtime_subtitle.streaming_translation import HyMT2API
 
         def translator_factory():
             translator = HyMT2API(backend="local", local_device=config.LOCAL_TRANSLATION_DEVICE)
@@ -167,7 +167,7 @@ def run(args: argparse.Namespace) -> None:
 
 
 def reference(args: argparse.Namespace) -> None:
-    from local_inference.asr_qwen3 import Qwen3ASREngine
+    from realtime_subtitle.local_inference.asr_qwen3 import Qwen3ASREngine
 
     audio = load_wav(args.wav, args.start, args.duration)
     frame = 1600

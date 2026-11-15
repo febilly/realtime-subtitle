@@ -7,11 +7,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import llm_log
-import local_store
-import logger
-import network_debug
-from relay_errors import RELAY_CLOSE_CODES, relay_close_info
+import realtime_subtitle.llm.llm_log as llm_log
+import realtime_subtitle.core.local_store as local_store
+import realtime_subtitle.core.logger as logger
+import realtime_subtitle.core.network_debug as network_debug
+from realtime_subtitle.hosted.relay_errors import RELAY_CLOSE_CODES, relay_close_info
 
 
 @pytest.fixture(autouse=True)
@@ -319,7 +319,7 @@ def test_relay_close_info_returns_all_known_mappings(code):
 
 
 def test_relay_http_402_maps_to_billing_exhausted():
-    from relay_errors import RelayConnectionRequestError, relay_error_info
+    from realtime_subtitle.hosted.relay_errors import RelayConnectionRequestError, relay_error_info
 
     error = RelayConnectionRequestError(402, '{"detail":"Insufficient credits"}')
 
@@ -336,7 +336,7 @@ def test_relay_http_402_maps_to_billing_exhausted():
 def test_relay_http_error_prefers_the_close_code_in_the_body():
     """A ticket refused over a concurrency cap still has quota left, so it must
     not be reported as exhausted credits even though it arrives as a 402."""
-    from relay_errors import RelayConnectionRequestError, relay_error_info
+    from realtime_subtitle.hosted.relay_errors import RelayConnectionRequestError, relay_error_info
 
     error = RelayConnectionRequestError(
         402,
@@ -353,7 +353,7 @@ def test_relay_http_error_prefers_the_close_code_in_the_body():
 
 @pytest.mark.parametrize("detail", ["", "Payment Required", "{not json}", "[4005]"])
 def test_relay_http_error_falls_back_to_the_status_code(detail):
-    from relay_errors import RelayConnectionRequestError, relay_error_info
+    from realtime_subtitle.hosted.relay_errors import RelayConnectionRequestError, relay_error_info
 
     error = RelayConnectionRequestError(402, detail)
 

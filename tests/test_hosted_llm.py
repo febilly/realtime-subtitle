@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import hosted_llm
+import realtime_subtitle.hosted.hosted_llm as hosted_llm
 
 
 def test_handle_frame_only_consumes_llm_frames():

@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from overlay_window import (
+from realtime_subtitle.outputs.overlay_window import (
     _RUBY_SCHEME,
     FuriganaService,
     OverlayWindow,

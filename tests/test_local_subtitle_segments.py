@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from local_inference.subtitle_segments import StickySubtitleSegments
+from realtime_subtitle.local_inference.subtitle_segments import StickySubtitleSegments
 
 
 SHARED_SPLIT_CASES = [

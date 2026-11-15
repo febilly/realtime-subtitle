@@ -2,19 +2,20 @@ import importlib
 import sys
 
 import pytest
+from module_stubs import pop_module, set_module
 
 
 @pytest.fixture
 def restore_config_module():
-    """Reloading config replaces sys.modules['config']; other test modules
+    """Reloading config replaces sys.modules['realtime_subtitle.core.config']; other test modules
     (e.g. test_ipc_server) install their own mock config there, so snapshot and
     restore it to avoid cross-test pollution."""
-    original = sys.modules.get("config")
+    original = sys.modules.get("realtime_subtitle.core.config")
     yield
     if original is not None:
-        sys.modules["config"] = original
+        set_module("realtime_subtitle.core.config", original)
     else:
-        sys.modules.pop("config", None)
+        pop_module("realtime_subtitle.core.config")
 
 
 def _reload_config(monkeypatch, mode):
@@ -28,8 +29,8 @@ def _reload_config(monkeypatch, mode):
     monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
     # Drop whatever is currently registered (possibly another test's mock) and
     # import a fresh, real config under the patched environment.
-    sys.modules.pop("config", None)
-    import config
+    pop_module("realtime_subtitle.core.config")
+    import realtime_subtitle.core.config as config
     return importlib.reload(config)
 
 

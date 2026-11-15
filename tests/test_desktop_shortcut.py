@@ -4,7 +4,7 @@ from unittest.mock import call, patch
 
 import pytest
 
-import desktop_shortcut
+import realtime_subtitle.core.desktop_shortcut as desktop_shortcut
 
 
 def hosted_executable(version: str, directory: str = r"C:\Apps") -> Path:

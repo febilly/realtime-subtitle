@@ -1,4 +1,4 @@
-from gemini_key_setup import validate_gemini_api_key
+from realtime_subtitle.core.gemini_key_setup import validate_gemini_api_key
 
 
 def test_validate_gemini_api_key_accepts_valid_key():

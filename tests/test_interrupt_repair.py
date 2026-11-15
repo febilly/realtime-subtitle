@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-import interrupt_repair
-from interrupt_repair import InterruptRepairHistory, clone_tokens_for_merge
+import realtime_subtitle.text.interrupt_repair as interrupt_repair
+from realtime_subtitle.text.interrupt_repair import InterruptRepairHistory, clone_tokens_for_merge
 
 CONFIG = SimpleNamespace(
     SONIOX_INTERRUPT_REPAIR_ENABLED=True,

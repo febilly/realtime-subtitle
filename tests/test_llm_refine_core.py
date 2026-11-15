@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import llm_refine
+import realtime_subtitle.llm.llm_refine as llm_refine
 
 
 @pytest.fixture(autouse=True)

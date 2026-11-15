@@ -1,6 +1,6 @@
 import json
 
-from soniox_key_setup import validate_soniox_api_key
+from realtime_subtitle.core.soniox_key_setup import validate_soniox_api_key
 
 
 class _AcceptedWebSocket:

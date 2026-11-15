@@ -5,16 +5,17 @@ from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from module_stubs import monkeypatch_module
 
 
 def _install_soniox_session_import_mocks(monkeypatch):
-    monkeypatch.delitem(sys.modules, "soniox_session", raising=False)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.sessions.soniox_session", None)
     # The shared base binds osc_manager/config at import: reload it with the stubs.
-    monkeypatch.delitem(sys.modules, "realtime_session_base", raising=False)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.sessions.realtime_session_base", None)
     # Re-import the shared LLM helper fresh so it binds to this test's mocked
     # config / llm_client rather than a version cached by an earlier test.
-    monkeypatch.delitem(sys.modules, "llm_refine", raising=False)
-    config = ModuleType("config")
+    monkeypatch_module(monkeypatch, "realtime_subtitle.llm.llm_refine", None)
+    config = ModuleType("realtime_subtitle.core.config")
     config.SONIOX_WEBSOCKET_URL = "wss://example.invalid"
     config.SONIOX_STREAM_DURATION_SECONDS = None
     config.SONIOX_SLEEP_ON_SILENCE = False
@@ -69,36 +70,36 @@ def _install_soniox_session_import_mocks(monkeypatch):
     config.TARGET_LANG_1 = "en"
     config.TARGET_LANG_2 = "zh"
     config.describe_target_language = lambda lang: lang
-    monkeypatch.setitem(sys.modules, "config", config)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", config)
 
-    soniox_client = ModuleType("soniox_client")
+    soniox_client = ModuleType("realtime_subtitle.sessions.soniox_client")
     soniox_client.get_config = lambda *args, **kwargs: {"api_key": args[0] if args else ""}
-    monkeypatch.setitem(sys.modules, "soniox_client", soniox_client)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.sessions.soniox_client", soniox_client)
 
-    audio_capture = ModuleType("audio_capture")
+    audio_capture = ModuleType("realtime_subtitle.audio.audio_capture")
     audio_capture.AudioStreamer = MagicMock()
-    monkeypatch.setitem(sys.modules, "audio_capture", audio_capture)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.audio.audio_capture", audio_capture)
 
-    osc_manager = ModuleType("osc_manager")
+    osc_manager = ModuleType("realtime_subtitle.outputs.osc_manager")
     osc_manager.osc_manager = MagicMock()
-    monkeypatch.setitem(sys.modules, "osc_manager", osc_manager)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.outputs.osc_manager", osc_manager)
 
     # Session lifecycle tests must not persist usage to the real settings store.
-    timed_notifications = ModuleType("timed_notifications")
+    timed_notifications = ModuleType("realtime_subtitle.core.timed_notifications")
     timed_notifications.record_usage = MagicMock()
-    monkeypatch.setitem(sys.modules, "timed_notifications", timed_notifications)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.timed_notifications", timed_notifications)
 
-    llm_client = ModuleType("llm_client")
+    llm_client = ModuleType("realtime_subtitle.llm.llm_client")
     llm_client.LlmConfig = MagicMock()
     llm_client.chat_completion = MagicMock()
     llm_client.extract_answer_tag = lambda text: text
     llm_client.LlmError = RuntimeError
-    monkeypatch.setitem(sys.modules, "llm_client", llm_client)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.llm.llm_client", llm_client)
 
 
 def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -161,7 +162,7 @@ def test_soniox_response_uses_per_stream_sent_count(monkeypatch):
 
 def test_soniox_response_capture_includes_raw_batch_and_active_modes(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     capture = MagicMock()
     monkeypatch.setattr(module.soniox_response_log, "log_response", capture)
@@ -212,8 +213,8 @@ def _separator_in_updates(updates):
 
 def test_relay_http_402_broadcasts_billing_exhausted_disconnect(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
-    from relay_errors import RelayConnectionRequestError
+    import realtime_subtitle.sessions.soniox_session as module
+    from realtime_subtitle.hosted.relay_errors import RelayConnectionRequestError
 
     updates = []
 
@@ -246,8 +247,8 @@ def test_relay_http_402_concurrency_code_broadcasts_concurrency_disconnect(monke
     """Admission answers a concurrency cap with the same 402 as an exhausted
     allowance, so only the close code in the body tells the two apart."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
-    from relay_errors import RelayConnectionRequestError
+    import realtime_subtitle.sessions.soniox_session as module
+    from realtime_subtitle.hosted.relay_errors import RelayConnectionRequestError
 
     updates = []
 
@@ -296,7 +297,7 @@ def _feed_original(session, text, language):
 
 def test_same_language_source_punctuation_segments_in_punctuation_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -318,7 +319,7 @@ def test_same_language_source_punctuation_segments_in_punctuation_mode(monkeypat
 
 def test_standalone_translation_punctuation_segments_in_punctuation_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -407,7 +408,7 @@ def test_punctuation_separator_lands_at_period_within_batch(monkeypatch):
     words that follow it in a single batch, the line break must be inserted right
     after the period, not at the end of the batch."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -435,7 +436,7 @@ def test_punctuation_separator_lands_at_period_within_batch(monkeypatch):
 
 def _final_kinds_for_translation_off_batch(monkeypatch, texts):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -478,7 +479,7 @@ def test_translation_off_splits_two_sentences_in_one_batch(monkeypatch):
 
 def test_punctuation_does_not_split_unspaced_decimal_point(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -506,7 +507,7 @@ def test_punctuation_does_not_split_spaced_decimal_inside_one_chinese_token(monk
     """Soniox can finalize one token containing ``5. 3%``. The space is token
     formatting inside the decimal, not a sentence boundary."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -531,7 +532,7 @@ def test_punctuation_does_not_split_spaced_decimal_inside_one_chinese_token(monk
 
 def test_punctuation_does_not_split_chinese_decimal_with_standalone_period_token(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -555,7 +556,7 @@ def test_punctuation_does_not_split_chinese_decimal_with_standalone_period_token
 
 def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -636,7 +637,7 @@ def test_punctuation_does_not_split_decimal_point_across_batches(monkeypatch):
 
 def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -702,7 +703,7 @@ def test_punctuation_flushes_pending_numeric_period_before_next_sentence(monkeyp
 ])
 def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatch, first, second):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -776,7 +777,7 @@ def test_punctuation_does_not_split_am_pm_abbreviation_across_batches(monkeypatc
 
 def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -834,7 +835,7 @@ def test_punctuation_flushes_abbreviation_prefix_when_not_continued(monkeypatch)
 
 def test_punctuation_keeps_closing_quote_with_previous_sentence(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -860,7 +861,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence(monkeypatch):
 
 def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -941,7 +942,7 @@ def test_punctuation_keeps_closing_quote_with_previous_sentence_across_batches(m
 
 def test_punctuation_quoted_sentence_in_one_token_splits_after_quote(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -967,7 +968,7 @@ def test_punctuation_quoted_sentence_in_one_token_splits_after_quote(monkeypatch
 
 def _translation_off_session(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1292,7 +1293,7 @@ def test_endpoint_split_keeps_late_translation_with_its_own_sentence(monkeypatch
     <end>. The line break must still land before the next sentence so the next
     sentence's translation does not run onto the previous translation."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1334,7 +1335,7 @@ def test_endpoint_split_keeps_late_translation_with_its_own_sentence(monkeypatch
 
 def test_cross_language_source_punctuation_does_not_segment_in_punctuation_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1360,7 +1361,7 @@ def test_accurate_mode_cross_language_source_segments_in_punctuation_mode(monkey
     cross-language sentence (which normally waits for a translation) never
     triggers the LLM translate at all."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1386,7 +1387,7 @@ def test_accurate_mode_segments_period_on_fragmented_word_suffix(monkeypatch):
     """Raw-token regression from responses_20260713_011610: Soniox emitted
     here. as " her" + "e." before the next sentence."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1448,7 +1449,7 @@ def test_accurate_mode_cross_language_source_segments_in_translation_mode(monkey
     """Same as above but in translation segment mode: the source-punctuation
     fallback must fire in accurate mode even though the source is cross-language."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1477,7 +1478,7 @@ def test_accurate_translation_mode_forces_punctuation_segmentation(monkeypatch):
     dispatched them as one blob (and re-translated it despite per-sentence
     speculative results)."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     session = module.SonioxSession(MagicMock(), MagicMock())
     session._segment_mode = "translation"
@@ -1496,7 +1497,7 @@ def test_accurate_translation_mode_forces_punctuation_segmentation(monkeypatch):
 
 def test_accurate_quota_exhaustion_turns_translation_off_without_restart(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     session = module.SonioxSession(MagicMock(), MagicMock())
     assert session.set_translation_mode("accurate") == (True, "accurate", True)
@@ -1528,7 +1529,7 @@ def test_outgoing_final_tokens_carry_llm_sentence_id_in_punctuation_mode(monkeyp
     the buffer opens — otherwise the frontend can never match refine_result to
     its sentence (准确 mode has no translation text to fall back on)."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1689,7 +1690,7 @@ def _feed_original_and_translation_pair_with_endpoint(session, source, translati
 
 def test_hybrid_finalize_without_interim_translation_refines_stt_draft(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1730,7 +1731,7 @@ def test_hybrid_finalize_without_interim_translation_refines_stt_draft(monkeypat
 
 def test_hybrid_immediate_finalize_after_translation_candidate_refines_stt_draft(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1771,7 +1772,7 @@ def test_hybrid_immediate_finalize_after_translation_candidate_refines_stt_draft
 
 def test_hybrid_finalize_with_interim_translation_refines_final_stt_translation(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1813,7 +1814,7 @@ def test_hybrid_finalize_with_interim_translation_refines_final_stt_translation(
 
 def test_hybrid_final_translation_seen_before_sentence_end_uses_refine(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1852,7 +1853,7 @@ def test_hybrid_final_translation_seen_before_sentence_end_uses_refine(monkeypat
 
 def test_hybrid_endpoint_finalizes_short_sentence_with_refine(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1900,7 +1901,7 @@ def test_hybrid_endpoint_finalizes_short_sentence_with_refine(monkeypatch):
 
 def test_hybrid_source_punctuation_short_sentence_uses_refine(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1947,7 +1948,7 @@ def test_hybrid_source_punctuation_short_sentence_uses_refine(monkeypatch):
 
 def test_hybrid_finalize_with_interim_translation_keeps_stt_when_refine_no_change(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1986,7 +1987,7 @@ def test_hybrid_finalize_with_interim_translation_keeps_stt_when_refine_no_chang
 
 def test_perform_refine_accepts_plain_replacement(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     session = module.SonioxSession(MagicMock(), MagicMock())
 
@@ -2006,7 +2007,7 @@ def test_perform_refine_accepts_plain_replacement(monkeypatch):
 
 def test_perform_refine_accepts_plain_no_change_marker(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     session = module.SonioxSession(MagicMock(), MagicMock())
 
@@ -2026,7 +2027,7 @@ def test_accurate_mode_speculative_translation_fires_instantly_and_reuses_cache(
     delay), broadcasts a pending marker + the result, and finalization reuses
     the cached result without a second (double-billed) LLM call."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2080,7 +2081,7 @@ def test_accurate_mode_finalize_broadcasts_pending_placeholder(monkeypatch):
     broadcast a pending marker BEFORE the call so the UI shows the ZH
     placeholder immediately, not only for speculative (non-final) runs."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2120,7 +2121,7 @@ def test_accurate_mode_speculative_cooldown_limits_flip_flop_requests(monkeypatc
     cooldown must wait for it to expire (and still be present) before firing,
     so flip-flopping interim results cannot spam LLM requests."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2166,7 +2167,7 @@ def test_accurate_mode_speculative_cooldown_limits_flip_flop_requests(monkeypatc
 
 def test_same_language_source_punctuation_segments_in_translation_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2188,7 +2189,7 @@ def test_same_language_source_punctuation_segments_in_translation_mode(monkeypat
 
 def test_split_into_sentence_lines(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     session = module.SonioxSession(MagicMock(), lambda *_: None)
     split = session._split_into_sentence_lines
@@ -2207,10 +2208,10 @@ def test_split_into_sentence_lines(monkeypatch):
 
 def test_stream_key_refresh_skips_temp_key_fetch_in_relay_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     get_api_key = MagicMock(side_effect=AssertionError("should not fetch temp key"))
-    sys.modules["soniox_client"].get_api_key = get_api_key
+    sys.modules["realtime_subtitle.sessions.soniox_client"].get_api_key = get_api_key
     module.config.RELAY_MODE = True
     module.config.SONIOX_USES_TEMP_API_KEY = True
     module.config.SONIOX_TEMP_KEY_URL = None
@@ -2222,10 +2223,10 @@ def test_stream_key_refresh_skips_temp_key_fetch_in_relay_mode(monkeypatch):
 
 def test_stream_key_refresh_skips_missing_temp_key_url(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     get_api_key = MagicMock(side_effect=AssertionError("should not fetch temp key"))
-    sys.modules["soniox_client"].get_api_key = get_api_key
+    sys.modules["realtime_subtitle.sessions.soniox_client"].get_api_key = get_api_key
     module.config.RELAY_MODE = False
     module.config.SONIOX_USES_TEMP_API_KEY = True
     module.config.SONIOX_TEMP_KEY_URL = None
@@ -2237,7 +2238,7 @@ def test_stream_key_refresh_skips_missing_temp_key_url(monkeypatch):
 
 def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     async def broadcast(_data):
         return None
@@ -2254,7 +2255,7 @@ def test_stream_rollover_prepare_age_uses_fixed_patience_window(monkeypatch):
 
 def test_stream_rollover_disabled_in_relay_mode(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     module.config.RELAY_MODE = True
     module.config.SONIOX_USES_TEMP_API_KEY = True
@@ -2270,7 +2271,7 @@ def test_stream_rollover_disabled_in_relay_mode(monkeypatch):
 
 def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     relay_calls = []
     sent_payloads = []
@@ -2350,7 +2351,7 @@ def test_relay_stream_marks_translation_none_when_translation_disabled(monkeypat
 
 def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     close_calls = []
 
@@ -2396,7 +2397,7 @@ def test_run_session_finally_does_not_overwrite_user_stop_reason(monkeypatch):
 
 def test_run_session_wakes_at_sentence_pairing_deadline(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     recv_timeouts = []
 
@@ -2444,7 +2445,7 @@ def test_run_session_wakes_at_sentence_pairing_deadline(monkeypatch):
 
 def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     module.config.RELAY_MODE = False
     monkeypatch.setattr(module, "SONIOX_STREAM_DURATION_SECONDS", 30.0)
@@ -2463,7 +2464,7 @@ def test_stream_rollover_only_uses_direct_temp_soniox_keys(monkeypatch):
 
 def test_manual_finalize_fin_token_is_consumed_but_not_displayed(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2514,7 +2515,7 @@ def test_manual_finalize_fin_token_is_consumed_but_not_displayed(monkeypatch):
 
 def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     module.config.SONIOX_USES_TEMP_API_KEY = True
     monkeypatch.setattr(module, "SONIOX_STREAM_DURATION_SECONDS", 30.0)
@@ -2598,7 +2599,7 @@ def test_rollover_warmup_does_not_finalize_frontend_non_final(monkeypatch):
 
 def test_punctuation_speaker_change_finalizes_previous_speaker(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2700,7 +2701,7 @@ async def _fake_translate_ok(*args, **kwargs):
 
 def test_short_interrupt_retracts_first_fragment_and_llm_uses_merged_source(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2766,7 +2767,7 @@ def test_short_interrupt_retracts_first_fragment_and_llm_uses_merged_source(monk
 
 def test_short_interrupt_merges_on_first_non_final_continuation(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2808,7 +2809,7 @@ def test_short_interrupt_merges_on_first_non_final_continuation(monkeypatch):
 
 def test_short_interrupt_does_not_search_past_a_newer_sentence(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2834,7 +2835,7 @@ def test_short_interrupt_does_not_search_past_a_newer_sentence(monkeypatch):
 
 def test_short_interrupt_large_overlap_is_not_repaired(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2859,7 +2860,7 @@ def test_short_interrupt_large_overlap_is_not_repaired(monkeypatch):
 
 def test_short_interrupt_whitelist_ignores_case_and_punctuation(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2888,7 +2889,7 @@ def test_short_interrupt_whitelist_ignores_case_and_punctuation(monkeypatch):
 
 def test_short_interrupt_japanese_backchannel_whitelist_matches(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2917,7 +2918,7 @@ def test_short_interrupt_japanese_backchannel_whitelist_matches(monkeypatch):
 
 def test_short_interrupt_non_whitelisted_text_does_not_merge(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -2946,7 +2947,7 @@ def test_short_interrupt_non_whitelisted_text_does_not_merge(monkeypatch):
 
 def test_short_interrupt_whitelist_can_be_disabled(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     module.config.SONIOX_INTERRUPT_FILLER_WHITELIST_ENABLED = False
     updates = []
@@ -2976,7 +2977,7 @@ def test_short_interrupt_whitelist_can_be_disabled(monkeypatch):
 
 def test_short_interrupt_801ms_does_not_merge(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -3005,7 +3006,7 @@ def test_short_interrupt_801ms_does_not_merge(monkeypatch):
 
 def test_short_interrupt_missing_timestamps_does_not_merge(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -3036,7 +3037,7 @@ def test_short_interrupt_missing_timestamps_does_not_merge(monkeypatch):
 
 def test_short_interrupt_resume_gap_too_long_does_not_merge(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -3065,7 +3066,7 @@ def test_short_interrupt_resume_gap_too_long_does_not_merge(monkeypatch):
 
 def test_two_way_translation_can_use_source_as_translation_is_always_false(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     session = module.SonioxSession(MagicMock(), AsyncMock())
     session.translation = "two_way"
@@ -3091,7 +3092,7 @@ def test_two_way_translation_can_use_source_as_translation_is_always_false(monke
 
 def test_two_way_translation_select_osc_text_always_returns_translation(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     session = module.SonioxSession(MagicMock(), AsyncMock())
     session.translation = "two_way"
@@ -3112,7 +3113,7 @@ def test_two_way_translation_select_osc_text_always_returns_translation(monkeypa
 
 def test_two_way_translation_fast_mode_sends_partner_translations_to_osc(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     osc_messages = []
     module.osc_manager.add_message_and_send = MagicMock(
@@ -3145,7 +3146,7 @@ def test_two_way_translation_fast_mode_sends_partner_translations_to_osc(monkeyp
 
 def test_two_way_translation_hybrid_mode_refines_with_partner_target_lang(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     osc_messages = []
     module.osc_manager.add_message_and_send = MagicMock(
@@ -3193,7 +3194,7 @@ def test_two_way_translation_hybrid_mode_refines_with_partner_target_lang(monkey
 
 def test_two_way_translation_accurate_mode_translates_with_partner_target_lang(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     osc_messages = []
     module.osc_manager.add_message_and_send = MagicMock(
@@ -3239,7 +3240,7 @@ def test_two_way_translation_accurate_mode_translates_with_partner_target_lang(m
 
 def test_accurate_mode_does_not_llm_translate_when_translation_is_off(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     monkeypatch.setattr(module, "is_llm_refine_available", lambda: True)
 
@@ -3264,7 +3265,7 @@ def test_accurate_mode_does_not_llm_translate_when_translation_is_off(monkeypatc
 
 def test_two_way_translation_live_preview_sends_partner_translation_and_not_source(monkeypatch):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     preview_messages = []
     module.osc_manager.send_preview_messages_with_history = MagicMock(

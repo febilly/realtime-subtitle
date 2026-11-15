@@ -34,7 +34,7 @@ def test_fixtures_exist():
 @pytest.mark.parametrize("name", FIXTURES)
 def test_fixture_replays_to_expected_output(monkeypatch, name):
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     meta, records = segmentation_replay.load_fixture(name)
     frames, errors = segmentation_replay.replay(module, records, meta["config"])

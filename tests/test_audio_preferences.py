@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-import audio_capture
-import audio_preferences as prefs
-import local_store
-import window_audio
-from realtime_session_base import RealtimeSessionBase
+import realtime_subtitle.audio.audio_capture as audio_capture
+import realtime_subtitle.audio.audio_preferences as prefs
+import realtime_subtitle.core.local_store as local_store
+import realtime_subtitle.audio.window_audio as window_audio
+from realtime_subtitle.sessions.realtime_session_base import RealtimeSessionBase
 
 
 @pytest.fixture
@@ -156,7 +156,7 @@ def test_session_applies_whole_selection_and_saves_only_on_request(monkeypatch, 
     session.output_device_id = session.microphone_device_id = ""
     applied = []
     session.audio_streamer = SimpleNamespace(configure_capture=applied.append)
-    monkeypatch.setattr("realtime_session_base.USE_TWITCH_AUDIO_STREAM", False)
+    monkeypatch.setattr("realtime_subtitle.sessions.realtime_session_base.USE_TWITCH_AUDIO_STREAM", False)
     value = prefs.defaults() | {"microphone_enabled": True, "remember": True}
     assert session.set_audio_capture_settings(value)[0]
     assert applied == [value]
@@ -202,8 +202,8 @@ def test_apply_during_recorder_replacement_is_not_lost(monkeypatch, store):
         def start(self):
             assert self.settings == next_settings
 
-    monkeypatch.setattr("realtime_session_base.USE_TWITCH_AUDIO_STREAM", False)
-    monkeypatch.setattr("realtime_session_base.AudioStreamer", Recorder)
+    monkeypatch.setattr("realtime_subtitle.sessions.realtime_session_base.USE_TWITCH_AUDIO_STREAM", False)
+    monkeypatch.setattr("realtime_subtitle.sessions.realtime_session_base.AudioStreamer", Recorder)
     session._start_audio_streamer(SimpleNamespace())
     assert session.audio_streamer.settings == next_settings
 

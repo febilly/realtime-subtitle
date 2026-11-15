@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 
-from local_inference.subtitle_pipeline import LocalSubtitlePipeline
+from realtime_subtitle.local_inference.subtitle_pipeline import LocalSubtitlePipeline
 
 
 def wait_until(predicate, timeout: float = 3.0) -> None:

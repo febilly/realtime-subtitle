@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from local_inference.spec_decode import SpeculativeDecoder
+from realtime_subtitle.local_inference.spec_decode import SpeculativeDecoder
 
 VOCAB = 8
 STOP = 7

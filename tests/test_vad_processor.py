@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from local_inference.model_manager import (
+from realtime_subtitle.local_inference.model_manager import (
     firered_vad_cmvn_path,
     firered_vad_onnx_path,
 )
-from local_inference.vad_processor import FireRedStreamVAD
+from realtime_subtitle.local_inference.vad_processor import FireRedStreamVAD
 
 
 def _make_vad() -> FireRedStreamVAD:

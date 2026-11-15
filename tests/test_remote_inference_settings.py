@@ -7,19 +7,20 @@ import pytest
 
 # Imported here so the web_module fixture's sys.modules restore cannot drop it
 # between tests, which would leave monkeypatch patching a stale module.
-import local_inference.remote_client
+import realtime_subtitle.local_inference.remote_client
+from module_stubs import patch_modules, pop_module
 
 
 @pytest.fixture
 def web_module():
     # Legacy suites leave a minimal config stub in sys.modules at collection.
     # Import the actual handler against the retained real session config.
-    from local_session import config
+    from realtime_subtitle.sessions.local_session import config
     # Restore the module cache too: later legacy suites intentionally import
     # WebServer against their own aiohttp/config stubs.
-    with patch.dict(sys.modules, {"config": config}):
-        sys.modules.pop("web_server", None)
-        import web_server
+    with patch_modules({"realtime_subtitle.core.config": config}):
+        pop_module("realtime_subtitle.web.web_server")
+        import realtime_subtitle.web.web_server as web_server
         yield web_server
 
 
@@ -27,7 +28,7 @@ def web_module():
 def test_probe_rejects_invalid_payload_before_network(monkeypatch, payload, web_module):
     module = web_module
     probe = Mock(side_effect=AssertionError("invalid endpoint reached network"))
-    monkeypatch.setattr("local_inference.remote_client.probe_remote_server", probe)
+    monkeypatch.setattr("realtime_subtitle.local_inference.remote_client.probe_remote_server", probe)
     monkeypatch.setattr(module, "LOCK_MANUAL_CONTROLS", False)
     monkeypatch.setattr(module, "web", SimpleNamespace(json_response=lambda data, status=200: (data, status)))
     request = SimpleNamespace(json=AsyncMock(return_value=payload))
@@ -40,7 +41,7 @@ def test_probe_rejects_invalid_payload_before_network(monkeypatch, payload, web_
 def test_probe_uses_bounded_ws_health_and_normalizes_required_model_status(monkeypatch, web_module):
     module = web_module
     probe = Mock(return_value={"ready": False, "models": {"qwen3-asr": {"ready": True}, "hymt2": {"ready": True}}})
-    monkeypatch.setattr("local_inference.remote_client.probe_remote_server", probe)
+    monkeypatch.setattr("realtime_subtitle.local_inference.remote_client.probe_remote_server", probe)
     monkeypatch.setattr(module, "LOCK_MANUAL_CONTROLS", False)
     monkeypatch.setattr(module, "web", SimpleNamespace(json_response=lambda data, status=200: (data, status)))
     request = SimpleNamespace(json=AsyncMock(return_value={"server_url": "http://127.0.0.1:18775/"}))
@@ -54,7 +55,7 @@ def test_probe_uses_bounded_ws_health_and_normalizes_required_model_status(monke
 
 
 def test_bad_remote_config_does_not_partially_switch_backend(monkeypatch):
-    from local_session import config
+    from realtime_subtitle.sessions.local_session import config
     monkeypatch.setattr(config, "LOCAL_INFERENCE_BACKEND", "local")
     monkeypatch.setattr(config, "LOCAL_INFERENCE_SERVER_URL", "ws://127.0.0.1:18775")
     with pytest.raises(ValueError):

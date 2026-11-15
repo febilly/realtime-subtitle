@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import WSMsgType
+from module_stubs import pop_module, set_module
 
 class FakeWebSocketContext:
     def __init__(self, websocket):
@@ -36,19 +37,19 @@ class FakeHttpResponseContext:
 
 @pytest.fixture
 def ticket_notification_runtime():
-    previous_config = sys.modules.pop("config", None)
-    previous_web_server = sys.modules.pop("web_server", None)
+    previous_config = pop_module("realtime_subtitle.core.config")
+    previous_web_server = pop_module("realtime_subtitle.web.web_server")
     try:
-        config = importlib.import_module("config")
-        web_server = importlib.import_module("web_server")
+        config = importlib.import_module("realtime_subtitle.core.config")
+        web_server = importlib.import_module("realtime_subtitle.web.web_server")
         yield config, web_server.WebServer
     finally:
-        sys.modules.pop("web_server", None)
-        sys.modules.pop("config", None)
+        pop_module("realtime_subtitle.web.web_server")
+        pop_module("realtime_subtitle.core.config")
         if previous_web_server is not None:
-            sys.modules["web_server"] = previous_web_server
+            set_module("realtime_subtitle.web.web_server", previous_web_server)
         if previous_config is not None:
-            sys.modules["config"] = previous_config
+            set_module("realtime_subtitle.core.config", previous_config)
 
 
 @pytest.mark.asyncio

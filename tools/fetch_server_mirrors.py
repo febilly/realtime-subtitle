@@ -21,7 +21,7 @@ import sys
 import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from server_route import normalize_mirrors, parse_bundled_mirrors  # noqa: E402
+from realtime_subtitle.hosted.server_route import normalize_mirrors, parse_bundled_mirrors  # noqa: E402
 
 KEY = "SUBTITLE_SERVER_MIRRORS"
 

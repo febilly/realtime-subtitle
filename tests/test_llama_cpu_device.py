@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("gguf")
-from local_inference.vendor.qwen_asr_gguf.inference import llama
+from realtime_subtitle.local_inference.vendor.qwen_asr_gguf.inference import llama
 
 
 @pytest.mark.parametrize("layers", [0, 99, -1])

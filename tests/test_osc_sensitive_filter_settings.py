@@ -4,6 +4,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from module_stubs import pop_module, set_module
 
 
 class _Request:
@@ -16,19 +17,19 @@ class _Request:
 
 @pytest.fixture
 def real_web_server_module():
-    previous_config = sys.modules.pop("config", None)
-    previous_web_server = sys.modules.pop("web_server", None)
+    previous_config = pop_module("realtime_subtitle.core.config")
+    previous_web_server = pop_module("realtime_subtitle.web.web_server")
     try:
-        importlib.import_module("config")
-        web_server = importlib.import_module("web_server")
+        importlib.import_module("realtime_subtitle.core.config")
+        web_server = importlib.import_module("realtime_subtitle.web.web_server")
         yield web_server
     finally:
-        sys.modules.pop("web_server", None)
-        sys.modules.pop("config", None)
+        pop_module("realtime_subtitle.web.web_server")
+        pop_module("realtime_subtitle.core.config")
         if previous_web_server is not None:
-            sys.modules["web_server"] = previous_web_server
+            set_module("realtime_subtitle.web.web_server", previous_web_server)
         if previous_config is not None:
-            sys.modules["config"] = previous_config
+            set_module("realtime_subtitle.core.config", previous_config)
 
 
 def _json(response):

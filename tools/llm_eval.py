@@ -337,7 +337,7 @@ async def post_chat(
 
 
 def _build_messages(sample: dict[str, Any], mode: str) -> list[dict[str, str]]:
-    import llm_refine
+    import realtime_subtitle.llm.llm_refine as llm_refine
 
     if mode == "refine":
         return llm_refine.build_refine_messages(
@@ -356,7 +356,7 @@ def _build_messages(sample: dict[str, Any], mode: str) -> list[dict[str, str]]:
 
 
 def _extract_answer(text: str) -> str:
-    import llm_client
+    import realtime_subtitle.llm.llm_client as llm_client
 
     return llm_client.extract_answer_tag(text or "").strip().strip("`").strip()
 
@@ -368,7 +368,7 @@ def _parse_severity(text: str) -> str:
 
 
 def _final_translation(sample: dict[str, Any], mode: str, raw_content: str) -> dict[str, Any]:
-    import llm_refine
+    import realtime_subtitle.llm.llm_refine as llm_refine
 
     answer = _extract_answer(raw_content)
     severity = _parse_severity(raw_content)

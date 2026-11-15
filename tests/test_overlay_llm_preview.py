@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from overlay_window import OverlayWindow, SubtitleModel
+from realtime_subtitle.outputs.overlay_window import OverlayWindow, SubtitleModel
 
 
 APP = QApplication.instance() or QApplication([])

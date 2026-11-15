@@ -7,10 +7,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from module_stubs import monkeypatch_module, pop_module, set_module
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Mock config module before importing ipc_server
-mock_config = type(sys)("config")
+mock_config = type(sys)("realtime_subtitle.core.config")
 mock_config.IPC_HOST = "127.0.0.1"
 mock_config.IPC_DISCOVERY_FILE = os.path.join(tempfile.gettempdir(), "test_rt_discovery.json")
 mock_config.IPC_PORT_RANGE = range(24000, 24010)
@@ -24,8 +26,8 @@ mock_config.LOCAL_SETTINGS_FILE = os.environ.get(
     "LOCAL_SETTINGS_FILE",
     os.path.join(os.path.dirname(__file__), "..", "build", "test-local-settings.json"),
 )
-_previous_config = sys.modules.get("config")
-sys.modules["config"] = mock_config
+_previous_config = sys.modules.get("realtime_subtitle.core.config")
+set_module("realtime_subtitle.core.config", mock_config)
 
 # Mock vrchat_oscquery before importing osc_manager
 mock_vrchat_common = type(sys)("vrchat_oscquery.common")
@@ -39,9 +41,9 @@ mock_vrchat_threaded.vrc_osc = MagicMock()
 sys.modules["vrchat_oscquery.threaded"] = mock_vrchat_threaded
 sys.modules["vrchat_oscquery"] = type(sys)("vrchat_oscquery")
 
-from ipc_server import IPCServer
-from osc_manager import osc_manager as rt_osc
-from shared.vrchat_bridge import (
+from realtime_subtitle.web.ipc_server import IPCServer
+from realtime_subtitle.outputs.osc_manager import osc_manager as rt_osc
+from realtime_subtitle.shared.vrchat_bridge import (
     serialize_message,
     deserialize_message,
     YakutanMessage,
@@ -52,14 +54,14 @@ from shared.vrchat_bridge import (
 # Imports above bound the stub; put the real config back so later test
 # modules (e.g. llm_refine users) do not inherit it.
 if _previous_config is None:
-    sys.modules.pop("config", None)
+    pop_module("realtime_subtitle.core.config")
 else:
-    sys.modules["config"] = _previous_config
+    set_module("realtime_subtitle.core.config", _previous_config)
 
 
 @pytest.fixture(autouse=True)
 def _stub_config(monkeypatch):
-    monkeypatch.setitem(sys.modules, "config", mock_config)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", mock_config)
 
 
 @pytest.fixture(autouse=True)

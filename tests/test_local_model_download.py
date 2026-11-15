@@ -9,8 +9,8 @@ from urllib.error import HTTPError
 
 import pytest
 
-import config
-from local_inference import model_manager
+import realtime_subtitle.core.config as config
+from realtime_subtitle.local_inference import model_manager
 
 
 class FakeResponse:

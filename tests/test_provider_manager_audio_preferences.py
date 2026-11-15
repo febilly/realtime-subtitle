@@ -7,12 +7,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from server import ProviderManager
+from module_stubs import monkeypatch_module
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider,downgraded", [("local", False), ("soniox", False), ("gemini", True)])
 async def test_provider_switch_preserves_two_way_except_for_gemini(monkeypatch, provider, downgraded):
-    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", _get_real_config())
     manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
     manager.loop = asyncio.get_running_loop()
     manager.web_server = SimpleNamespace(session=None)
@@ -35,7 +36,7 @@ async def test_provider_switch_preserves_two_way_except_for_gemini(monkeypatch, 
 
 
 def _get_real_config():
-    spec = importlib.util.spec_from_file_location("config", "config.py")
+    spec = importlib.util.spec_from_file_location("realtime_subtitle.core.config", "realtime_subtitle/core/config.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -105,7 +106,7 @@ class FakeSession:
 
 @pytest.mark.asyncio
 async def test_provider_switch_preserves_audio_source_and_device_preferences(monkeypatch):
-    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", _get_real_config())
     logger = MagicMock()
     ipc_server = MagicMock()
     osc_manager = MagicMock()
@@ -145,7 +146,7 @@ async def test_provider_switch_reapplies_ui_translation_mode(monkeypatch):
     翻译模式 must be re-applied to it before start(), otherwise 准确 is silently
     lost and the new soniox stream opens with translation ON (billed at the
     full rate, stray translation tokens)."""
-    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", _get_real_config())
     logger = MagicMock()
     manager = ProviderManager(logger, MagicMock(), MagicMock(), AsyncMock())
     manager.loop = asyncio.get_running_loop()
@@ -172,8 +173,8 @@ async def test_provider_switch_reapplies_ui_translation_mode(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("provider", ["soniox", "gemini", "local"])
 async def test_seed_start_defers_only_local_model_loading(monkeypatch, provider):
-    monkeypatch.setitem(sys.modules, "config", _get_real_config())
-    monkeypatch.setattr(sys.modules["config"], "RELAY_AVAILABLE", False)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", _get_real_config())
+    monkeypatch.setattr(sys.modules["realtime_subtitle.core.config"], "RELAY_AVAILABLE", False)
     manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
     manager.provider = provider
     manager.loop = asyncio.get_running_loop()
@@ -193,7 +194,7 @@ async def test_seed_start_defers_only_local_model_loading(monkeypatch, provider)
 
     if provider == "local":
         # The normal resume path must start this never-started session.
-        from local_session import LocalInferenceSession
+        from realtime_subtitle.sessions.local_session import LocalInferenceSession
         assert LocalInferenceSession.resume(
             session, audio_format="pcm_s16le", translation="one_way",
             loop=manager.loop, translation_target_lang="zh",
@@ -205,7 +206,7 @@ async def test_seed_start_defers_only_local_model_loading(monkeypatch, provider)
 @pytest.mark.asyncio
 async def test_seed_start_waits_for_hosted_sign_in_before_fetching_temp_key(monkeypatch):
     config = _get_real_config()
-    monkeypatch.setitem(sys.modules, "config", config)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", config)
     monkeypatch.setattr(config, "RELAY_AVAILABLE", True)
     monkeypatch.delenv("SONIOX_API_KEY", raising=False)
     manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
@@ -228,7 +229,7 @@ async def test_seed_start_waits_for_hosted_sign_in_before_fetching_temp_key(monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["direct", "relay"])
 async def test_restoring_local_settings_stays_paused_until_manual_start(monkeypatch, mode):
-    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", _get_real_config())
     manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
     manager.loop = asyncio.get_running_loop()
     manager.web_server = SimpleNamespace(session=None)
@@ -250,7 +251,7 @@ async def test_restoring_local_settings_stays_paused_until_manual_start(monkeypa
 
 @pytest.mark.asyncio
 async def test_restoring_soniox_can_stay_paused(monkeypatch):
-    monkeypatch.setitem(sys.modules, "config", _get_real_config())
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", _get_real_config())
     manager = ProviderManager(MagicMock(), MagicMock(), MagicMock(), AsyncMock())
     manager.loop = asyncio.get_running_loop()
     manager.web_server = SimpleNamespace(session=None)

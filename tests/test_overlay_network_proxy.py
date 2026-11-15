@@ -3,7 +3,7 @@ import contextlib
 import urllib.request
 import pytest
 
-import overlay_window
+import realtime_subtitle.outputs.overlay_window as overlay_window
 
 
 def test_ws_connect_kwargs_disables_proxy():

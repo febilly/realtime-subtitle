@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import llm_client
+import realtime_subtitle.llm.llm_client as llm_client
 
 
 class FakeResponse:

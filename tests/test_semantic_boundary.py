@@ -1,6 +1,6 @@
 import pytest
 
-from local_inference.semantic_boundary import (
+from realtime_subtitle.local_inference.semantic_boundary import (
     LocalAgreementBoundaryDetector,
     deduplicate_normalized_replay,
     deduplicate_replayed_overlap,

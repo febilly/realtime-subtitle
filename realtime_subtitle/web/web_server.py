@@ -1,0 +1,2923 @@
+"""
+Web服务器模块 - 处理HTTP和WebSocket连接
+"""
+import json
+import asyncio
+import os
+import secrets
+import logging
+import time
+import aiohttp
+from aiohttp import web
+from aiohttp import WSMsgType
+
+import realtime_subtitle.core.config as config
+from realtime_subtitle.core.config import (
+    get_resource_path,
+    LOCK_MANUAL_CONTROLS,
+    ENABLE_CHROMA_THEME,
+    LLM_REFINE_DEFAULT_MODE,
+    LLM_REFINE_DIFF_MODE,
+    TRANSLATION_MODE,
+    get_capabilities,
+    get_language_codes_ordered,
+)
+from realtime_subtitle.core.config import (
+    is_llm_refine_available,
+)
+
+from realtime_subtitle.audio.audio_capture import (
+    list_microphone_devices,
+    list_output_devices,
+    normalize_microphone_device_id,
+    normalize_output_device_id,
+)
+from realtime_subtitle.llm.llm_client import close_llm_http_session
+import realtime_subtitle.core.local_store as local_store
+import realtime_subtitle.core.timed_notifications as timed_notifications
+import realtime_subtitle.core.desktop_shortcut as desktop_shortcut
+from realtime_subtitle.outputs.osc_manager import osc_manager
+
+logger = logging.getLogger("web_server")
+
+@web.middleware
+async def cache_bypass_middleware(request, handler):
+    """Add no-cache headers to all non-WS responses."""
+    response = await handler(request)
+    if isinstance(response, web.StreamResponse):
+        path = str(request.path or "")
+        if path.startswith("/kuromoji/"):
+            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+            response.headers.pop('Pragma', None)
+            response.headers.pop('Expires', None)
+        else:
+            response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+    return response
+
+
+
+class WebServer:
+    """Web服务器管理器"""
+    
+    def __init__(self, session, logger):
+        self.session = session
+        self.logger = logger
+        self.websocket_clients = set()
+        self.app_runner = None
+        self.api_key_error_message = None # 新增属性
+        self.window_on_top_callback = None
+        self.shutdown_callback = None
+        # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
+        self.overlay_manager = None
+        self.overlay_ws = None
+        # SteamVR 字幕悬浮窗进程管理器；仅在 openvr 可用时由 server.py 注入。
+        self.vr_overlay_manager = None
+        self.vr_overlay_ws = None
+        self.ipc_server = None
+        # Provider-specific API key getter; injected by server.py.
+        self.get_api_key = None
+        # Runtime provider/key manager (hot-switch); injected by server.py.
+        self.provider_manager = None
+        # Fallback session-lifecycle lock when no provider manager is wired.
+        self._fallback_lifecycle_lock = asyncio.Lock()
+        self._ipc_polling_task = None
+        # Lazy aiohttp client for proxying REST calls to the subtitle-server.
+        self._http = None
+        self._public_settings_task = None
+        self._public_settings_result = None
+        self._public_settings_checked_at = 0.0
+        self._ticket_notifications_task = None
+        self._ticket_notifications_connected = False
+        self._event_loop = None
+        self._osc_sensitive_filter_notice_triggered = False
+        self._osc_sensitive_filter_notice_delivered = False
+        self._osc_sensitive_filter_notice_callback = self._on_osc_sensitive_filter_triggered
+        stored_settings = local_store.load()
+        osc_manager.set_sensitive_filter_enabled(
+            str(stored_settings.get("oscSensitiveFilterEnabled", "true")).lower() == "true"
+        )
+        notice_disabled = (
+            str(stored_settings.get("oscSensitiveFilterNoticeDisabled", "false")).lower()
+            == "true"
+        )
+        osc_manager.set_sensitive_filter_notice_enabled(not notice_disabled)
+        # A client process reports its version only on its first successful
+        # startup account-validation GET /me request.
+        self._client_version_reported = False
+        self.use_bundled_cjk_fonts = False
+        self._frontend_frame_log = None
+        if os.getenv("FRONTEND_FRAME_LOG") == "1" and not os.getenv("PYTEST_CURRENT_TEST"):
+            try:
+                os.makedirs(os.path.join("logs", "frontend-frames"), exist_ok=True)
+                frame_name = f"frames_{time.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{time.time_ns()}_{secrets.token_hex(4)}.jsonl"
+                self._frontend_frame_log = open(
+                    os.path.join("logs", "frontend-frames", frame_name), "x", encoding="utf-8"
+                )
+            except Exception:
+                pass
+        # Pending hosted-login handshakes keyed by a one-time state nonce. Each
+        # entry: {"status": "pending"|"done"|"error", "result": {...}, "ts": float}.
+        # The web page bounces the login code back to /account/login-callback and
+        # the frontend polls /account/login-poll to complete sign-in.
+        self._login_states = {}
+
+    def set_window_on_top_callback(self, callback):
+        self.window_on_top_callback = callback
+
+    def set_shutdown_callback(self, callback):
+        self.shutdown_callback = callback
+        
+    async def _start_ipc_status_polling(self, app):
+        self._ipc_polling_task = asyncio.create_task(self._poll_ipc_status())
+        
+    async def _stop_ipc_status_polling(self, app):
+        if self._ipc_polling_task:
+            self._ipc_polling_task.cancel()
+            try:
+                await self._ipc_polling_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _start_osc_sensitive_filter_notifications(self, app):
+        self._event_loop = asyncio.get_running_loop()
+        osc_manager.set_sensitive_filter_notice_callback(
+            self._osc_sensitive_filter_notice_callback
+        )
+
+    async def _stop_osc_sensitive_filter_notifications(self, app):
+        osc_manager.clear_sensitive_filter_notice_callback(
+            self._osc_sensitive_filter_notice_callback
+        )
+        self._event_loop = None
+
+    def _on_osc_sensitive_filter_triggered(self):
+        """Thread-safe bridge from the synchronous OSC sender to aiohttp."""
+        self._osc_sensitive_filter_notice_triggered = True
+        loop = self._event_loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(self._deliver_osc_sensitive_filter_notice())
+        )
+
+    async def _deliver_osc_sensitive_filter_notice(self):
+        if (
+            not self._osc_sensitive_filter_notice_triggered
+            or self._osc_sensitive_filter_notice_delivered
+        ):
+            return False
+        regular_clients = [
+            client for client in self.websocket_clients
+            if client is not self.overlay_ws and client is not self.vr_overlay_ws
+        ]
+        if not regular_clients:
+            return False
+
+        # Reserve delivery before awaiting so a simultaneous connection/trigger
+        # cannot enqueue the startup-only notice twice.
+        self._osc_sensitive_filter_notice_delivered = True
+        message = json.dumps({"type": "osc_sensitive_filter_triggered"})
+        results = await asyncio.gather(
+            *[client.send_str(message) for client in regular_clients],
+            return_exceptions=True,
+        )
+        delivered = any(not isinstance(result, BaseException) for result in results)
+        if not delivered:
+            self._osc_sensitive_filter_notice_delivered = False
+        return delivered
+                
+    async def _poll_ipc_status(self):
+        last_status = None
+        while True:
+            try:
+                connected = False
+                if self.ipc_server is not None:
+                    connected = len(self.ipc_server._clients) > 0
+                
+                if last_status != connected:
+                    last_status = connected
+                    await self.broadcast_to_clients({
+                        "type": "ipc_status",
+                        "connected": connected
+                    })
+            except Exception as e:
+                self.logger.error(f"Error polling IPC status: {e}")
+            try:
+                await self._check_vr_overlay_process()
+            except Exception as e:
+                self.logger.error(f"Error checking VR overlay process: {e}")
+            await asyncio.sleep(2)
+
+    VR_OVERLAY_RESPAWN_INTERVAL = 5.0
+
+    async def _check_vr_overlay_process(self):
+        """VR 字幕开着但子进程没了（SteamVR 退出时把它杀掉、或 SteamVR 崩溃连带）：
+        重新拉起，让它继续静默等待 SteamVR 下次启动。"""
+        manager = self.vr_overlay_manager
+        if manager is None or not manager.is_visible or manager.is_open():
+            return False
+        now = time.monotonic()
+        last = getattr(self, "_vr_overlay_last_respawn", None)
+        if last is not None and now - last < self.VR_OVERLAY_RESPAWN_INTERVAL:
+            return False
+        self._vr_overlay_last_respawn = now
+        manager.connected = False
+        manager.open(hidden=True)
+        await self.broadcast_to_clients(self._vr_overlay_state_frame())
+        return True
+
+    async def ipc_status_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        connected = False
+        if self.ipc_server is not None:
+            connected = len(self.ipc_server._clients) > 0
+        return web.json_response({"connected": connected})
+
+    async def api_key_status_handler(self, request):
+        """返回API Key状态"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        status = "ok" if self.api_key_error_message is None else "error"
+        return web.json_response({"status": status, "message": self.api_key_error_message})
+    
+    async def broadcast_to_clients(self, data: dict):
+        """向所有连接的客户端广播数据"""
+        if data.get("type") == "server_notice":
+            try:
+                notice_id = self._remember_timed_notice(data.get("notice"))
+            except OSError:
+                config._queue_relay_notices([data.get("notice")])
+                logger.warning("Failed to retain server reminder; will retry", exc_info=True)
+                notice_id = None
+            data = {**data, "notice_id": notice_id}
+        if self._frontend_frame_log:
+            try:
+                self._frontend_frame_log.write(json.dumps(data, ensure_ascii=False) + "\n")
+                self._frontend_frame_log.flush()
+            except Exception:
+                try:
+                    self._frontend_frame_log.close()
+                except Exception:
+                    pass
+                self._frontend_frame_log = None
+        if self.websocket_clients:
+            # 创建消息
+            message = json.dumps(data)
+            # 向所有客户端发送
+            await asyncio.gather(
+                *[client.send_str(message) for client in self.websocket_clients],
+                return_exceptions=True
+            )
+    
+    async def websocket_handler(self, request):
+        """WebSocket处理函数"""
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        
+        # 识别是否是悬浮窗客户端
+        client_type = request.query.get("client")
+        if client_type == "overlay":
+            self.overlay_ws = ws
+            print("Overlay window client connected via WebSocket.")
+        elif client_type == "vr_overlay":
+            self.vr_overlay_ws = ws
+            print("VR overlay client connected via WebSocket.")
+
+        # 添加到客户端列表
+        self.websocket_clients.add(ws)
+        print(f"Client connected. Total clients: {len(self.websocket_clients)}")
+
+        if client_type not in ("overlay", "vr_overlay"):
+            await self._deliver_osc_sensitive_filter_notice()
+        
+        try:
+            connected = False
+            if self.ipc_server is not None:
+                connected = len(self.ipc_server._clients) > 0
+            await ws.send_str(json.dumps({"type": "ipc_status", "connected": connected}))
+            
+            # 发送当前悬浮窗显隐状态给新连入的客户端
+            is_visible = False
+            if self.overlay_manager is not None:
+                is_visible = getattr(self.overlay_manager, "is_visible", False)
+            await ws.send_str(json.dumps({"type": "overlay_visibility", "visible": is_visible}))
+            if self.vr_overlay_manager is not None:
+                await ws.send_str(json.dumps(self._vr_overlay_state_frame()))
+                await ws.send_str(json.dumps(self._vr_overlay_config_frame()))
+
+            # 发送当前识别暂停状态给新连入的客户端
+            is_paused = getattr(self.session, "is_paused", False)
+            await ws.send_str(json.dumps({"type": "recognition_paused", "paused": is_paused}))
+
+            await ws.send_str(json.dumps({
+                "type": "subtitle_font_preference",
+                "use_bundled_cjk_fonts": bool(self.use_bundled_cjk_fonts and self.check_custom_font_exists()),
+            }))
+            await ws.send_str(json.dumps({
+                "type": "ticket_notifications_ready",
+                "connected": self._ticket_notifications_connected,
+            }))
+
+            manager = self.provider_manager
+            if manager is not None:
+                if getattr(self.session, "_relay_session_active", False):
+                    if manager.mode == "relay":
+                        await ws.send_str(json.dumps({"type": "session_connected"}))
+                else:
+                    last_disconnect = getattr(self.session, "last_disconnect_payload", None)
+                    if last_disconnect is not None:
+                        await ws.send_str(json.dumps(last_disconnect))
+        except Exception as e:
+            self.logger.error(f"Failed to send initial IPC status to client: {e}")
+
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    # 处理客户端消息（如果需要）
+                    pass
+                elif msg.type == WSMsgType.ERROR:
+                    print(f'WebSocket connection closed with exception {ws.exception()}')
+        except Exception as e:
+            print(f"WebSocket error: {e}")
+        finally:
+            if client_type == "overlay":
+                if getattr(self, "overlay_ws", None) == ws:
+                    self.overlay_ws = None
+                    print("Overlay window client disconnected.")
+            elif client_type == "vr_overlay":
+                if getattr(self, "vr_overlay_ws", None) == ws:
+                    self.vr_overlay_ws = None
+                    print("VR overlay client disconnected.")
+            # 从客户端列表移除
+            self.websocket_clients.discard(ws)
+            print(f"Client disconnected. Total clients: {len(self.websocket_clients)}")
+        
+        return ws
+    
+    async def health_handler(self, request):
+        """健康检查端点 - 用于浏览器定期检测服务器是否存活"""
+        return web.json_response({"status": "ok"})
+
+    def _remember_timed_notice(self, notice):
+        if not isinstance(notice, dict) or notice.get("id") not in config.RELAY_NOTICES_SUPPORTED:
+            return None
+        return timed_notifications.remember_server_notice(notice)
+
+    async def timed_notifications_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"message": "localhost only"}, status=403)
+        try:
+            # A relay connection can have returned its notices before the UI
+            # opens or before the recognition-session broadcast occurs.
+            pending = config.take_relay_notices()
+            for index, notice in enumerate(pending):
+                try:
+                    self._remember_timed_notice(notice)
+                except OSError:
+                    config._queue_relay_notices(pending[index:])
+                    raise
+            if request.method == "POST":
+                payload = await request.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Invalid payload")
+                if payload.get("disable_star") is True:
+                    timed_notifications.disable_star()
+                    return web.json_response({"ok": True})
+                kind = payload.get("kind")
+                notice_id = payload.get("notice_id")
+                result = timed_notifications.claim(kind, notice_id=notice_id)
+                return web.json_response(result)
+            state = timed_notifications.snapshot()
+            return web.json_response(state)
+        except (ValueError, TypeError):
+            return web.json_response({"message": "Invalid timed notification request"}, status=400)
+        except OSError:
+            logger.warning("Failed to persist timed notification state", exc_info=True)
+            return web.json_response({"message": "Notification storage unavailable"}, status=503)
+
+    async def local_store_get_handler(self, request):
+        """返回跨实例共享的浏览器设置（localStorage 镜像）。
+
+        每个实例都连自己的后端，但后端读写的是同一个共享文件，因此第二个
+        实例（不同端口/origin）也能拿到第一个实例保存的设置与登录信息。
+        """
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            return web.json_response({"store": local_store.load()})
+        except Exception as e:
+            logger.warning(f"Failed to read local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    async def local_store_post_handler(self, request):
+        """写入共享设置：{set:{k:v}, remove:[k], clear:bool}。"""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
+
+        try:
+            if payload.get("clear"):
+                store = local_store.clear()
+                return web.json_response({"status": "ok", "store": store})
+
+            updates = payload.get("set")
+            removals = payload.get("remove")
+            if updates is not None and not isinstance(updates, dict):
+                return web.json_response({"status": "error", "message": "'set' must be an object"}, status=400)
+            if removals is not None and not isinstance(removals, list):
+                return web.json_response({"status": "error", "message": "'remove' must be an array"}, status=400)
+            store = local_store.merge(updates=updates, removals=removals)
+            return web.json_response({"status": "ok", "store": store})
+        except Exception as e:
+            logger.warning(f"Failed to update local store: {e}")
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    def _supports_segment_mode(self) -> bool:
+        return hasattr(self.session, "get_segment_mode")
+
+    async def ui_config_handler(self, request):
+        """前端 UI 配置下发"""
+        # Read provider-dependent values dynamically so runtime hot-switches are
+        # reflected immediately.
+        provider = config.TRANSLATION_PROVIDER
+        manager = self.provider_manager
+        capabilities = get_capabilities(provider)
+        # The links the UI builds (login, dashboard) use the route chosen at startup.
+        if config.RELAY_AVAILABLE:
+            await self._await_server_route()
+        # In hosted mode the LLM tuning (availability, context window, timeout) is
+        # delivered by the server; refresh it so the fields below reflect it.
+        if config.RELAY_MODE:
+            await self._refresh_hosted_llm_config()
+        payload = {
+            "offline_mode": bool(getattr(self, "offline_mode", False)),
+            "recognition_paused": bool(getattr(self.session, "is_paused", False)),
+            "provider": provider,
+            "providers": ["soniox", "gemini", "local"],
+            "capabilities": capabilities,
+            "languages": get_language_codes_ordered(provider),
+            "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
+            "enable_chroma_theme": bool(ENABLE_CHROMA_THEME),
+            "translation_target_lang": self.session.get_translation_target_lang(),
+            "llm_refine_available": bool(is_llm_refine_available()),
+            "llm_refine_mode": self.session.get_llm_refine_mode(),
+            "llm_refine_default_mode": str(LLM_REFINE_DEFAULT_MODE or "off"),
+            # How refine edits are visualized on the frontend:
+            # off | additions | additions_deletions | two_lines
+            "llm_refine_diff_mode": str(LLM_REFINE_DIFF_MODE or "off"),
+            "llm_refine_context_min_count": int(config.llm_context_bounds()[0]),
+            "llm_refine_context_max_count": int(config.llm_context_bounds()[1]),
+            # Unified 翻译模式: 快速(fast) / 准确(accurate) / 混合(hybrid). 混合 shows
+            # the STT draft immediately and refines it in place.
+            "translation_ui_mode": (self.session.get_translation_mode() if hasattr(self.session, "get_translation_mode") else "fast"),
+            # Server-delivered STT billing factor for soniox 准确 mode (built-in
+            # translation off); the client mirrors it in its live cost estimate.
+            "soniox_no_translation_factor": float(config.HOSTED_SONIOX_NO_TRANSLATION_FACTOR),
+            "speaker_diarization_enabled": bool(config.ENABLE_SPEAKER_DIARIZATION),
+            "hide_speaker_labels": bool(config.HIDE_SPEAKER_LABELS),
+            "interrupt_repair_supported": bool(
+                provider == "soniox" and config.ENABLE_SPEAKER_DIARIZATION
+            ),
+            "interrupt_repair_enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
+            "sleep_on_silence_enabled": config.get_sleep_on_silence_enabled(provider),
+            "osc_sensitive_filter_enabled": osc_manager.get_sensitive_filter_enabled(),
+            "osc_sensitive_filter_notice_disabled": (
+                not osc_manager.get_sensitive_filter_notice_enabled()
+            ),
+            "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
+            # Subtitle-server relay (hosted mode) availability. The server URL is
+            # read only from .env and is never editable in the UI.
+            "relay_available": bool(config.RELAY_AVAILABLE),
+            "server_url": config.current_server_url(),
+            "server_official_url": config.SUBTITLE_SERVER_URL,
+            "credits_purchase_url": "",
+            "first_redeem_bonus_credits": 0,
+            "client_version": config.CLIENT_VERSION,
+            "client_latest_version": "",
+            "client_minimum_version": "",
+            "client_update_url": "",
+            "client_update_notes": "",
+            "client_update_notes_i18n": None,
+            "custom_font_available": self.check_custom_font_exists(),
+        }
+
+        if getattr(self, "offline_mode", False):
+            from realtime_subtitle.local_inference.model_manager import get_all_local_models_status
+            models = get_all_local_models_status()
+            payload["offline_models"] = {
+                "asr": bool(models["asr"]["qwen3-asr"]["ready"]),
+                "translation": bool(models["translation"]["hymt2"]["ready"]),
+            }
+            payload["llm_refine_available"] = False
+
+        if config.RELAY_AVAILABLE and not getattr(self, "offline_mode", False):
+            status, public_settings = await self._get_public_settings()
+            payload["hosted_reachable"] = status == 200
+            if status != 200:
+                from realtime_subtitle.local_inference.model_manager import get_all_local_models_status
+                models = get_all_local_models_status()
+                payload["offline_models"] = {
+                    "asr": bool(models["asr"]["qwen3-asr"]["ready"]),
+                    "translation": bool(models["translation"]["hymt2"]["ready"]),
+                }
+            if status == 200 and isinstance(public_settings, dict):
+                payload["credits_purchase_url"] = str(
+                    public_settings.get("credits_purchase_url") or ""
+                ).strip()
+                try:
+                    payload["first_redeem_bonus_credits"] = max(
+                        0, float(public_settings.get("first_redeem_bonus_credits") or 0)
+                    )
+                except (TypeError, ValueError):
+                    payload["first_redeem_bonus_credits"] = 0
+                payload["client_latest_version"] = str(
+                    public_settings.get("client_latest_version") or ""
+                ).strip()
+                payload["client_minimum_version"] = str(
+                    public_settings.get("client_minimum_version") or ""
+                ).strip()
+                payload["client_update_url"] = str(
+                    public_settings.get("client_update_url")
+                    or public_settings.get("client_download_url")
+                    or ""
+                ).strip()
+                payload["client_update_notes_i18n"] = public_settings.get("client_update_notes_i18n")
+                payload["client_update_notes"] = str(
+                    public_settings.get("client_update_notes") or ""
+                ).strip()
+
+        if manager is not None:
+            payload.update({
+                "boot_id": manager.boot_id,
+                "setup_required": bool(manager.setup_required),
+                "key_source": manager.key_source(),
+                "env_key_present": {
+                    "soniox": manager.env_key_present("soniox"),
+                    "gemini": manager.env_key_present("gemini"),
+                    "local": True,
+                },
+                "mode": manager.mode,
+                "logged_in": bool(manager.relay_token),
+                "translation_mode": manager.translation_mode,
+                "target_lang_1": manager.target_lang_1,
+                "target_lang_2": manager.target_lang_2,
+            })
+        else:
+            payload.update({
+                "boot_id": "",
+                "setup_required": False,
+                "key_source": "env",
+                "env_key_present": {"soniox": False, "gemini": False, "local": True},
+                "mode": "direct",
+                "logged_in": False,
+                "translation_mode": str(getattr(self.session, "translation", None) or TRANSLATION_MODE),
+                "target_lang_1": self.session.get_target_langs()[0],
+                "target_lang_2": self.session.get_target_langs()[1],
+            })
+
+        # Segment mode is a Soniox-only capability.
+        if self._supports_segment_mode():
+            payload["segment_mode"] = self.session.get_segment_mode()
+        return web.json_response(payload)
+
+    # 未知来源值只告警一次，避免每次请求刷屏。
+    _warned_unknown_remotes: set = set()
+
+    def _session_lifecycle_lock(self) -> asyncio.Lock:
+        """The one lock serializing session stop/start across /restart,
+        pause/resume and the provider manager's hot-switch."""
+        manager = self.provider_manager
+        lock = getattr(manager, "lifecycle_lock", None) if manager is not None else None
+        return lock if isinstance(lock, asyncio.Lock) else self._fallback_lifecycle_lock
+
+    @staticmethod
+    def _is_loopback_request(request) -> bool:
+        """Whether the request originates from localhost (loopback)."""
+        remote = str(getattr(request, "remote", "") or "")
+        if remote in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
+            return True
+        # aiohttp may report None for in-process/test transports.
+        if remote in ("", "None"):
+            cls = WebServer
+            if remote not in cls._warned_unknown_remotes:
+                cls._warned_unknown_remotes.add(remote)
+                print(f"⚠️  Request with unknown remote address treated as loopback ({remote!r})")
+            return True
+        return False
+
+    async def setup_handler(self, request):
+        """配置/切换 provider + API key（前端设置面板），在进程内热切换。"""
+        manager = self.provider_manager
+        if manager is None:
+            return web.json_response({"status": "error", "message": "Setup unavailable"}, status=503)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Configuration is locked by server config"},
+                status=403,
+            )
+        if not self._is_loopback_request(request):
+            return web.json_response(
+                {"status": "error", "message": "Setup is only allowed from localhost"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid payload"}, status=400)
+
+        provider = str(payload.get("provider") or "").strip().lower()
+        if provider not in ("soniox", "gemini", "local"):
+            return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
+
+        offline = getattr(self, "offline_mode", False) or payload.get("offline_mode") is True
+        if offline:
+            if provider != "local":
+                return web.json_response({"status": "error", "message": "Offline mode requires local recognition"}, status=409)
+            if not getattr(self, "offline_mode", False):
+                from realtime_subtitle.local_inference.model_manager import get_all_local_models_status
+                models = get_all_local_models_status()
+                if not models["asr"]["qwen3-asr"]["ready"]:
+                    return web.json_response({"status": "error", "message": "Local ASR model unavailable"}, status=400)
+                manager.ui_translation_mode = "fast" if models["translation"]["hymt2"]["ready"] else "off"
+                if manager.translation_mode == "none":
+                    manager.translation_mode = "one_way"
+            if payload.get("local_config") is not None and not isinstance(payload["local_config"], dict):
+                return web.json_response({"status": "error", "message": "Invalid local_config"}, status=400)
+            payload["mode"] = "direct"
+            payload["local_config"] = {**(payload.get("local_config") or {}), "backend": "local"}
+            # Enter offline mode without starting, and preserve a paused local
+            # session when saving settings. Only the main Start button resumes it.
+            payload["start_paused"] = (
+                not getattr(self, "offline_mode", False)
+                or bool(getattr(getattr(self, "session", None), "is_paused", True))
+            )
+
+        if provider == "local":
+            local_config = payload.get("local_config")
+            if local_config is not None and not isinstance(local_config, dict):
+                return web.json_response(
+                    {"status": "error", "message": "Invalid local_config"}, status=400
+                )
+            local_config = local_config or {}
+            try:
+                config.set_local_inference_config(
+                    backend=local_config.get("backend"),
+                    server_url=local_config.get("server_url"),
+                    remote_timeout_seconds=local_config.get("remote_timeout_seconds"),
+                    asr_device=local_config.get("asr_device"),
+                    encoder_device=local_config.get("encoder_device"),
+                    translation_device=local_config.get("translation_device"),
+                    vad_silence_duration=local_config.get("vad_silence_duration"),
+                    incremental_max_update_interval=local_config.get("incremental_max_update_interval"),
+                )
+            except (ValueError, TypeError) as error:
+                return web.json_response({"status": "error", "message": str(error)}, status=400)
+
+        if "sleep_on_silence" in payload:
+            if not isinstance(payload.get("sleep_on_silence"), bool):
+                return web.json_response(
+                    {"status": "error", "message": "Invalid sleep_on_silence value"},
+                    status=400,
+                )
+            config.set_sleep_on_silence_enabled(payload["sleep_on_silence"])
+
+        # Connection mode: "direct" (own provider key) or "relay" (hosted).
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode not in ("direct", "relay"):
+            mode = "direct"
+        if provider == "local" and not config.RELAY_AVAILABLE:
+            mode = "direct"
+
+        # Soniox regional endpoint (us | eu | jp); ignored for other providers.
+        soniox_region = str(payload.get("soniox_region") or "").strip().lower() or None
+        if soniox_region is not None and soniox_region not in config.SONIOX_REGION_URLS:
+            soniox_region = None
+
+        if mode == "relay":
+            if not config.RELAY_AVAILABLE:
+                return web.json_response(
+                    {"status": "error", "message": "Subtitle server not configured"}, status=400
+                )
+            # The relay token (ss_ account key) may come from the request or from
+            # a prior login already held in memory.
+            token = str(payload.get("token") or payload.get("api_key") or "").strip()
+            if not token:
+                token = manager.relay_token
+            if token:
+                ok, error, _account, auth_failed = await self._validate_relay_token(token)
+                if not ok and auth_failed:
+                    # The server actively rejected the token: the user must
+                    # sign in again.
+                    return web.json_response(
+                        {"status": "error", "message": error or "Token validation failed",
+                         "setup_required": True, "boot_id": manager.boot_id},
+                        status=400,
+                    )
+                if not ok and payload.get("startup") is True:
+                    from realtime_subtitle.local_inference.model_manager import get_all_local_models_status
+                    models = get_all_local_models_status()
+                    return web.json_response(
+                        {"status": "error", "message": error or "Hosted server unavailable", "hosted_unreachable": True,
+                         "offline_models": {"asr": bool(models["asr"]["qwen3-asr"]["ready"]),
+                                            "translation": bool(models["translation"]["hymt2"]["ready"])}},
+                        status=503,
+                    )
+                # On a transient validation failure (server unreachable / 5xx)
+                # we keep the saved token and proceed, so a brief server outage
+                # at startup doesn't log the user out.
+            result = await manager.apply_provider(
+                provider, mode="relay", relay_token=token, soniox_region=soniox_region,
+                start_paused=payload.get("start_paused") is True,
+            )
+            if not result.get("started") and result.get("error") and not token:
+                return web.json_response(
+                    {"status": "error", "message": result.get("error"),
+                     "boot_id": manager.boot_id, "setup_required": True},
+                    status=400,
+                )
+            return self._setup_response(manager, result)
+
+        # ----- direct mode (user's own provider key) -----
+        api_key = payload.get("api_key")
+        if api_key is not None:
+            api_key = str(api_key).strip()
+            if not api_key:
+                api_key = None
+
+        # Validate the key (if provided) before activating it.
+        if api_key is not None:
+            ok, error = await asyncio.to_thread(
+                self._validate_provider_key, provider, api_key, soniox_region=soniox_region
+            )
+            if not ok:
+                return web.json_response(
+                    {"status": "error", "message": error or "API key validation failed"},
+                    status=400,
+                )
+
+        result = await manager.apply_provider(
+            provider, mode="direct", api_key=api_key, use_env=(api_key is None),
+            soniox_region=soniox_region,
+            start_paused=payload.get("start_paused") is True,
+        )
+        if offline and not result.get("error"):
+            self.offline_mode = True
+        if not result.get("started") and result.get("error") and api_key is None:
+            # No key provided and env had none either.
+            return web.json_response(
+                {"status": "error", "message": result.get("error"), "boot_id": manager.boot_id},
+                status=400,
+            )
+
+        return self._setup_response(manager, result)
+
+    @staticmethod
+    def _setup_response(manager, result):
+        return web.json_response({
+            "status": "ok",
+            "boot_id": manager.boot_id,
+            "provider": manager.provider,
+            "mode": manager.mode,
+            "logged_in": bool(manager.relay_token) if manager.mode == "relay" else None,
+            "translation_mode": manager.translation_mode,
+            "setup_required": bool(manager.setup_required),
+            "downgraded_two_way": bool(result.get("downgraded_two_way")),
+            "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
+        })
+
+    async def use_env_handler(self, request):
+        """从环境变量读取 key（清除内存 override 并热切换）。"""
+        manager = self.provider_manager
+        if manager is None:
+            return web.json_response({"status": "error", "message": "Setup unavailable"}, status=503)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Configuration is locked by server config"},
+                status=403,
+            )
+        if not self._is_loopback_request(request):
+            return web.json_response(
+                {"status": "error", "message": "Setup is only allowed from localhost"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+
+        provider = str((payload or {}).get("provider") or config.TRANSLATION_PROVIDER).strip().lower()
+        if provider not in ("soniox", "gemini", "local"):
+            return web.json_response({"status": "error", "message": "Invalid provider"}, status=400)
+
+        soniox_region = str((payload or {}).get("soniox_region") or "").strip().lower() or None
+        if soniox_region is not None and soniox_region not in config.SONIOX_REGION_URLS:
+            soniox_region = None
+
+        result = await manager.apply_provider(provider, use_env=True, soniox_region=soniox_region)
+        return web.json_response({
+            "status": "ok",
+            "boot_id": manager.boot_id,
+            "provider": manager.provider,
+            "translation_mode": manager.translation_mode,
+            "setup_required": bool(manager.setup_required),
+            "downgraded_two_way": bool(result.get("downgraded_two_way")),
+            "soniox_region": config.SONIOX_REGION,
+            "soniox_custom_url": bool(config.SONIOX_CUSTOM_URL),
+        })
+
+    @staticmethod
+    def _validate_provider_key(
+        provider: str, api_key: str, *, soniox_region: str | None = None
+    ) -> tuple[bool, str | None]:
+        try:
+            if provider == "local":
+                return True, None
+            if provider == "gemini":
+                from realtime_subtitle.core.gemini_key_setup import validate_gemini_api_key
+                return validate_gemini_api_key(api_key)
+            from realtime_subtitle.core.soniox_key_setup import validate_soniox_api_key
+            # Validate against the selected regional endpoint when provided.
+            websocket_url = config.SONIOX_REGION_URLS.get(soniox_region) if soniox_region else None
+            return validate_soniox_api_key(api_key, websocket_url)
+        except Exception as error:
+            return False, str(error)
+
+    async def local_inference_status_handler(self, request):
+        """Return model/runtime/device state without loading either model."""
+        from realtime_subtitle.local_inference.gpu_devices import probe_gpu_devices, resolve_device
+        from realtime_subtitle.local_inference.model_manager import get_all_local_models_status
+        from realtime_subtitle.streaming_translation import get_local_engine_runtime_status
+
+        refresh = str(request.query.get("refresh_devices") or "").lower() in ("1", "true", "yes")
+        devices = await asyncio.to_thread(probe_gpu_devices, refresh=refresh)
+        # The GPU the ASR setting resolves to (None for CPU / no enumeration),
+        # so the download dialog checks the card the models will load on.
+        n_gpu_layers, main_gpu, _ = resolve_device(config.LOCAL_INFERENCE_DEVICE, devices=devices)
+        selected_device = None
+        if n_gpu_layers:
+            selected_device = next((d for d in devices if int(d["index"]) == main_gpu), None)
+        return web.json_response({
+            "status": "ok",
+            "models": get_all_local_models_status(),
+            "runtime": {
+                "translation": get_local_engine_runtime_status(),
+                "session_running": bool(
+                    config.TRANSLATION_PROVIDER == "local"
+                    and getattr(self.session, "thread", None)
+                    and self.session.thread.is_alive()
+                ),
+            },
+            "devices": devices,
+            "selected_device": selected_device,
+            "remote_status": None,
+            "config": {
+                "backend": config.LOCAL_INFERENCE_BACKEND,
+                "server_url": config.LOCAL_INFERENCE_SERVER_URL,
+                "remote_timeout_seconds": config.LOCAL_INFERENCE_REMOTE_TIMEOUT_SECONDS,
+                "asr_device": config.LOCAL_INFERENCE_DEVICE,
+                "encoder_device": config.LOCAL_QWEN_ENCODER_DEVICE,
+                "translation_device": config.LOCAL_TRANSLATION_DEVICE,
+                "vad_silence_duration": config.LOCAL_VAD_SILENCE_DURATION,
+                "incremental_max_update_interval": config.LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL,
+            },
+        })
+
+    async def local_inference_probe_handler(self, request):
+        """Explicit, bounded WebSocket health check; never changes settings."""
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "Local configuration only"}, status=403)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Invalid payload")
+            from realtime_subtitle.local_inference.remote_client import normalize_server_url, probe_remote_server, remote_readiness_error
+            url = normalize_server_url(payload.get("server_url"))
+            if not url:
+                raise ValueError("远程推理服务器地址为空")
+        except (ValueError, TypeError) as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=400)
+        result = await asyncio.to_thread(probe_remote_server, url, timeout=5)
+        error = remote_readiness_error(result, translation_enabled=True)
+        result = {**result, "ready": not bool(error)}
+        if error:
+            result["error"] = error
+        return web.json_response({"status": "ok", "remote_status": result})
+
+    async def local_inference_download_handler(self, request):
+        """Download the redistributable Qwen3-ASR (or Hy-MT2) and the llama runtime."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Configuration is locked by server config"},
+                status=403,
+            )
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        component = str((payload or {}).get("component") or "qwen3-asr").strip().lower()
+        if component not in ("qwen3-asr", "hymt2"):
+            return web.json_response(
+                {"status": "error", "message": f"Unknown component: {component}"}, status=400,
+            )
+        from realtime_subtitle.local_inference.model_manager import (
+            DownloadBusy, DownloadCancelled, get_all_local_models_status, run_download,
+        )
+        try:
+            await asyncio.to_thread(run_download, component)
+            return web.json_response({"status": "ok", "models": get_all_local_models_status()})
+        except DownloadBusy:
+            return web.json_response(
+                {"status": "error", "code": "download_busy", "message": "Another model download is running"},
+                status=409,
+            )
+        except DownloadCancelled:
+            return web.json_response(
+                {"status": "error", "code": "download_cancelled", "message": "Download cancelled"},
+                status=409,
+            )
+        except Exception as error:
+            return web.json_response(
+                {"status": "error", "message": str(error)}, status=500
+            )
+
+    async def local_inference_download_progress_handler(self, request):
+        from realtime_subtitle.local_inference.model_manager import get_download_progress
+        return web.json_response({"status": "ok", "download": get_download_progress()})
+
+    async def local_inference_download_cancel_handler(self, request):
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        from realtime_subtitle.local_inference.model_manager import cancel_download
+        return web.json_response({"status": "ok", "cancelled": cancel_download()})
+
+    async def local_inference_legacy_cleanup_handler(self, request):
+        if LOCK_MANUAL_CONTROLS or not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        from realtime_subtitle.local_inference.model_manager import get_all_local_models_status, remove_legacy_files
+        result = await asyncio.to_thread(remove_legacy_files)
+        return web.json_response({"status": "ok", **result, "models": get_all_local_models_status()})
+
+    # ===================== Subtitle-server relay (hosted) =====================
+
+    async def _get_http_session(self):
+        if self._http is None or self._http.closed:
+            self._http = aiohttp.ClientSession()
+        return self._http
+
+    async def _start_ticket_notifications(self, app):
+        self._ticket_notifications_task = asyncio.create_task(self._ticket_notification_loop())
+
+    async def _stop_ticket_notifications(self, app):
+        if self._ticket_notifications_task:
+            self._ticket_notifications_task.cancel()
+            try:
+                await self._ticket_notifications_task
+            except asyncio.CancelledError:
+                pass
+            self._ticket_notifications_task = None
+        self._ticket_notifications_connected = False
+
+    async def _ticket_notification_loop(self):
+        """Forward authenticated subtitle-server ticket events to local UI sockets."""
+        retry_seconds = 1
+        while True:
+            token = self._relay_token()
+            if (not config.RELAY_AVAILABLE or not token
+                    or getattr(config, "SIMULATE_HOSTED_OFFLINE", False) is True
+                    or getattr(self, "offline_mode", False)):
+                self._ticket_notifications_connected = False
+                retry_seconds = 1
+                await asyncio.sleep(1)
+                continue
+
+            await self._await_server_route()
+            http_url = config.relay_rest_url("/me/tickets/events")
+            ws_url = ("wss://" + http_url[len("https://"):]) if http_url.startswith("https://") else (
+                "ws://" + http_url[len("http://"):]
+            )
+            try:
+                session = await self._get_http_session()
+                async with session.ws_connect(
+                    ws_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    heartbeat=30,
+                    autoping=True,
+                ) as upstream:
+                    self._ticket_notifications_connected = True
+                    retry_seconds = 1
+                    await self.broadcast_to_clients({"type": "ticket_notifications_ready", "connected": True})
+                    while not upstream.closed:
+                        if token != self._relay_token():
+                            await upstream.close(code=1000, message=b"Account changed")
+                            break
+                        try:
+                            message = await upstream.receive(timeout=5)
+                        except asyncio.TimeoutError:
+                            continue
+                        if message.type == WSMsgType.TEXT:
+                            try:
+                                event = json.loads(message.data)
+                            except Exception:
+                                continue
+                            if isinstance(event, dict) and event.get("type") == "ticket_changed":
+                                await self.broadcast_to_clients(event)
+                        elif message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                            break
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning(f"Ticket notification WebSocket disconnected: {error}")
+            finally:
+                self._ticket_notifications_connected = False
+
+            await asyncio.sleep(retry_seconds)
+            retry_seconds = min(30, retry_seconds * 2)
+
+    async def _server_request(
+        self,
+        method,
+        path,
+        *,
+        json_body=None,
+        token=None,
+        timeout=15,
+        include_client_version=False,
+    ):
+        """Proxy a REST call to the configured subtitle-server.
+
+        Returns (status, data). FastAPI errors arrive as {"detail": ...}.
+        """
+        if not config.RELAY_AVAILABLE:
+            return 503, {"detail": "Subtitle server not configured"}
+        if getattr(config, "SIMULATE_HOSTED_OFFLINE", False) is True:
+            return 502, {"detail": "Hosted server connection unavailable (SIMULATE_HOSTED_OFFLINE)"}
+        await self._await_server_route()
+        url = config.relay_rest_url(path)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        if include_client_version and token:
+            headers[config.CLIENT_VERSION_HEADER] = str(config.CLIENT_VERSION).strip()
+        try:
+            session = await self._get_http_session()
+            async with session.request(
+                method, url, json=json_body, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=timeout),
+            ) as resp:
+                try:
+                    data = await resp.json()
+                except Exception:
+                    data = {"detail": (await resp.text())[:500]}
+                return resp.status, data
+        except Exception as e:
+            if isinstance(e, (aiohttp.ClientConnectionError, asyncio.TimeoutError)):
+                config.report_server_network_failure()
+            return 502, {"detail": str(e)}
+
+    async def _await_server_route(self):
+        """Wait (off the event loop) for the startup official-vs-mirror race."""
+        if config.server_router() is None:
+            return
+        await asyncio.get_running_loop().run_in_executor(None, config.wait_server_route)
+
+    async def _validate_relay_token(self, token):
+        """Validate an ss_ account token via GET /me.
+
+        Returns (ok, error, account, auth_failed). ``auth_failed`` is True only
+        when the server actively rejects the token (401/403) — i.e. the user
+        really needs to sign in again. A transient failure (server unreachable
+        or 5xx) returns auth_failed=False so callers can keep the saved token
+        instead of forcing a needless re-login.
+        """
+        if not token:
+            return False, "Missing token", None, True
+        report_client_version = not self._client_version_reported
+        status, data = await self._server_request(
+            "GET",
+            "/me",
+            token=token,
+            include_client_version=report_client_version,
+        )
+        if status == 200 and isinstance(data, dict):
+            if report_client_version:
+                self._client_version_reported = True
+            return True, None, data, False
+        if status in (401, 403):
+            return False, "Invalid or unauthorized token", None, True
+        msg = data.get("detail") if isinstance(data, dict) else None
+        return False, msg or f"Server error {status}", None, False
+
+    def _relay_token(self):
+        manager = self.provider_manager
+        return (manager.relay_token if manager else "") or ""
+
+    async def _fetch_public_settings(self):
+        status, data = await self._server_request(
+            "GET", "/public/settings", timeout=5
+        )
+        self._public_settings_result = (status, data)
+        self._public_settings_checked_at = time.monotonic()
+        return status, data
+
+    def _schedule_public_settings_refresh(self):
+        if not config.RELAY_AVAILABLE:
+            return None
+        task = getattr(self, "_public_settings_task", None)
+        if task is None or task.done():
+            task = asyncio.create_task(
+                self._fetch_public_settings(),
+                name="hosted-public-settings",
+            )
+            self._public_settings_task = task
+        return task
+
+    async def _get_public_settings(self):
+        """Return hosted public settings, deduplicating startup requests.
+
+        The app startup hook starts this fetch while the WebView is still
+        loading, so the first /ui-config normally consumes an already-finished
+        request instead of starting a fresh network round trip on the UI path.
+        """
+        result = getattr(self, "_public_settings_result", None)
+        checked_at = getattr(self, "_public_settings_checked_at", 0.0)
+        if (
+            result is not None
+            and time.monotonic() - checked_at < 60
+        ):
+            return result
+        task = self._schedule_public_settings_refresh()
+        if task is None:
+            return 503, {"detail": "Subtitle server not configured"}
+        return await task
+
+    async def account_login_code_handler(self, request):
+        """Redeem a one-time login code generated on the user web page. On
+        success, remember the token so /account/* works immediately."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        code = str((payload or {}).get("code") or "").strip()
+        if not code:
+            return web.json_response({"status": "error", "message": "Missing code"}, status=400)
+        status, data = await self._server_request("POST", "/auth/login-code", json_body={"code": code})
+        if (
+            status == 200 and isinstance(data, dict)
+            and data.get("success") and data.get("api_key")
+            and self.provider_manager is not None
+        ):
+            self.provider_manager.relay_token = str(data["api_key"]).strip()
+            config.set_relay_token(self.provider_manager.relay_token)
+        return web.json_response(data, status=status)
+
+    def _prune_login_states(self):
+        """Drop login handshakes older than 10 minutes."""
+        cutoff = time.monotonic() - 600
+        stale = [k for k, v in self._login_states.items() if v.get("ts", 0) < cutoff]
+        for k in stale:
+            self._login_states.pop(k, None)
+
+    async def account_login_begin_handler(self, request):
+        """Start a hosted-login handshake: mint a one-time state nonce that the
+        web page must echo back via /account/login-callback. Prevents an
+        arbitrary web page from injecting an unsolicited login code."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        self._prune_login_states()
+        state = secrets.token_urlsafe(24)
+        self._login_states[state] = {"status": "pending", "result": None, "ts": time.monotonic()}
+        return web.json_response({"state": state})
+
+    async def account_login_callback_handler(self, request):
+        """Landing point the web page redirects the browser to after VRChat
+        verification. Exchanges the one-time login code and stashes the result
+        for the polling frontend, then shows a friendly close-me page."""
+        if not self._is_loopback_request(request):
+            return web.Response(text="localhost only", status=403)
+        self._prune_login_states()
+        state = str(request.query.get("state") or "").strip()
+        code = str(request.query.get("code") or "").strip()
+        entry = self._login_states.get(state)
+        lang = "zh" if str(request.headers.get("Accept-Language", "")).lower().startswith("zh") else "en"
+        if not entry or entry.get("status") == "done":
+            return web.Response(text=self._login_callback_page(lang, False), content_type="text/html")
+        if not code:
+            entry["status"] = "error"
+            entry["result"] = {"message": "Missing code"}
+            entry["ts"] = time.monotonic()
+            return web.Response(text=self._login_callback_page(lang, False), content_type="text/html")
+        status, data = await self._server_request("POST", "/auth/login-code", json_body={"code": code})
+        if (
+            status == 200 and isinstance(data, dict)
+            and data.get("success") and data.get("api_key")
+        ):
+            if self.provider_manager is not None:
+                self.provider_manager.relay_token = str(data["api_key"]).strip()
+                config.set_relay_token(self.provider_manager.relay_token)
+            entry["status"] = "done"
+            entry["result"] = {
+                "api_key": data.get("api_key"),
+                "display_name": data.get("display_name"),
+                "trust_rank": data.get("trust_rank"),
+            }
+            entry["ts"] = time.monotonic()
+            return web.Response(
+                text=self._login_callback_page(lang, True, self._dashboard_url()),
+                content_type="text/html",
+            )
+        entry["status"] = "error"
+        entry["result"] = data if isinstance(data, dict) else {"message": "Login failed"}
+        entry["ts"] = time.monotonic()
+        return web.Response(text=self._login_callback_page(lang, False), content_type="text/html")
+
+    async def account_login_poll_handler(self, request):
+        """Frontend polls this after opening the web page; returns the handshake
+        result once the browser has bounced the login code back."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        state = str(request.query.get("state") or "").strip()
+        entry = self._login_states.get(state)
+        if not entry:
+            return web.json_response({"status": "unknown"})
+        if entry.get("status") == "done":
+            result = entry.get("result") or {}
+            self._login_states.pop(state, None)
+            return web.json_response({"status": "done", **result})
+        if entry.get("status") == "error":
+            result = entry.get("result") or {}
+            self._login_states.pop(state, None)
+            return web.json_response({"status": "error", **result})
+        return web.json_response({"status": "pending"})
+
+    @staticmethod
+    def _dashboard_url():
+        base = str(config.current_server_url() or "").rstrip("/")
+        return (base + "/app/#/") if base else ""
+
+    @staticmethod
+    def _login_callback_page(lang, ok, dashboard_url=""):
+        if lang == "zh":
+            title = "登录成功" if ok else "登录未完成"
+            body = "已完成登录，请返回应用。可以关闭此页面。" if ok else "登录未能完成，请返回应用重试。"
+            dash = "进入用户管理页"
+        else:
+            title = "Signed in" if ok else "Sign-in incomplete"
+            body = "You're signed in. Return to the app; you can close this page." if ok else "Sign-in did not complete. Return to the app and try again."
+            dash = "Open account dashboard"
+        button = ""
+        if ok and dashboard_url:
+            button = (
+                f"<a href=\"{dashboard_url}\" "
+                "style=\"display:inline-block;margin-top:1.25rem;padding:.5rem 1rem;"
+                "border:1px solid #3a3f4b;border-radius:8px;color:#e8eaed;"
+                f"text-decoration:none;font-size:.9rem\">{dash}</a>"
+            )
+        return (
+            "<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            f"<title>{title}</title></head>"
+            "<body style=\"font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;"
+            "display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;"
+            "background:#0f1115;color:#e8eaed;text-align:center\">"
+            f"<div><h1 style=\"font-size:1.25rem;margin:0 0 .5rem\">{title}</h1>"
+            f"<p style=\"opacity:.75;margin:0\">{body}</p>{button}</div></body></html>"
+        )
+
+    async def account_announcements_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"detail": "localhost only"}, status=403)
+        # Announcement format version 2 (size, color); the server rewrites anything newer.
+        status, data = await self._server_request("GET", "/public/announcements?format=2")
+        return web.json_response(data, status=status, headers={"Cache-Control": "no-store"})
+
+    async def account_registration_info_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        status, data = await self._server_request("GET", "/auth/registration-info")
+        return web.json_response(data, status=status)
+
+    async def account_status_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        manager = self.provider_manager
+        token = self._relay_token()
+        payload = {
+            "relay_available": bool(config.RELAY_AVAILABLE),
+            "server_url": config.current_server_url(),
+            "server_official_url": config.SUBTITLE_SERVER_URL,
+            "mode": manager.mode if manager else "direct",
+            "logged_in": bool(token),
+            "display_name": None,
+            "trust_rank": None,
+            "first_redeem_bonus_credits": 0,
+            "first_redeem_bonus_eligible": False,
+        }
+        if token and config.RELAY_AVAILABLE:
+            status, data = await self._server_request("GET", "/me", token=token)
+            if status == 200 and isinstance(data, dict):
+                payload["display_name"] = data.get("display_name")
+                payload["trust_rank"] = data.get("trust_rank")
+                try:
+                    payload["first_redeem_bonus_credits"] = max(
+                        0, float(data.get("first_redeem_bonus_credits") or 0)
+                    )
+                except (TypeError, ValueError):
+                    payload["first_redeem_bonus_credits"] = 0
+                payload["first_redeem_bonus_eligible"] = bool(
+                    data.get("first_redeem_bonus_eligible")
+                    and payload["first_redeem_bonus_credits"] > 0
+                )
+            elif status in (401, 403):
+                payload["logged_in"] = False
+        return web.json_response(payload)
+
+    @staticmethod
+    def _active_relay_model(provider):
+        if provider == "local":
+            return "local"
+        return (
+            f"models/{config.GEMINI_MODEL}"
+            if provider == "gemini" else "stt-rt-v5"
+        )
+
+    async def account_balance_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+
+        provider = request.query.get("provider", config.TRANSLATION_PROVIDER)
+        if provider not in ("soniox", "gemini", "local"):
+            provider = config.TRANSLATION_PROVIDER
+        model = self._active_relay_model(provider)
+
+        # /billing/summary gives prepaid balance + subscription used/remaining +
+        # free used-today/remaining in one call.
+        s_sum, summary = await self._server_request("GET", "/billing/summary", token=token)
+        if s_sum != 200:
+            return web.json_response(summary, status=s_sum)
+
+        prepaid = summary.get("prepaid_balance")
+        subscriptions = []
+        # Local recognition never bills per second, even against a server that
+        # does not list the local provider.
+        price_per_second = 0.0 if provider == "local" else 1.0
+        free = None
+        for api in summary.get("apis", []):
+            if api.get("name") == provider or api.get("provider") == provider:
+                if api.get("prepaid_balance") is not None:
+                    prepaid = api.get("prepaid_balance")
+                # One subscription can fund several models; quota attached to a
+                # model this session will not use must neither be displayed nor
+                # counted towards whether the session can afford to start.
+                subscriptions = [
+                    pool for pool in (api.get("subscriptions") or [])
+                    if not pool.get("model_name") or pool.get("model_name") == model
+                ]
+                for m in api.get("models", []):
+                    if m.get("model_name") == model:
+                        price_per_second = m.get("price_per_second", 1.0)
+                        free = m.get("free")  # None unless the model offers free quota
+                        break
+                break
+
+        return web.json_response({
+            "provider": provider,
+            "model": model,
+            "prepaid_balance": prepaid,
+            "subscriptions": subscriptions,
+            "llm_subscription": summary.get("llm_subscription") or {"pools": []},
+            "price_per_second": float(price_per_second),
+            "free": free,
+            "first_redeem_bonus_credits": summary.get("first_redeem_bonus_credits") or 0,
+            "first_redeem_bonus_eligible": bool(summary.get("first_redeem_bonus_eligible")),
+        })
+
+    async def account_pricing_handler(self, request):
+        """Per-provider unit price of the active relay model, for the Settings UI.
+
+        Uses the public /billing/policies endpoint (no token needed) so the
+        Settings panel can show each provider's price before a session starts.
+        """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        status, pol = await self._server_request("GET", "/billing/policies")
+        pricing = {}
+        if status == 200 and isinstance(pol, dict):
+            for provider in ("soniox", "gemini"):
+                model = self._active_relay_model(provider)
+                for p in pol.get("policies", []):
+                    if p.get("name") == provider or p.get("provider") == provider:
+                        for m in p.get("models", []):
+                            if m.get("model_name") == model:
+                                pps = float(m.get("price_rate", 1.0)) * float(m.get("price_multiplier", 1.0))
+                                entry = {"model": model, "price_per_second": pps}
+                                # Free pools (daily/weekly/monthly) the model offers,
+                                # so the Settings UI can show each configured quota.
+                                if m.get("free_pools"):
+                                    entry["free_pools"] = m["free_pools"]
+                                pricing[provider] = entry
+                                break
+                        break
+        return web.json_response({"pricing": pricing})
+
+    async def account_usage_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        limit = request.query.get("limit", "50")
+        status, data = await self._server_request("GET", f"/me/usage?limit={limit}", token=token)
+        return web.json_response(data, status=status)
+
+    async def account_invite_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        status, data = await self._server_request("GET", "/me/invite", token=token)
+        return web.json_response(data, status=status)
+
+    async def account_web_login_url_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        status, data = await self._server_request("POST", "/me/web-login-code", token=token)
+        if status != 200 or not isinstance(data, dict) or not data.get("web_login_code"):
+            return web.json_response(data, status=status)
+        await self._await_server_route()
+        base = config.relay_rest_url("/app/")
+        from urllib.parse import quote
+        url = f"{base}#/login?web_login_code={quote(str(data['web_login_code']))}"
+        next_path = str(request.query.get("next") or "").strip()
+        if next_path in {"/invite", "/tickets"}:
+            url += f"&next={quote(next_path, safe='')}"
+        return web.json_response({"url": url, "expires_at": data.get("expires_at")})
+
+    async def account_tickets_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        status, data = await self._server_request("GET", "/me/tickets", token=token)
+        return web.json_response(data, status=status)
+
+    async def account_ticket_unread_summary_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        status, data = await self._server_request("GET", "/me/tickets/unread-summary", token=token)
+        return web.json_response(data, status=status)
+
+    async def account_ticket_detail_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        ticket_id = str(request.match_info.get("ticket_id") or "").strip()
+        if not ticket_id:
+            return web.json_response({"status": "error", "message": "Missing ticket ID"}, status=400)
+        from urllib.parse import quote
+        status, data = await self._server_request(
+            "GET", f"/me/tickets/{quote(ticket_id, safe='')}", token=token
+        )
+        return web.json_response(data, status=status)
+
+    async def account_redeem_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not config.RELAY_AVAILABLE:
+            return web.json_response({"status": "error", "message": "Subtitle server not configured"}, status=503)
+        token = self._relay_token()
+        if not token:
+            return web.json_response({"status": "error", "message": "Not signed in"}, status=401)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        code = str((payload or {}).get("code") or "").strip()
+        if not code:
+            return web.json_response({"status": "error", "message": "Missing code"}, status=400)
+        status, data = await self._server_request(
+            "POST", "/redeem", json_body={"code": code}, token=token
+        )
+        return web.json_response(data, status=status)
+
+    async def account_logout_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        manager = self.provider_manager
+        if manager is None:
+            return web.json_response({"status": "error", "message": "Setup unavailable"}, status=503)
+        # Clear the token and stop any running relay session.
+        await manager.apply_provider(manager.provider, mode="relay", relay_token="")
+        return web.json_response({"status": "ok", "boot_id": manager.boot_id})
+
+    async def segment_mode_get_handler(self, request):
+        """获取当前断句模式（仅支持断句的 provider）"""
+        if not self._supports_segment_mode():
+            return web.json_response({"status": "error", "message": "Segment mode not supported"}, status=404)
+        return web.json_response({"mode": self.session.get_segment_mode()})
+
+    async def segment_mode_set_handler(self, request):
+        """设置断句模式（会广播给所有前端）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not self._supports_segment_mode():
+            return web.json_response({"status": "error", "message": "Segment mode not supported"}, status=404)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Segment mode switching is disabled"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        mode = payload.get("mode") if isinstance(payload, dict) else None
+        ok, message = self.session.set_segment_mode(mode)
+        if not ok:
+            return web.json_response({"status": "error", "message": message}, status=400)
+        return web.json_response({"status": "ok", "mode": mode})
+
+    def _supports_speaker_labels(self) -> bool:
+        return config.TRANSLATION_PROVIDER == "soniox" and bool(config.ENABLE_SPEAKER_DIARIZATION)
+
+    async def speaker_labels_get_handler(self, request):
+        """获取字幕说话人标签显示状态（仅 Soniox 支持）。"""
+        supported = self._supports_speaker_labels()
+        hide_labels = bool(config.HIDE_SPEAKER_LABELS)
+        return web.json_response({
+            "status": "ok",
+            "supported": supported,
+            "enabled": bool(supported and not hide_labels),
+            "hide_speaker_labels": hide_labels,
+        })
+
+    async def speaker_labels_set_handler(self, request):
+        """设置字幕说话人标签显示状态（会广播给所有前端）。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not self._supports_speaker_labels():
+            return web.json_response({"status": "error", "message": "Speaker labels not supported"}, status=404)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Speaker label switching is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if "hide_speaker_labels" in payload:
+            hide_labels = bool(payload.get("hide_speaker_labels"))
+        elif "enabled" in payload:
+            hide_labels = not bool(payload.get("enabled"))
+        else:
+            return web.json_response({"status": "error", "message": "Missing speaker labels field"}, status=400)
+
+        config.HIDE_SPEAKER_LABELS = hide_labels
+        data = {
+            "type": "speaker_labels_changed",
+            "enabled": not hide_labels,
+            "hide_speaker_labels": hide_labels,
+        }
+        await self.broadcast_to_clients(data)
+        response = dict(data)
+        response["status"] = "ok"
+        return web.json_response(response)
+
+    async def sleep_on_silence_get_handler(self, request):
+        """Return the user-facing auto-sleep preference and current effect."""
+        provider = config.TRANSLATION_PROVIDER
+        effective = (
+            config.GEMINI_SLEEP_ON_SILENCE
+            if provider == "gemini"
+            else config.SONIOX_SLEEP_ON_SILENCE
+        )
+        return web.json_response({
+            "status": "ok",
+            "enabled": config.get_sleep_on_silence_enabled(provider),
+            "effective": bool(effective),
+        })
+
+    async def sleep_on_silence_set_handler(self, request):
+        """Hot-apply auto sleep without rebuilding the provider session."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Auto sleep switching is disabled by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
+            return web.json_response(
+                {"status": "error", "message": "Missing or invalid 'enabled' field"},
+                status=400,
+            )
+
+        enabled = config.set_sleep_on_silence_enabled(payload["enabled"])
+        provider = config.TRANSLATION_PROVIDER
+        effective = (
+            config.GEMINI_SLEEP_ON_SILENCE
+            if provider == "gemini"
+            else config.SONIOX_SLEEP_ON_SILENCE
+        )
+        return web.json_response({
+            "status": "ok",
+            "enabled": enabled,
+            "effective": bool(effective),
+        })
+
+    def _supports_interrupt_repair(self) -> bool:
+        return (
+            config.TRANSLATION_PROVIDER == "soniox"
+            and bool(config.ENABLE_SPEAKER_DIARIZATION)
+        )
+
+    async def interrupt_repair_get_handler(self, request):
+        """Return the hot-applied interrupted-sentence repair preference."""
+        return web.json_response({
+            "status": "ok",
+            "supported": self._supports_interrupt_repair(),
+            "enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
+        })
+
+    async def interrupt_repair_set_handler(self, request):
+        """Hot-apply interrupted-sentence repair without restarting Soniox."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        if not self._supports_interrupt_repair():
+            return web.json_response(
+                {"status": "error", "message": "Interrupted sentence repair not supported"},
+                status=404,
+            )
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Interrupted sentence repair switching is disabled by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+        if not isinstance(payload, dict) or not isinstance(payload.get("enabled"), bool):
+            return web.json_response(
+                {"status": "error", "message": "Missing or invalid 'enabled' field"},
+                status=400,
+            )
+
+        config.SONIOX_INTERRUPT_REPAIR_ENABLED = payload["enabled"]
+        return web.json_response({
+            "status": "ok",
+            "supported": True,
+            "enabled": bool(config.SONIOX_INTERRUPT_REPAIR_ENABLED),
+        })
+
+    async def llm_refine_get_handler(self, request):
+        """获取 LLM 改进开关状态"""
+        mode = self.session.get_llm_refine_mode()
+        return web.json_response({
+            "mode": mode,
+            "available": bool(is_llm_refine_available()),
+        })
+
+    async def llm_refine_set_handler(self, request):
+        """设置 LLM 改进开关"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "LLM refine toggle is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON"}, status=400)
+
+        mode = payload.get("mode") if isinstance(payload, dict) else None
+
+        if not mode:
+            return web.json_response({"status": "error", "message": "Missing 'mode' field"}, status=400)
+
+        ok, message = self.session.set_llm_refine_mode(str(mode))
+        if not ok:
+            return web.json_response({"status": "error", "message": message}, status=400)
+
+        return web.json_response({
+            "status": "ok",
+            "mode": self.session.get_llm_refine_mode(),
+        })
+
+    async def _refresh_hosted_llm_config(self, force: bool = False) -> None:
+        """Fetch the server-delivered hosted LLM tuning (relay mode) and cache it
+        into `config` so the session and /ui-config reflect it. Cached ~60s per
+        token to avoid refetching on every UI poll."""
+        if not config.RELAY_AVAILABLE or not config.RELAY_MODE:
+            return
+        token = self._relay_token()
+        if not token:
+            # Logged out: the hosted LLM is gone too, don't keep the last answer.
+            config.HOSTED_LLM_AVAILABLE = False
+            self._hosted_llm_cfg_token = None
+            return
+        if (not force
+                and getattr(self, "_hosted_llm_cfg_token", None) == token
+                and getattr(self, "_hosted_llm_cfg_ts", 0.0) > (time.time() - 60)):
+            return
+        status, data = await self._server_request("GET", "/billing/llm-config", token=token, timeout=5)
+        if status == 200 and isinstance(data, dict):
+            config.set_hosted_llm_config(data)
+            self._hosted_llm_cfg_token = token
+            self._hosted_llm_cfg_ts = time.time()
+
+    async def translation_mode_set_handler(self, request):
+        """Set the unified 翻译模式 (fast/accurate/hybrid/refine)."""
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "forbidden"}, status=403)
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response({"status": "error", "message": "locked"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        mode = str((payload or {}).get("mode") or "").strip().lower()
+        if getattr(self, "offline_mode", False) and mode not in ("off", "fast"):
+            return web.json_response({"status": "error", "message": "Translation mode unavailable offline"}, status=400)
+        if getattr(self, "offline_mode", False) and mode == "fast":
+            from realtime_subtitle.local_inference.model_manager import get_all_local_models_status
+            if not get_all_local_models_status()["translation"]["hymt2"]["ready"]:
+                return web.json_response({"status": "error", "message": "Local translation model unavailable"}, status=400)
+        # A settings save can change provider and translation mode together.
+        # Keep the mode for the upcoming rebuild without touching the old
+        # provider's stream. This matters when leaving local mode, whose "off"
+        # mode has no equivalent in the other providers.
+        requested_provider = str((payload or {}).get("provider") or "").strip().lower()
+        if (
+            requested_provider in ("soniox", "gemini", "local")
+            and requested_provider != config.TRANSLATION_PROVIDER
+        ):
+            if mode not in ("off", "fast", "accurate", "hybrid"):
+                return web.json_response({"status": "error", "message": "Invalid translation mode"}, status=400)
+            if requested_provider != "local" and mode == "off":
+                mode = "hybrid"
+            if self.provider_manager is not None:
+                self.provider_manager.ui_translation_mode = mode
+            return web.json_response({"status": "ok", "mode": mode, "needs_restart": False})
+        if not hasattr(self.session, "set_translation_mode"):
+            return web.json_response({"status": "error", "message": "unsupported"}, status=400)
+        ok, message, needs_restart = self.session.set_translation_mode(mode)
+        if not ok:
+            return web.json_response({"status": "error", "message": message}, status=400)
+        # Remember on the manager so apply_provider (session rebuilds on
+        # provider/key/mode switches) re-applies it — otherwise 准确 is silently
+        # lost and soniox reopens with translation ON at the full billing rate.
+        if self.provider_manager is not None:
+            self.provider_manager.ui_translation_mode = message
+        return web.json_response({
+            "status": "ok",
+            "mode": self.session.get_translation_mode(),
+            "needs_restart": bool(needs_restart),
+        })
+
+    async def restart_handler(self, request):
+        """重启识别端点（也用于运行时切换翻译模式 / 双向语言对）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        is_auto = False
+        requested_target_lang = None
+        requested_mode = None
+        requested_lang_1 = None
+        requested_lang_2 = None
+        try:
+            payload = await request.json()
+            if isinstance(payload, dict):
+                is_auto = bool(payload.get("auto"))
+                if payload.get("target_lang") is not None:
+                    requested_target_lang = payload.get("target_lang")
+                if payload.get("translation_mode") is not None:
+                    requested_mode = str(payload.get("translation_mode")).strip().lower()
+                if payload.get("target_lang_1") is not None:
+                    requested_lang_1 = payload.get("target_lang_1")
+                if payload.get("target_lang_2") is not None:
+                    requested_lang_2 = payload.get("target_lang_2")
+        except Exception:
+            # 兼容旧客户端：无 body 时视为手动
+            is_auto = False
+
+        if LOCK_MANUAL_CONTROLS and not is_auto:
+            return web.json_response(
+                {"status": "error", "message": "Manual restart is disabled by server config"},
+                status=403
+            )
+
+        if requested_mode is not None and requested_mode not in ("none", "one_way", "two_way"):
+            return web.json_response(
+                {"status": "error", "message": f"Invalid translation_mode: {requested_mode}"},
+                status=400,
+            )
+
+        # Gemini Live Translation only supports a single target language.
+        if requested_mode == "two_way" and config.TRANSLATION_PROVIDER == "gemini":
+            return web.json_response(
+                {"status": "error", "message": "Gemini does not support two-way translation"},
+                status=400,
+            )
+
+        # Serialized with the provider hot-switch and pause/resume, so two
+        # overlapping lifecycles can never leave two live streams.
+        async with self._session_lifecycle_lock():
+            get_api_key = self.get_api_key
+
+            print(f"\n[Server] Received {'auto ' if is_auto else ''}restart request...")
+
+            if requested_target_lang is not None:
+                ok, message = self.session.set_translation_target_lang(requested_target_lang)
+                if not ok:
+                    return web.json_response({"status": "error", "message": message}, status=400)
+
+            if requested_mode == "two_way":
+                lang_a = requested_lang_1 if requested_lang_1 is not None else self.session.get_target_langs()[0]
+                lang_b = requested_lang_2 if requested_lang_2 is not None else self.session.get_target_langs()[1]
+                if hasattr(self.session, "set_target_langs"):
+                    ok, message = self.session.set_target_langs(lang_a, lang_b)
+                    if not ok:
+                        return web.json_response({"status": "error", "message": message}, status=400)
+
+            # Determine the translation mode to (re)start with.
+            if requested_mode is not None:
+                translation_mode = requested_mode
+            elif self.provider_manager is not None:
+                translation_mode = self.provider_manager.translation_mode
+            else:
+                translation_mode = str(getattr(self.session, "translation", None) or TRANSLATION_MODE)
+
+            # Keep the manager state in sync so subsequent hot-switches preserve it.
+            if self.provider_manager is not None:
+                self.provider_manager.translation_mode = translation_mode
+                self.provider_manager.target_lang = self.session.get_translation_target_lang()
+                if hasattr(self.session, "get_target_langs"):
+                    l1, l2 = self.session.get_target_langs()
+                    self.provider_manager.target_lang_1 = l1
+                    self.provider_manager.target_lang_2 = l2
+
+            if (is_auto and config.TRANSLATION_PROVIDER == "local"
+                    and getattr(self.session, "is_paused", False)):
+                self.session.translation = translation_mode
+                return web.json_response({"status": "ok", "paused": True})
+
+            # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
+            # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求
+            # 停滞），因此放到线程池里等待。
+            await asyncio.to_thread(self.session.stop)
+
+            # 关闭当前日志文件（同步文件 IO，同样移出事件循环）
+            await asyncio.to_thread(self.logger.close_log_file)
+        
+            if is_auto:
+                await self.broadcast_to_clients({
+                    "type": "clear",
+                    "message": "Recognition reconnecting...",
+                    "preserve_existing": True,
+                })
+            else:
+                # 向所有客户端发送清空指令
+                await self.broadcast_to_clients({
+                    "type": "clear",
+                    "message": "Recognition restarting..."
+                })
+
+                # 给客户端一点时间处理clear消息
+                await asyncio.sleep(0.3)
+
+                # 关闭所有现有的WebSocket连接
+                print(f"[Server] Closing {len(self.websocket_clients)} WebSocket connections...")
+                clients_to_close = list(self.websocket_clients)
+                for client in clients_to_close:
+                    try:
+                        await client.close()
+                    except Exception as e:
+                        print(f"[Server] Error closing client connection: {e}")
+                self.websocket_clients.clear()
+        
+            # 启动新的Soniox会话
+            try:
+                print("[Server] Starting new recognition session...")
+                api_key = get_api_key()
+                audio_format = "pcm_s16le"
+
+                loop = asyncio.get_event_loop()
+                started = self.session.start(
+                    api_key,
+                    audio_format,
+                    translation_mode,
+                    loop,
+                    translation_target_lang=self.session.get_translation_target_lang(),
+                )
+                if started is False:
+                    message = "Recognition session is still stopping; start request was ignored"
+                    print(f"[Server] Failed to restart: {message}")
+                    return web.json_response({"status": "error", "message": message}, status=409)
+
+                # Translation may have been toggled on/off; keep IPC in sync.
+                if self.provider_manager is not None:
+                    try:
+                        await self.provider_manager._sync_ipc(True)
+                    except Exception:
+                        pass
+
+                print("[Server] New session started successfully")
+                return web.json_response({"status": "ok", "message": "Recognition restarted", "paused": False})
+            except Exception as e:
+                print(f"[Server] Failed to restart: {e}")
+                return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    async def osc_translation_get_handler(self, request):
+        """查询翻译结果 OSC 发送开关状态"""
+        enabled = self.session.get_osc_translation_enabled()
+        return web.json_response({"enabled": enabled})
+
+    async def osc_translation_set_handler(self, request):
+        """设置翻译结果 OSC 发送开关"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC translation toggle is disabled by server config"},
+                status=403
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        enabled = bool(payload.get("enabled")) if isinstance(payload, dict) else False
+        self.session.set_osc_translation_enabled(enabled)
+        return web.json_response({"enabled": self.session.get_osc_translation_enabled()})
+
+    async def osc_sensitive_filter_get_handler(self, request):
+        """Return whether outbound OSC sensitive-phrase filtering is enabled."""
+        return web.json_response({"enabled": osc_manager.get_sensitive_filter_enabled()})
+
+    async def osc_sensitive_filter_set_handler(self, request):
+        """Toggle filtering at the OSC-only output boundary."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC sensitive word filter is locked by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or "enabled" not in payload:
+            return web.json_response({"status": "error", "message": "Missing enabled field"}, status=400)
+        if not isinstance(payload["enabled"], bool):
+            return web.json_response({"status": "error", "message": "enabled must be a boolean"}, status=400)
+
+        osc_manager.set_sensitive_filter_enabled(payload["enabled"])
+        return web.json_response({
+            "status": "ok",
+            "enabled": osc_manager.get_sensitive_filter_enabled(),
+        })
+
+    async def osc_sensitive_filter_notice_get_handler(self, request):
+        """Return whether the first-match OSC filter notice is suppressed."""
+        return web.json_response({
+            "disabled": not osc_manager.get_sensitive_filter_notice_enabled(),
+        })
+
+    async def osc_sensitive_filter_notice_set_handler(self, request):
+        """Enable or suppress the startup-only OSC filter notice."""
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "OSC sensitive word filter notice is locked by server config"},
+                status=403,
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or "disabled" not in payload:
+            return web.json_response({"status": "error", "message": "Missing disabled field"}, status=400)
+        if not isinstance(payload["disabled"], bool):
+            return web.json_response({"status": "error", "message": "disabled must be a boolean"}, status=400)
+
+        disabled = payload["disabled"]
+        osc_manager.set_sensitive_filter_notice_enabled(not disabled)
+        if disabled and not self._osc_sensitive_filter_notice_delivered:
+            self._osc_sensitive_filter_notice_triggered = False
+        return web.json_response({"status": "ok", "disabled": disabled})
+
+    async def pause_handler(self, request):
+        """暂停识别端点"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Pause is disabled by server config"},
+                status=403
+            )
+
+        print("\n[Server] Received pause request...")
+        # pause() -> stop() 会同步 join 会话/音频线程（最长约 4.5s），
+        # 移出事件循环避免阻塞其他请求。
+        async with self._session_lifecycle_lock():
+            paused = await asyncio.to_thread(self.session.pause)
+
+        # 广播暂停状态给所有 WebSocket 客户端
+        await self.broadcast_to_clients({
+            "type": "recognition_paused",
+            "paused": True
+        })
+
+        if paused:
+            message = "Recognition paused"
+        else:
+            message = "Recognition already paused"
+
+        return web.json_response({"status": "ok", "message": message})
+    
+    async def resume_handler(self, request):
+        """恢复识别端点"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Resume is disabled by server config"},
+                status=403
+            )
+
+        print("\n[Server] Received resume request...")
+        async with self._session_lifecycle_lock():
+            get_api_key = self.get_api_key
+
+            if not self.session.is_paused:
+                # 即使已经运行，也确保状态同步
+                await self.broadcast_to_clients({
+                    "type": "recognition_paused",
+                    "paused": False
+                })
+                return web.json_response({"status": "ok", "message": "Recognition already running"})
+
+            try:
+                api_key = get_api_key()
+            except RuntimeError as error:
+                print(f"[Server] Resume failed: {error}")
+                return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+            loop = asyncio.get_event_loop()
+            # Resume in the mode the user last applied (e.g. two_way via
+            # /restart), not the boot-time env default.
+            if self.provider_manager is not None:
+                resume_translation = self.provider_manager.translation_mode
+            else:
+                resume_translation = getattr(self.session, "translation", None) or TRANSLATION_MODE
+            resumed = self.session.resume(
+                api_key=api_key,
+                audio_format="pcm_s16le",
+                translation=resume_translation,
+                loop=loop
+            )
+            if resumed and self.provider_manager is not None:
+                await self.provider_manager._sync_ipc(True)
+
+            # 广播恢复状态给所有 WebSocket 客户端
+            await self.broadcast_to_clients({
+                "type": "recognition_paused",
+                "paused": False
+            })
+
+            if resumed:
+                return web.json_response({"status": "ok", "message": "Recognition resumed"})
+
+            # resume 请求失败但仍处于暂停状态，返回错误
+            return web.json_response({"status": "error", "message": "Failed to resume recognition"}, status=500)
+
+    async def get_audio_source_handler(self, request):
+        """获取当前音频源"""
+        source = self.session.get_audio_source()
+        payload = {"status": "ok", "source": source}
+        if self._is_loopback_request(request) and hasattr(self.session, "get_audio_capture_settings"):
+            payload["settings"] = self.session.get_audio_capture_settings()
+            streamer = getattr(self.session, "audio_streamer", None)
+            payload["capture_error"] = getattr(streamer, "capture_error", "")
+            settings = payload["settings"]
+            if (streamer is None and settings.get("desktop_enabled")
+                    and settings.get("desktop_mode") == "window" and settings.get("window")):
+                # Report a missing saved target even before recognition starts.
+                import realtime_subtitle.audio.window_audio as window_audio
+                target = await asyncio.to_thread(window_audio.resolve_window, settings["window"], restore=True)
+                if not target:
+                    payload["capture_error"] = "Selected audio window is unavailable"
+        return web.json_response(payload)
+
+    async def audio_windows_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        import realtime_subtitle.audio.window_audio as window_audio
+        return web.json_response({"available": window_audio.supported(),
+                                  "windows": await asyncio.to_thread(window_audio.list_windows)})
+
+    async def set_audio_source_handler(self, request):
+        """切换音频源"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Audio source switching is disabled by server config"},
+                status=403
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if isinstance(payload, dict) and "settings" in payload:
+            success, message = self.session.set_audio_capture_settings(payload["settings"], persist=True)
+            if success and self.provider_manager is not None:
+                self.provider_manager._capture_audio_preferences(self.session)
+            return web.json_response({"status": "ok" if success else "error", "message": message,
+                                      "source": self.session.get_audio_source(),
+                                      "settings": self.session.get_audio_capture_settings()},
+                                     status=200 if success else 400)
+
+        if not isinstance(payload, dict) or "source" not in payload:
+            return web.json_response({"status": "error", "message": "Missing 'source' field"}, status=400)
+
+        source = payload.get("source")
+        if not isinstance(source, str):
+            return web.json_response({"status": "error", "message": "'source' must be a string"}, status=400)
+
+        source = source.strip().lower()
+        if source not in ("system", "microphone", "mix"):
+            return web.json_response({"status": "error", "message": "Invalid audio source"}, status=400)
+
+        success, message = self.session.set_audio_source(source)
+        if success and self.provider_manager is not None:
+            try:
+                self.provider_manager.audio_source = self.session.get_audio_source()
+            except Exception:
+                self.provider_manager.audio_source = source
+        status_code = 200 if success else 400
+        response = {
+            "status": "ok" if success else "error",
+            "message": message,
+            "source": self.session.get_audio_source()
+        }
+        return web.json_response(response, status=status_code)
+
+    def _microphone_payload(self) -> dict:
+        data = list_microphone_devices()
+        selected_id = ""
+        if hasattr(self.session, "get_microphone_device_id"):
+            selected_id = normalize_microphone_device_id(self.session.get_microphone_device_id())
+        valid_ids = {str(item.get("id") or "") for item in data.get("devices", []) if isinstance(item, dict)}
+        if data.get("available") and selected_id and selected_id not in valid_ids:
+            selected_id = ""
+            if hasattr(self.session, "set_microphone_device_id"):
+                self.session.set_microphone_device_id("")
+            if self.provider_manager is not None:
+                self.provider_manager.microphone_device_id = ""
+        data["selected_id"] = selected_id
+        return data
+
+    async def microphones_handler(self, request):
+        """List available microphone devices for the settings UI."""
+        payload = self._microphone_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    def _output_device_payload(self) -> dict:
+        data = list_output_devices()
+        selected_id = ""
+        if hasattr(self.session, "get_output_device_id"):
+            selected_id = normalize_output_device_id(self.session.get_output_device_id())
+        valid_ids = {str(item.get("id") or "") for item in data.get("devices", []) if isinstance(item, dict)}
+        if data.get("available") and selected_id and selected_id not in valid_ids:
+            selected_id = ""
+            if hasattr(self.session, "set_output_device_id"):
+                self.session.set_output_device_id("")
+            if self.provider_manager is not None:
+                self.provider_manager.output_device_id = ""
+        data["selected_id"] = selected_id
+        return data
+
+    async def output_devices_handler(self, request):
+        payload = self._output_device_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    async def output_device_set_handler(self, request):
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Output device switching is disabled by server config"}, status=403
+            )
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        device_id = normalize_output_device_id(payload.get("id"))
+        devices = self._output_device_payload().get("devices") or []
+        known_ids = {str(device.get("id") or "") for device in devices if isinstance(device, dict)}
+        if known_ids and device_id and device_id not in known_ids:
+            device_id = ""  # A stale persisted choice always falls back to current default.
+        if not hasattr(self.session, "set_output_device_id"):
+            return web.json_response({"status": "error", "message": "Output device switching is unavailable"}, status=503)
+        success, message = self.session.set_output_device_id(device_id)
+        if success and self.provider_manager is not None:
+            self.provider_manager.output_device_id = device_id
+        return web.json_response({
+            "status": "ok" if success else "error", "message": message,
+            "id": self.session.get_output_device_id(),
+        }, status=200 if success else 400)
+
+    async def microphone_device_get_handler(self, request):
+        """Get the selected microphone device."""
+        payload = self._microphone_payload()
+        payload["status"] = "ok"
+        return web.json_response(payload)
+
+    async def microphone_device_set_handler(self, request):
+        """Set the selected microphone device."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Microphone device switching is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        device_id = normalize_microphone_device_id(payload.get("id"))
+        if device_id:
+            devices = self._microphone_payload().get("devices") or []
+            known_ids = {str(device.get("id") or "") for device in devices if isinstance(device, dict)}
+            if known_ids and device_id not in known_ids:
+                device_id = ""  # A stale persisted choice always falls back to current default.
+
+        if not hasattr(self.session, "set_microphone_device_id"):
+            return web.json_response(
+                {"status": "error", "message": "Microphone device switching is unavailable"},
+                status=503,
+            )
+
+        success, message = self.session.set_microphone_device_id(device_id)
+        if success and self.provider_manager is not None:
+            try:
+                self.provider_manager.microphone_device_id = normalize_microphone_device_id(
+                    self.session.get_microphone_device_id()
+                )
+            except Exception:
+                self.provider_manager.microphone_device_id = device_id
+        status_code = 200 if success else 400
+        return web.json_response({
+            "status": "ok" if success else "error",
+            "message": message,
+            "id": self.session.get_microphone_device_id(),
+        }, status=status_code)
+
+    async def window_on_top_handler(self, request):
+        """切换窗口始终置顶状态（仅 WebView 模式有效）"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict) or "on_top" not in payload:
+            return web.json_response({"status": "error", "message": "Missing 'on_top' field"}, status=400)
+
+        on_top = bool(payload.get("on_top"))
+
+        if not callable(self.window_on_top_callback):
+            return web.json_response({"status": "ignored", "message": "Window on-top control unavailable"})
+
+        try:
+            applied = bool(self.window_on_top_callback(on_top))
+            return web.json_response({"status": "ok", "on_top": on_top, "applied": applied})
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    async def desktop_shortcut_get_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            return web.json_response(desktop_shortcut.get_shortcut_status())
+        except desktop_shortcut.DesktopShortcutError as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    async def desktop_shortcut_post_handler(self, request):
+        if not self._is_loopback_request(request):
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+        if not isinstance(payload, dict) or payload.get("action") != "create":
+            return web.json_response({"status": "error", "message": "Invalid shortcut action"}, status=400)
+        try:
+            result = desktop_shortcut.create_desktop_shortcut()
+            status = 200 if result.get("created") else 503
+            return web.json_response(result, status=status)
+        except desktop_shortcut.DesktopShortcutError as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    def get_custom_font_path(self) -> str | None:
+        import sys
+        if getattr(sys, 'frozen', False):
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            return os.path.join(exe_dir, "NotoSansCJK-Regular.ttc")
+        else:
+            return os.path.join(os.getcwd(), "NotoSansCJK-Regular.ttc")
+
+    def check_custom_font_exists(self) -> bool:
+        font_path = self.get_custom_font_path()
+        return font_path is not None and os.path.exists(font_path)
+
+    async def custom_font_file_handler(self, request):
+        """Serve the custom font file if it exists, fallback to static version, or return 404."""
+        font_path = self.get_custom_font_path()
+        if font_path and os.path.exists(font_path):
+            return web.FileResponse(font_path)
+        
+        # Fallback to static folder version
+        static_font_path = get_resource_path(os.path.join('static', 'fonts', 'NotoSansCJK-Regular.ttc'))
+        if os.path.exists(static_font_path):
+            return web.FileResponse(static_font_path)
+        
+        return web.HTTPNotFound()
+
+    async def subtitle_font_get_handler(self, request):
+        """Return the current subtitle font preference for native overlay clients."""
+        return web.json_response({
+            "use_bundled_cjk_fonts": bool(self.use_bundled_cjk_fonts and self.check_custom_font_exists()),
+        })
+
+    async def subtitle_font_post_handler(self, request):
+        """Update subtitle font preference and broadcast it to connected windows."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        enabled = bool(payload.get("use_bundled_cjk_fonts"))
+        if enabled and not self.check_custom_font_exists():
+            enabled = False
+
+        self.use_bundled_cjk_fonts = enabled
+        await self.broadcast_to_clients({
+            "type": "subtitle_font_preference",
+            "use_bundled_cjk_fonts": enabled,
+        })
+        return web.json_response({"status": "ok", "use_bundled_cjk_fonts": enabled})
+
+    def set_furigana_evaluator(self, evaluator):
+        """注入一个 (text)->dict 的回调，用主窗口已加载的 kuromoji 分词。
+
+        由 server.py 在创建 pywebview 窗口后设置：内部调用 window.evaluate_js
+        执行 window.__overlayFurigana(text)。浏览器兜底模式（无主窗口）下不设置，
+        悬浮窗假名请求会拿到 ready:false 并降级为纯文本。
+        """
+        self.furigana_evaluator = evaluator
+
+    async def furigana_handler(self, request):
+        """原生悬浮窗的假名分词代理：转交主窗口 kuromoji，返回 [[surface, reading|null], ...]。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        evaluator = getattr(self, "furigana_evaluator", None)
+        if evaluator is None:
+            return web.json_response({"ready": False, "pairs": []})
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        text = (payload.get("text") if isinstance(payload, dict) else None) or ""
+        if not text:
+            return web.json_response({"ready": True, "pairs": []})
+        try:
+            loop = asyncio.get_event_loop()
+            # evaluate_js 会阻塞到主窗口 GUI 线程返回结果，放到执行器线程里跑，避免卡事件循环。
+            result = await loop.run_in_executor(None, evaluator, text)
+        except Exception:
+            result = None
+        if not isinstance(result, dict):
+            return web.json_response({"ready": False, "pairs": []})
+        return web.json_response({
+            "ready": bool(result.get("ready")),
+            "pairs": result.get("pairs") or [],
+        })
+
+    async def overlay_get_handler(self, request):
+        """查询原生字幕悬浮窗当前是否打开。"""
+        manager = self.overlay_manager
+        if manager is None:
+            return web.json_response({"status": "ok", "available": False, "open": False})
+        return web.json_response({
+            "status": "ok",
+            "available": True,
+            "open": bool(manager.is_open() and manager.is_visible),
+        })
+
+    async def overlay_post_handler(self, request):
+        """打开/关闭/切换原生字幕悬浮窗。
+
+        请求体：{"action": "toggle" | "open" | "close"}（缺省为 toggle）。
+        """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Overlay control is disabled by server config"},
+                status=403,
+            )
+
+        manager = self.overlay_manager
+        if manager is None:
+            return web.json_response(
+                {"status": "ignored", "available": False, "message": "Overlay unavailable"}
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        action = (payload.get("action") if isinstance(payload, dict) else None) or "toggle"
+
+        try:
+            if action == "open":
+                is_visible = True
+            elif action == "close":
+                is_visible = False
+            else:  # toggle
+                is_visible = not getattr(manager, "is_visible", False)
+
+            manager.is_visible = is_visible
+
+            # Ensure the process is alive (spawn it if it died or hasn't started)
+            if not manager.is_open():
+                manager.open(hidden=True)
+            
+            # Broadcast new visibility state to all websocket clients
+            await self.broadcast_to_clients({"type": "overlay_visibility", "visible": is_visible})
+
+            return web.json_response({"status": "ok", "available": True, "open": bool(is_visible)})
+        except Exception as error:
+            self.logger.error(f"Failed to handle overlay request: {error}")
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    VR_ATTACH_MODES = ("world", "head", "body")
+
+    def _vr_overlay_state_frame(self) -> dict:
+        manager = self.vr_overlay_manager
+        visible = bool(manager is not None and manager.is_visible)
+        alive = bool(manager is not None and manager.is_open())
+        return {
+            "type": "vr_overlay_visibility",
+            "visible": visible,
+            # 已连上 SteamVR 并在显示；开着但 SteamVR 未运行时为 False（悬浮窗在静默等待）
+            "connected": bool(visible and alive and manager.connected),
+        }
+
+    def _vr_overlay_config_frame(self) -> dict:
+        manager = self.vr_overlay_manager
+        return {
+            "type": "vr_overlay_config",
+            "attach_mode": getattr(manager, "attach_mode", "body"),
+        }
+
+    async def vr_overlay_get_handler(self, request):
+        """查询 SteamVR 字幕悬浮窗状态。"""
+        manager = self.vr_overlay_manager
+        if manager is None:
+            return web.json_response({"status": "ok", "available": False, "open": False})
+        frame = self._vr_overlay_state_frame()
+        return web.json_response({
+            "status": "ok",
+            "available": True,
+            "open": frame["visible"],
+            "connected": frame["connected"],
+            "attach_mode": manager.attach_mode,
+        })
+
+    async def vr_overlay_post_handler(self, request):
+        """控制 SteamVR 字幕悬浮窗。
+
+        请求体 {"action": ...}：
+          * "toggle" | "open" | "close"：开关（缺省为 toggle）
+          * "config"：{"attach_mode": "world" | "head" | "body"} 位置模式
+          * "reset_position"：把悬浮窗放回视线正前方
+          * "report"：VR 子进程回报 {"connected": bool}
+        """
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        manager = self.vr_overlay_manager
+        if manager is None:
+            return web.json_response(
+                {"status": "ignored", "available": False, "message": "VR overlay unavailable"}
+            )
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        action = payload.get("action") or "toggle"
+
+        if action == "report":
+            manager.connected = bool(payload.get("connected"))
+            await self.broadcast_to_clients(self._vr_overlay_state_frame())
+            return web.json_response({"status": "ok"})
+
+        if LOCK_MANUAL_CONTROLS:
+            return web.json_response(
+                {"status": "error", "message": "Overlay control is disabled by server config"},
+                status=403,
+            )
+
+        try:
+            if action == "config":
+                mode = str(payload.get("attach_mode") or "").strip().lower()
+                if mode not in self.VR_ATTACH_MODES:
+                    return web.json_response(
+                        {"status": "error", "message": "Invalid attach_mode"}, status=400)
+                manager.attach_mode = mode
+                await self.broadcast_to_clients(self._vr_overlay_config_frame())
+                return web.json_response({"status": "ok", "attach_mode": mode})
+
+            if action == "reset_position":
+                await self.broadcast_to_clients({"type": "vr_overlay_reset_position"})
+                return web.json_response({"status": "ok"})
+
+            if action == "open":
+                is_visible = True
+            elif action == "close":
+                is_visible = False
+            else:  # toggle
+                is_visible = not (manager.is_visible and manager.is_open())
+
+            manager.is_visible = is_visible
+            if not is_visible:
+                manager.connected = False
+            elif not manager.is_open():
+                # 子进程连上 WebSocket 后会收到当前显隐与位置模式
+                manager.connected = False
+                manager.open(hidden=True)
+
+            frame = self._vr_overlay_state_frame()
+            if action == "close" and payload.get("source") == "vr_overlay":
+                frame["closed_from_overlay"] = True
+            await self.broadcast_to_clients(frame)
+            return web.json_response({
+                "status": "ok",
+                "available": True,
+                "open": frame["visible"],
+                "connected": frame["connected"],
+            })
+        except Exception as error:
+            self.logger.error(f"Failed to handle VR overlay request: {error}")
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    async def shutdown_handler(self, request):
+        """请求退出应用（前端“重置所有设置并退出”调用）。"""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not callable(self.shutdown_callback):
+            return web.json_response({"status": "ignored", "message": "Shutdown unavailable"})
+        # 先返回响应，再延迟退出，避免连接被强制中断导致前端报错。
+        asyncio.get_event_loop().call_later(0.3, self.shutdown_callback)
+        return web.json_response({"status": "ok"})
+
+    async def index_handler(self, request):
+        """静态文件处理"""
+        index_path = get_resource_path(os.path.join('static', 'index.html'))
+        with open(index_path, 'r', encoding='utf-8') as f:
+            html = f.read()
+            initial_config = {
+                "relay_available": bool(config.RELAY_AVAILABLE),
+                "server_url": config.current_server_url(),
+                "server_official_url": config.SUBTITLE_SERVER_URL,
+                "lock_manual_controls": bool(LOCK_MANUAL_CONTROLS),
+            }
+            boot_script = (
+                "<script>"
+                "window.__INITIAL_UI_CONFIG__="
+                + json.dumps(initial_config, ensure_ascii=False)
+                + ";</script>"
+            )
+            if "</head>" in html:
+                html = html.replace("</head>", f"    {boot_script}\n</head>", 1)
+            return web.Response(
+                text=html,
+                content_type='text/html',
+                headers={
+                    "Cache-Control": "no-store, no-cache, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
+    
+    def create_app(self):
+        """创建aiohttp应用"""
+        app = web.Application(middlewares=[cache_bypass_middleware])
+
+        async def _prefetch_hosted_settings(app_instance):
+            # Race the official site against the relay mirrors right away.
+            config.start_server_route()
+            self._schedule_public_settings_refresh()
+
+        async def _cleanup_hosted_settings(app_instance):
+            task = getattr(self, "_public_settings_task", None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        app.on_startup.append(_prefetch_hosted_settings)
+        app.on_cleanup.append(_cleanup_hosted_settings)
+        app.on_startup.append(self._start_ipc_status_polling)
+        app.on_cleanup.append(self._stop_ipc_status_polling)
+        app.on_startup.append(self._start_osc_sensitive_filter_notifications)
+        app.on_cleanup.append(self._stop_osc_sensitive_filter_notifications)
+        app.on_startup.append(self._start_ticket_notifications)
+        app.on_cleanup.append(self._stop_ticket_notifications)
+
+        async def _cleanup_llm_session(app_instance):
+            try:
+                await close_llm_http_session()
+            except Exception:
+                # Best-effort cleanup.
+                pass
+
+        app.on_cleanup.append(_cleanup_llm_session)
+
+        async def _cleanup_http_session(app_instance):
+            try:
+                if self._http is not None and not self._http.closed:
+                    await self._http.close()
+            except Exception:
+                pass
+
+        app.on_cleanup.append(_cleanup_http_session)
+
+        # 路由设置
+        app.router.add_get('/', self.index_handler)
+        app.router.add_get('/ws', self.websocket_handler)
+        app.router.add_get('/health', self.health_handler)
+        app.router.add_get('/local-store', self.local_store_get_handler)
+        app.router.add_get('/timed-notifications', self.timed_notifications_handler)
+        app.router.add_post('/timed-notifications', self.timed_notifications_handler)
+        app.router.add_post('/local-store', self.local_store_post_handler)
+        app.router.add_get('/ui-config', self.ui_config_handler)
+        app.router.add_get('/api/ipc_status', self.ipc_status_handler)
+        app.router.add_get('/segment-mode', self.segment_mode_get_handler)
+        app.router.add_post('/segment-mode', self.segment_mode_set_handler)
+        app.router.add_get('/speaker-labels', self.speaker_labels_get_handler)
+        app.router.add_post('/speaker-labels', self.speaker_labels_set_handler)
+        app.router.add_get('/sleep-on-silence', self.sleep_on_silence_get_handler)
+        app.router.add_post('/sleep-on-silence', self.sleep_on_silence_set_handler)
+        app.router.add_get('/interrupt-repair', self.interrupt_repair_get_handler)
+        app.router.add_post('/interrupt-repair', self.interrupt_repair_set_handler)
+        app.router.add_get('/llm-refine', self.llm_refine_get_handler)
+        app.router.add_post('/llm-refine', self.llm_refine_set_handler)
+        app.router.add_post('/translation-mode', self.translation_mode_set_handler)
+        app.router.add_get('/api-key-status', self.api_key_status_handler) # 新增路由
+        app.router.add_post('/setup', self.setup_handler)
+        app.router.add_post('/use-env', self.use_env_handler)
+        app.router.add_get('/local-inference/status', self.local_inference_status_handler)
+        app.router.add_post('/local-inference/probe', self.local_inference_probe_handler)
+        app.router.add_post('/local-inference/download', self.local_inference_download_handler)
+        app.router.add_get('/local-inference/download/progress', self.local_inference_download_progress_handler)
+        app.router.add_post('/local-inference/download/cancel', self.local_inference_download_cancel_handler)
+        app.router.add_post('/local-inference/legacy-cleanup', self.local_inference_legacy_cleanup_handler)
+        # Subtitle-server relay (hosted mode) account endpoints.
+        app.router.add_post('/account/login-code', self.account_login_code_handler)
+        app.router.add_post('/account/login-begin', self.account_login_begin_handler)
+        app.router.add_get('/account/login-callback', self.account_login_callback_handler)
+        app.router.add_get('/account/login-poll', self.account_login_poll_handler)
+        app.router.add_get('/account/announcements', self.account_announcements_handler)
+        app.router.add_get('/account/registration-info', self.account_registration_info_handler)
+        app.router.add_get('/account/status', self.account_status_handler)
+        app.router.add_get('/account/balance', self.account_balance_handler)
+        app.router.add_get('/account/pricing', self.account_pricing_handler)
+        app.router.add_get('/account/usage', self.account_usage_handler)
+        app.router.add_get('/account/invite', self.account_invite_handler)
+        app.router.add_get('/account/web-login-url', self.account_web_login_url_handler)
+        app.router.add_get('/account/tickets', self.account_tickets_handler)
+        app.router.add_get('/account/tickets/unread-summary', self.account_ticket_unread_summary_handler)
+        app.router.add_get('/account/tickets/{ticket_id}', self.account_ticket_detail_handler)
+        app.router.add_post('/account/redeem', self.account_redeem_handler)
+        app.router.add_post('/account/logout', self.account_logout_handler)
+        app.router.add_post('/restart', self.restart_handler)
+        app.router.add_post('/pause', self.pause_handler)
+        app.router.add_post('/resume', self.resume_handler)
+        app.router.add_get('/osc-translation', self.osc_translation_get_handler)
+        app.router.add_post('/osc-translation', self.osc_translation_set_handler)
+        app.router.add_get('/osc-sensitive-filter', self.osc_sensitive_filter_get_handler)
+        app.router.add_post('/osc-sensitive-filter', self.osc_sensitive_filter_set_handler)
+        app.router.add_get('/osc-sensitive-filter-notice', self.osc_sensitive_filter_notice_get_handler)
+        app.router.add_post('/osc-sensitive-filter-notice', self.osc_sensitive_filter_notice_set_handler)
+        app.router.add_get('/audio-source', self.get_audio_source_handler)
+        app.router.add_post('/audio-source', self.set_audio_source_handler)
+        app.router.add_get('/audio-windows', self.audio_windows_handler)
+        app.router.add_get('/microphones', self.microphones_handler)
+        app.router.add_get('/output-devices', self.output_devices_handler)
+        app.router.add_post('/output-device', self.output_device_set_handler)
+        app.router.add_get('/microphone-device', self.microphone_device_get_handler)
+        app.router.add_post('/microphone-device', self.microphone_device_set_handler)
+        app.router.add_get('/subtitle-font', self.subtitle_font_get_handler)
+        app.router.add_post('/subtitle-font', self.subtitle_font_post_handler)
+        app.router.add_post('/window-on-top', self.window_on_top_handler)
+        app.router.add_get('/desktop-shortcut', self.desktop_shortcut_get_handler)
+        app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)
+        app.router.add_get('/overlay', self.overlay_get_handler)
+        app.router.add_post('/overlay', self.overlay_post_handler)
+        app.router.add_get('/vr-overlay', self.vr_overlay_get_handler)
+        app.router.add_post('/vr-overlay', self.vr_overlay_post_handler)
+        app.router.add_post('/furigana', self.furigana_handler)
+        app.router.add_post('/shutdown', self.shutdown_handler)
+        app.router.add_get('/fonts/NotoSansCJK-Regular.ttc', self.custom_font_file_handler)
+        
+        # 静态文件服务 - 放在最后以避免覆盖API路由
+        # 将 static 目录下的文件映射到根路径
+        app.router.add_static('/', path=get_resource_path('static'), name='static')
+        
+        return app

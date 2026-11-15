@@ -14,7 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from osc_sensitive_filter import (  # noqa: E402
+from realtime_subtitle.outputs.osc_sensitive_filter import (  # noqa: E402
     HASH_FILE_FORMAT,
     HASH_FILE_RELATIVE_PATH,
     OSC_SENSITIVE_FILTER_MAX_WORDS,

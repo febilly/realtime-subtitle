@@ -1,6 +1,6 @@
 import pytest
 
-from local_inference.repetition_guard import (
+from realtime_subtitle.local_inference.repetition_guard import (
     RETRY_REPEAT_PENALTY,
     has_repeated_block,
     is_runaway,
@@ -8,7 +8,7 @@ from local_inference.repetition_guard import (
     tail_repeats,
     text_units,
 )
-from streaming_translation.api.hymt2 import HyMT2API
+from realtime_subtitle.streaming_translation.api.hymt2 import HyMT2API
 
 
 def test_units_drop_punctuation_and_split_cjk_from_words():

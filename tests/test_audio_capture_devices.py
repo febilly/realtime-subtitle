@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import audio_capture
+import realtime_subtitle.audio.audio_capture as audio_capture
 
 
 class FakeSoundcard:

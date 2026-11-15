@@ -6,7 +6,7 @@ import struct
 import av
 import pytest
 
-from soniox_audio import OggOpusEncoder, SonioxOpusWebSocket
+from realtime_subtitle.sessions.soniox_audio import OggOpusEncoder, SonioxOpusWebSocket
 
 
 def speech_like_pcm(samples):

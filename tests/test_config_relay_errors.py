@@ -1,7 +1,7 @@
 import pytest
 
-import config
-from relay_errors import RelayConnectionRequestError
+import realtime_subtitle.core.config as config
+from realtime_subtitle.hosted.relay_errors import RelayConnectionRequestError
 
 
 def test_relay_connect_info_preserves_http_status(monkeypatch):
@@ -83,7 +83,7 @@ def test_logged_out_relay_mode_reports_no_hosted_llm(monkeypatch):
     import asyncio
     import types
 
-    import web_server
+    import realtime_subtitle.web.web_server as web_server
 
     monkeypatch.setattr(config, "RELAY_AVAILABLE", True)
     monkeypatch.setattr(config, "RELAY_MODE", True)

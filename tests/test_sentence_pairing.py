@@ -25,7 +25,7 @@ def _run_immediately(coro, _loop):
 
 
 def _make_pairer(clock):
-    from sentence_pairing import SentencePairer
+    from realtime_subtitle.text.sentence_pairing import SentencePairer
 
     counter = {"n": 0}
 
@@ -453,7 +453,7 @@ def test_seeded_translation_survives_until_fresh_chunk_arrives():
     translation. It must not punct-close (nor resync-close) on the seeded
     text alone — the continuation's translation, arriving later, belongs to
     the merged sentence, not the next one."""
-    from sentence_pairing import PairedSentence
+    from realtime_subtitle.text.sentence_pairing import PairedSentence
 
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)
@@ -500,7 +500,7 @@ def test_seeded_translation_survives_until_fresh_chunk_arrives():
 
 
 def test_seeded_translation_quiet_closes_when_no_fresh_chunk_comes():
-    from sentence_pairing import PairedSentence
+    from realtime_subtitle.text.sentence_pairing import PairedSentence
 
     clock = {"t": 100.0}
     pairer = _make_pairer(clock)
@@ -549,7 +549,7 @@ def test_session_fast_banter_never_shifts_refine_pairs(monkeypatch):
     whose translations each arrive interleaved with the NEXT sentence's
     source. Every refine call must receive its own sentence's translation."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -632,7 +632,7 @@ def test_session_translation_tail_after_source_close_stays_with_sentence(monkeyp
     already quiet when the source closes, then its tail arrives 50 ms later.
     The refine call must wait for and retain that tail."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -698,7 +698,7 @@ def test_session_translation_punctuation_closes_matching_open_source(monkeypatch
     sentence inherited the same id, so refine triggered late and its Chinese
     result appeared under both display blocks."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -772,7 +772,7 @@ def test_session_ellipsis_does_not_split_sentence(monkeypatch):
     sentence as its continuation, so the pairing never needs to guess where
     the translation splits (the guessing variants each misfired live)."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -848,7 +848,7 @@ def test_session_same_batch_sentences_merge_into_one_pair(monkeypatch):
     refine LLM then receives both sources with both translations, and the
     following sentence still pairs with its own translation."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -920,7 +920,7 @@ def test_session_mid_token_period_still_splits_sentences(monkeypatch):
     looks at token ends — never split, so two sentences dispatched as one.
     Final tokens are now pre-split at internal sentence boundaries."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -979,7 +979,7 @@ def test_session_mid_token_decimal_stays_one_sentence(monkeypatch):
     """A finalized Soniox token can contain ``5. 3%`` with token-formatting
     whitespace. It must reach pairing and LLM translation as one sentence."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     async def broadcast(_data):
         return None
@@ -1033,7 +1033,7 @@ def test_session_quoted_passage_stays_one_pair(monkeypatch):
     for ten sentences. An ender inside an unclosed quote pair is no longer a
     boundary, so the quotation is ONE pair."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1101,7 +1101,7 @@ def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
     (fragment, late translation) — instead of opening a fresh id that makes
     the frontend's gray line vanish."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 
@@ -1180,7 +1180,7 @@ def test_session_late_translation_after_timeout_revives_fragment(monkeypatch):
 def test_session_late_short_translation_does_not_swap_with_open_next_sentence(monkeypatch):
     """End-to-end replay of llm_20260711_214104 ids 104-105."""
     _install_soniox_session_import_mocks(monkeypatch)
-    import soniox_session as module
+    import realtime_subtitle.sessions.soniox_session as module
 
     updates = []
 

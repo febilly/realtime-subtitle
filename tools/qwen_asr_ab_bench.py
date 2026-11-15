@@ -148,9 +148,9 @@ def main():
     os.chdir(a.repo)
     import logging
     logging.basicConfig(level=logging.WARNING)
-    import config
+    import realtime_subtitle.core.config as config
     config.LOCAL_QWEN_LOG_PIPELINE_TIMING = False
-    from local_inference.asr_qwen3 import Qwen3ASREngine
+    from realtime_subtitle.local_inference.asr_qwen3 import Qwen3ASREngine
 
     base = gpu_used()
     t0 = time.perf_counter()

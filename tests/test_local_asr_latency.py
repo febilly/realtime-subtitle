@@ -5,21 +5,22 @@ from unittest.mock import Mock
 
 import numpy as np
 import pytest
+from module_stubs import pop_module, set_module
 
 
 # Keep this focused unit suite attached to the real config even when another
 # legacy test installs a minimal config module during collection.
-_previous_config = sys.modules.pop("config", None)
+_previous_config = pop_module("realtime_subtitle.core.config")
 try:
-    importlib.import_module("config")
-    from local_inference.recognizer import LocalQwenRecognizer
-    from local_inference.recognizer import config
-    from local_inference.semantic_boundary import BoundaryCommit
+    importlib.import_module("realtime_subtitle.core.config")
+    from realtime_subtitle.local_inference.recognizer import LocalQwenRecognizer
+    from realtime_subtitle.local_inference.recognizer import config
+    from realtime_subtitle.local_inference.semantic_boundary import BoundaryCommit
 finally:
     if _previous_config is None:
-        sys.modules.pop("config", None)
+        pop_module("realtime_subtitle.core.config")
     else:
-        sys.modules["config"] = _previous_config
+        set_module("realtime_subtitle.core.config", _previous_config)
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +61,7 @@ def test_uninterrupted_speech_waits_for_four_second_fallback(monkeypatch, semant
     monkeypatch.setattr(config, "LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL", 4.0)
     monkeypatch.setattr(config, "LOCAL_SEMANTIC_BOUNDARY_ENABLED", semantic_enabled)
     monkeypatch.setattr(config, "LOCAL_SEMANTIC_BOUNDARY_SCAN_INTERVAL", 1.0)
-    monkeypatch.setattr("local_inference.recognizer.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr("realtime_subtitle.local_inference.recognizer.time.monotonic", lambda: 100.0)
     recognizer._last_partial_time = 96.1
 
     recognizer._maybe_emit_partial()
@@ -84,7 +85,7 @@ def test_natural_pause_updates_before_four_second_fallback(monkeypatch):
     monkeypatch.setattr(config, "LOCAL_INCREMENTAL_MAX_UPDATE_INTERVAL", 4.0)
     monkeypatch.setattr(config, "LOCAL_INCREMENTAL_TRIGGER_SILENCE_MS", 10)
     monkeypatch.setattr(config, "LOCAL_SEMANTIC_BOUNDARY_ENABLED", False)
-    monkeypatch.setattr("local_inference.recognizer.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr("realtime_subtitle.local_inference.recognizer.time.monotonic", lambda: 100.0)
     recognizer._last_partial_time = 99.71
     recognizer._maybe_emit_partial()
     recognizer._enqueue_transcribe.assert_not_called()
@@ -106,7 +107,7 @@ def test_known_boundary_still_gets_fast_confirmation(monkeypatch):
     monkeypatch.setattr(config, "LOCAL_SEMANTIC_BOUNDARY_ENABLED", True)
     monkeypatch.setattr(config, "LOCAL_SEMANTIC_BOUNDARY_SCAN_INTERVAL", 1.0)
     monkeypatch.setattr(config, "LOCAL_SEMANTIC_BOUNDARY_CONFIRM_INTERVAL", 0.35)
-    monkeypatch.setattr("local_inference.recognizer.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr("realtime_subtitle.local_inference.recognizer.time.monotonic", lambda: 100.0)
     recognizer._last_partial_time = 99.6
     recognizer._maybe_emit_partial()
     assert recognizer._enqueue_transcribe.call_args.kwargs["present"] is True
@@ -225,7 +226,7 @@ def test_replay_expected_suffix_is_passed_to_main_and_locator_dedup(monkeypatch)
         calls.append((committed, replayed, kwargs))
         return replayed
 
-    monkeypatch.setattr("local_inference.recognizer.deduplicate_normalized_replay", dedup)
+    monkeypatch.setattr("realtime_subtitle.local_inference.recognizer.deduplicate_normalized_replay", dedup)
     assert recognizer._deduplicate_replay("candidate", {"text": "candidate"})[0] == "candidate"
 
     engine = Mock()

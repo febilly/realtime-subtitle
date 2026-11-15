@@ -201,15 +201,15 @@ def select_samples(pool, size, seed):
 
 
 def build(args):
-    import llm_refine
+    import realtime_subtitle.llm.llm_refine as llm_refine
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     if (out / 'dataset.jsonl').exists():
         raise ValueError('Frozen dataset already exists; choose a new output directory')
     pool, exclusions = collect(args.logs, args.context)
     rows = select_samples(pool, args.size, args.seed)
-    old_code = subprocess.check_output(['git', 'show', 'HEAD:llm_refine.py'], cwd=ROOT).decode('utf-8')
-    new_code = (ROOT / 'llm_refine.py').read_text(encoding='utf-8')
+    old_code = subprocess.check_output(['git', 'show', 'HEAD:realtime_subtitle/llm/llm_refine.py'], cwd=ROOT).decode('utf-8')
+    new_code = (ROOT / 'realtime_subtitle/llm/llm_refine.py').read_text(encoding='utf-8')
     llm_refine.config.llm_context_bounds = lambda: (args.context, args.context)
     llm_refine.config.LLM_PROMPT_SUFFIX = ''
     for row in rows:
@@ -286,7 +286,7 @@ def load_experiment(args):
     public = [{k: v for k, v in m.items() if k != 'api_key'} for m in models]
     fingerprint = digest({'dataset': digest(rows), 'prompts': prompts, 'models': public,
                           'temperature': config['temperature'], 'max_tokens': config['max_tokens'],
-                          'production_module_sha256': hashlib.sha256((ROOT / 'llm_refine.py').read_bytes()).hexdigest(),
+                          'production_module_sha256': hashlib.sha256((ROOT / 'realtime_subtitle/llm/llm_refine.py').read_bytes()).hexdigest(),
                           'experimental_protocol_sha256': hashlib.sha256((ROOT / 'tools/refine_response_protocols.py').read_bytes()).hexdigest()})
     return out, rows, config, prompts, models, public, fingerprint
 
@@ -312,7 +312,7 @@ async def request(session, model, messages, temperature, max_tokens):
 
 async def run(args):
     import aiohttp
-    import llm_refine
+    import realtime_subtitle.llm.llm_refine as llm_refine
     out, rows, config, prompts, models, public, fingerprint = load_experiment(args)
     if args.limit:
         rows = rows[:args.limit]
@@ -321,7 +321,7 @@ async def run(args):
         raise ValueError('Run configuration changed. Use a new experiment directory.')
     ev._write_json(metadata, {'fingerprint': fingerprint, 'models': public,
                             'temperature': config['temperature'], 'max_tokens': config['max_tokens'],
-                            'production_module_sha256': hashlib.sha256((ROOT / 'llm_refine.py').read_bytes()).hexdigest(),
+                            'production_module_sha256': hashlib.sha256((ROOT / 'realtime_subtitle/llm/llm_refine.py').read_bytes()).hexdigest(),
                           'experimental_protocol_sha256': hashlib.sha256((ROOT / 'tools/refine_response_protocols.py').read_bytes()).hexdigest()})
     existing = read_rows(out / 'results.jsonl')
     done = {(r['sample_id'], r['model_name']) for r in existing if r['status'] == 'ok'}

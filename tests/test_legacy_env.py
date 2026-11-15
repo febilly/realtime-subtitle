@@ -1,4 +1,4 @@
-from legacy_env import LEGACY_ENV, find_legacy_settings, warn_legacy_settings
+from realtime_subtitle.core.legacy_env import LEGACY_ENV, find_legacy_settings, warn_legacy_settings
 
 
 def test_reports_old_env_names_with_the_replacement():

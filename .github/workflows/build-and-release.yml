@@ -109,7 +109,7 @@ jobs:
 
     - name: Build executable with PyInstaller
       run: |
-        python build_exe.py
+        python packaging/build_exe.py
     
     - name: Get commit info
       id: commit_info

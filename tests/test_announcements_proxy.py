@@ -8,7 +8,7 @@ from aiohttp import web
 
 # Execute just the handler source with a narrow fake server; importing the whole
 # application would initialize optional audio/device dependencies unrelated to REST.
-source = Path('web_server.py').read_text(encoding='utf-8')
+source = Path('realtime_subtitle/web/web_server.py').read_text(encoding='utf-8')
 start = source.index('    async def account_announcements_handler(')
 end = source.index('    async def account_registration_info_handler(', start)
 scope = {'web': web}

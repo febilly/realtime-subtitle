@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from websockets.sync.server import serve
 
-from local_inference.remote_client import RemoteASREngine, normalize_server_url, probe_remote_server, remote_readiness_error
-from streaming_translation.api.hymt2 import HyMT2API
+from realtime_subtitle.local_inference.remote_client import RemoteASREngine, normalize_server_url, probe_remote_server, remote_readiness_error
+from realtime_subtitle.streaming_translation.api.hymt2 import HyMT2API
 
 
 @pytest.fixture
@@ -106,7 +106,7 @@ def test_asr_reconnect_replays_full_window_without_old_draft(endpoint):
 
 
 def test_remote_hymt_keeps_revision_history_and_context_sensitive_final(endpoint, monkeypatch):
-    monkeypatch.setattr("streaming_translation.api.hymt2.acquire_local_engine", Mock(side_effect=AssertionError("local weights loaded")))
+    monkeypatch.setattr("realtime_subtitle.streaming_translation.api.hymt2.acquire_local_engine", Mock(side_effect=AssertionError("local weights loaded")))
     translator = HyMT2API(backend="remote", websocket_url=endpoint.url, max_retries=0)
     try:
         assert translator.load_local_engine() is False
@@ -143,7 +143,7 @@ def test_missing_unused_sensevoice_does_not_block_remote_qwen():
 
 
 def test_remote_recognizer_bypasses_local_weights(monkeypatch):
-    import local_inference.recognizer as module
+    import realtime_subtitle.local_inference.recognizer as module
     monkeypatch.setattr(module, "is_asr_cached", Mock(side_effect=AssertionError("local ASR checked")))
     monkeypatch.setattr(module, "Qwen3ASREngine", Mock(side_effect=AssertionError("local ASR loaded")))
     recognizer = module.LocalQwenRecognizer(Mock(), Mock(), inference_backend="remote", server_url="ws://127.0.0.1:18775")
@@ -152,13 +152,13 @@ def test_remote_recognizer_bypasses_local_weights(monkeypatch):
 
 
 def test_remote_session_checks_service_without_requiring_local_models(monkeypatch):
-    import local_session as module
+    import realtime_subtitle.sessions.local_session as module
     monkeypatch.setattr(module, "get_all_local_models_status", Mock(side_effect=AssertionError("local models checked")))
     session = module.LocalInferenceSession(Mock(), Mock())
     session._inference_backend = "remote"
     session._server_url = "ws://127.0.0.1:18775"
     session._check_models(True)
-    monkeypatch.setattr("local_inference.remote_client.probe_remote_server", lambda url: {"ready": True})
+    monkeypatch.setattr("realtime_subtitle.local_inference.remote_client.probe_remote_server", lambda url: {"ready": True})
     session._check_models(True, prepare_remote=True)
     translator = session._make_row_translator()
     assert translator.backend == "remote" and translator._local_engine is None

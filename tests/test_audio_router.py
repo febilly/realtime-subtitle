@@ -1,5 +1,5 @@
-import audio_router as audio_router_module
-from audio_router import (
+import realtime_subtitle.audio.audio_router as audio_router_module
+from realtime_subtitle.audio.audio_router import (
     AudioSendRouter,
     EnergySilenceDetector,
     FireRedSilenceDetector,

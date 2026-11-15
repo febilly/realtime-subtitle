@@ -4,14 +4,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from module_stubs import patch_modules, pop_module, set_module
 
 
 @pytest.fixture
 def server(monkeypatch):
-    from local_session import config
-    with patch.dict(sys.modules, {"config": config}):
-        previous = sys.modules.pop("web_server", None)
-        import web_server as module
+    from realtime_subtitle.sessions.local_session import config
+    with patch_modules({"realtime_subtitle.core.config": config}):
+        previous = pop_module("realtime_subtitle.web.web_server")
+        import realtime_subtitle.web.web_server as module
         monkeypatch.setattr(module, "LOCK_MANUAL_CONTROLS", False)
         monkeypatch.setattr(module, "web", SimpleNamespace(json_response=lambda data, status=200: (data, status)))
         monkeypatch.setattr(config, "set_local_inference_config", Mock())
@@ -23,9 +24,9 @@ def server(monkeypatch):
         )
         instance._validate_relay_token = AsyncMock(side_effect=AssertionError("offline attempted hosted access"))
         yield instance, module
-        sys.modules.pop("web_server", None)
+        pop_module("realtime_subtitle.web.web_server")
         if previous is not None:
-            sys.modules["web_server"] = previous
+            set_module("realtime_subtitle.web.web_server", previous)
 
 
 def models(asr=True, translation=True):
@@ -59,7 +60,7 @@ def test_simulated_hosted_outage_prevents_relay_ticket_requests(server, monkeypa
 @pytest.mark.parametrize("translation,expected", [(True, "fast"), (False, "off")])
 def test_offline_setup_uses_downloaded_models_without_hosted_access(server, monkeypatch, translation, expected):
     instance, module = server
-    monkeypatch.setattr("local_inference.model_manager.get_all_local_models_status", lambda: models(translation=translation))
+    monkeypatch.setattr("realtime_subtitle.local_inference.model_manager.get_all_local_models_status", lambda: models(translation=translation))
     request = SimpleNamespace(remote="127.0.0.1", json=AsyncMock(return_value={
         "provider": "local", "offline_mode": True, "mode": "relay",
         "local_config": {"backend": "remote"},
@@ -104,7 +105,7 @@ def test_automatic_language_sync_does_not_start_paused_local_models(server, monk
 
 def test_offline_setup_rejects_missing_asr_and_cloud_provider(server, monkeypatch):
     instance, _ = server
-    monkeypatch.setattr("local_inference.model_manager.get_all_local_models_status", lambda: models(asr=False))
+    monkeypatch.setattr("realtime_subtitle.local_inference.model_manager.get_all_local_models_status", lambda: models(asr=False))
     request = SimpleNamespace(remote="127.0.0.1", json=AsyncMock(return_value={"provider": "local", "offline_mode": True}))
     _, status = asyncio.run(instance.setup_handler(request))
     assert status == 400
@@ -146,7 +147,7 @@ def test_offline_fast_translation_requires_a_downloaded_model(server, monkeypatc
     instance, _ = server
     instance.offline_mode = True
     instance.session = Mock()
-    monkeypatch.setattr("local_inference.model_manager.get_all_local_models_status", lambda: models(translation=False))
+    monkeypatch.setattr("realtime_subtitle.local_inference.model_manager.get_all_local_models_status", lambda: models(translation=False))
     request = SimpleNamespace(remote="127.0.0.1", json=AsyncMock(return_value={"mode": "fast"}))
     _, status = asyncio.run(instance.translation_mode_set_handler(request))
     assert status == 400
@@ -156,7 +157,7 @@ def test_offline_fast_translation_requires_a_downloaded_model(server, monkeypatc
 def test_startup_validation_failure_keeps_token_and_offers_local_availability(server, monkeypatch):
     instance, module = server
     monkeypatch.setattr(module.config, "RELAY_AVAILABLE", True)
-    monkeypatch.setattr("local_inference.model_manager.get_all_local_models_status", lambda: models())
+    monkeypatch.setattr("realtime_subtitle.local_inference.model_manager.get_all_local_models_status", lambda: models())
     instance._validate_relay_token = AsyncMock(return_value=(False, "unreachable", None, False))
     request = SimpleNamespace(remote="127.0.0.1", json=AsyncMock(return_value={
         "provider": "soniox", "mode": "relay", "startup": True,
@@ -173,7 +174,7 @@ def test_ui_config_reports_cached_models_and_skips_hosted_calls_offline(server, 
     instance, module = server
     monkeypatch.setattr(module.config, "RELAY_AVAILABLE", True)
     monkeypatch.setattr(module.config, "RELAY_MODE", False)
-    monkeypatch.setattr("local_inference.model_manager.get_all_local_models_status", lambda: models(translation=False))
+    monkeypatch.setattr("realtime_subtitle.local_inference.model_manager.get_all_local_models_status", lambda: models(translation=False))
     instance.offline_mode = offline
     instance.session = Mock()
     instance.check_custom_font_exists = lambda: False

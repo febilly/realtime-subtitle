@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from overlay_window import SubtitleModel
+from realtime_subtitle.outputs.overlay_window import SubtitleModel
 
 
 def row(identifier, source, **changes):

@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import local_store
-import timed_notifications as notices
+import realtime_subtitle.core.local_store as local_store
+import realtime_subtitle.core.timed_notifications as notices
 
 
 @pytest.fixture(autouse=True)
@@ -119,7 +119,7 @@ def test_concurrent_claims_only_admit_one_and_preserve_other_settings():
 def test_separate_app_processes_share_one_cooldown_slot():
     env = {**os.environ, "LOCAL_SETTINGS_FILE": local_store._path(),
            "TIMED_NOTIFICATION_COOLDOWN_SECONDS": "14400"}
-    script = "import timed_notifications as n; print(n.claim('invite', 1000000)['shown'])"
+    script = "import realtime_subtitle.core.timed_notifications as n; print(n.claim('invite', 1000000)['shown'])"
 
     def launch(_):
         result = subprocess.run([sys.executable, "-c", script], env=env,
@@ -131,7 +131,7 @@ def test_separate_app_processes_share_one_cooldown_slot():
 
 
 def test_session_usage_respects_pause_and_throttles_writes(monkeypatch):
-    import realtime_session_base as sessions
+    import realtime_subtitle.sessions.realtime_session_base as sessions
     session = object.__new__(sessions.RealtimeSessionBase)
     session.is_paused = True
     record = MagicMock()
@@ -148,7 +148,7 @@ def test_session_usage_respects_pause_and_throttles_writes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_startup_snapshot_includes_notices_sent_before_browser_connected(monkeypatch):
-    import web_server
+    import realtime_subtitle.web.web_server as web_server
     monkeypatch.setattr(web_server.WebServer, "_is_loopback_request", lambda *_: True)
     monkeypatch.setattr(web_server.config, "take_relay_notices", lambda: [{"id": "soniox_quota"}])
     server = web_server.WebServer(MagicMock(), MagicMock())
@@ -165,7 +165,7 @@ async def test_startup_snapshot_includes_notices_sent_before_browser_connected(m
 
 @pytest.mark.asyncio
 async def test_broadcast_retains_notice_without_a_browser_client():
-    import web_server
+    import realtime_subtitle.web.web_server as web_server
     server = web_server.WebServer(MagicMock(), MagicMock())
     await server.broadcast_to_clients({"type": "server_notice", "notice": {"id": "soniox_quota"}})
     assert notices.snapshot()["notices"][0]["notice"] == {"id": "soniox_quota"}

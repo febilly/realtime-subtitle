@@ -477,7 +477,7 @@ def load_backend_module():
             mapping[key] = value
 
     stubs._install_soniox_session_import_mocks(_Patch())
-    import soniox_session
+    import realtime_subtitle.sessions.soniox_session as soniox_session
     return soniox_session
 
 

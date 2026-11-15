@@ -4,13 +4,14 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-import soniox_client
+import realtime_subtitle.sessions.soniox_client as soniox_client
+from module_stubs import monkeypatch_module
 
 
 @pytest.fixture(autouse=True)
 def expose_real_config(monkeypatch):
     # test_osc_manager installs a narrow config stub during collection.
-    monkeypatch.setitem(sys.modules, "config", soniox_client.config)
+    monkeypatch_module(monkeypatch, "realtime_subtitle.core.config", soniox_client.config)
 
 
 def test_temp_key_headers_are_optional(monkeypatch):

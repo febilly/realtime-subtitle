@@ -15,7 +15,7 @@ Realtime Subtitle 可以采集桌面音频、单个应用窗口、麦克风，�
 字幕可以显示在主窗口、桌面悬浮窗或 SteamVR 悬浮层里。VRChat 玩家还有专属功能，比如通过 OSC 把翻译直接发到 VRChat 聊天框。
 
 <div align="center">
-    <img src="doc-images/screenshot-zh.png" alt="主窗口，实时显示原文和译文" style="max-width: 100%; width: 512px; height: auto;">
+    <img src="docs/images/screenshot-zh.png" alt="主窗口，实时显示原文和译文" style="max-width: 100%; width: 512px; height: auto;">
 </div>
 
 ## 功能
@@ -76,7 +76,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-加 `--debug` 可打开 WebView 开发者工具和网络日志。`python server.py --help` 列出所有命令行参数。Linux 用户请看 [LINUX_SETUP.md](LINUX_SETUP.md)，需要额外安装 GUI 依赖。
+加 `--debug` 可打开 WebView 开发者工具和网络日志。`python server.py --help` 列出所有命令行参数。Linux 用户请看 [LINUX_SETUP.md](docs/LINUX_SETUP.md)，需要额外安装 GUI 依赖。
 
 ### 首次启动
 
@@ -185,7 +185,7 @@ FFMPEG_PATH="ffmpeg"
 
 ```bash
 pip install pyinstaller
-python build_exe.py
+python packaging/build_exe.py
 ```
 
 可执行文件输出到 `dist/RealtimeSubtitle.exe`。
