@@ -126,6 +126,8 @@ class GenerationResult:
     n_realigned: int = 0
     # Positions where a draft-biased decode kept the draft token over the model's argmax.
     n_biased: int = 0
+    # Stops that ``avoid_stop`` pushed down far enough for another token to win.
+    n_stop_vetoed: int = 0
     # Wall time split across the loop's costs, so a slow run can be attributed without guessing.
     # ``t_wait`` is the first sample after each forward pass - llama_get_logits_ith synchronizes there, so
     # that call is where the GPU round-trip actually lands. ``t_verify`` is the remaining sampler calls
@@ -276,6 +278,8 @@ class SpeculativeDecoder:
         on_token: Optional[Callable[[list[int]], bool]] = None,
         draft_bias: float = 0.0,
         bias_tail: int = 0,
+        stop_penalty: float = 0.0,
+        avoid_stop: Optional[Callable[[list[int]], bool]] = None,
     ) -> GenerationResult:
         """Generate from an already-prefilled context.
 
@@ -288,29 +292,56 @@ class SpeculativeDecoder:
         then only changes what the model is clearly surer about, instead of flipping near-ties such as
         ``,``/``.`` on every pass. The last ``bias_tail`` draft tokens stay unbiased: they were decoded
         from audio that ended mid-word and are exactly what new audio should be free to correct.
+
+        ``stop_penalty > 0`` with ``avoid_stop``: when the pick is a stop token and ``avoid_stop(emitted)``
+        says stopping here is suspicious, every stop token's logit is lowered by ``stop_penalty`` and the
+        argmax is taken again. The stop still wins if the model prefers it by more than the penalty. The
+        re-pick reads raw logits, so it skips any repeat penalty in ``sampler`` for that one position.
         """
         res = GenerationResult()
         tracker = DraftTracker(draft, window=window)
         emitted = res.tokens
         pos0 = pos
         clock = time.perf_counter
-        n_vocab = int(self._m.llama_vocab_n_tokens(self._model.vocab)) if draft_bias > 0 else 0
+        check_stop = stop_penalty > 0 and avoid_stop is not None
+        n_vocab = (
+            int(self._m.llama_vocab_n_tokens(self._model.vocab)) if draft_bias > 0 or check_stop else 0
+        )
         protected = len(tracker) - max(0, int(bias_tail))
 
         def expected_at(index: int) -> Optional[int]:
             return tracker.token_at(index) if draft_bias > 0 and index < protected else None
 
-        def choose(idx: int, expected: Optional[int]) -> int:
-            if draft_bias <= 0:
-                return sampler.sample(self._ctx, idx=idx)
-            logits = np.ctypeslib.as_array(
+        def logits_at(idx: int) -> np.ndarray:
+            return np.ctypeslib.as_array(
                 self._m.llama_get_logits_ith(self._ctx.ptr, idx), shape=(n_vocab,)
             )
+
+        def pick(idx: int, expected: Optional[int]) -> int:
+            if draft_bias <= 0:
+                return sampler.sample(self._ctx, idx=idx)
+            logits = logits_at(idx)
             tok = int(logits.argmax())
             if expected is not None and expected != tok and logits[tok] - logits[expected] <= draft_bias:
                 res.n_biased += 1
                 return int(expected)
             return tok
+
+        def choose(idx: int, expected: Optional[int]) -> int:
+            tok = pick(idx, expected)
+            # ``emitted`` is exactly the prefix this position predicts from, inside a draft chunk too:
+            # accepted draft tokens are appended before the next position is sampled.
+            if not check_stop or tok not in stop_ids or not avoid_stop(emitted):
+                return tok
+            scores = logits_at(idx).copy()
+            for stop in stop_ids:
+                if 0 <= stop < n_vocab:
+                    scores[stop] -= stop_penalty
+            alt = int(scores.argmax())
+            if alt in stop_ids:
+                return tok
+            res.n_stop_vetoed += 1
+            return alt
 
         def sample(idx: int, *, waits: bool, expected: Optional[int] = None) -> int:
             # ``waits`` marks the first sampler call after a forward pass: llama_decode is asynchronous,

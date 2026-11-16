@@ -540,6 +540,20 @@ LOCAL_QWEN_ASR_DRAFT_BIAS_TAIL_TOKENS = max(
 LOCAL_MT_PROMPT_CACHE = _env_bool("LOCAL_MT_PROMPT_CACHE", True)
 # Q8_0 KV cache for Hy-MT2. Saves 60 MB but changed 16 of 180 translations, some for the worse.
 LOCAL_MT_KV_Q8 = _env_bool("LOCAL_MT_KV_Q8", False)
+# When the source grew but Hy-MT2 is about to stop right after reproducing the
+# previous translation verbatim, lower the stop tokens' logits by this much so it
+# goes on to translate the new part. 0 disables. Swept on 180 zh/en/ja streams
+# (2250 steps): omissions fixed 35/52/64% at 1/2/3, invented-content steps
+# 0.13/0.18/0.49%. 3 nearly triples the hallucinations, so 2.
+LOCAL_MT_EOS_PENALTY = max(0.0, _env_float("LOCAL_MT_EOS_PENALTY", 2.0))
+# If it still ends on the previous translation although the source gained at least
+# LOCAL_MT_FRESH_MIN_ADD content units (CJK chars / words), translate once more
+# without the previous source/translation in the prompt and keep it if it says more.
+# Same 180 streams: labeled omissions 134 -> 35 with the EOS penalty (60 without),
+# but a reviewer found ~1 in 3 of the real fixes rewords earlier text wrongly
+# (grandma -> aunt, 8 minutes -> 80%), mostly from Japanese. Off by default.
+LOCAL_MT_FRESH_RETRY = _env_bool("LOCAL_MT_FRESH_RETRY", False)
+LOCAL_MT_FRESH_MIN_ADD = max(1, _env_int("LOCAL_MT_FRESH_MIN_ADD", 2))
 
 # Conservative estimates used only for GPU auto-selection.
 QWEN3_ASR_VRAM_MB = max(0, _env_int("QWEN3_ASR_VRAM_MB", 1530))

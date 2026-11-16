@@ -60,7 +60,7 @@ class _LoopingEngine:
         self.outputs = list(outputs)
         self.calls = []
 
-    def generate(self, prompt, *, max_tokens=160, draft=None, repeat_penalty=1.0, stop_on_runaway=False):
+    def generate(self, prompt, *, max_tokens=160, draft=None, repeat_penalty=1.0, stop_on_runaway=False, **_kwargs):
         self.calls.append({"draft": draft, "repeat_penalty": repeat_penalty, "stop": stop_on_runaway})
         return self.outputs.pop(0), [len(self.calls)]
 

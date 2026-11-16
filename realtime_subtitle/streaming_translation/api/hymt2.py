@@ -52,6 +52,11 @@ GGML_TYPE_Q8_0 = 8
 MAX_HISTORY = 8        # 服务端接受 <=10 条，取 8 与本应用上下文窗口一致
 HISTORY_KEEP = 20      # 本地保留的完成句对上限（截断后再取最新一条发送）
 TRAINED_HISTORY_PAIRS = 5  # 微调数据（v4 build_traj.HISTORY_WINDOW）里历史最多 5 对
+# 压低 EOS 后，续写里又出现上一版译文开头这么多字，就认定是在重写整段
+REPEAT_PROBE_CHARS = 10
+# 去掉上一版重翻的结果，实际内容至少多这么多倍才采用
+FRESH_MIN_GROWTH = 1.05
+MIN_REPEAT_PROBE_CHARS = 4
 
 LANGUAGE_NAMES: Dict[str, str] = HYMT2_LANGUAGE_NAMES
 
@@ -141,6 +146,41 @@ def render_trained_prompt(
         "taking the provided background information into consideration.\n\n[Source Text]\n"
         + current_source
     )
+
+
+def clean_output(raw: str) -> str:
+    # 只认全角竖线：这个词表没有 <|...|> 这种特殊 token，译文里的它是原文带来的普通文本。
+    clean = re.split(r"<｜.*?｜>", raw)[0].strip()
+    for prefix in ("Translation:", "翻译：", "译文："):
+        if clean.startswith(prefix):
+            clean = clean[len(prefix) :].strip()
+    return clean
+
+
+def source_grew(previous_source: Optional[str], source: str) -> bool:
+    previous = (previous_source or "").strip()
+    return bool(previous) and len(source.strip()) > len(previous)
+
+
+_NON_CONTENT = set("，。、！？；：,.!?;:…・「」『』（）()[]\"'“”‘’ \t\n-—~～")
+# 按字计数的语言（没有空格分词）；其他语言按词计数
+_CHAR_UNIT_LANGS = {"zh", "ja", "ko", "yue", "th", "lo", "my", "km", "bo"}
+
+
+def text_content(text: Optional[str]) -> str:
+    """去掉标点和空白，只留实际内容，用来比较两版译文是否"只差标点"。"""
+    return "".join(ch for ch in (text or "") if ch not in _NON_CONTENT)
+
+
+def added_content_units(previous_source: Optional[str], source: str, source_lang: str) -> int:
+    """新增原文里有多少实际内容：中日韩等按字，其他语言按词，标点不算。"""
+    previous = (previous_source or "").strip()
+    current = source.strip()
+    added = current[len(previous):] if current.startswith(previous) else current
+    base = (source_lang or "").replace("_", "-").split("-")[0].lower()
+    if base in _CHAR_UNIT_LANGS:
+        return len(text_content(added))
+    return sum(1 for word in added.split() if text_content(word))
 
 
 class HyMT2LocalEngine:
@@ -270,6 +310,9 @@ class HyMT2LocalEngine:
         draft: Optional[List[int]] = None,
         repeat_penalty: float = 1.0,
         stop_on_runaway: bool = False,
+        eos_penalty: float = 0.0,
+        hold_text: Optional[str] = None,
+        hold_tokens: Optional[List[int]] = None,
     ) -> tuple[str, List[int]]:
         """生成译文；返回 (清洗后的文本, 原始 token)。
 
@@ -277,6 +320,10 @@ class HyMT2LocalEngine:
         验证掉模型认同的部分。验证是精确比对，输出与逐 token 解码一致。
 
         ``stop_on_runaway``：末尾复读到 RUNAWAY_REPEATS 次就停（先按 token 粗筛，命中再按文本确认）。
+
+        ``eos_penalty`` + ``hold_text``/``hold_tokens``：原文变长了，模型却刚好把上一版译文原样
+        写完就要结束——多半是按稳定性规则照抄、漏了新增内容。这一步把停止符的 logit 压低
+        ``eos_penalty``，让它接着写；模型确实更想停（差距超过惩罚）时照样停。
         """
         import realtime_subtitle.core.config as _config
         from realtime_subtitle.local_inference.repetition_guard import RUNAWAY_REPEATS, tail_repeats, text_units
@@ -285,6 +332,39 @@ class HyMT2LocalEngine:
             if not tail_repeats(toks, RUNAWAY_REPEATS):
                 return False
             return bool(tail_repeats(text_units(self.model.detokenize(toks)), RUNAWAY_REPEATS))
+
+        hold_ids = list(hold_tokens or [])
+        hold_clean = (hold_text or "").strip()
+
+        def stops_on_previous(toks: List[int]) -> bool:
+            if hold_ids and toks == hold_ids:
+                return True
+            return bool(hold_clean) and clean_output(self.model.detokenize(toks)) == hold_clean
+
+        use_eos_guard = eos_penalty > 0 and bool(hold_ids or hold_clean)
+        # 被压住 EOS 的模型有时没东西可写，就把整段上一版译文再写一遍；这时退回上一版。
+        probe = hold_clean[:REPEAT_PROBE_CHARS]
+        held = {"pushed": False, "repeated": False}
+
+        def guarded_stop(toks: List[int]) -> bool:
+            hit = stops_on_previous(toks)
+            if hit:
+                held["pushed"] = True
+            return hit
+
+        def restarts_previous(toks: List[int]) -> bool:
+            if not held["pushed"] or len(probe) < MIN_REPEAT_PROBE_CHARS:
+                return False
+            text = clean_output(self.model.detokenize(toks))
+            if text.startswith(hold_clean) and probe in text[len(hold_clean):]:
+                held["repeated"] = True
+                return True
+            return False
+
+        def on_token(toks: List[int]) -> bool:
+            if use_eos_guard and restarts_previous(toks):
+                return True
+            return bool(stop_on_runaway and runaway(toks))
 
         with self._engine_lock:
             tokens = self.model.tokenize(prompt, add_special=False, parse_special=True)
@@ -304,7 +384,9 @@ class HyMT2LocalEngine:
                     # 上下文写满后 llama_decode 会失败，译文同样被截断；留在上下文之内。
                     max_tokens=min(max_tokens, self._n_ctx - len(tokens)),
                     draft=draft if use_draft else None,
-                    on_token=runaway if stop_on_runaway else None,
+                    on_token=on_token if (stop_on_runaway or use_eos_guard) else None,
+                    stop_penalty=eos_penalty if use_eos_guard else 0.0,
+                    avoid_stop=guarded_stop if use_eos_guard else None,
                 )
             finally:
                 del sampler
@@ -317,14 +399,14 @@ class HyMT2LocalEngine:
                 len(gen.tokens), gen.n_passes, gen.n_accepted, gen.n_drafted,
                 len(tokens) - n_new, len(tokens),
             )
+            if held["repeated"]:
+                print("[Hy-MT2 本地] 压低 EOS 后开始重写上一版译文，退回上一版")
+                kept = hold_ids if gen.tokens[: len(hold_ids)] == hold_ids else list(gen.tokens)
+                return hold_clean, list(kept)
+            if getattr(gen, "n_stop_vetoed", 0):
+                print("[Hy-MT2 本地] 原文变长但译文停在上一版，压低 EOS 继续生成")
 
-            raw = self.model.detokenize(gen.tokens)
-            # 只认全角竖线：这个词表没有 <|...|> 这种特殊 token，译文里的它是原文带来的普通文本。
-            clean = re.split(r"<｜.*?｜>", raw)[0].strip()
-            for prefix in ("Translation:", "翻译：", "译文："):
-                if clean.startswith(prefix):
-                    clean = clean[len(prefix) :].strip()
-            return clean, list(gen.tokens)
+            return clean_output(self.model.detokenize(gen.tokens)), list(gen.tokens)
 
 
 # ── 进程内共享本地引擎注册表（引用计数） ─────────────────────────────────
@@ -899,15 +981,47 @@ class HyMT2API(BaseTranslationAPI):
                 inference_started = time.monotonic()
                 guard = not source_is_repetitive(text)
                 max_tokens = max_translation_tokens(text)
+                eos_kwargs = self._eos_guard_kwargs(prev_src, prev_trans, text)
                 display, out_tokens = self._local_engine.generate(
-                    prompt, max_tokens=max_tokens, draft=self._prev_tokens or None, stop_on_runaway=guard
+                    prompt,
+                    max_tokens=max_tokens,
+                    draft=self._prev_tokens or None,
+                    stop_on_runaway=guard,
+                    **eos_kwargs,
                 )
                 if guard and is_runaway(display):
                     # 复读跑飞：加一点重复惩罚重跑一次；还复读就照用，不再重试。
                     print("[Hy-MT2 本地] 译文末尾复读，加重复惩罚重跑一次")
                     display, out_tokens = self._local_engine.generate(
-                        prompt, max_tokens=max_tokens, repeat_penalty=RETRY_REPEAT_PENALTY, stop_on_runaway=True
+                        prompt,
+                        max_tokens=max_tokens,
+                        repeat_penalty=RETRY_REPEAT_PENALTY,
+                        stop_on_runaway=True,
+                        **eos_kwargs,
                     )
+                if self._needs_fresh_retry(eos_kwargs, display, prev_src, prev_trans, text, source_lang):
+                    # 压低 EOS 也没让它往下写：模型被上一版译文牵着走了。去掉上一版原文/译文
+                    # （保留历史）重翻一次，确实写出更多内容才用。
+                    fresh_prompt = (
+                        "<｜hy_begin▁of▁sentence｜><｜hy_User｜>"
+                        + render_trained_prompt(
+                            source_name=source_name,
+                            target_name=target_name,
+                            history=recent_history,
+                            previous_source="",
+                            previous_translation="",
+                            current_source=text,
+                        )
+                        + "<｜hy_Assistant｜>"
+                    )
+                    fresh, fresh_tokens = self._local_engine.generate(
+                        fresh_prompt, max_tokens=max_tokens, stop_on_runaway=guard
+                    )
+                    if not (guard and is_runaway(fresh)) and len(text_content(fresh)) > len(
+                        text_content(display)
+                    ) * FRESH_MIN_GROWTH:
+                        print("[Hy-MT2 本地] 原文变长但译文照抄上一版，去掉上一版重翻")
+                        display, out_tokens = fresh, fresh_tokens
                 # 同一句的下一次修订拿这次的结果当草稿；整句定稿后这一句就翻篇了。
                 self._prev_tokens = [] if not is_partial else out_tokens
                 # 临时：本地模型每次推理后输出一行日志，记录本次耗时（毫秒）
@@ -926,6 +1040,33 @@ class HyMT2API(BaseTranslationAPI):
                 self._history.append([text, display])
                 self._history = self._history[-HISTORY_KEEP:]
             return display
+
+    @staticmethod
+    def _needs_fresh_retry(eos_kwargs: Dict, display: str, prev_src, prev_trans, text: str, source_lang: str) -> bool:
+        import realtime_subtitle.core.config as _config
+
+        if not eos_kwargs or not getattr(_config, "LOCAL_MT_FRESH_RETRY", False):
+            return False
+        if text_content(display) != text_content(prev_trans):
+            return False
+        min_add = max(1, int(getattr(_config, "LOCAL_MT_FRESH_MIN_ADD", 2)))
+        return added_content_units(prev_src, text, source_lang) >= min_add
+
+    def _eos_guard_kwargs(self, prev_src: Optional[str], prev_trans: Optional[str], text: str) -> Dict:
+        """原文变长时，不许模型把上一版译文原样抄完就停。"""
+        if not prev_trans or not source_grew(prev_src, text):
+            return {}
+        return {
+            "eos_penalty": self._eos_penalty(),
+            "hold_text": prev_trans,
+            "hold_tokens": list(self._prev_tokens),
+        }
+
+    @staticmethod
+    def _eos_penalty() -> float:
+        import realtime_subtitle.core.config as _config
+
+        return max(0.0, float(getattr(_config, "LOCAL_MT_EOS_PENALTY", 0.0)))
 
     def _build_update(
         self,
