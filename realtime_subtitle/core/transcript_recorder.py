@@ -189,9 +189,13 @@ class TranscriptRecorder:
         self,
         stored_settings: dict | None = None,
         on_status_changed: Callable[[dict], None] | None = None,
+        on_auto_saved: Callable[[], None] | None = None,
+        on_exported: Callable[[], None] | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._on_status_changed = on_status_changed
+        self._on_auto_saved = on_auto_saved
+        self._on_exported = on_exported
         self._pack_enabled = _parse_stored_pack_enabled(stored_settings)
         auto_save, fmt, directory = _parse_stored_transcript_settings(stored_settings)
         self._auto_save = auto_save
@@ -205,6 +209,16 @@ class TranscriptRecorder:
     def set_status_callback(self, callback: Callable[[dict], None] | None) -> None:
         with self._lock:
             self._on_status_changed = callback
+
+    def set_usage_callbacks(
+        self,
+        *,
+        on_auto_saved: Callable[[], None] | None = None,
+        on_exported: Callable[[], None] | None = None,
+    ) -> None:
+        with self._lock:
+            self._on_auto_saved = on_auto_saved
+            self._on_exported = on_exported
 
     def _emit_status(self, status: dict) -> None:
         callback = self._on_status_changed
@@ -445,10 +459,17 @@ class TranscriptRecorder:
         content = render_transcript(self._entries.values(), self._format)
         try:
             _atomic_write_utf8_bom(self._auto_save_path, content)
-            return self._auto_save_path
+            has_entries = bool(self._entries)
+            callback = self._on_auto_saved
         except Exception as exc:
             logger.warning("Failed to auto-save transcript to %s: %s", self._auto_save_path, exc)
             return None
+        if has_entries and callable(callback):
+            try:
+                callback()
+            except Exception:
+                logger.debug("Transcript auto-save usage callback failed", exc_info=True)
+        return self._auto_save_path
 
     def export_to_file(self, path: str | Path, fmt: str | None = None) -> dict:
         target = Path(path)
@@ -460,6 +481,12 @@ class TranscriptRecorder:
         effective_fmt = infer_format_from_path(target, fallback=fallback_fmt)
         content = render_transcript(entries, effective_fmt)
         _atomic_write_utf8_bom(target, content)
+        callback = self._on_exported
+        if callable(callback):
+            try:
+                callback()
+            except Exception:
+                logger.debug("Transcript export usage callback failed", exc_info=True)
         return {
             "path": str(target),
             "count": len(entries),

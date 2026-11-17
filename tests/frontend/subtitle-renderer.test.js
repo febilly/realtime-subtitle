@@ -113,6 +113,7 @@ function createHarness(options = {}) {
         Segmentation,
         escapeHtml,
         TranslationDiff: options.TranslationDiff,
+        onReadingAnnotationRendered: options.onReadingAnnotationRendered,
         t: (key, vars = {}) => {
             if (key === 'empty_state') return 'Nothing to show';
             if (key === 'speaker_label') return `Speaker ${vars.speaker}`;
@@ -617,5 +618,42 @@ describe('SubtitleRenderer multi-language learning annotations', () => {
         expect(origLine.classList.contains('subtitle-line--furigana')).toBe(false);
         expect(origLine.classList.contains('subtitle-line--pinyin')).toBe(false);
         expect(origLine.textContent).toContain('OK 123');
+    });
+
+    it('invokes onReadingAnnotationRendered for ja/zh/ko only when <ruby> actually renders', () => {
+        const rendered = [];
+        const page = createRealServiceHarness({
+            onReadingAnnotationRendered: (lang) => rendered.push(lang),
+            view: {
+                furiganaEnabled: true,
+                learningLanguages: { ja: true, zh: true, ko: true },
+            },
+        });
+
+        // Plain kana/English cached without <ruby> for Japanese does not trigger
+        page.furiganaService.cache.set('ありがとう', 'ありがとう');
+        page.setTokens([original('ありがとう', { language: 'ja', llm_sentence_id: 's1', _sequenceIndex: 1 })]);
+        page.renderer.render();
+        expect(rendered).toEqual([]);
+
+        // Japanese with <ruby> triggers 'ja'
+        page.furiganaService.cache.set('日本語', '<ruby>日本語<rp>(</rp><rt>にほんご</rt><rp>)</rp></ruby>');
+        page.setTokens([original('日本語', { language: 'ja', llm_sentence_id: 's2', _sequenceIndex: 2 })]);
+        page.renderer.render();
+        expect(rendered).toEqual(['ja']);
+
+        // Chinese plain ASCII (no <ruby>) does not trigger; Hanzi triggers 'zh'
+        page.setTokens([original('OK 123', { language: 'zh', llm_sentence_id: 's3', _sequenceIndex: 3 })]);
+        page.renderer.render();
+        expect(rendered).toEqual(['ja']);
+
+        page.setTokens([original('你好', { language: 'zh', llm_sentence_id: 's4', _sequenceIndex: 4 })]);
+        page.renderer.render();
+        expect(rendered).toEqual(['ja', 'zh']);
+
+        // Korean Hangul triggers 'ko'
+        page.setTokens([original('한국어', { language: 'ko', llm_sentence_id: 's5', _sequenceIndex: 5 })]);
+        page.renderer.render();
+        expect(rendered).toEqual(['ja', 'zh', 'ko']);
     });
 });

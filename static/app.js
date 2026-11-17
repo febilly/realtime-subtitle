@@ -755,6 +755,28 @@ window.__overlayFurigana = function (text, lang = 'ja') {
     }
 };
 const translationDiff = TranslationDiff.create({ escapeHtml });
+const READING_LANG_TO_FEATURE = Object.freeze({
+    ja: 'furigana_ja',
+    zh: 'pinyin',
+    ko: 'ko_roman',
+});
+const reportedReadingFeatures = new Set();
+
+function reportReadingAnnotationRendered(readingLang) {
+    const feature = READING_LANG_TO_FEATURE[readingLang];
+    if (!feature || reportedReadingFeatures.has(feature)) return;
+    const socket = typeof webSocketController !== 'undefined' && webSocketController
+        ? webSocketController.getSocket()
+        : null;
+    if (!socket || socket.readyState !== 1) return;
+    try {
+        socket.send(JSON.stringify({ type: 'feature_used', feature }));
+        reportedReadingFeatures.add(feature);
+    } catch (e) {
+        // Ignore transient WebSocket send failure so future renders can retry.
+    }
+}
+
 const subtitleRenderer = SubtitleRenderer.create({
     document,
     container: subtitleContainer,
@@ -767,6 +789,7 @@ const subtitleRenderer = SubtitleRenderer.create({
     t,
     escapeHtml,
     TranslationDiff: translationDiff,
+    onReadingAnnotationRendered: reportReadingAnnotationRendered,
     getViewState: () => ({
         translationProvider,
         isPaused,
@@ -1507,6 +1530,9 @@ document.getElementById('vrResetPositionButton')?.addEventListener('click', () =
 
 
 function handleMessageFrame(data) {
+    if (data && data.type === 'session_connected') {
+        reportedReadingFeatures.clear();
+    }
     if (data && data.type === 'feature_packs') {
         featurePacks.applyBackendPacks(data.packs);
         return;

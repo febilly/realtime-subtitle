@@ -44,6 +44,7 @@ class LocalRelayLink:
         self._stop = threading.Event()
         self._ws = None
         self._ws_lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
 
     @property
@@ -71,10 +72,12 @@ class LocalRelayLink:
             thread.join(timeout=3.0)
 
     def send(self, text: str) -> None:
-        ws = self._ws
+        with self._ws_lock:
+            ws = self._ws
         if ws is None:
             raise RuntimeError("hosted relay is not connected")
-        ws.send(text)
+        with self._send_lock:
+            ws.send(text)
 
     def _run(self) -> None:
         failures = 0

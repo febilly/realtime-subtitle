@@ -38,6 +38,10 @@ import realtime_subtitle.core.local_store as local_store
 import realtime_subtitle.core.timed_notifications as timed_notifications
 import realtime_subtitle.core.desktop_shortcut as desktop_shortcut
 from realtime_subtitle.core.transcript_recorder import TranscriptRecorder
+from realtime_subtitle.hosted.feature_usage import (
+    FeatureUsageReporter,
+    READING_LANG_TO_FEATURE,
+)
 from realtime_subtitle.outputs.osc_manager import osc_manager
 
 logger = logging.getLogger("web_server")
@@ -124,13 +128,24 @@ class WebServer:
         self.use_bundled_cjk_fonts = False
         self.feature_packs = self._load_initial_feature_packs(stored_settings)
         self.obs_settings = self._load_initial_obs_settings(stored_settings)
+        self.feature_usage = FeatureUsageReporter(
+            get_enabled_packs=self.get_feature_packs_state,
+            get_active_stream_features=self._active_stream_features,
+        )
+        osc_manager.set_message_sent_callback(
+            lambda: self.feature_usage.report_feature_used("osc")
+        )
         self.transcript_recorder = TranscriptRecorder(
             stored_settings=stored_settings,
             on_status_changed=self._on_transcript_status_changed,
+            on_auto_saved=lambda: self.feature_usage.report_feature_used("autosave"),
+            on_exported=lambda: self.feature_usage.report_feature_used("export"),
         )
         self.transcript_recorder.set_pack_enabled(self.is_pack_enabled("transcript"))
         if session is not None and hasattr(session, "set_transcript_recorder"):
             session.set_transcript_recorder(self.transcript_recorder)
+        if session is not None and hasattr(session, "set_feature_usage_reporter"):
+            session.set_feature_usage_reporter(self.feature_usage)
         self.learning_languages, self._learning_languages_initialized = (
             self._load_initial_learning_languages(stored_settings)
         )
@@ -185,6 +200,18 @@ class WebServer:
 
     def obs_client_count(self) -> int:
         return len(getattr(self, "obs_ws_clients", ()) or ())
+
+    def _active_stream_features(self) -> list[str]:
+        active: list[str] = []
+        if self.has_obs_client():
+            active.append("obs")
+        vr_manager = getattr(self, "vr_overlay_manager", None)
+        if vr_manager is not None and bool(getattr(vr_manager, "is_visible", False)):
+            if callable(getattr(vr_manager, "is_open", None)) and vr_manager.is_open():
+                active.append("vr_overlay")
+            elif bool(getattr(vr_manager, "connected", False)):
+                active.append("vr_overlay")
+        return active
 
     def _on_transcript_status_changed(self, status: dict) -> None:
         """Thread-safe bridge from synchronous TranscriptRecorder updates to WebSocket broadcast."""
@@ -373,6 +400,7 @@ class WebServer:
         elif client_type == "obs":
             obs_clients.add(ws)
             print("OBS browser source client connected via WebSocket.")
+            self.feature_usage.report_feature_used("obs")
 
         # 添加到客户端列表
         if self._event_loop is None:
@@ -440,8 +468,14 @@ class WebServer:
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
-                    # 处理客户端消息（如果需要）
-                    pass
+                    try:
+                        frame = json.loads(msg.data)
+                    except Exception:
+                        frame = None
+                    if isinstance(frame, dict) and frame.get("type") == "feature_used":
+                        feature = str(frame.get("feature") or "").strip().lower()
+                        if feature in READING_LANG_TO_FEATURE.values():
+                            self.feature_usage.report_feature_used(feature)
                 elif msg.type == WSMsgType.ERROR:
                     print(f'WebSocket connection closed with exception {ws.exception()}')
         except Exception as e:
@@ -2713,6 +2747,7 @@ class WebServer:
 
         packs_state = self.get_feature_packs_state()
         self.transcript_recorder.set_pack_enabled(packs_state.get("transcript", False))
+        self.feature_usage.report_packs_changed()
         await self.broadcast_to_clients({
             "type": "feature_packs",
             "packs": packs_state,
@@ -3430,6 +3465,8 @@ class WebServer:
         if action == "report":
             manager.connected = bool(payload.get("connected"))
             await self.broadcast_to_clients(self._vr_overlay_state_frame())
+            if manager.connected and bool(getattr(manager, "is_visible", False)):
+                self.feature_usage.report_feature_used("vr_overlay")
             return web.json_response({"status": "ok"})
 
         if LOCK_MANUAL_CONTROLS:
@@ -3466,6 +3503,9 @@ class WebServer:
                 # 子进程连上 WebSocket 后会收到当前显隐与位置模式
                 manager.connected = False
                 manager.open(hidden=True)
+
+            if is_visible:
+                self.feature_usage.report_feature_used("vr_overlay")
 
             frame = self._vr_overlay_state_frame()
             if action == "close" and payload.get("source") == "vr_overlay":

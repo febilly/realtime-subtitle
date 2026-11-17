@@ -168,9 +168,14 @@ class LocalInferenceSession(SonioxSession):
     def _stop_relay_link(self) -> None:
         link, self._relay_link = self._relay_link, None
         if link is not None:
+            self._detach_relay_feature_usage(link)
             link.stop()
 
     def _on_relay_link_state(self, connected: bool, terminal_tag: str | None) -> None:
+        if connected:
+            self._attach_relay_feature_usage(self._relay_link)
+        else:
+            self._detach_relay_feature_usage(self._relay_link)
         loop = self.loop
         if loop is None or loop.is_closed():
             return

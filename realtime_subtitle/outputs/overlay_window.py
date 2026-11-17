@@ -626,6 +626,7 @@ class WsClient(threading.Thread):
         self.bridge = bridge
         self._stop = False
         self._loop = None
+        self._ws = None
 
     def run(self):
         if websockets is None:
@@ -642,23 +643,55 @@ class WsClient(threading.Thread):
         while not self._stop:
             try:
                 async with websockets.connect(self.ws_url, **connect_kwargs) as ws:
+                    self._ws = ws
                     self.bridge.status.emit(True)
-                    async for msg in ws:
-                        if self._stop:
-                            break
-                        if isinstance(msg, bytes):
-                            try:
-                                msg = msg.decode("utf-8")
-                            except Exception:
-                                continue
-                        self.bridge.message.emit(msg)
+                    try:
+                        async for msg in ws:
+                            if self._stop:
+                                break
+                            if isinstance(msg, bytes):
+                                try:
+                                    msg = msg.decode("utf-8")
+                                except Exception:
+                                    continue
+                            self.bridge.message.emit(msg)
+                    finally:
+                        if self._ws is ws:
+                            self._ws = None
             except Exception:
                 pass
+            self._ws = None
             self.bridge.status.emit(False)
             if self._stop:
                 break
             # Exit on a dead main app is handled by install_parent_watchdog.
             await asyncio.sleep(1.5)
+
+    def send_json(self, payload: dict) -> bool:
+        loop = self._loop
+        ws = self._ws
+        if self._stop or loop is None or ws is None or loop.is_closed():
+            return False
+        try:
+            text = json.dumps(payload, separators=(",", ":"))
+        except Exception:
+            return False
+
+        async def _safe_send(target_ws, message: str):
+            try:
+                await target_ws.send(message)
+            except Exception:
+                pass
+
+        def _schedule():
+            if self._ws is ws and not self._stop:
+                loop.create_task(_safe_send(ws, text))
+
+        try:
+            loop.call_soon_threadsafe(_schedule)
+            return True
+        except Exception:
+            return False
 
     def stop(self):
         self._stop = True
@@ -1679,6 +1712,7 @@ class OverlayWindow(QWidget):
             self.settings.value("furigana_enabled", "false")).lower() in ("true", "1")
         self._learning_pack_enabled = True
         self._learning_languages = {"ja": True, "zh": True, "ko": True}
+        self._reported_reading_features: set[str] = set()
         self.furigana_enabled = self._learning_pack_enabled and self._user_furigana_enabled
         self.furigana = FuriganaService(self._fetch_furigana, self)
         self.furigana.ready.connect(self._on_furigana_ready)
@@ -2287,14 +2321,39 @@ class OverlayWindow(QWidget):
             return None
 
     # --------------------------------------------------------------- WS ----
+    _READING_CODE_TO_FEATURE = {
+        "ja": "furigana_ja",
+        "zh": "pinyin",
+        "ko": "ko_roman",
+    }
+
     def _init_ws(self):
         scheme = "wss" if self.server_url.startswith("https") else "ws"
         host = self.server_url.split("://", 1)[-1]
         ws_url = f"{scheme}://{host}/ws?client={self.WS_CLIENT}"
         self.bridge = WsBridge()
+        self.bridge.status.connect(self._on_ws_status)
         self.bridge.message.connect(self._on_message)
         self.ws_client = WsClient(ws_url, self.bridge)
         self.ws_client.start()
+
+    def _on_ws_status(self, connected: bool):
+        if not connected:
+            self._reported_reading_features.clear()
+
+    def _report_reading_feature(self, code: str):
+        feature = self._READING_CODE_TO_FEATURE.get(code)
+        if not feature:
+            return
+        reported = getattr(self, "_reported_reading_features", None)
+        if reported is None:
+            reported = set()
+            self._reported_reading_features = reported
+        if feature in reported:
+            return
+        ws_client = getattr(self, "ws_client", None)
+        if ws_client is not None and ws_client.send_json({"type": "feature_used", "feature": feature}):
+            reported.add(feature)
 
     def _on_message(self, raw: str):
         try:
@@ -2302,7 +2361,11 @@ class OverlayWindow(QWidget):
         except Exception:
             return
         mtype = data.get("type")
-        if mtype == "update":
+        if mtype == "session_connected":
+            reported = getattr(self, "_reported_reading_features", None)
+            if reported is not None:
+                reported.clear()
+        elif mtype == "update":
             self.model.apply_update(data)
             self._render()
         elif mtype == "spec_translation_pending":
@@ -2660,7 +2723,12 @@ class OverlayWindow(QWidget):
         与网页版一致：整行 token 逐个画成「注音在上、正文在下」的内联图块；行内有
         非 final token 时整行按进行中着色。
         """
-        code = _learning_lang_code(lang) or "ja"
+        raw_code = _learning_lang_code(lang)
+        if raw_code:
+            report_fn = getattr(self, "_report_reading_feature", None)
+            if report_fn is not None:
+                report_fn(raw_code)
+        code = raw_code or "ja"
         non_final = any(not tk.get("is_final", True) for tk in tokens)
         imgs = []
         for surface, reading in pairs:

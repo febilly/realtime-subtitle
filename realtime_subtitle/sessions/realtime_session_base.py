@@ -176,12 +176,16 @@ class RealtimeSessionBase:
         self._ipc_ongoing_text = ""
         self._ipc_pending_final = ""
         self.transcript_recorder = None
+        self.feature_usage = None
         self._run_start_monotonic = time.monotonic()
         self._transcript_has_opened_stream = False
         self._preserve_transcript_run_once = False
 
     def set_transcript_recorder(self, recorder) -> None:
         self.transcript_recorder = recorder
+
+    def set_feature_usage_reporter(self, reporter) -> None:
+        self.feature_usage = reporter
 
     def mark_preserve_transcript_run_once(self) -> None:
         self._preserve_transcript_run_once = True
@@ -396,6 +400,7 @@ class RealtimeSessionBase:
 
         with self._stream_close_lock:
             if self.ws:
+                self._detach_relay_feature_usage(self.ws)
                 try:
                     # The one close the user actually asked for: a short session
                     # tagged this way is a deliberate stop, not a failure.
@@ -1551,6 +1556,22 @@ class RealtimeSessionBase:
             )
         except Exception as error:
             print(f"⚠️  Failed to notify clients about stream rollover: {error}")
+
+    def _attach_relay_feature_usage(self, ws) -> None:
+        import realtime_subtitle.core.config as live_config
+
+        reporter = getattr(self, "feature_usage", None)
+        if reporter is None:
+            return
+        if not getattr(live_config, "RELAY_MODE", False):
+            reporter.detach_stream()
+            return
+        reporter.attach_stream(ws)
+
+    def _detach_relay_feature_usage(self, ws=None) -> None:
+        reporter = getattr(self, "feature_usage", None)
+        if reporter is not None:
+            reporter.detach_stream(ws)
 
     def _notify_relay_session(self, loop: asyncio.AbstractEventLoop, event: str) -> None:
         """Tell clients when the billed relay link goes live/idle.

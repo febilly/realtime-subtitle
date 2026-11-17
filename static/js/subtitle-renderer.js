@@ -12,6 +12,9 @@
         const segmentation = options.Segmentation || root.Segmentation;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const escapeHtml = options.escapeHtml;
+        const onReadingAnnotationRendered = typeof options.onReadingAnnotationRendered === 'function'
+            ? options.onReadingAnnotationRendered
+            : null;
         const translationDiff = options.TranslationDiff
             || (root.TranslationDiff ? root.TranslationDiff.create({ escapeHtml }) : null);
         const getViewState = typeof options.getViewState === 'function'
@@ -150,13 +153,16 @@
                     rubyHtml = furiganaService.getSync(plainText, readingLang);
                 }
                 if (rubyHtml) {
-                    if (readingLang !== 'ja' && !rubyHtml.includes('<ruby>')) {
+                    if (!rubyHtml.includes('<ruby>')) {
                         const lineContent = renderTokenSpansTrimmed(sentence.originalTokens);
                         return {
                             blocked: false,
                             pendingFurigana: false,
                             html: `<div class="subtitle-line original-line" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${languageTag}${wrapSubtitleLineBody(lineContent, sentenceDir, sentence.originalLang)}</div>`,
                         };
+                    }
+                    if (onReadingAnnotationRendered) {
+                        onReadingAnnotationRendered(readingLang);
                     }
                     const classes = ['subtitle-text'];
                     if (hasNonFinal) classes.push('non-final');

@@ -556,6 +556,13 @@ class ProviderManager:
         )
         if recorder is not None and hasattr(new_session, "set_transcript_recorder"):
             new_session.set_transcript_recorder(recorder)
+        feature_usage = (
+            getattr(self.web_server, "feature_usage", None)
+            if self.web_server is not None
+            else None
+        )
+        if feature_usage is not None and hasattr(new_session, "set_feature_usage_reporter"):
+            new_session.set_feature_usage_reporter(feature_usage)
         self.ipc_server.set_session(new_session)
         import realtime_subtitle.sessions.realtime_session_base as realtime_session_base
         realtime_session_base.ipc_server = self.ipc_server

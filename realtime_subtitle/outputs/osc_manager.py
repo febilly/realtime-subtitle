@@ -89,6 +89,7 @@ class OSCManager:
             self._initialized = True
             self._client = None
             self._mute_callback = None  # 静音状态变化的回调函数
+            self._on_message_sent_callback = None
             self._oscquery_enabled = str(os.environ.get("OSC_QUERY_ENABLED", "1")).strip().lower() in ("1", "true", "yes", "on")
             self._oscquery_app_name = str(os.environ.get("OSCQUERY_APP_NAME", "DeafaultAppName")).strip() or "DeafaultAppName"
             
@@ -150,6 +151,10 @@ class OSCManager:
         """清除静音状态回调函数"""
         self._mute_callback = None
         self._emit("[OSC] Mute callback cleared")
+
+    def set_message_sent_callback(self, callback):
+        """Register callback invoked after an OSC chatbox message is sent."""
+        self._on_message_sent_callback = callback
     
     def get_udp_client(self):
         """获取OSC UDP客户端实例（用于发送消息）"""
@@ -676,6 +681,12 @@ class OSCManager:
             client.send_message("/chatbox/typing", ongoing)
             client.send_message("/chatbox/input", [text, True, not ongoing])
             logger.info(f"[OSC] Sent chatbox message: '{text}' (ongoing={ongoing})")
+            cb = getattr(self, "_on_message_sent_callback", None)
+            if callable(cb):
+                try:
+                    cb()
+                except Exception:
+                    logger.debug("[OSC] Message-sent callback failed", exc_info=True)
         except Exception as e:
             logger.error(f"[OSC] Failed to send OSC message: {e}")
     

@@ -257,6 +257,7 @@ def run_stream_session(
             return
         session.ws = active_stream.ws
         session.last_sent_count = 0
+        session._attach_relay_feature_usage(active_stream.ws)
         session._notify_relay_session(loop, "session_connected")
 
         if not audio_router.set_target(active_stream.ws):
@@ -306,6 +307,7 @@ def run_stream_session(
                             session.ws = active_stream.ws
                             session.last_sent_count = active_stream.sent_count
                             dormant_for_silence = False
+                            session._attach_relay_feature_usage(active_stream.ws)
                             session._notify_relay_session(loop, "session_connected")
                             disconnect_reason = "silence sleep resumed"
                             if resume_because_disabled:
@@ -370,6 +372,7 @@ def run_stream_session(
                 active_stream = None
                 session.ws = None
                 dormant_for_silence = True
+                session._detach_relay_feature_usage(sleeping_stream.ws)
                 session._notify_relay_session(loop, "session_idle")
                 sleeping_stream.sent_count = session._finalize_stream_before_rollover(
                     sleeping_stream.ws,
@@ -438,6 +441,7 @@ def run_stream_session(
                 active_stream, current_api_key, stream_index = switched
                 session.ws = active_stream.ws
                 session.last_sent_count = active_stream.sent_count
+                session._attach_relay_feature_usage(active_stream.ws)
                 disconnect_reason = "stream rollover"
                 continue
 
@@ -489,6 +493,7 @@ def run_stream_session(
                         current_api_key = active_stream.api_key
                         session.ws = active_stream.ws
                         session.last_sent_count = active_stream.sent_count
+                        session._attach_relay_feature_usage(active_stream.ws)
 
                         # Finalize old stream in background so main loop
                         # immediately starts processing new stream responses.
@@ -536,6 +541,7 @@ def run_stream_session(
                         if not audio_router.set_target(active_stream.ws):
                             disconnect_reason = f"failed to attach warmed {provider_name} stream after closure"
                             break
+                        session._attach_relay_feature_usage(active_stream.ws)
                         continue
 
                     try:
@@ -556,6 +562,7 @@ def run_stream_session(
                         active_stream, current_api_key, stream_index = replacement
                         session.ws = active_stream.ws
                         session.last_sent_count = active_stream.sent_count
+                        session._attach_relay_feature_usage(active_stream.ws)
                         continue
                     except Exception as reconnect_error:
                         disconnect_reason = f"connection closed during rollover and reconnect failed: {reconnect_error}"
@@ -623,6 +630,7 @@ def run_stream_session(
                         if not audio_router.set_target(active_stream.ws):
                             disconnect_reason = f"failed to attach warmed {provider_name} stream after finish"
                             break
+                        session._attach_relay_feature_usage(active_stream.ws)
                         continue
                     replacement = session._open_and_switch_to_replacement_stream(
                         audio_router,
@@ -641,6 +649,7 @@ def run_stream_session(
                     active_stream, current_api_key, stream_index = replacement
                     session.ws = active_stream.ws
                     session.last_sent_count = active_stream.sent_count
+                    session._attach_relay_feature_usage(active_stream.ws)
                     disconnect_reason = "stream rollover"
                     continue
                 break
@@ -659,6 +668,7 @@ def run_stream_session(
             warmup_future = None
         key_fetch_executor.shutdown(wait=False)
         session._relay_session_active = False
+        session._detach_relay_feature_usage()
         audio_router.close()
         session._stop_audio_streamer()
         # Serialize this decision with stop(): whichever path claims the
