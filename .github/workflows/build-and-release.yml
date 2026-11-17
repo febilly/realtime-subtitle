@@ -138,12 +138,21 @@ jobs:
           libglib2.0-dev \
           libcairo2-dev \
           libgtk-3-dev \
+          gir1.2-glib-2.0 \
           gir1.2-webkit2-4.1 \
           libwebkit2gtk-4.1-0 \
           libopus0 \
           libopus-dev \
           pulseaudio-utils \
           libxcb-cursor0 \
+          libxcb-icccm4 \
+          libxcb-image0 \
+          libxcb-keysyms1 \
+          libxcb-randr0 \
+          libxcb-render-util0 \
+          libxcb-shape0 \
+          libxcb-xkb1 \
+          libxkbcommon-x11-0 \
           pkg-config \
           meson \
           cmake \
@@ -169,6 +178,7 @@ jobs:
     - name: Smoke test AppImage CLI entrypoint
       run: |
         APPIMAGE_EXTRACT_AND_RUN=1 ./dist/RealtimeSubtitle-linux-x86_64.AppImage --help
+        APPIMAGE_EXTRACT_AND_RUN=1 ./dist/RealtimeSubtitle-linux-x86_64.AppImage --probe-local-gpus
 
     - name: Upload Linux AppImage artifact
       uses: actions/upload-artifact@v4

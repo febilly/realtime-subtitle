@@ -83,14 +83,14 @@ def _find_linux_opus():
         pass
     for path in candidates:
         if path and os.path.isfile(path):
-            return os.path.realpath(path)
+            return path
     raise SystemExit('libopus.so.0 not found; install libopus0 (Ubuntu/Debian) or opus (Arch)')
 
 
 if IS_WINDOWS:
     binaries += [(_src('libopus/win64/opus.dll'), '.')]
 elif IS_LINUX:
-    binaries += [(_find_linux_opus(), 'libopus.so.0')]
+    binaries += [(_find_linux_opus(), '.')]
 
 # SteamVR 字幕悬浮窗：pyopenvr 用 importlib.resources 在 openvr 包目录里找
 # 对应平台的 libopenvr_api 动态库，所以要放进 openvr/ 子目录。只带当前平台 64 位库，
