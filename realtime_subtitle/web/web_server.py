@@ -40,6 +40,8 @@ from realtime_subtitle.outputs.osc_manager import osc_manager
 
 logger = logging.getLogger("web_server")
 
+FEATURE_PACK_IDS = ("vrchat", "learning", "obs", "transcript")
+
 @web.middleware
 async def cache_bypass_middleware(request, handler):
     """Add no-cache headers to all non-WS responses."""
@@ -107,6 +109,7 @@ class WebServer:
         # startup account-validation GET /me request.
         self._client_version_reported = False
         self.use_bundled_cjk_fonts = False
+        self.feature_packs = self._load_initial_feature_packs(stored_settings)
         self._frontend_frame_log = None
         if os.getenv("FRONTEND_FRAME_LOG") == "1" and not os.getenv("PYTEST_CURRENT_TEST"):
             try:
@@ -323,6 +326,10 @@ class WebServer:
             await ws.send_str(json.dumps({
                 "type": "subtitle_font_preference",
                 "use_bundled_cjk_fonts": bool(self.use_bundled_cjk_fonts and self.check_custom_font_exists()),
+            }))
+            await ws.send_str(json.dumps({
+                "type": "feature_packs",
+                "packs": self.get_feature_packs_state(),
             }))
             await ws.send_str(json.dumps({
                 "type": "ticket_notifications_ready",
@@ -2531,6 +2538,74 @@ class WebServer:
         })
         return web.json_response({"status": "ok", "use_bundled_cjk_fonts": enabled})
 
+    def _load_initial_feature_packs(self, stored_settings):
+        default_upgrade = {
+            "vrchat": True,
+            "learning": True,
+            "obs": False,
+            "transcript": False,
+        }
+        default_new = {pack_id: False for pack_id in FEATURE_PACK_IDS}
+        raw = stored_settings.get("featurePacks.v1") if isinstance(stored_settings, dict) else None
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    is_upgrade = bool(parsed.get("isUpgrade"))
+                    confirmed = bool(parsed.get("confirmed"))
+                    fallback = default_upgrade if (is_upgrade and not confirmed) else default_new
+                    enabled = parsed.get("enabled") if isinstance(parsed.get("enabled"), dict) else {}
+                    return {
+                        pack_id: bool(enabled[pack_id]) if isinstance(enabled.get(pack_id), bool) else fallback[pack_id]
+                        for pack_id in FEATURE_PACK_IDS
+                    }
+            except Exception:
+                pass
+        if isinstance(stored_settings, dict) and len(stored_settings) > 0:
+            return dict(default_upgrade)
+        return dict(default_new)
+
+    def get_feature_packs_state(self):
+        return dict(self.feature_packs)
+
+    def is_pack_enabled(self, pack_id):
+        return bool(self.feature_packs.get(pack_id, False))
+
+    async def feature_packs_get_handler(self, request):
+        """Return the current enabled state of feature packs."""
+        return web.json_response({"status": "ok", "packs": self.get_feature_packs_state()})
+
+    async def feature_packs_post_handler(self, request):
+        """Update enabled state of feature packs and broadcast it to connected windows."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        raw_packs = payload.get("packs") if "packs" in payload else payload
+        if not isinstance(raw_packs, dict):
+            return web.json_response({"status": "error", "message": "Invalid packs payload"}, status=400)
+
+        for pack_id in FEATURE_PACK_IDS:
+            if pack_id in raw_packs and isinstance(raw_packs[pack_id], bool):
+                self.feature_packs[pack_id] = raw_packs[pack_id]
+
+        packs_state = self.get_feature_packs_state()
+        await self.broadcast_to_clients({
+            "type": "feature_packs",
+            "packs": packs_state,
+        })
+        return web.json_response({"status": "ok", "packs": packs_state})
+
     def set_furigana_evaluator(self, evaluator):
         """注入一个 (text)->dict 的回调，用主窗口已加载的 kuromoji 分词。
 
@@ -2905,6 +2980,8 @@ class WebServer:
         app.router.add_post('/microphone-device', self.microphone_device_set_handler)
         app.router.add_get('/subtitle-font', self.subtitle_font_get_handler)
         app.router.add_post('/subtitle-font', self.subtitle_font_post_handler)
+        app.router.add_get('/feature-packs', self.feature_packs_get_handler)
+        app.router.add_post('/feature-packs', self.feature_packs_post_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
         app.router.add_get('/desktop-shortcut', self.desktop_shortcut_get_handler)
         app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)

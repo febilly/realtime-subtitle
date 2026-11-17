@@ -1620,8 +1620,10 @@ class OverlayWindow(QWidget):
         self.flow_direction = str(self.settings.value("flow_direction", "up"))
         if self.flow_direction not in ("up", "down"):
             self.flow_direction = "up"
-        self.furigana_enabled = str(
+        self._user_furigana_enabled = str(
             self.settings.value("furigana_enabled", "false")).lower() in ("true", "1")
+        self._learning_pack_enabled = True
+        self.furigana_enabled = self._learning_pack_enabled and self._user_furigana_enabled
         self.furigana = FuriganaService(self._fetch_furigana, self)
         self.furigana.ready.connect(self._on_furigana_ready)
         if self.furigana_enabled:
@@ -1736,6 +1738,7 @@ class OverlayWindow(QWidget):
         self._update_background_button()
         self._update_display_button()
         self._update_furigana_button()
+        self.btn_furigana.setVisible(self._learning_pack_enabled)
         self._update_flow_button()
         self._update_passthrough_button()
 
@@ -2034,9 +2037,25 @@ class OverlayWindow(QWidget):
         self.btn_furigana.setToolTip(tr(
             "furigana_on" if self.furigana_enabled else "furigana_off"))
 
+    def set_learning_pack_enabled(self, enabled: bool):
+        pack_enabled = bool(enabled)
+        self._learning_pack_enabled = pack_enabled
+        effective = pack_enabled and self._user_furigana_enabled
+        self.btn_furigana.setVisible(pack_enabled)
+        if self.furigana_enabled != effective:
+            self.furigana_enabled = effective
+            self.furigana.set_enabled(effective)
+        self._update_furigana_button()
+        self._reposition_buttons()
+        self._last_html = None
+        self._render()
+
     def _toggle_furigana(self):
-        self.furigana_enabled = not self.furigana_enabled
-        self.settings.setValue("furigana_enabled", self.furigana_enabled)
+        if not self._learning_pack_enabled:
+            return
+        self._user_furigana_enabled = not self._user_furigana_enabled
+        self.settings.setValue("furigana_enabled", self._user_furigana_enabled)
+        self.furigana_enabled = self._learning_pack_enabled and self._user_furigana_enabled
         # 与网页版 setEnabled 一致：关闭时清缓存并停止排队。
         self.furigana.set_enabled(self.furigana_enabled)
         self._update_furigana_button()
@@ -2268,6 +2287,10 @@ class OverlayWindow(QWidget):
                 self.use_bundled_cjk_fonts = enabled
                 self._last_html = None
                 self._render()
+        elif mtype == "feature_packs":
+            packs = data.get("packs") if isinstance(data.get("packs"), dict) else {}
+            if "learning" in packs:
+                self.set_learning_pack_enabled(bool(packs.get("learning")))
 
     def _apply_refine_result(self, data: dict):
         """应用一条 LLM 译文更新，按 sentence_id 覆盖对应句子的 STT 译文。
