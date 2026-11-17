@@ -52,6 +52,7 @@
         'useBundledCjkFont': true,
         'translationLanguagePreferences.v1': true,
         'featurePacks.v1': true,
+        'learningLanguages.v1': true,
     };
 
     function isShared(key) {

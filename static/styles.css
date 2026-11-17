@@ -653,6 +653,20 @@ body.dark-theme ruby rt {
     }
 }
 
+.subtitle-line--pinyin ruby {
+    margin: 0 0.14em;
+}
+
+.subtitle-line--romanization ruby {
+    margin: 0 0.08em;
+}
+
+.subtitle-line--pinyin ruby rt,
+.subtitle-line--romanization ruby rt {
+    padding: 0 0.1em;
+    line-height: 1.15;
+}
+
 .control-button.ipc-connected {
     color: #15803d;
     background: rgba(21, 128, 61, 0.15);

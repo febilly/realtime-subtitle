@@ -47,6 +47,7 @@
             descKey: 'pack_learning_desc',
             elementIds: Object.freeze([
                 'furiganaButton',
+                'learningSettingsSection',
             ]),
         }),
         Object.freeze({

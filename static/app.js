@@ -279,6 +279,7 @@ const settingsPorts = {
 };
 
 let featurePacks = null;
+let learningLanguages = null;
 
 const settingsRuntime = SettingsRuntime.create({
     document,
@@ -719,21 +720,33 @@ function applyInterruptRepairConfig(data = {}) {
 
 const furiganaService = Furigana.createService({
     kuromoji: window.kuromoji,
+    pinyinPro: window.pinyinPro,
+    koroman: window.koroman,
     escapeHtml,
     onReady: () => subtitleRuntimeController.render(),
 });
 furiganaService.setEnabled(furiganaToggleController.isEnabled(), { clearState: false });
 
-// 原生半透明悬浮窗（独立进程）自己不带日语词典，改为经 server 调用这里已加载的
-// kuromoji 分词，避免在 exe 里再打包一份 Python 词典。与网页版共用同一 tokenizer，
-// 分词/注音结果完全一致。首个请求会触发词典异步加载；未就绪时返回 ready:false，
-// 悬浮窗先显示纯文本并稍后重试。不受网页版假名开关影响。
-window.__overlayFurigana = function (text) {
+// 原生半透明悬浮窗（独立进程）自己不带分词/注音词典，改为经 server 调用这里已加载的
+// kuromoji / pinyin-pro / koroman。与网页版共用同一套规则，注音结果完全一致。
+// 首个日语请求会触发词典异步加载；未就绪时返回 ready:false，悬浮窗先显示纯文本并稍后重试。
+// 不受网页版假名开关或各语言开关影响。
+window.__overlayFurigana = function (text, lang = 'ja') {
     try {
+        const plain = String(text == null ? '' : text);
+        const requestedLang = (lang == null || lang === '') ? 'ja' : lang;
+        const normLang = Furigana.normalizeLanguage(requestedLang);
+        if (!normLang) return { ready: true, pairs: [] };
+        if (normLang === 'zh') {
+            return { ready: true, pairs: Furigana.buildPinyinPairs(plain, window.pinyinPro) };
+        }
+        if (normLang === 'ko') {
+            return { ready: true, pairs: Furigana.buildKoreanRomanizationPairs(plain, window.koroman) };
+        }
         furiganaService.getTokenizer(); // 幂等：确保词典开始加载
         const tokenizer = furiganaService.getReadyTokenizer();
         if (!tokenizer) return { ready: false, pairs: [] };
-        const tokens = tokenizer.tokenize(String(text == null ? '' : text)) || [];
+        const tokens = tokenizer.tokenize(plain) || [];
         return { ready: true, pairs: Furigana.buildFuriganaPairs(tokens) };
     } catch (error) {
         return { ready: true, pairs: [] };
@@ -762,6 +775,7 @@ const subtitleRenderer = SubtitleRenderer.create({
         llmRefineDiffMode,
         currentTranslationTargetLang,
         furiganaEnabled: furiganaToggleController.isEnabled(),
+        learningLanguages: learningLanguages ? learningLanguages.getEnabledMap() : undefined,
         speakerDiarizationEnabled: speakerLabelController.isDiarizationEnabled(),
         hideSpeakerLabels: speakerLabelController.isHidden(),
         flowDirection: subtitleFlowDirection,
@@ -1316,6 +1330,19 @@ featurePacks = FeaturePacks.create({
 });
 featurePacks.applyAll({ sync: false });
 featurePacksRuntimeActive = true;
+learningLanguages = LearningLanguages.create({
+    document,
+    storage: localStorage,
+    fetch,
+    t,
+    getUiLanguage: () => (window.I18N && window.I18N.lang) || 'en',
+    buildToggleSwitch: settingsPorts.buildToggleSwitch,
+    onChange: () => {
+        subtitleRenderer.invalidateSentences();
+        subtitleRuntimeController.render();
+    },
+});
+learningLanguages.renderSettingsSection();
 const themeController = ThemeController.create({
     settingsUi,
     fetch,
@@ -1432,6 +1459,14 @@ function handleMessageFrame(data) {
         featurePacks.applyBackendPacks(data.packs);
         return;
     }
+    if (data && data.type === 'learning_languages') {
+        if (learningLanguages) {
+            learningLanguages.applyBackendLanguages(data.languages, {
+                initialized: data.initialized !== false,
+            });
+        }
+        return;
+    }
     if (data && (data.type === 'ticket_changed'
         || (data.type === 'ticket_notifications_ready' && data.connected))) {
         void hostedAccount.maybeShowTicketUnreadReminder();
@@ -1473,7 +1508,10 @@ const settingsPanelController = SettingsPanel.create({
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
         renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
-        applyFeaturePacksI18n: () => featurePacks.applyI18n(),
+        applyFeaturePacksI18n: () => {
+            featurePacks.applyI18n();
+            if (learningLanguages) learningLanguages.applyI18n();
+        },
         fetchMicrophoneDevices: settingsPorts.fetchMicrophoneDevices,
         fetchBalance: hostedPorts.fetchBalance,
         updateAccountSection: hostedPorts.updateAccountSection,
@@ -2015,6 +2053,7 @@ document.addEventListener('DOMContentLoaded', () => {
     void audioSourceUi.fetchState();
     audioSourceUi.startMonitoring();
     void featurePacks.syncToBackend();
+    if (learningLanguages) void learningLanguages.syncToBackend();
     void hostedController.startup().then(() => {
         timedNotifications.start();
         void featurePacks.maybeShowStartupPicker();

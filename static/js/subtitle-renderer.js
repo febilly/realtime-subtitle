@@ -95,13 +95,38 @@
             return sentence.renderKey || renderModel.getSentenceRenderKey(sentence, fallbackIndex);
         }
 
+        const furiganaApi = options.Furigana || root.Furigana;
+
+        function normalizeReadingLang(lang) {
+            if (furiganaApi && typeof furiganaApi.normalizeLanguage === 'function') {
+                return furiganaApi.normalizeLanguage(lang);
+            }
+            const primary = String(lang || '')
+                .trim()
+                .toLowerCase()
+                .replace(/_/g, '-')
+                .split('-')[0];
+            if (primary === 'ja') return 'ja';
+            if (primary === 'zh' || primary === 'cmn') return 'zh';
+            if (primary === 'ko') return 'ko';
+            return null;
+        }
+
+        function isReadingLanguageEnabled(view, normLang) {
+            if (!normLang || !view.furiganaEnabled) return false;
+            if (!view.learningLanguages || typeof view.learningLanguages !== 'object') {
+                return true;
+            }
+            return view.learningLanguages[normLang] !== false;
+        }
+
         function renderOriginalLine(sentence, sentenceId, sentenceDir, view) {
             if (!view.showOriginal || sentence.originalTokens.length === 0) {
                 return { blocked: false, pendingFurigana: false, html: '' };
             }
             const languageTag = getLanguageTag(sentence.originalLang);
-            const isJapanese = sentence.originalLang === 'ja';
-            if (isJapanese && view.furiganaEnabled) {
+            const readingLang = normalizeReadingLang(sentence.originalLang);
+            if (isReadingLanguageEnabled(view, readingLang)) {
                 const plainText = sentence.originalTokens.map((token) => token.text).join('');
                 const hasNonFinal = sentence.originalTokens.some((token) => !token.is_final);
                 if (plainText.trim().length === 0) {
@@ -114,18 +139,42 @@
                         html: `<div class="subtitle-line original-line" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${languageTag}${wrapSubtitleLineBody(lineContent, sentenceDir, sentence.originalLang)}</div>`,
                     };
                 }
-                const rubyHtml = furiganaService.getCached(plainText);
+                let rubyHtml = readingLang === 'ja'
+                    ? furiganaService.getCached(plainText)
+                    : furiganaService.getCached(plainText, readingLang);
+                if (
+                    rubyHtml === undefined
+                    && readingLang !== 'ja'
+                    && typeof furiganaService.getSync === 'function'
+                ) {
+                    rubyHtml = furiganaService.getSync(plainText, readingLang);
+                }
                 if (rubyHtml) {
+                    if (readingLang !== 'ja' && !rubyHtml.includes('<ruby>')) {
+                        const lineContent = renderTokenSpansTrimmed(sentence.originalTokens);
+                        return {
+                            blocked: false,
+                            pendingFurigana: false,
+                            html: `<div class="subtitle-line original-line" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${languageTag}${wrapSubtitleLineBody(lineContent, sentenceDir, sentence.originalLang)}</div>`,
+                        };
+                    }
                     const classes = ['subtitle-text'];
                     if (hasNonFinal) classes.push('non-final');
                     const rubySpan = `<span class="${classes.join(' ')}">${rubyHtml}</span>`;
+                    const lineClasses = ['subtitle-line', 'original-line', 'subtitle-line--furigana'];
+                    if (readingLang === 'zh') lineClasses.push('subtitle-line--pinyin');
+                    if (readingLang === 'ko') lineClasses.push('subtitle-line--romanization');
                     return {
                         blocked: false,
                         pendingFurigana: false,
-                        html: `<div class="subtitle-line original-line subtitle-line--furigana" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${wrapSubtitleLineBody(`${languageTag}${rubySpan}`, sentenceDir, sentence.originalLang)}</div>`,
+                        html: `<div class="${lineClasses.join(' ')}" lang="${sentence.originalLang || ''}" dir="${sentenceDir}">${wrapSubtitleLineBody(`${languageTag}${rubySpan}`, sentenceDir, sentence.originalLang)}</div>`,
                     };
                 }
-                furiganaService.request(plainText);
+                if (readingLang === 'ja') {
+                    furiganaService.request(plainText);
+                } else {
+                    furiganaService.request(plainText, readingLang);
+                }
                 const previousHtml = renderedSentences.get(sentenceId);
                 return {
                     blocked: !previousHtml,
