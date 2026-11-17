@@ -61,6 +61,151 @@ MIN_REPEAT_PROBE_CHARS = 4
 LANGUAGE_NAMES: Dict[str, str] = HYMT2_LANGUAGE_NAMES
 
 
+# ── 临时实验：LOCAL_MT_MODEL=index 时本地翻译换成 Index-Translate-2B（未微调） ──
+# 模型：IndexTeam/Index-Translate-2B-GGUF（Qwen3.5 混合线性注意力）。递归状态不能截断，
+# 所以这个模式下关掉 prompt 前缀复用和草稿投机解码，每次整段重算；提示词用官方模板，
+# 不带上一版原文/译文和历史（模型没学过这套流式修订格式）。
+INDEX_TRANSLATE_LANG_NAMES = {
+    "zh": "中文", "en": "英语", "ja": "日语", "ko": "韩语", "fr": "法语", "de": "德语",
+    "es": "西班牙语", "ru": "俄语", "pt": "葡萄牙语", "it": "意大利语",
+}
+
+
+def index_translate_enabled() -> bool:
+    import os
+
+    return os.environ.get("LOCAL_MT_MODEL", "").strip().lower() in ("index", "index-translate")
+
+
+def index_translate_model_path() -> Optional[str]:
+    import os
+
+    explicit = os.environ.get("INDEX_TRANSLATE_GGUF", "").strip()
+    if explicit:
+        return explicit
+    from realtime_subtitle.local_inference.model_manager import MODELS_DIR
+
+    files = sorted((MODELS_DIR.resolve() / "index-translate").glob("*.gguf"))
+    files = [f for f in files if "mmproj" not in f.name]
+    return str(files[0]) if files else None
+
+
+def index_prompt_context_enabled() -> bool:
+    import os
+
+    return os.environ.get("INDEX_PROMPT_CONTEXT", "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+_INDEX_TRAILING_ELLIPSIS = re.compile(r"(\.\.\.|…+|⋯+)\s*$")
+
+
+def index_clean_output(text: str) -> str:
+    """模型偶尔在译文后空一行再追加"（注：……）"之类的说明；字幕只要第一段。"""
+    return (text or "").split("\n\n")[0].strip()
+
+
+def index_final_fresh() -> bool:
+    import os
+
+    return os.environ.get("INDEX_FINAL_FRESH", "").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _index_lang_name(code: str) -> str:
+    return INDEX_TRANSLATE_LANG_NAMES.get(code) or LANGUAGE_NAMES.get(code, code)
+
+
+def render_index_prompt(
+    target_lang: str,
+    text: str,
+    *,
+    source_lang: str = "",
+    history: Optional[List[List[str]]] = None,
+    previous_source: str = "",
+    previous_translation: str = "",
+) -> str:
+    import os
+
+    target = _index_lang_name(target_lang)
+    if not index_prompt_context_enabled() or not (history or previous_source or previous_translation):
+        # docs/prompts.md 默认翻译模板
+        content = f"请将以下文本翻译为{target}，直接输出翻译结果，不要进行任何解释：\n\n{text}"
+    elif os.environ.get("INDEX_PROMPT_STYLE", "bg").strip().lower() == "inst":
+        # docs/prompts.md instTrans 中文标准模板：【源文】+【约束要求】（流式信息都写成【注意】软约束）
+        source = _index_lang_name(source_lang) if source_lang else ""
+        rules = [
+            "【注意】这是实时语音字幕，源文可能是一句还没说完的话，只翻译源文已有的内容，不要补全或猜测后文。"
+        ]
+        if history:
+            rules.append(
+                "【注意】跨句一致：前面几句及其译文如下，用词和称呼与之保持一致——"
+                + "；".join(f"{src} → {tgt}" for src, tgt in history)
+            )
+        if previous_source or previous_translation:
+            rules.append(
+                f"【注意】这句话的上一版原文是「{previous_source}」，上一版译文是「{previous_translation}」。"
+                "源文意思没有变的部分，尽量沿用上一版译文中仍然正确的开头，不要无故改写；"
+                "源文有新增或更正时，以准确完整为先。"
+            )
+        numbered = "\n".join(f"{i}. {rule}" for i, rule in enumerate(rules, 1))
+        content = (
+            f"请将以下{source}口语字幕翻译成{target}，并且严格遵循所有约束要求。\n\n"
+            f"【源文】\n{text}\n\n【约束要求】\n{numbered}\n\n只输出译文，不要有任何额外说明。"
+        )
+    elif os.environ.get("INDEX_PROMPT_STYLE", "bg").strip().lower() == "bg":
+        # 2026-11-17 提示词 A/B 胜出版（v2）：上一版标成"已过时/只供参考"、去掉上一版末尾省略号、
+        # 指出源文新增的部分、要求完整覆盖。漏译明显少于 bg0，代价是中间版擦写略多。
+        background = [
+            "这是实时语音字幕的流式翻译。【源文】是正在说的一句话，可能还没说完，之后会继续变长或被更正。"
+        ]
+        if history:
+            background.append(
+                "前面几句及其译文：\n" + "\n".join(f"{src} → {tgt}" for src, tgt in history)
+            )
+        prev_t = _INDEX_TRAILING_ELLIPSIS.sub("", previous_translation or "").strip()
+        if previous_source:
+            background.append("这句话的上一版原文（更早、更短，已过时）：\n" + previous_source)
+        if prev_t:
+            background.append("这句话的上一版译文（只供参考）：\n" + prev_t)
+        if previous_source and text.startswith(previous_source) and len(text) > len(previous_source):
+            background.append(
+                f"相比上一版，【源文】新增了：「{text[len(previous_source):].strip()}」。译文必须包含这部分的翻译。"
+            )
+        background.append(
+            "要求：译文必须完整翻译【源文】的全部内容，不能停在上一版译文的结尾，也不要照抄上一版末尾的省略号。"
+            "在完整的前提下，原文意思没变的部分尽量沿用上一版译文中仍然正确的说法，不要无故改写。"
+            "背景信息只供参考，只翻译【源文】。"
+        )
+        content = (
+            f"请将以下文本翻译为{target}，直接输出翻译结果，不要进行任何解释。\n\n【背景信息】\n"
+            + "\n\n".join(background) + f"\n\n【源文】\n{text}"
+        )
+    else:  # bg0：第一版自写格式
+        background = [
+            "这是实时语音字幕的流式翻译。【源文】是正在说的一句话，可能还没说完，之后会继续变长或被更正。"
+        ]
+        if history:
+            background.append(
+                "前面几句及其译文：\n" + "\n".join(f"{src} → {tgt}" for src, tgt in history)
+            )
+        if previous_source:
+            background.append("这句话的上一版原文：\n" + previous_source)
+        if previous_translation:
+            background.append("这句话的上一版译文：\n" + previous_translation)
+        background.append(
+            "要求：原文意思没有变的部分，尽量保留上一版译文中仍然正确的开头，不要无故改写；"
+            "原文有新增或更正时，以准确完整为先。背景信息只供参考，只翻译【源文】。"
+        )
+        content = (
+            f"请将以下文本翻译为{target}，直接输出翻译结果，不要进行任何解释。\n\n【背景信息】\n"
+            + "\n\n".join(background) + f"\n\n【源文】\n{text}"
+        )
+    # Qwen3.5 聊天模板，enable_thinking=false
+    return (
+        f"<|im_start|>user\n{content}<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )
+
+
 def _local_backend_available() -> bool:
     """本地推理后端是否可用（仅本地推理版打包 / 源码模式带 local_inference 运行时）。"""
     try:
@@ -150,7 +295,9 @@ def render_trained_prompt(
 
 def clean_output(raw: str) -> str:
     # 只认全角竖线：这个词表没有 <|...|> 这种特殊 token，译文里的它是原文带来的普通文本。
-    clean = re.split(r"<｜.*?｜>", raw)[0].strip()
+    clean = re.split(r"<｜.*?｜>", raw)[0]
+    clean = re.sub(r"<think>.*?</think>", "", clean, flags=re.S)
+    clean = re.split(r"<\|im_end\|>|<\|endoftext\|>", clean)[0].strip()
     for prefix in ("Translation:", "翻译：", "译文："):
         if clean.startswith(prefix):
             clean = clean[len(prefix) :].strip()
@@ -194,7 +341,8 @@ class HyMT2LocalEngine:
         )
 
         prepare_qwen_llama_runtime_env()
-        path = model_path or get_hymt2_model_path()
+        self.is_index = index_translate_enabled() and not model_path
+        path = model_path or (index_translate_model_path() if self.is_index else get_hymt2_model_path())
         if not path or not Path(path).is_file():
             raise FileNotFoundError(f"Hy-MT2 本地模型文件未找到: {path}")
 
@@ -288,6 +436,8 @@ class HyMT2LocalEngine:
             # 末位必须重算：要拿它的 logits 起头
             reuse = min(reuse, n - 1)
 
+        if getattr(self, "is_index", False):
+            reuse = 0  # 递归状态不能从中间截断
         if reuse > 0:
             self._spec.seq_rm(reuse, -1)
         else:
@@ -376,7 +526,7 @@ class HyMT2LocalEngine:
                 temperature=0.0, repeat_penalty=repeat_penalty, n_vocab=self.model.n_vocab
             )
             try:
-                use_draft = bool(getattr(_config, "LOCAL_SPECULATIVE_DECODE", True))
+                use_draft = bool(getattr(_config, "LOCAL_SPECULATIVE_DECODE", True)) and not getattr(self, "is_index", False)
                 gen = self._spec.generate(
                     sampler,
                     len(tokens),
@@ -427,7 +577,7 @@ def _local_engine_key(
         try:
             from realtime_subtitle.local_inference.model_manager import get_hymt2_model_path
 
-            path = get_hymt2_model_path()
+            path = index_translate_model_path() if index_translate_enabled() else get_hymt2_model_path()
         except Exception:  # pragma: no cover - 非本地构建
             path = None
     return (str(path) if path else "", _sanitize_local_device(device))
@@ -975,13 +1125,22 @@ class HyMT2API(BaseTranslationAPI):
             )
 
             prompt = f"<｜hy_begin▁of▁sentence｜><｜hy_User｜>{content}<｜hy_Assistant｜>"
+            is_index = bool(getattr(self._local_engine, "is_index", False))
+            if is_index:
+                # INDEX_FINAL_FRESH=1：终稿不给上一版，只带历史重翻（漏译最少，但终稿会整句改写）
+                drop_prev = not is_partial and index_final_fresh()
+                prompt = render_index_prompt(
+                    target_lang, text, source_lang=source_lang, history=recent_history,
+                    previous_source="" if drop_prev else (prev_src or ""),
+                    previous_translation="" if drop_prev else (prev_trans or ""),
+                )
             if self._local_engine is None:
                 display = ""
             else:
                 inference_started = time.monotonic()
                 guard = not source_is_repetitive(text)
                 max_tokens = max_translation_tokens(text)
-                eos_kwargs = self._eos_guard_kwargs(prev_src, prev_trans, text)
+                eos_kwargs = {} if is_index and not index_prompt_context_enabled() else self._eos_guard_kwargs(prev_src, prev_trans, text)
                 display, out_tokens = self._local_engine.generate(
                     prompt,
                     max_tokens=max_tokens,
@@ -1023,6 +1182,8 @@ class HyMT2API(BaseTranslationAPI):
                         print("[Hy-MT2 本地] 原文变长但译文照抄上一版，去掉上一版重翻")
                         display, out_tokens = fresh, fresh_tokens
                 # 同一句的下一次修订拿这次的结果当草稿；整句定稿后这一句就翻篇了。
+                if is_index:
+                    display = index_clean_output(display)
                 self._prev_tokens = [] if not is_partial else out_tokens
                 # 临时：本地模型每次推理后输出一行日志，记录本次耗时（毫秒）
                 print(
