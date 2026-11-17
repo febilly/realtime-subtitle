@@ -44,6 +44,10 @@ logger = logging.getLogger("web_server")
 
 FEATURE_PACK_IDS = ("vrchat", "learning", "obs", "transcript")
 LEARNING_LANGUAGES = ("ja", "zh", "ko")
+OBS_FONT_SIZE_DEFAULT = 42
+OBS_FONT_SIZE_MIN = 16
+OBS_FONT_SIZE_MAX = 120
+OBS_DISPLAY_MODES = ("both", "original", "translation")
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -70,6 +74,7 @@ class WebServer:
         self.session = session
         self.logger = logger
         self.websocket_clients = set()
+        self.obs_ws_clients = set()
         self.app_runner = None
         self.api_key_error_message = None # 新增属性
         self.window_on_top_callback = None
@@ -77,6 +82,8 @@ class WebServer:
         self.transcript_save_dialog_callback = None
         self.transcript_folder_dialog_callback = None
         self.transcript_open_folder_callback = None
+        self.clipboard_callback = None
+        self.actual_port = None
         # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
         self.overlay_manager = None
         self.overlay_ws = None
@@ -116,6 +123,7 @@ class WebServer:
         self._client_version_reported = False
         self.use_bundled_cjk_fonts = False
         self.feature_packs = self._load_initial_feature_packs(stored_settings)
+        self.obs_settings = self._load_initial_obs_settings(stored_settings)
         self.transcript_recorder = TranscriptRecorder(
             stored_settings=stored_settings,
             on_status_changed=self._on_transcript_status_changed,
@@ -162,6 +170,21 @@ class WebServer:
 
     def transcript_dialogs_available(self) -> bool:
         return callable(getattr(self, "transcript_save_dialog_callback", None))
+
+    def set_clipboard_callback(self, callback):
+        self.clipboard_callback = callback
+
+    def desktop_window_available(self) -> bool:
+        return bool(
+            self.transcript_dialogs_available()
+            or callable(getattr(self, "clipboard_callback", None))
+        )
+
+    def has_obs_client(self) -> bool:
+        return len(getattr(self, "obs_ws_clients", ()) or ()) > 0
+
+    def obs_client_count(self) -> int:
+        return len(getattr(self, "obs_ws_clients", ()) or ())
 
     def _on_transcript_status_changed(self, status: dict) -> None:
         """Thread-safe bridge from synchronous TranscriptRecorder updates to WebSocket broadcast."""
@@ -215,9 +238,12 @@ class WebServer:
             or self._osc_sensitive_filter_notice_delivered
         ):
             return False
+        obs_clients = getattr(self, "obs_ws_clients", ()) or ()
         regular_clients = [
             client for client in self.websocket_clients
-            if client is not self.overlay_ws and client is not self.vr_overlay_ws
+            if client is not self.overlay_ws
+            and client is not self.vr_overlay_ws
+            and client not in obs_clients
         ]
         if not regular_clients:
             return False
@@ -332,14 +358,21 @@ class WebServer:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         
-        # 识别是否是悬浮窗客户端
+        # 识别是否是悬浮窗 / OBS 客户端
         client_type = request.query.get("client")
+        obs_clients = getattr(self, "obs_ws_clients", None)
+        if obs_clients is None:
+            obs_clients = set()
+            self.obs_ws_clients = obs_clients
         if client_type == "overlay":
             self.overlay_ws = ws
             print("Overlay window client connected via WebSocket.")
         elif client_type == "vr_overlay":
             self.vr_overlay_ws = ws
             print("VR overlay client connected via WebSocket.")
+        elif client_type == "obs":
+            obs_clients.add(ws)
+            print("OBS browser source client connected via WebSocket.")
 
         # 添加到客户端列表
         if self._event_loop is None:
@@ -347,7 +380,7 @@ class WebServer:
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
 
-        if client_type not in ("overlay", "vr_overlay"):
+        if client_type not in ("overlay", "vr_overlay", "obs"):
             await self._deliver_osc_sensitive_filter_notice()
         
         try:
@@ -377,6 +410,7 @@ class WebServer:
                 "type": "feature_packs",
                 "packs": self.get_feature_packs_state(),
             }))
+            await ws.send_str(json.dumps(self._obs_settings_frame()))
             await ws.send_str(json.dumps({
                 "type": "learning_languages",
                 "languages": self.get_learning_languages_state(),
@@ -421,6 +455,9 @@ class WebServer:
                 if getattr(self, "vr_overlay_ws", None) == ws:
                     self.vr_overlay_ws = None
                     print("VR overlay client disconnected.")
+            elif client_type == "obs":
+                obs_clients.discard(ws)
+                print("OBS browser source client disconnected.")
             # 从客户端列表移除
             self.websocket_clients.discard(ws)
             print(f"Client disconnected. Total clients: {len(self.websocket_clients)}")
@@ -591,6 +628,11 @@ class WebServer:
                 if getattr(self, "transcript_recorder", None) is not None
                 else {"auto_save": False, "format": "srt", "directory": ""}
             ),
+            "obs_desktop_available": bool(
+                self._is_loopback_request(request) and self.desktop_window_available()
+            ),
+            "obs_settings": self.get_obs_settings(),
+            "obs_url": self._obs_url_for_request(request),
         }
 
         if getattr(self, "offline_mode", False):
@@ -2955,6 +2997,251 @@ class WebServer:
         except Exception as error:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
+    @staticmethod
+    def _normalize_obs_font_size(value) -> int:
+        if isinstance(value, bool):
+            return OBS_FONT_SIZE_DEFAULT
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return OBS_FONT_SIZE_DEFAULT
+        if numeric != numeric:  # NaN
+            return OBS_FONT_SIZE_DEFAULT
+        return max(OBS_FONT_SIZE_MIN, min(OBS_FONT_SIZE_MAX, int(round(numeric))))
+
+    @staticmethod
+    def _normalize_obs_display_content(value) -> str:
+        if not isinstance(value, str):
+            return "both"
+        normalized = value.strip().lower()
+        return normalized if normalized in OBS_DISPLAY_MODES else "both"
+
+    def _normalize_obs_settings(self, raw) -> dict:
+        source = raw if isinstance(raw, dict) else {}
+        raw_font = source.get("font_size", source.get("fontSize", OBS_FONT_SIZE_DEFAULT))
+        raw_display = source.get("display_content", source.get("displayContent", "both"))
+        return {
+            "font_size": self._normalize_obs_font_size(raw_font),
+            "display_content": self._normalize_obs_display_content(raw_display),
+        }
+
+    def _load_initial_obs_settings(self, stored_settings) -> dict:
+        raw = stored_settings.get("obsSettings.v1") if isinstance(stored_settings, dict) else None
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return self._normalize_obs_settings(parsed)
+            except Exception:
+                pass
+        elif isinstance(raw, dict):
+            return self._normalize_obs_settings(raw)
+        return self._normalize_obs_settings(None)
+
+    def get_obs_settings(self) -> dict:
+        return self._normalize_obs_settings(getattr(self, "obs_settings", None))
+
+    def _obs_settings_frame(self) -> dict:
+        return {
+            "type": "obs_settings",
+            "settings": self.get_obs_settings(),
+        }
+
+    def _obs_url_for_request(self, request) -> str:
+        port = getattr(self, "actual_port", None)
+        if isinstance(port, int) and not isinstance(port, bool) and port > 0:
+            return f"http://127.0.0.1:{port}/obs"
+        url_port = None
+        url_obj = getattr(request, "url", None)
+        if url_obj is not None:
+            url_port = getattr(url_obj, "port", None)
+        if not url_port:
+            host = str(getattr(request, "host", "") or "").strip()
+            if host.startswith("["):
+                closing = host.find("]")
+                if closing != -1 and len(host) > closing + 2 and host[closing + 1] == ":":
+                    candidate = host[closing + 2:]
+                    if candidate.isdigit():
+                        url_port = int(candidate)
+            elif ":" in host:
+                candidate = host.rsplit(":", 1)[1]
+                if candidate.isdigit():
+                    url_port = int(candidate)
+        if isinstance(url_port, int) and url_port > 0:
+            return f"http://127.0.0.1:{url_port}/obs"
+        return "http://127.0.0.1/obs"
+
+    def _copy_text_to_clipboard(self, text: str) -> None:
+        callback = getattr(self, "clipboard_callback", None)
+        if callable(callback):
+            callback(text)
+            return
+
+        import subprocess
+        import sys
+
+        if os.name == "nt":
+            import ctypes
+
+            CF_UNICODETEXT = 13
+            GMEM_MOVEABLE = 0x0002
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+            user32.OpenClipboard.restype = ctypes.c_bool
+            user32.CloseClipboard.argtypes = []
+            user32.CloseClipboard.restype = ctypes.c_bool
+            user32.EmptyClipboard.argtypes = []
+            user32.EmptyClipboard.restype = ctypes.c_bool
+            user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+            user32.SetClipboardData.restype = ctypes.c_void_p
+            kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+            kernel32.GlobalAlloc.restype = ctypes.c_void_p
+            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalLock.restype = ctypes.c_void_p
+            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalUnlock.restype = ctypes.c_bool
+            kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalFree.restype = ctypes.c_void_p
+
+            if not user32.OpenClipboard(None):
+                raise RuntimeError("Failed to open Windows clipboard")
+            h_mem = None
+            try:
+                user32.EmptyClipboard()
+                encoded = text.encode("utf-16-le") + b"\x00\x00"
+                h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+                if not h_mem:
+                    raise RuntimeError("Failed to allocate clipboard memory")
+                ptr = kernel32.GlobalLock(h_mem)
+                if not ptr:
+                    raise RuntimeError("Failed to lock clipboard memory")
+                try:
+                    ctypes.memmove(ptr, encoded, len(encoded))
+                finally:
+                    kernel32.GlobalUnlock(h_mem)
+                if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+                    raise RuntimeError("Failed to set clipboard data")
+                h_mem = None  # Ownership transferred to clipboard.
+            finally:
+                if h_mem:
+                    kernel32.GlobalFree(h_mem)
+                user32.CloseClipboard()
+            return
+
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+            return
+
+        for cmd in (
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ):
+            try:
+                subprocess.run(cmd, input=text.encode("utf-8"), check=True)
+                return
+            except FileNotFoundError:
+                continue
+        raise RuntimeError("No clipboard utility available")
+
+    async def obs_handler(self, request):
+        """Serve the standalone transparent OBS browser source page."""
+        obs_path = get_resource_path(os.path.join('static', 'obs.html'))
+        return web.FileResponse(
+            obs_path,
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
+
+    async def obs_settings_get_handler(self, request):
+        """Return current OBS subtitle overlay settings and OBS URL."""
+        return web.json_response({
+            "status": "ok",
+            "settings": self.get_obs_settings(),
+            "desktop_available": bool(
+                self._is_loopback_request(request) and self.desktop_window_available()
+            ),
+            "obs_url": self._obs_url_for_request(request),
+        })
+
+    async def obs_settings_post_handler(self, request):
+        """Update OBS subtitle overlay settings and broadcast to connected clients."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        current = self.get_obs_settings()
+        if "font_size" in payload or "fontSize" in payload:
+            raw_font = payload.get("font_size", payload.get("fontSize"))
+            if isinstance(raw_font, bool):
+                return web.json_response({"status": "error", "message": "'font_size' must be numeric"}, status=400)
+            try:
+                numeric_font = float(raw_font)
+            except (TypeError, ValueError):
+                return web.json_response({"status": "error", "message": "'font_size' must be numeric"}, status=400)
+            if numeric_font != numeric_font:
+                return web.json_response({"status": "error", "message": "'font_size' must be numeric"}, status=400)
+            current["font_size"] = self._normalize_obs_font_size(numeric_font)
+
+        if "display_content" in payload or "displayContent" in payload:
+            raw_display = payload.get("display_content", payload.get("displayContent"))
+            if not isinstance(raw_display, str):
+                return web.json_response(
+                    {"status": "error", "message": "'display_content' must be a string"},
+                    status=400,
+                )
+            normalized_display = raw_display.strip().lower()
+            if normalized_display not in OBS_DISPLAY_MODES:
+                return web.json_response(
+                    {"status": "error", "message": "Invalid 'display_content' value"},
+                    status=400,
+                )
+            current["display_content"] = normalized_display
+
+        self.obs_settings = current
+        await self.broadcast_to_clients(self._obs_settings_frame())
+        return web.json_response({"status": "ok", "settings": dict(current)})
+
+    async def clipboard_post_handler(self, request):
+        """Copy text to the OS clipboard for loopback desktop main window fallback."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        text = payload.get("text")
+        if not isinstance(text, str) or not text:
+            return web.json_response({"status": "error", "message": "'text' must be a non-empty string"}, status=400)
+
+        try:
+            await asyncio.to_thread(self._copy_text_to_clipboard, text)
+            return web.json_response({"status": "ok"})
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
     def set_furigana_evaluator(self, evaluator):
         """注入一个 (text, lang)->dict 的回调，用主窗口已加载的注音模块处理。
 
@@ -3346,6 +3633,10 @@ class WebServer:
         app.router.add_post('/feature-packs', self.feature_packs_post_handler)
         app.router.add_get('/learning-languages', self.learning_languages_get_handler)
         app.router.add_post('/learning-languages', self.learning_languages_post_handler)
+        app.router.add_get('/obs', self.obs_handler)
+        app.router.add_get('/obs-settings', self.obs_settings_get_handler)
+        app.router.add_post('/obs-settings', self.obs_settings_post_handler)
+        app.router.add_post('/clipboard', self.clipboard_post_handler)
         app.router.add_get('/transcript/status', self.transcript_status_get_handler)
         app.router.add_get('/transcript/settings', self.transcript_settings_get_handler)
         app.router.add_post('/transcript/settings', self.transcript_settings_post_handler)

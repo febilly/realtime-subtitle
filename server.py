@@ -1112,6 +1112,7 @@ def main():
         bind_host = SERVER_HOST if SERVER_HOST not in ("localhost", "127.0.0.1") else "0.0.0.0"
 
     listener_socket, actual_port = create_listening_socket(bind_host, SERVER_PORT)
+    web_server.actual_port = actual_port
 
     if SERVER_PORT and SERVER_PORT > 0 and SERVER_PORT != actual_port:
         print(f"⚠️  Port {SERVER_PORT} unavailable, switched to {actual_port}")
