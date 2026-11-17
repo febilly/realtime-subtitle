@@ -3224,6 +3224,13 @@ class WebServer:
             logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
             return web.json_response({"status": "error", "message": "localhost only"}, status=403)
 
+        # Require a JSON content type: a cross-site "simple" POST (text/plain form)
+        # cannot set it without a CORS preflight, so other web pages cannot write
+        # the user's clipboard through this endpoint.
+        content_type = str(getattr(request, "content_type", "") or "").lower()
+        if content_type != "application/json":
+            return web.json_response({"status": "error", "message": "JSON content type required"}, status=415)
+
         try:
             payload = await request.json()
         except Exception:

@@ -138,6 +138,7 @@ class TestWebServerObsPack:
             # Clamps font size and broadcasts obs_settings frame
             req_ok = AsyncMock()
             req_ok.remote = "127.0.0.1"
+            req_ok.content_type = "application/json"
             req_ok.json.return_value = {"font_size": 200, "display_content": "translation"}
             body, code = _async_run(server.obs_settings_post_handler(req_ok))
             assert code == 200
@@ -171,16 +172,25 @@ class TestWebServerObsPack:
 
             req_empty = AsyncMock()
             req_empty.remote = "127.0.0.1"
+            req_empty.content_type = "application/json"
             req_empty.json.return_value = {"text": ""}
             _, code = _async_run(server.clipboard_post_handler(req_empty))
             assert code == 400
 
             req_ok = AsyncMock()
             req_ok.remote = "127.0.0.1"
+            req_ok.content_type = "application/json"
             req_ok.json.return_value = {"text": "http://127.0.0.1:18777/obs"}
             body, code = _async_run(server.clipboard_post_handler(req_ok))
             assert code == 200
             assert body == {"status": "ok"}
+            assert copied == ["http://127.0.0.1:18777/obs"]
+            req_form = AsyncMock()
+            req_form.remote = "127.0.0.1"
+            req_form.content_type = "text/plain"
+            req_form.json.return_value = {"text": "attacker"}
+            _, code = _async_run(server.clipboard_post_handler(req_form))
+            assert code == 415
             assert copied == ["http://127.0.0.1:18777/obs"]
 
     def test_obs_ws_client_tracking_initial_frame_and_notice_exclusion(self):
