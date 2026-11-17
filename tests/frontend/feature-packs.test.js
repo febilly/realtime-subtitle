@@ -26,6 +26,7 @@ function buildFeaturePacksDom() {
         <div id="oscSettingsSection"></div>
         <div id="vrOverlaySection"></div>
         <button id="furiganaButton"></button>
+        <div id="learningSettingsSection"></div>
         <div id="featurePacksSection">
             <label id="featurePacksLabel"></label>
             <div id="featurePacksList"></div>
@@ -57,7 +58,10 @@ describe('FeaturePacks registry and install detection', () => {
             'oscSettingsSection',
             'vrOverlaySection',
         ]);
-        expect(FeaturePacks.PACKS.find((p) => p.id === 'learning').elementIds).toEqual(['furiganaButton']);
+        expect(FeaturePacks.PACKS.find((p) => p.id === 'learning').elementIds).toEqual([
+            'furiganaButton',
+            'learningSettingsSection',
+        ]);
     });
 
     it('treats empty storage as a brand-new install with all packs disabled', () => {
@@ -125,6 +129,7 @@ describe('FeaturePacks visibility, hooks, backend sync, and settings UI', () => 
         expect(dom.window.document.getElementById('oscSettingsSection').hidden).toBe(true);
         expect(dom.window.document.getElementById('vrOverlaySection').hidden).toBe(true);
         expect(dom.window.document.getElementById('furiganaButton').hidden).toBe(true);
+        expect(dom.window.document.getElementById('learningSettingsSection').hidden).toBe(true);
         expect(hooks.vrchat.onDisable).toHaveBeenCalledWith(false);
         expect(hooks.learning.onDisable).toHaveBeenCalledWith(false);
         expect(fetchMock).toHaveBeenCalledWith('/feature-packs', expect.objectContaining({
@@ -138,6 +143,7 @@ describe('FeaturePacks visibility, hooks, backend sync, and settings UI', () => 
         expect(dom.window.document.getElementById('oscTranslationButton').hidden).toBe(false);
         expect(dom.window.document.getElementById('vrOverlaySection').hidden).toBe(false);
         expect(dom.window.document.getElementById('furiganaButton').hidden).toBe(true);
+        expect(dom.window.document.getElementById('learningSettingsSection').hidden).toBe(true);
         expect(hooks.vrchat.onEnable).toHaveBeenCalledWith(true);
 
         const rows = [...dom.window.document.querySelectorAll('#featurePacksList .settings-row')];
@@ -162,6 +168,7 @@ describe('FeaturePacks visibility, hooks, backend sync, and settings UI', () => 
         expect(fp.applyBackendPacks({ learning: true })).toBe(true);
         expect(fp.isEnabled('learning')).toBe(true);
         expect(dom.window.document.getElementById('furiganaButton').hidden).toBe(false);
+        expect(dom.window.document.getElementById('learningSettingsSection').hidden).toBe(false);
         expect(onLearningEnable).toHaveBeenCalledWith(true);
         expect(fp.applyBackendPacks({ learning: true })).toBe(false);
     });

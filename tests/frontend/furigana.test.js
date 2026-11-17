@@ -333,3 +333,147 @@ describe('Furigana request cache and pending state', () => {
         expect(service.hasPending('猫')).toBe(false);
     });
 });
+
+describe('Chinese pinyin and Korean romanization annotations', () => {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const vm = require('node:vm');
+    const pinyinPro = require('../../static/pinyin-pro/pinyin-pro');
+
+    function loadKoroman() {
+        const ctx = {};
+        const src = fs.readFileSync(
+            path.resolve(__dirname, '../../static/koroman/koroman.browser.js'),
+            'utf8',
+        );
+        vm.runInNewContext(src, ctx);
+        return ctx.koroman;
+    }
+
+    const koroman = loadKoroman();
+
+    it('normalizes supported learning languages and aliases', () => {
+        expect(Furigana.SUPPORTED_LEARNING_LANGUAGES).toEqual(['ja', 'zh', 'ko']);
+        expect(Furigana.normalizeLanguage('ja')).toBe('ja');
+        expect(Furigana.normalizeLanguage('ja-JP')).toBe('ja');
+        expect(Furigana.normalizeLanguage('zh')).toBe('zh');
+        expect(Furigana.normalizeLanguage('zh-CN')).toBe('zh');
+        expect(Furigana.normalizeLanguage('zh_Hans')).toBe('zh');
+        expect(Furigana.normalizeLanguage('cmn')).toBe('zh');
+        expect(Furigana.normalizeLanguage('ko')).toBe('ko');
+        expect(Furigana.normalizeLanguage('ko-KR')).toBe('ko');
+        expect(Furigana.normalizeLanguage('en')).toBe(null);
+        expect(Furigana.normalizeLanguage('')).toBe(null);
+        expect(Furigana.normalizeLanguage(null)).toBe(null);
+    });
+
+    it('builds escaped ruby HTML from [surface, reading|null] pairs', () => {
+        expect(Furigana.buildRubyHtml(null, escapeHtml)).toBe(null);
+        expect(() => Furigana.buildRubyHtml([], null)).toThrow(TypeError);
+        expect(Furigana.buildRubyHtml([
+            ['好', 'hǎo'],
+            [' <&>', null],
+        ], escapeHtml)).toBe('<ruby>好<rp>(</rp><rt>hǎo</rt><rp>)</rp></ruby> &lt;&amp;&gt;');
+    });
+
+    it('produces tone-marked 1-per-Hanzi Mandarin pinyin and handles polyphones', () => {
+        expect(Furigana.buildPinyinPairs('你好', pinyinPro)).toEqual([
+            ['你', 'nǐ'],
+            ['好', 'hǎo'],
+        ]);
+        // Polyphones: 银行 (yín háng) vs 行走 (xíng zǒu)
+        expect(Furigana.buildPinyinPairs('银行', pinyinPro)).toEqual([
+            ['银', 'yín'],
+            ['行', 'háng'],
+        ]);
+        expect(Furigana.buildPinyinPairs('行走', pinyinPro)).toEqual([
+            ['行', 'xíng'],
+            ['走', 'zǒu'],
+        ]);
+        // umlaut + tone mark
+        expect(Furigana.buildPinyinPairs('绿色', pinyinPro)).toEqual([
+            ['绿', 'lǜ'],
+            ['色', 'sè'],
+        ]);
+        // Mixed Chinese, English, numbers, whitespace, and punctuation
+        expect(Furigana.buildPinyinPairs('你好 AI 123！', pinyinPro)).toEqual([
+            ['你', 'nǐ'],
+            ['好', 'hǎo'],
+            [' ', null],
+            ['AI', null],
+            [' ', null],
+            ['123！', null],
+        ]);
+        expect(Furigana.buildPinyinPairs('', pinyinPro)).toEqual([]);
+        expect(Furigana.buildPinyinPairs('你好', null)).toEqual([]);
+    });
+
+    it('produces Revised Romanization with Korean phonological rules per Hangul eojeol', () => {
+        const cases = [
+            ['한국어', 'hangugeo'],
+            ['신라', 'silla'],
+            ['백마', 'baengma'],
+            ['같이', 'gachi'],
+            ['해돋이', 'haedoji'],
+            ['좋다', 'jota'],
+            ['좋고', 'joko'],
+            ['닭이', 'dalgi'],
+            ['학교', 'hakgyo'],
+            ['학년', 'hangnyeon'],
+            ['역량', 'yeongnyang'],
+            ['선릉역', 'seolleungyeok'],
+            ['실내', 'sillae'],
+            ['종로', 'jongno'],
+            ['꽃잎', 'kkonnip'],
+            ['먹히다', 'meokida'],
+            ['어떻게', 'eotteoke'],
+        ];
+        for (const [word, expected] of cases) {
+            expect(Furigana.buildKoreanRomanizationPairs(word, koroman)).toEqual([[word, expected]]);
+        }
+
+        // Mixed Hangul eojeols, whitespace, Latin casing, punctuation, standalone jamo
+        expect(Furigana.buildKoreanRomanizationPairs('안녕 AI ㅋㅋㅋ!', koroman)).toEqual([
+            ['안녕', 'annyeong'],
+            [' ', null],
+            ['AI', null],
+            [' ', null],
+            ['ㅋㅋㅋ!', null],
+        ]);
+        expect(Furigana.buildKoreanRomanizationPairs('', koroman)).toEqual([]);
+        expect(Furigana.buildKoreanRomanizationPairs('한국어', null)).toEqual([]);
+    });
+
+    it('supports synchronous zh/ko lookup and keeps ja/zh/ko caches isolated', async () => {
+        const tokenizer = tokenizerFor([{ surface_form: '日本', reading: 'ニホン' }]);
+        const service = Furigana.createService({
+            kuromoji: { builder: () => ({ build: (cb) => cb(null, tokenizer) }) },
+            pinyinPro,
+            koroman,
+            escapeHtml,
+        });
+
+        expect(service.getSync('你好', 'zh')).toBe(null);
+        service.setEnabled(true);
+
+        expect(service.getSync('日本語', 'ja')).toBeUndefined();
+        const zhHtml = service.getSync('你好', 'cmn');
+        expect(zhHtml).toBe(
+            '<ruby>你<rp>(</rp><rt>nǐ</rt><rp>)</rp></ruby><ruby>好<rp>(</rp><rt>hǎo</rt><rp>)</rp></ruby>',
+        );
+        const koHtml = service.getSync('한국어', 'ko');
+        expect(koHtml).toBe('<ruby>한국어<rp>(</rp><rt>hangugeo</rt><rp>)</rp></ruby>');
+
+        // Same text in ja vs zh must not collide in cache
+        const jaSameText = await service.get('日本', 'ja');
+        const zhSameText = service.getSync('日本', 'zh');
+        expect(jaSameText).toBe('<ruby>日本<rp>(</rp><rt>にほん</rt><rp>)</rp></ruby>');
+        expect(zhSameText).toBe(
+            '<ruby>日<rp>(</rp><rt>rì</rt><rp>)</rp></ruby><ruby>本<rp>(</rp><rt>běn</rt><rp>)</rp></ruby>',
+        );
+        expect(service.getCached('日本')).toBe(jaSameText);
+        expect(service.getCached('日本', 'zh')).toBe(zhSameText);
+        expect(service.getCached('한국어', 'ko')).toBe(koHtml);
+        await expect(service.get('Hello', 'en')).resolves.toBe(null);
+    });
+});

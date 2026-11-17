@@ -80,3 +80,18 @@ def test_websocket_feature_packs_frame_updates_learning_pack(isolated_overlay):
     }))
     assert window.btn_furigana.isHidden() is False
     assert window.furigana_enabled is True
+
+
+def test_websocket_learning_languages_frame_updates_overlay_state(isolated_overlay):
+    window, _ = isolated_overlay
+    assert window._learning_languages == {"ja": True, "zh": True, "ko": True}
+
+    window._on_message(json.dumps({
+        "type": "learning_languages",
+        "languages": {"ja": True, "zh": False, "ko": True},
+    }))
+    assert window._learning_languages == {"ja": True, "zh": False, "ko": True}
+
+    assert window.set_learning_languages({"zh": True, "ko": False, "unknown": False}) is True
+    assert window._learning_languages == {"ja": True, "zh": True, "ko": False}
+    assert window.set_learning_languages({"ja": True, "zh": True, "ko": False}) is False

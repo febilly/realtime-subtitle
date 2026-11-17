@@ -185,3 +185,125 @@ class TestFeaturePacksServer:
                 "type": "feature_packs",
                 "packs": {"vrchat": False, "learning": True, "obs": False, "transcript": False},
             }]
+            lang_frames = [frame for frame in sent_payloads if frame.get("type") == "learning_languages"]
+            assert lang_frames == [{
+                "type": "learning_languages",
+                "languages": {"ja": True, "zh": True, "ko": True},
+                "initialized": False,
+            }]
+
+    @async_test
+    async def test_learning_languages_initial_get_post_broadcast_and_ws(self):
+        with patch_modules({
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
+        }):
+            import realtime_subtitle.web.web_server as module
+
+            module.web.json_response.side_effect = lambda data, status=200: (data, status)
+
+            empty_server = self._create_server(module, {})
+            get_req = AsyncMock()
+            get_req.remote = "127.0.0.1"
+            data, status = await empty_server.learning_languages_get_handler(get_req)
+            assert status == 200
+            assert data == {
+                "status": "ok",
+                "languages": {"ja": True, "zh": True, "ko": True},
+                "initialized": False,
+            }
+
+            stored_server = self._create_server(module, {
+                "learningLanguages.v1": json.dumps({"ja": True, "zh": False, "ko": True}),
+            })
+            stored_server.broadcast_to_clients = AsyncMock()
+            data, status = await stored_server.learning_languages_get_handler(get_req)
+            assert status == 200
+            assert data == {
+                "status": "ok",
+                "languages": {"ja": True, "zh": False, "ko": True},
+                "initialized": True,
+            }
+
+            # Non-loopback POST rejected
+            remote_req = AsyncMock()
+            remote_req.remote = "10.0.0.8"
+            remote_req.path = "/learning-languages"
+            data, status = await stored_server.learning_languages_post_handler(remote_req)
+            assert status == 403
+
+            # Invalid JSON returns 400
+            bad_req = AsyncMock()
+            bad_req.remote = "127.0.0.1"
+            bad_req.json.side_effect = ValueError("bad json")
+            data, status = await stored_server.learning_languages_post_handler(bad_req)
+            assert status == 400
+
+            # Valid POST updates state, ignores non-bool/unknown keys, and broadcasts
+            post_req = AsyncMock()
+            post_req.remote = "127.0.0.1"
+            post_req.json.return_value = {
+                "languages": {"ja": False, "zh": True, "ko": "nope", "en": True},
+            }
+            data, status = await stored_server.learning_languages_post_handler(post_req)
+            assert status == 200
+            expected = {"ja": False, "zh": True, "ko": True}
+            assert data == {"status": "ok", "languages": expected, "initialized": True}
+            assert stored_server.get_learning_languages_state() == expected
+            assert stored_server.is_learning_language_enabled("ja") is False
+            assert stored_server.is_learning_language_enabled("zh") is True
+            stored_server.broadcast_to_clients.assert_awaited_once_with({
+                "type": "learning_languages",
+                "languages": expected,
+                "initialized": True,
+            })
+
+    @async_test
+    async def test_furigana_handler_forwards_lang_and_supports_one_arg_evaluator(self):
+        with patch_modules({
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
+        }):
+            import realtime_subtitle.web.web_server as module
+
+            module.web.json_response.side_effect = lambda data, status=200: (data, status)
+            server = self._create_server(module, {})
+
+            two_arg_calls = []
+
+            def eval_two(text, lang):
+                two_arg_calls.append((text, lang))
+                return {"ready": True, "pairs": [[text, f"{lang}-ok"]]}
+
+            server.set_furigana_evaluator(eval_two)
+
+            req_zh = AsyncMock()
+            req_zh.remote = "127.0.0.1"
+            req_zh.json.return_value = {"text": "你好", "lang": "zh"}
+            data, status = await server.furigana_handler(req_zh)
+            assert status == 200
+            assert data == {"ready": True, "pairs": [["你好", "zh-ok"]]}
+
+            req_default = AsyncMock()
+            req_default.remote = "127.0.0.1"
+            req_default.json.return_value = {"text": "猫"}
+            data, status = await server.furigana_handler(req_default)
+            assert status == 200
+            assert two_arg_calls == [("你好", "zh"), ("猫", "ja")]
+
+            # Legacy 1-arg evaluator still works
+            one_arg_calls = []
+
+            def eval_one(text):
+                one_arg_calls.append(text)
+                return {"ready": True, "pairs": [[text, "legacy"]]}
+
+            server.set_furigana_evaluator(eval_one)
+            data, status = await server.furigana_handler(req_zh)
+            assert status == 200
+            assert data == {"ready": True, "pairs": [["你好", "legacy"]]}
+            assert one_arg_calls == ["你好"]

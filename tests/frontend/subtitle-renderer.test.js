@@ -500,3 +500,122 @@ it('shows the local start hint while paused and replaces it after starting', () 
     env.renderer.render();
     expect(env.container.textContent).toBe('Nothing to show');
 });
+
+describe('SubtitleRenderer multi-language learning annotations', () => {
+    const Furigana = require('../../static/js/furigana');
+    const pinyinPro = require('../../static/pinyin-pro/pinyin-pro');
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const vm = require('node:vm');
+    const ctx = {};
+    vm.runInNewContext(
+        fs.readFileSync(path.resolve(__dirname, '../../static/koroman/koroman.browser.js'), 'utf8'),
+        ctx,
+    );
+    const koroman = ctx.koroman;
+
+    function createRealServiceHarness(options = {}) {
+        const escapeHtml = (text) => String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+        const service = Furigana.createService({
+            pinyinPro,
+            koroman,
+            escapeHtml,
+        });
+        service.setEnabled(options.enabled !== false);
+        return createHarness({
+            ...options,
+            furiganaService: service,
+        });
+    }
+
+    it('renders Chinese pinyin synchronously with subtitle-line--pinyin and handles cmn alias', () => {
+        const page = createRealServiceHarness({
+            tokens: [
+                original('你好世界', { language: 'cmn', _sequenceIndex: 1 }),
+                translation('こんにちは', { language: 'ja', source_language: 'cmn', _sequenceIndex: 2 }),
+            ],
+            view: {
+                furiganaEnabled: true,
+                learningLanguages: { ja: true, zh: true, ko: true },
+            },
+        });
+
+        expect(page.renderer.render()).toMatchObject({ rendered: true, blocked: false });
+        const origLine = page.container.querySelector('.original-line');
+        const transLine = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(origLine.classList.contains('subtitle-line--furigana')).toBe(true);
+        expect(origLine.classList.contains('subtitle-line--pinyin')).toBe(true);
+        expect(origLine.classList.contains('subtitle-line--romanization')).toBe(false);
+        expect(origLine.innerHTML).toContain('<ruby>你<rp>(</rp><rt>nǐ</rt><rp>)</rp></ruby>');
+        expect(transLine.innerHTML).not.toContain('<ruby>');
+    });
+
+    it('renders Korean romanization synchronously with subtitle-line--romanization and never annotates translations', () => {
+        const page = createRealServiceHarness({
+            tokens: [
+                original('한국어', { language: 'ko', _sequenceIndex: 1 }),
+                translation('你好', { language: 'zh', source_language: 'ko', _sequenceIndex: 2 }),
+            ],
+            view: {
+                furiganaEnabled: true,
+                learningLanguages: { ja: true, zh: true, ko: true },
+            },
+        });
+
+        expect(page.renderer.render()).toMatchObject({ rendered: true, blocked: false });
+        const origLine = page.container.querySelector('.original-line');
+        const transLine = page.container.querySelector('.subtitle-line:not(.original-line)');
+        expect(origLine.classList.contains('subtitle-line--furigana')).toBe(true);
+        expect(origLine.classList.contains('subtitle-line--romanization')).toBe(true);
+        expect(origLine.innerHTML).toContain('<ruby>한국어<rp>(</rp><rt>hangugeo</rt><rp>)</rp></ruby>');
+        expect(transLine.innerHTML).not.toContain('<ruby>');
+    });
+
+    it('gates ja/zh/ko independently via view.learningLanguages while master switch controls all', () => {
+        const page = createRealServiceHarness({
+            tokens: [
+                original('你好', { language: 'zh', _sequenceIndex: 1 }),
+            ],
+            view: {
+                furiganaEnabled: true,
+                learningLanguages: { ja: true, zh: false, ko: true },
+            },
+        });
+
+        page.renderer.render();
+        let origLine = page.container.querySelector('.original-line');
+        expect(origLine.classList.contains('subtitle-line--furigana')).toBe(false);
+        expect(origLine.innerHTML).not.toContain('<ruby>');
+
+        page.view.learningLanguages = { ja: true, zh: true, ko: true };
+        page.renderer.invalidateAll();
+        page.renderer.render();
+        origLine = page.container.querySelector('.original-line');
+        expect(origLine.innerHTML).toContain('<ruby>');
+
+        page.view.furiganaEnabled = false;
+        page.renderer.invalidateAll();
+        page.renderer.render();
+        origLine = page.container.querySelector('.original-line');
+        expect(origLine.innerHTML).not.toContain('<ruby>');
+    });
+
+    it('falls back to plain line when zh/ko text produces no <ruby> tags', () => {
+        const page = createRealServiceHarness({
+            tokens: [original('OK 123', { language: 'zh', _sequenceIndex: 1 })],
+            view: {
+                furiganaEnabled: true,
+                learningLanguages: { ja: true, zh: true, ko: true },
+            },
+        });
+
+        page.renderer.render();
+        const origLine = page.container.querySelector('.original-line');
+        expect(origLine.classList.contains('subtitle-line--furigana')).toBe(false);
+        expect(origLine.classList.contains('subtitle-line--pinyin')).toBe(false);
+        expect(origLine.textContent).toContain('OK 123');
+    });
+});

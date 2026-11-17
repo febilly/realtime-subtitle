@@ -257,3 +257,93 @@ def test_disabling_clears_cache():
 
     service.set_enabled(False)
     assert service.get_pairs("猫") is None            # 关闭后清缓存 + 不再取词
+
+
+def test_ruby_spec_with_lang_roundtrip_and_legacy_compat():
+    from realtime_subtitle.outputs.overlay_window import _decode_ruby_spec_with_lang
+
+    spec_zh = _encode_ruby_spec(24, False, False, "庄", "zhuāng", lang="zh")
+    assert all(c.isalnum() or c in "._-" for c in spec_zh)
+    assert _decode_ruby_spec_with_lang(spec_zh) == (24, False, False, "庄", "zhuāng", "zh")
+    assert _decode_ruby_spec(spec_zh) == (24, False, False, "庄", "zhuāng")
+
+    legacy_spec = _encode_ruby_spec(22, True, False, "猫", "ねこ")
+    assert _decode_ruby_spec_with_lang(legacy_spec) == (22, True, False, "猫", "ねこ", "ja")
+
+
+def test_zh_and_ko_ruby_pixmaps_add_horizontal_padding_and_keep_uniform_height():
+    from PySide6.QtGui import QFont, QFontMetricsF
+    from realtime_subtitle.outputs.overlay_window import RUBY_RT_SCALE, _font_families_for_lang
+
+    fs = 24
+    rt_px = max(6, round(fs * RUBY_RT_SCALE))
+    for code, surface, reading, plain in [
+        ("zh", "庄", "zhuāng", "的"),
+        ("ko", "한국어", "hangugeo", " "),
+    ]:
+        families = _font_families_for_lang(code, False)
+        rt_font = QFont()
+        rt_font.setFamilies(families)
+        rt_font.setPixelSize(rt_px)
+        rt_w = QFontMetricsF(rt_font).horizontalAdvance(reading)
+
+        pm = _make_ruby_pixmap(surface, reading, fs, False, False, lang=code)
+        plain_pm = _make_ruby_pixmap(plain, "", fs, False, False, lang=code)
+        assert pm.height() == plain_pm.height()
+        # 中文拼音/韩语罗马音带左右内边距（每侧 >= 2px）
+        assert pm.width() >= rt_w + 4.0
+
+
+def test_service_caches_separately_by_lang_and_passes_lang_to_two_arg_fetcher():
+    calls = []
+
+    def fetch(text, lang):
+        calls.append((text, lang))
+        if lang == "zh":
+            return {"ready": True, "pairs": [["日", "rì"], ["本", "běn"]]}
+        return {"ready": True, "pairs": [["日本", "にほん"]]}
+
+    service = FuriganaService(fetch)
+    service.set_enabled(True)
+
+    assert service.get_pairs("日本", "ja") is None
+    assert _wait_for(lambda: service.get_pairs("日本", "ja") is not None)
+    assert service.get_pairs("日本", "zh") is None
+    assert _wait_for(lambda: service.get_pairs("日本", "zh") is not None)
+
+    assert service.get_pairs("日本", "ja") == [("日本", "にほん")]
+    assert service.get_pairs("日本", "zh") == [("日", "rì"), ("本", "běn")]
+    assert ("日本", "ja") in calls
+    assert ("日本", "zh") in calls
+
+
+def test_furigana_pairs_for_gates_ja_zh_ko_by_learning_languages():
+    calls = []
+
+    class FakeFurigana:
+        def get_pairs(self, text, lang="ja"):
+            calls.append((text, lang))
+            if lang == "zh":
+                return [("你", "nǐ"), ("好", "hǎo")]
+            if lang == "ko":
+                return [("한국어", "hangugeo")]
+            return [("猫", "ねこ")]
+
+        def is_pending(self, _text, _lang="ja"):
+            return False
+
+    fake = types.SimpleNamespace(
+        furigana=FakeFurigana(),
+        _learning_languages={"ja": True, "zh": False, "ko": True},
+    )
+    fn = OverlayWindow._furigana_pairs_for.__get__(fake)
+
+    assert fn([{"text": "猫"}], "ja") == [("猫", "ねこ")]
+    assert fn([{"text": "你好"}], "cmn") is None   # zh 关闭时不请求
+    assert fn([{"text": "한국어"}], "ko") == [("한국어", "hangugeo")]
+    assert fn([{"text": "Hello"}], "en") is None
+    assert ("你好", "zh") not in calls
+
+    fake._learning_languages["zh"] = True
+    assert fn([{"text": "你好"}], "cmn") == [("你", "nǐ"), ("好", "hǎo")]
+    assert ("你好", "zh") in calls

@@ -88,6 +88,7 @@ describe('full-page feature packs wiring', () => {
             expect(doc.getElementById('oscSettingsSection').hidden).toBe(true);
             expect(doc.getElementById('vrOverlaySection').hidden).toBe(true);
             expect(doc.getElementById('furiganaButton').hidden).toBe(true);
+            expect(doc.getElementById('learningSettingsSection').hidden).toBe(true);
 
             // Confirm without checking anything
             doc.getElementById('featurePackConfirmButton').click();
@@ -128,6 +129,7 @@ describe('full-page feature packs wiring', () => {
             });
             expect(doc.getElementById('oscTranslationButton').hidden).toBe(false);
             expect(doc.getElementById('furiganaButton').hidden).toBe(false);
+            expect(doc.getElementById('learningSettingsSection').hidden).toBe(false);
             expect(doc.getElementById('furiganaButton').classList.contains('active')).toBe(true);
 
             // Confirm with default upgrade selection
@@ -141,20 +143,22 @@ describe('full-page feature packs wiring', () => {
             const firstGroup = doc.querySelector('#settingsForm .settings-group');
             expect(firstGroup.id).toBe('featurePacksSection');
 
-            // Toggle Learning pack off in Settings -> hides furiganaButton & forces runtime off, preserves sessionStorage
+            // Toggle Learning pack off in Settings -> hides furiganaButton & learningSettingsSection, preserves sessionStorage
             const learningSwitch = doc.querySelector('#featurePacksList [data-pack-id="learning"] .settings-switch');
             expect(learningSwitch.getAttribute('aria-checked')).toBe('true');
             learningSwitch.click();
             await page.flush(6);
             expect(doc.getElementById('furiganaButton').hidden).toBe(true);
+            expect(doc.getElementById('learningSettingsSection').hidden).toBe(true);
             expect(doc.getElementById('furiganaButton').classList.contains('active')).toBe(false);
             expect(page.window.sessionStorage.getItem('furiganaEnabled')).toBe('true');
 
-            // Re-enable Learning pack -> restores furiganaButton & active state
+            // Re-enable Learning pack -> restores furiganaButton, learningSettingsSection & active state
             const learningSwitchRe = doc.querySelector('#featurePacksList [data-pack-id="learning"] .settings-switch');
             learningSwitchRe.click();
             await page.flush(6);
             expect(doc.getElementById('furiganaButton').hidden).toBe(false);
+            expect(doc.getElementById('learningSettingsSection').hidden).toBe(false);
             expect(doc.getElementById('furiganaButton').classList.contains('active')).toBe(true);
 
             // Toggle VRChat pack off -> hides VRChat UI & sends stop requests without wiping vrOverlayEnabled
