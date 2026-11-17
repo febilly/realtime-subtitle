@@ -53,6 +53,7 @@
         'translationLanguagePreferences.v1': true,
         'featurePacks.v1': true,
         'learningLanguages.v1': true,
+        'obsSettings.v1': true,
         'transcriptSettings.v1': true,
     };
 

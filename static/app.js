@@ -281,6 +281,7 @@ const settingsPorts = {
 let featurePacks = null;
 let learningLanguages = null;
 let transcriptController = null;
+let obsController = null;
 
 const settingsRuntime = SettingsRuntime.create({
     document,
@@ -1299,6 +1300,20 @@ transcriptController = TranscriptController.create({
     isPackEnabled: () => (featurePacks ? featurePacks.isEnabled('transcript') : false),
     console,
 });
+obsController = ObsController.create({
+    document,
+    window,
+    storage: localStorage,
+    fetch,
+    navigator,
+    t,
+    showToast,
+    userAgent: navigator.userAgent,
+    buildCustomSelect: settingsPorts.buildCustomSelect,
+    ControlIcon,
+    isPackEnabled: () => (featurePacks ? featurePacks.isEnabled('obs') : false),
+    console,
+});
 let featurePacksRuntimeActive = false;
 featurePacks = FeaturePacks.create({
     document,
@@ -1339,6 +1354,14 @@ featurePacks = FeaturePacks.create({
                 furiganaToggleController.setPackEnabled(true);
             },
         },
+        obs: {
+            onDisable: () => {
+                if (obsController) obsController.setPackEnabled(false);
+            },
+            onEnable: () => {
+                if (obsController) obsController.setPackEnabled(true);
+            },
+        },
         transcript: {
             onDisable: () => {
                 if (transcriptController) transcriptController.setPackEnabled(false);
@@ -1352,6 +1375,7 @@ featurePacks = FeaturePacks.create({
 featurePacks.applyAll({ sync: false });
 featurePacksRuntimeActive = true;
 transcriptController.init();
+obsController.init();
 learningLanguages = LearningLanguages.create({
     document,
     storage: localStorage,
@@ -1458,6 +1482,9 @@ const uiConfigController = UiConfigController.create({
         applyTranscriptConfig: (data) => {
             if (transcriptController) transcriptController.applyConfig(data);
         },
+        applyObsConfig: (data) => {
+            if (obsController) obsController.applyConfig(data);
+        },
     },
 });
 
@@ -1541,6 +1568,7 @@ const settingsPanelController = SettingsPanel.create({
             featurePacks.applyI18n();
             if (learningLanguages) learningLanguages.applyI18n();
             if (transcriptController) transcriptController.applyI18n();
+            if (obsController) obsController.applyI18n();
         },
         fetchMicrophoneDevices: settingsPorts.fetchMicrophoneDevices,
         fetchBalance: hostedPorts.fetchBalance,
@@ -2085,6 +2113,7 @@ document.addEventListener('DOMContentLoaded', () => {
     void featurePacks.syncToBackend();
     if (learningLanguages) void learningLanguages.syncToBackend();
     if (transcriptController) void transcriptController.syncToBackend();
+    if (obsController) void obsController.syncToBackend();
     void hostedController.startup().then(() => {
         timedNotifications.start();
         void featurePacks.maybeShowStartupPicker();

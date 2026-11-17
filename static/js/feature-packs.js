@@ -54,7 +54,10 @@
             id: 'obs',
             nameKey: 'pack_obs_name',
             descKey: 'pack_obs_desc',
-            elementIds: Object.freeze([]),
+            elementIds: Object.freeze([
+                'obsCopyLinkButton',
+                'obsSettingsSection',
+            ]),
         }),
         Object.freeze({
             id: 'transcript',

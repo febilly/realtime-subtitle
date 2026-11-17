@@ -201,6 +201,7 @@
             call('enforceTranslateSegmentMode');
             call('syncTranslationModeWithBackend');
             call('applyTranscriptConfig', data);
+            call('applyObsConfig', data);
             return data;
         }
 
