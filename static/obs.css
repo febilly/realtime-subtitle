@@ -1,0 +1,78 @@
+html,
+body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent;
+}
+
+.ov.text-mode {
+    position: fixed;
+    inset: 0;
+    background: transparent;
+    pointer-events: none;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic", "Meiryo", "Malgun Gothic", "Noto Sans SC", sans-serif;
+}
+
+.ov.text-mode[hidden] {
+    display: none;
+}
+
+.ov-text {
+    position: absolute;
+    inset: 12px;
+    padding: max(4px, var(--pad, 11px));
+    overflow: hidden;
+    scrollbar-width: none;
+    font-size: var(--fs, 42px);
+    color: #e5e7eb;
+}
+
+.ov-text::-webkit-scrollbar {
+    display: none;
+}
+
+.ov-line {
+    line-height: 1.45;
+    text-align: start;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+.ov-line[lang="ja"],
+.ov-text [lang="ja"] {
+    font-family: "Yu Gothic UI", "Yu Gothic", "Meiryo", "Noto Sans JP", "Segoe UI", sans-serif;
+}
+
+.ov-line[lang="ar"],
+.ov-text [lang="ar"] {
+    font-family: "Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif;
+}
+
+.ov-nf {
+    color: #60a5fa;
+}
+
+.ov-tag {
+    display: inline-block;
+    vertical-align: middle;
+    font: 700 var(--tag-fs, 23px)/1.17 Consolas, "Cascadia Mono", ui-monospace, monospace;
+    padding: var(--tag-py, 6px) var(--tag-px, 13px);
+    border-radius: calc((var(--tag-fs, 23px) * 1.17 + 2 * var(--tag-py, 6px)) * .4);
+    background: rgba(255, 255, 255, .16);
+    color: #d1d5db;
+    margin-inline-end: var(--tag-gap, 10px);
+    text-transform: uppercase;
+}
+
+.ov.text-mode .ov-bg {
+    background: rgba(0, 0, 0, var(--a, 0.592));
+    padding: .06em var(--pad, 11px);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, .85);
+}

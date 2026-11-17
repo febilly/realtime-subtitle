@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Realtime Subtitle - OBS</title>
+    <link rel="stylesheet" href="obs.css">
+</head>
+<body>
+    <div id="obsOverlayRoot" class="ov text-mode" aria-live="polite" hidden>
+        <div id="obsTextContainer" class="ov-text"></div>
+    </div>
+
+    <script src="js/segmentation.js"></script>
+    <script src="js/token-stream.js"></script>
+    <script src="js/refine-state.js"></script>
+    <script src="js/render-model.js"></script>
+    <script src="js/render-html.js"></script>
+    <script src="js/subtitle-session.js"></script>
+    <script src="js/subtitle-frame-controller.js"></script>
+    <script src="js/ws-client.js"></script>
+    <script src="js/obs-renderer.js"></script>
+    <script src="js/obs-app.js"></script>
+</body>
+</html>
