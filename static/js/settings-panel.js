@@ -687,6 +687,7 @@
                     version: state().clientVersion,
                 });
             }
+            call('applyFeaturePacksI18n');
         }
 
         function open({ forced = false, scrollTop = false } = {}) {

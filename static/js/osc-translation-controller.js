@@ -7,6 +7,9 @@
         const icon = options.icon || null;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const logger = options.console || root.console || { log() {}, error() {} };
+        const isPackEnabled = typeof options.isPackEnabled === 'function'
+            ? options.isPackEnabled
+            : () => true;
         if (typeof fetchImpl !== 'function') {
             throw new TypeError('OscTranslationController.create requires fetch');
         }
@@ -21,7 +24,39 @@
             return true;
         }
 
+        async function disable() {
+            if (!enabled) {
+                updateButton();
+                return true;
+            }
+            try {
+                const response = await fetchImpl('/osc-translation', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: false }),
+                });
+                let data = null;
+                try {
+                    data = await response.json();
+                } catch (parseError) {
+                    logger.error('Failed to parse OSC translation disable response:', parseError);
+                }
+                if (response.ok && data) {
+                    enabled = !!data.enabled;
+                    updateButton();
+                    logger.log(`OSC translation ${enabled ? 'enabled' : 'disabled'}`);
+                    return !enabled;
+                }
+                logger.error('Failed to disable OSC translation:', response.status, data?.message);
+                return false;
+            } catch (error) {
+                logger.error('Error disabling OSC translation:', error);
+                return false;
+            }
+        }
+
         async function toggle() {
+            if (!isPackEnabled()) return false;
             const next = !enabled;
             try {
                 const response = await fetchImpl('/osc-translation', {
@@ -56,6 +91,10 @@
                 if (!response.ok) return false;
                 const data = await response.json();
                 enabled = !!data.enabled;
+                if (enabled && !isPackEnabled()) {
+                    await disable();
+                    return true;
+                }
                 updateButton();
                 return true;
             } catch (error) {
@@ -84,6 +123,7 @@
 
         return {
             destroy,
+            disable,
             fetchStatus,
             init,
             isEnabled: () => enabled,

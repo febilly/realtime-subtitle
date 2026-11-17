@@ -14,32 +14,53 @@
             throw new TypeError('FuriganaToggleController.create requires storage');
         }
 
-        let enabled = false;
+        let userEnabled = false;
+        let packEnabled = true;
         let initialized = false;
         try {
-            enabled = storage.getItem(STORAGE_KEY) === 'true';
+            userEnabled = storage.getItem(STORAGE_KEY) === 'true';
         } catch (error) {
             logger.warn('Unable to access sessionStorage for furigana preference:', error);
         }
 
+        function isEnabled() {
+            return packEnabled && userEnabled;
+        }
+
         function updateButton() {
             if (!button || !icon) return false;
-            button.classList.toggle('active', enabled);
-            button.title = t(enabled ? 'furigana_on' : 'furigana_off');
+            const active = isEnabled();
+            button.classList.toggle('active', active);
+            button.title = t(active ? 'furigana_on' : 'furigana_off');
             return true;
         }
 
         function toggle() {
-            enabled = !enabled;
+            if (!packEnabled) return false;
+            userEnabled = !userEnabled;
             try {
-                storage.setItem(STORAGE_KEY, enabled);
+                storage.setItem(STORAGE_KEY, userEnabled);
             } catch (error) {
                 logger.warn('Unable to persist furigana preference:', error);
             }
+            const active = isEnabled();
             updateButton();
-            onChange(enabled);
-            logger.log(`Furigana ${enabled ? 'enabled' : 'disabled'}`);
-            return enabled;
+            onChange(active);
+            logger.log(`Furigana ${active ? 'enabled' : 'disabled'}`);
+            return active;
+        }
+
+        function setPackEnabled(nextPackEnabled) {
+            const next = !!nextPackEnabled;
+            if (packEnabled === next) {
+                updateButton();
+                return isEnabled();
+            }
+            packEnabled = next;
+            const active = isEnabled();
+            updateButton();
+            onChange(active);
+            return active;
         }
 
         function onClick() {
@@ -63,7 +84,8 @@
         return {
             destroy,
             init,
-            isEnabled: () => enabled,
+            isEnabled,
+            setPackEnabled,
             toggle,
             updateButton,
         };

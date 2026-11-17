@@ -140,6 +140,11 @@
                 <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
             </div>
 
+            <section class="settings-group" id="featurePacksSection">
+                <h2 class="settings-group-title" id="featurePacksLabel">Feature packs</h2>
+                <div class="settings-card" id="featurePacksList"></div>
+            </section>
+
             <section class="settings-group">
                 <h2 class="settings-group-title" id="serviceGroupLabel">Service</h2>
                 <div class="settings-card">
@@ -485,6 +490,17 @@
         </div>
     </div>
 
+    <!-- Feature packs picker dialog -->
+    <div class="confirm-overlay" id="featurePackOverlay" hidden></div>
+    <div class="feature-pack-dialog" id="featurePackDialog" role="dialog" aria-modal="true" aria-labelledby="featurePackTitle" hidden>
+        <h1 id="featurePackTitle">Choose feature packs</h1>
+        <p class="field-hint" id="featurePackHint">You can change these anytime in Settings.</p>
+        <div class="feature-pack-list" id="featurePackList"></div>
+        <div class="feature-pack-actions">
+            <button class="primary-button" id="featurePackConfirmButton" type="button">Confirm</button>
+        </div>
+    </div>
+
     <!-- Subtitle-server sign-in (web one-time code) -->
     <div class="settings-overlay" id="loginOverlay" hidden></div>
     <aside class="settings-panel" id="loginPanel" aria-label="Sign in" hidden>
@@ -590,6 +606,7 @@
     <script src="js/hosted-account.js"></script>
     <script src="js/ws-client.js"></script>
     <script src="js/websocket-controller.js"></script>
+    <script src="js/feature-packs.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

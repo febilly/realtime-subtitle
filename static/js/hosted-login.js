@@ -318,6 +318,7 @@
             } catch (error) {
                 call('showToast', String(error), true);
             }
+            await call('maybeShowFeaturePacksPicker');
         }
 
         async function pollLoginCallback() {

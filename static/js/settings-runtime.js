@@ -660,7 +660,7 @@
         }
 
         function renderVrAttachModePicker() {
-            const available = !!state().vrOverlayAvailable;
+            const available = !!state().vrOverlayAvailable && state().vrchatPackEnabled !== false;
             if (elements.vrOverlaySection) elements.vrOverlaySection.hidden = !available;
             if (!available) {
                 if (elements.vrAttachModePickerHost) elements.vrAttachModePickerHost.innerHTML = '';

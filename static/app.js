@@ -278,6 +278,8 @@ const settingsPorts = {
     fetchLlmRefineStatus: () => translationModeController.fetchLlmRefineStatus(),
 };
 
+let featurePacks = null;
+
 const settingsRuntime = SettingsRuntime.create({
     document,
     fetch,
@@ -340,6 +342,7 @@ const settingsRuntime = SettingsRuntime.create({
         get subtitleFlowDirection() { return subtitleFlowDirection; },
         get vrOverlayAvailable() { return runtimeControls.isVrOverlayAvailable(); },
         get vrAttachMode() { return runtimeControls.getVrAttachMode(); },
+        get vrchatPackEnabled() { return featurePacks ? featurePacks.isEnabled('vrchat') : true; },
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'autoRestartEnabled')) {
@@ -446,6 +449,7 @@ const oscTranslationController = OscTranslationController.create({
     icon: oscTranslationIcon,
     t,
     console,
+    isPackEnabled: () => (featurePacks ? featurePacks.isEnabled('vrchat') : true),
 });
 oscTranslationController.init();
 const mobileSafeAreaController = MobileSafeAreaController.create({
@@ -831,6 +835,7 @@ const runtimeControls = RuntimeControls.create({
         audioSource,
         overlayOpen,
         lockManualControls,
+        vrchatPackEnabled: featurePacks ? featurePacks.isEnabled('vrchat') : true,
     }),
     updateState: (patch) => {
         if (Object.prototype.hasOwnProperty.call(patch, 'displayMode')) displayMode = patch.displayMode;
@@ -1267,6 +1272,50 @@ const settingsUi = SettingsUI.create({
         handleSettingsSave: (event) => settingsFlowController.handleSubmit(event),
     },
 });
+let featurePacksRuntimeActive = false;
+featurePacks = FeaturePacks.create({
+    document,
+    storage: localStorage,
+    fetch,
+    t,
+    buildToggleSwitch: settingsPorts.buildToggleSwitch,
+    getRuntimeState: () => ({
+        lockManualControls,
+        relayAvailable,
+        backendLoggedIn,
+        signedIn: !!settingsPorts.loadServerSettings().token,
+        connectionMode: settingsPorts.getConnectionMode(),
+    }),
+    hooks: {
+        vrchat: {
+            onDisable: () => {
+                if (featurePacksRuntimeActive) {
+                    void oscTranslationController.disable();
+                    void runtimeControls.closeVrOverlayForPack();
+                }
+                settingsRuntime.renderVrAttachModePicker();
+            },
+            onEnable: () => {
+                oscTranslationController.updateButton();
+                runtimeControls.updateVrOverlayButton();
+                if (featurePacksRuntimeActive) {
+                    void runtimeControls.restoreVrOverlayState();
+                }
+                settingsRuntime.renderVrAttachModePicker();
+            },
+        },
+        learning: {
+            onDisable: () => {
+                furiganaToggleController.setPackEnabled(false);
+            },
+            onEnable: () => {
+                furiganaToggleController.setPackEnabled(true);
+            },
+        },
+    },
+});
+featurePacks.applyAll({ sync: false });
+featurePacksRuntimeActive = true;
 const themeController = ThemeController.create({
     settingsUi,
     fetch,
@@ -1379,6 +1428,10 @@ document.getElementById('vrResetPositionButton')?.addEventListener('click', () =
 
 
 function handleMessageFrame(data) {
+    if (data && data.type === 'feature_packs') {
+        featurePacks.applyBackendPacks(data.packs);
+        return;
+    }
     if (data && (data.type === 'ticket_changed'
         || (data.type === 'ticket_notifications_ready' && data.connected))) {
         void hostedAccount.maybeShowTicketUnreadReminder();
@@ -1420,6 +1473,7 @@ const settingsPanelController = SettingsPanel.create({
         renderRuntimeSettingsPickers: settingsPorts.renderRuntimeSettingsPickers,
         renderBundledCjkFontPicker: settingsPorts.renderBundledCjkFontPicker,
         renderTranslationModePicker: settingsPorts.renderTranslationModePicker,
+        applyFeaturePacksI18n: () => featurePacks.applyI18n(),
         fetchMicrophoneDevices: settingsPorts.fetchMicrophoneDevices,
         fetchBalance: hostedPorts.fetchBalance,
         updateAccountSection: hostedPorts.updateAccountSection,
@@ -1788,6 +1842,7 @@ const hostedMode = HostedMode.create({
         applyModeSectionsVisibility: settingsPorts.applyModeSectionsVisibility,
         updateAccountSection: hostedPorts.updateAccountSection,
         openSettings: settingsFlowController.open,
+        maybeShowFeaturePacksPicker: (mode) => featurePacks.maybeShowOnModeEnter(mode),
     },
     elements: {
         chooserOverlay: modeChooserOverlay,
@@ -1834,6 +1889,7 @@ const hostedLogin = HostedLogin.create({
         pushSetup: settingsPorts.pushSetup,
         switchToOwnKeyMode: hostedPorts.switchToOwnKeyMode,
         offerDesktopShortcut: desktopShortcut.offer,
+        maybeShowFeaturePacksPicker: () => featurePacks.maybeShowAfterLogin(),
     },
     elements: {
         overlay: loginOverlay,
@@ -1958,7 +2014,11 @@ const hostedController = Hosted.createController({
 document.addEventListener('DOMContentLoaded', () => {
     void audioSourceUi.fetchState();
     audioSourceUi.startMonitoring();
-    void hostedController.startup().then(() => timedNotifications.start());
+    void featurePacks.syncToBackend();
+    void hostedController.startup().then(() => {
+        timedNotifications.start();
+        void featurePacks.maybeShowStartupPicker();
+    });
 });
 
 timedNotifications.addUngated('update', () => hostedUpdate.ensure({ background: true }));

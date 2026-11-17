@@ -42,7 +42,7 @@
             setText('modeChooserDirectDesc', t('chooser_direct_desc'));
         }
 
-        function openModeChooser() {
+        async function openModeChooser() {
             return new Promise((resolve) => {
                 applyChooserI18n();
                 if (chooserOverlay) chooserOverlay.hidden = false;
@@ -80,6 +80,7 @@
             call('setModeRadio', 'direct');
             call('applyModeSectionsVisibility', 'direct');
             call('updateAccountSection');
+            void call('maybeShowFeaturePacksPicker', 'direct');
         }
 
         function shouldPreopenHostedLogin() {
@@ -126,11 +127,14 @@
             call('resetBootGuard');
             call('hideSettingsPanel');
             call('hideLogin');
-            await openModeChooser();
+            const chosenMode = await openModeChooser();
             await call('ensureHostedVersionAllowed');
             await call('syncProviderFromStorage');
             call('maybeForceOpenSettings');
             call('updateBalanceBarVisibility');
+            if (chosenMode === 'direct') {
+                await call('maybeShowFeaturePacksPicker', 'direct');
+            }
         }
 
         async function switchToOwnKeyMode() {
@@ -145,6 +149,7 @@
             call('updateAccountSection');
             call('updateBalanceBarVisibility');
             call('openSettings', { forced: true });
+            await call('maybeShowFeaturePacksPicker', 'direct');
         }
 
         async function maybeRunFirstLaunchFlow() {

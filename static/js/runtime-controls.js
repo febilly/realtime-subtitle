@@ -178,6 +178,12 @@
                 }
                 applyVrOverlayState(result);
                 if (state().lockManualControls) return true;
+                if (state().vrchatPackEnabled === false) {
+                    if (result.open) {
+                        applyVrOverlayState(await postVrOverlay({ action: 'close' }));
+                    }
+                    return true;
+                }
                 const mode = getVrAttachMode();
                 if (result.attach_mode !== mode) {
                     await postVrOverlay({ action: 'config', attach_mode: mode });
@@ -192,8 +198,20 @@
             }
         }
 
+        async function closeVrOverlayForPack() {
+            if (state().lockManualControls || !fetchRef || !vrOverlayOpen) return false;
+            try {
+                const result = await postVrOverlay({ action: 'close' });
+                if (result) applyVrOverlayState(result);
+                return true;
+            } catch (error) {
+                consoleRef.error('Error closing VR subtitle overlay for disabled pack:', error);
+                return false;
+            }
+        }
+
         async function toggleVrOverlay() {
-            if (state().lockManualControls || !fetchRef) return false;
+            if (state().lockManualControls || state().vrchatPackEnabled === false || !fetchRef) return false;
             try {
                 const result = await postVrOverlay({ action: vrOverlayOpen ? 'close' : 'open' });
                 if (!result || result.available === false) {
@@ -404,6 +422,7 @@
             updateAudioSourceButton,
             updateOverlayButton,
             restoreVrOverlayState,
+            closeVrOverlayForPack,
             toggleVrOverlay,
             syncVrOverlayState,
             setVrAttachMode,

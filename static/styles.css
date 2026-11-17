@@ -2227,6 +2227,110 @@ body.dark-theme .mode-card:hover {
     opacity: 0.7;
 }
 
+.feature-pack-dialog {
+    position: fixed;
+    z-index: 10002;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(480px, calc(100vw - 48px));
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 24px;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #1f2937;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+body.dark-theme .feature-pack-dialog {
+    background: #1e1e2e;
+    color: #e5e7eb;
+}
+
+.feature-pack-dialog h1 {
+    margin: 0 0 6px;
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.feature-pack-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.feature-pack-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(0, 0, 0, 0.14);
+    background: rgba(0, 0, 0, 0.02);
+    color: inherit;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.feature-pack-card:hover {
+    border-color: #2563eb;
+    background: rgba(37, 99, 235, 0.05);
+}
+
+.feature-pack-card.is-selected {
+    border-color: #2563eb;
+    background: rgba(37, 99, 235, 0.08);
+}
+
+body.dark-theme .feature-pack-card {
+    border-color: rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+body.dark-theme .feature-pack-card:hover {
+    border-color: #60a5fa;
+    background: rgba(96, 165, 250, 0.08);
+}
+
+body.dark-theme .feature-pack-card.is-selected {
+    border-color: #60a5fa;
+    background: rgba(96, 165, 250, 0.14);
+}
+
+.feature-pack-checkbox {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    margin: 2px 0 0;
+    accent-color: #3b82f6;
+    cursor: pointer;
+}
+
+.feature-pack-card-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.feature-pack-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 18px;
+}
+
+.feature-pack-settings-name {
+    font-weight: 500;
+}
+
+.feature-pack-settings-desc {
+    font-size: 12px;
+    opacity: 0.72;
+}
+
 .client-update-dialog {
     position: fixed;
     z-index: 10002;
