@@ -217,6 +217,24 @@ body.chroma-theme .subtitle-container {
     transform: scale(0.95);
 }
 
+.control-button:disabled {
+    opacity: 0.38;
+    cursor: default;
+    transform: none;
+}
+
+.control-button:disabled:hover,
+.control-button:disabled:active {
+    background: rgba(0, 0, 0, 0.05);
+    transform: none;
+}
+
+body.dark-theme .control-button:disabled:hover,
+body.dark-theme .control-button:disabled:active {
+    background: rgba(255, 255, 255, 0.1);
+    transform: none;
+}
+
 .lang-popover {
     --lang-popover-top: clamp(160px, 30vh, 230px);
     position: fixed;
@@ -1049,6 +1067,25 @@ body.dark-theme .checkbox-field {
     flex: 0 0 auto;
     align-self: stretch;
     min-height: 38px;
+}
+
+.transcript-folder-path {
+    margin: 0;
+    word-break: break-all;
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+}
+
+.transcript-folder-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.transcript-folder-actions .secondary-button {
+    flex: 0 1 auto;
 }
 
 .settings-error {

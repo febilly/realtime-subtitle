@@ -200,6 +200,7 @@
             call('applyLockPauseRestartControlsUI');
             call('enforceTranslateSegmentMode');
             call('syncTranslationModeWithBackend');
+            call('applyTranscriptConfig', data);
             return data;
         }
 

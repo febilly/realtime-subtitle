@@ -113,6 +113,12 @@
                 </svg>
             </button>
 
+            <button class="control-button" id="exportTranscriptButton" type="button" title="Export transcript" hidden disabled>
+                <svg class="control-icon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#download"></use>
+                </svg>
+            </button>
+
             <!-- Shown by announcements.js only once there is at least one announcement. -->
             <button class="control-button" id="announcementsButton" type="button" title="Announcements" aria-label="Announcements" hidden>
                 <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -365,6 +371,29 @@
                 <div class="settings-card" id="learningLanguagesList"></div>
             </section>
 
+            <section class="settings-group" id="transcriptSettingsSection" hidden>
+                <h2 class="settings-group-title" id="transcriptSettingsLabel">Transcripts</h2>
+                <div class="settings-card">
+                    <label class="settings-item settings-row" id="transcriptAutoSaveField">
+                        <span class="settings-row-text" id="transcriptAutoSaveLabel">Auto-save transcripts</span>
+                        <span id="transcriptAutoSavePicker"></span>
+                    </label>
+                    <div class="settings-item form-field" id="transcriptFormatField">
+                        <span id="transcriptFormatLabel">Format</span>
+                        <div id="transcriptFormatPicker"></div>
+                    </div>
+                    <div class="settings-item form-field" id="transcriptFolderField">
+                        <span id="transcriptFolderLabel">Save folder</span>
+                        <p class="field-hint transcript-folder-path" id="transcriptFolderPath"></p>
+                        <div class="transcript-folder-actions" id="transcriptFolderActions">
+                            <button class="secondary-button" id="transcriptChangeFolderButton" type="button">Change</button>
+                            <button class="secondary-button" id="transcriptOpenFolderButton" type="button">Open folder</button>
+                        </div>
+                        <p class="field-hint" id="transcriptDesktopHint" hidden></p>
+                    </div>
+                </div>
+            </section>
+
             <section class="settings-group" id="appearanceSection">
                 <h2 class="settings-group-title" id="appearanceLabel">Appearance</h2>
                 <div class="settings-card">
@@ -615,6 +644,7 @@
     <script src="js/ws-client.js"></script>
     <script src="js/websocket-controller.js"></script>
     <script src="js/feature-packs.js"></script>
+    <script src="js/transcript-controller.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

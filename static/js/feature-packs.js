@@ -60,7 +60,10 @@
             id: 'transcript',
             nameKey: 'pack_transcript_name',
             descKey: 'pack_transcript_desc',
-            elementIds: Object.freeze([]),
+            elementIds: Object.freeze([
+                'exportTranscriptButton',
+                'transcriptSettingsSection',
+            ]),
         }),
     ]);
 

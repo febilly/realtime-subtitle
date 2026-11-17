@@ -280,6 +280,7 @@ const settingsPorts = {
 
 let featurePacks = null;
 let learningLanguages = null;
+let transcriptController = null;
 
 const settingsRuntime = SettingsRuntime.create({
     document,
@@ -1286,6 +1287,18 @@ const settingsUi = SettingsUI.create({
         handleSettingsSave: (event) => settingsFlowController.handleSubmit(event),
     },
 });
+transcriptController = TranscriptController.create({
+    document,
+    storage: localStorage,
+    fetch,
+    t,
+    showToast,
+    userAgent: navigator.userAgent,
+    buildToggleSwitch: settingsPorts.buildToggleSwitch,
+    buildCustomSelect: settingsPorts.buildCustomSelect,
+    isPackEnabled: () => (featurePacks ? featurePacks.isEnabled('transcript') : false),
+    console,
+});
 let featurePacksRuntimeActive = false;
 featurePacks = FeaturePacks.create({
     document,
@@ -1326,10 +1339,19 @@ featurePacks = FeaturePacks.create({
                 furiganaToggleController.setPackEnabled(true);
             },
         },
+        transcript: {
+            onDisable: () => {
+                if (transcriptController) transcriptController.setPackEnabled(false);
+            },
+            onEnable: () => {
+                if (transcriptController) transcriptController.setPackEnabled(true);
+            },
+        },
     },
 });
 featurePacks.applyAll({ sync: false });
 featurePacksRuntimeActive = true;
+transcriptController.init();
 learningLanguages = LearningLanguages.create({
     document,
     storage: localStorage,
@@ -1433,6 +1455,9 @@ const uiConfigController = UiConfigController.create({
         applyLockPauseRestartControlsUI: appShellController.applyManualControlPolicy,
         enforceTranslateSegmentMode: controlPorts.enforceTranslateSegmentMode,
         syncTranslationModeWithBackend: () => { languageUi.updateAvailability(); return languageUi.syncBackendMode(); },
+        applyTranscriptConfig: (data) => {
+            if (transcriptController) transcriptController.applyConfig(data);
+        },
     },
 });
 
@@ -1465,6 +1490,10 @@ function handleMessageFrame(data) {
                 initialized: data.initialized !== false,
             });
         }
+        return;
+    }
+    if (data && data.type === 'transcript_status') {
+        if (transcriptController) transcriptController.applyStatus(data);
         return;
     }
     if (data && (data.type === 'ticket_changed'
@@ -1511,6 +1540,7 @@ const settingsPanelController = SettingsPanel.create({
         applyFeaturePacksI18n: () => {
             featurePacks.applyI18n();
             if (learningLanguages) learningLanguages.applyI18n();
+            if (transcriptController) transcriptController.applyI18n();
         },
         fetchMicrophoneDevices: settingsPorts.fetchMicrophoneDevices,
         fetchBalance: hostedPorts.fetchBalance,
@@ -2054,6 +2084,7 @@ document.addEventListener('DOMContentLoaded', () => {
     audioSourceUi.startMonitoring();
     void featurePacks.syncToBackend();
     if (learningLanguages) void learningLanguages.syncToBackend();
+    if (transcriptController) void transcriptController.syncToBackend();
     void hostedController.startup().then(() => {
         timedNotifications.start();
         void featurePacks.maybeShowStartupPicker();
