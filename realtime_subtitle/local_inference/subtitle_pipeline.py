@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import threading
 import time
 from typing import Callable
@@ -36,11 +36,12 @@ class _Row:
     epoch: int = 0
     is_final: bool = False
     previous_source: str = ""
+    first_seen_at: float = field(default_factory=time.monotonic)
 
     def payload(self) -> dict:
         return {key: getattr(self, key) for key in (
             "id", "source", "translation", "source_language", "target_language",
-            "order", "requires_translation", "revision", "is_final",
+            "order", "requires_translation", "revision", "is_final", "first_seen_at",
         )}
 
 

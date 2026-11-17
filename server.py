@@ -265,6 +265,7 @@ class ProviderManager:
         self._env_get_api_key = None
         self._session_mod = None
         self._ipc_started = False
+        self.transcript_recorder = None
 
     # ----- provider module wiring -----
     def _provider_modules(self, provider):
@@ -548,6 +549,13 @@ class ProviderManager:
         if self.web_server is not None:
             self.web_server.session = new_session
             self.web_server.get_api_key = self.get_api_key
+        recorder = self.transcript_recorder or (
+            getattr(self.web_server, "transcript_recorder", None)
+            if self.web_server is not None
+            else None
+        )
+        if recorder is not None and hasattr(new_session, "set_transcript_recorder"):
+            new_session.set_transcript_recorder(recorder)
         self.ipc_server.set_session(new_session)
         import realtime_subtitle.sessions.realtime_session_base as realtime_session_base
         realtime_session_base.ipc_server = self.ipc_server
@@ -909,6 +917,9 @@ def main():
     web_server = WebServer(session, logger)
     web_server.get_api_key = provider_manager.get_api_key
     web_server.provider_manager = provider_manager
+    provider_manager.transcript_recorder = web_server.transcript_recorder
+    if hasattr(session, "set_transcript_recorder"):
+        session.set_transcript_recorder(web_server.transcript_recorder)
 
     ipc_server.set_session(session)
     import realtime_subtitle.sessions.realtime_session_base as realtime_session_base
@@ -1168,6 +1179,45 @@ def main():
 
         if web_server is not None:
             web_server.set_furigana_evaluator(_furigana_eval)
+
+            def _transcript_save_dialog(default_dir: str, default_filename: str):
+                try:
+                    target_dir = str(default_dir or "").strip()
+                    if target_dir:
+                        os.makedirs(target_dir, exist_ok=True)
+                    result = window.create_file_dialog(
+                        webview.FileDialog.SAVE,
+                        directory=target_dir,
+                        save_filename=str(default_filename or "transcript.srt"),
+                        file_types=("SubRip Subtitles (*.srt)", "Text Documents (*.txt)"),
+                    )
+                    if isinstance(result, (list, tuple)):
+                        return result[0] if result else None
+                    return result or None
+                except Exception as error:
+                    print(f"⚠️  Transcript save dialog failed: {error}")
+                    return None
+
+            def _transcript_folder_dialog(default_dir: str):
+                try:
+                    target_dir = str(default_dir or "").strip()
+                    if target_dir:
+                        os.makedirs(target_dir, exist_ok=True)
+                    result = window.create_file_dialog(
+                        webview.FileDialog.FOLDER,
+                        directory=target_dir,
+                    )
+                    if isinstance(result, (list, tuple)):
+                        return result[0] if result else None
+                    return result or None
+                except Exception as error:
+                    print(f"⚠️  Transcript folder dialog failed: {error}")
+                    return None
+
+            web_server.set_transcript_dialog_callbacks(
+                save_callback=_transcript_save_dialog,
+                folder_callback=_transcript_folder_dialog,
+            )
 
         if not debug and os.name == 'nt':
             try:

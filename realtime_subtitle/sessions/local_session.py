@@ -348,9 +348,22 @@ class LocalInferenceSession(SonioxSession):
         tokens = self._local_row_tokens(row)
         if not self.is_paused:
             self.logger.write_to_log(tokens)
+        first_seen = row.get("first_seen_at")
+        now = time.monotonic()
+        run_start = getattr(self, "_run_start_monotonic", now)
+        start_at = float(first_seen) if isinstance(first_seen, (int, float)) else now
+        start_ms = max(0, int(round((start_at - run_start) * 1000)))
+        end_ms = max(start_ms, int(round((now - run_start) * 1000)))
         if self.loop is not None and not self.loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._finalize_sentence_async("0", tokens[:1], tokens[1:], row["id"]), self.loop,
+                self._finalize_sentence_async(
+                    "0",
+                    tokens[:1],
+                    tokens[1:],
+                    row["id"],
+                    timing_ms=(start_ms, end_ms),
+                ),
+                self.loop,
             )
 
     def _run_local_session(self) -> None:
@@ -434,6 +447,7 @@ class LocalInferenceSession(SonioxSession):
         self._pending_boundaries.clear()
         self._reset_osc_live_state()
         self._local_live_rows.clear()
+        self._end_transcript_run()
 
     def start(
         self,
@@ -468,6 +482,11 @@ class LocalInferenceSession(SonioxSession):
         self._pairer.flush_all()
         self._pending_boundaries.clear()
         self._reset_osc_live_state()
+        if not self._consume_preserve_transcript_run():
+            self._run_start_monotonic = time.monotonic()
+            self._begin_transcript_run()
+        else:
+            self._continue_transcript_run()
         if self.logger.enabled and self.logger.log_file is None:
             self.logger.init_log_file()
         self._local_stop_event = threading.Event()
@@ -497,6 +516,7 @@ class LocalInferenceSession(SonioxSession):
             # chain.  Keep its event and subtitle pipeline reachable until
             # the run thread finishes, even when a slow CPU final exceeds this
             # caller's bounded join.
+            self._end_transcript_run()
             logger.warning(
                 "Local inference session is still draining after 15 seconds; "
                 "final state will be cleared by the run thread"

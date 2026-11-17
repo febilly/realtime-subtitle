@@ -175,6 +175,92 @@ class RealtimeSessionBase:
         self._ipc_lock = threading.Lock()
         self._ipc_ongoing_text = ""
         self._ipc_pending_final = ""
+        self.transcript_recorder = None
+        self._run_start_monotonic = time.monotonic()
+        self._transcript_has_opened_stream = False
+        self._preserve_transcript_run_once = False
+
+    def set_transcript_recorder(self, recorder) -> None:
+        self.transcript_recorder = recorder
+
+    def mark_preserve_transcript_run_once(self) -> None:
+        self._preserve_transcript_run_once = True
+
+    def _consume_preserve_transcript_run(self) -> bool:
+        preserve = bool(self._preserve_transcript_run_once)
+        self._preserve_transcript_run_once = False
+        return preserve
+
+    def _begin_transcript_run(self) -> None:
+        recorder = getattr(self, "transcript_recorder", None)
+        if recorder is not None:
+            recorder.begin_run()
+
+    def _continue_transcript_run(self) -> None:
+        recorder = getattr(self, "transcript_recorder", None)
+        if recorder is not None:
+            recorder.continue_run()
+
+    def _end_transcript_run(self) -> None:
+        recorder = getattr(self, "transcript_recorder", None)
+        if recorder is not None:
+            recorder.end_run()
+
+    def _record_transcript_sentence(
+        self,
+        sentence_id: str | None,
+        start_ms: int,
+        end_ms: int,
+        original: str,
+        source_language: str = "",
+        translation: str = "",
+    ) -> None:
+        recorder = getattr(self, "transcript_recorder", None)
+        if recorder is None or not sentence_id:
+            return
+        recorder.record_sentence(
+            sentence_id,
+            start_ms,
+            end_ms,
+            original,
+            source_language=source_language,
+            translation=translation,
+        )
+
+    def _update_transcript_translation(self, sentence_id: str | None, translation: str) -> None:
+        recorder = getattr(self, "transcript_recorder", None)
+        if recorder is None or not sentence_id:
+            return
+        recorder.update_translation(sentence_id, translation)
+
+    def _retract_transcript_sentence(self, sentence_id: str | None) -> None:
+        recorder = getattr(self, "transcript_recorder", None)
+        if recorder is None or not sentence_id:
+            return
+        recorder.retract_sentence(sentence_id)
+
+    def _extract_wall_timing_ms(
+        self,
+        original_tokens: list[dict],
+        *,
+        finalized_at: float | None = None,
+    ) -> tuple[int, int]:
+        now = time.monotonic() if finalized_at is None else finalized_at
+        run_start = getattr(self, "_run_start_monotonic", now)
+        seen_times = [
+            float(t["_seen_at"])
+            for t in (original_tokens or [])
+            if isinstance(t, dict) and isinstance(t.get("_seen_at"), (int, float))
+        ]
+        if seen_times:
+            start_at = min(seen_times)
+            end_at = max(max(seen_times), now)
+        else:
+            start_at = now
+            end_at = now
+        start_ms = max(0, int(round((start_at - run_start) * 1000)))
+        end_ms = max(start_ms, int(round((end_at - run_start) * 1000)))
+        return start_ms, end_ms
 
     def _clear_segmentation_state(self) -> None:
         """Drop all in-flight sentence/line-break state (start and stop)."""
@@ -218,6 +304,12 @@ class RealtimeSessionBase:
         self.relay_run_id = uuid.uuid4().hex
         self._refine_context_history.clear()
         self._llm_context_cycle_count = int(LLM_REFINE_CONTEXT_MIN_COUNT)
+        if not self._consume_preserve_transcript_run():
+            self._run_start_monotonic = time.monotonic()
+            self._transcript_has_opened_stream = False
+            self._begin_transcript_run()
+        else:
+            self._continue_transcript_run()
         self._reset_run_state()
         self._reset_osc_live_state()
 
@@ -333,6 +425,7 @@ class RealtimeSessionBase:
             with self._ipc_lock:
                 self._ipc_ongoing_text = ""
                 self._ipc_pending_final = ""
+        self._end_transcript_run()
 
     def pause(self):
         """暂停识别"""

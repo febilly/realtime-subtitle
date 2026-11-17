@@ -476,6 +476,21 @@ class GeminiSession(RealtimeSessionBase):
 
         fallback_to_source = not translation and self._can_use_source_as_translation(original_tokens)
         display_translation = translation if translation else (source if fallback_to_source else "")
+
+        mode = self.get_llm_refine_mode()
+        start_ms, end_ms = self._extract_wall_timing_ms(original_tokens)
+        source_lang = self._infer_source_language(original_tokens) or ""
+        llm_active = is_llm_refine_available() and mode != "off" and bool(translation)
+        initial_translation = "" if (llm_active and mode == "translate") else translation
+        self._record_transcript_sentence(
+            sentence_id,
+            start_ms,
+            end_ms,
+            source,
+            source_language=source_lang,
+            translation=initial_translation,
+        )
+
         if not display_translation:
             return
 
@@ -485,8 +500,6 @@ class GeminiSession(RealtimeSessionBase):
             self._osc_translation_language_for_comparison(original_tokens)
             or normalize_language_code(self.get_translation_target_lang())
         )
-
-        mode = self.get_llm_refine_mode()
 
         # 混合: push the fast built-in draft to the chatbox immediately (before the
         # LLM), so viewers never wait on refine latency; a high/critical refine
@@ -501,7 +514,7 @@ class GeminiSession(RealtimeSessionBase):
         refined_translation = display_translation
         no_change = True
 
-        if is_llm_refine_available() and mode != "off" and translation:
+        if llm_active:
             try:
                 if mode == "refine":
                     refine_kwargs = self._target_lang_kwargs(self._perform_refine, utterance_target_lang)
@@ -539,6 +552,10 @@ class GeminiSession(RealtimeSessionBase):
             "refined_translation": refined_translation if not no_change else None,
             "no_change": no_change,
         })
+
+        if not no_change:
+            effective_trans = "" if fallback_to_source else refined_translation
+            self._update_transcript_translation(sentence_id, effective_trans)
 
         osc_pub.publish_final(
             self._select_osc_text(refined_translation, source, original_tokens),
@@ -661,6 +678,7 @@ class GeminiSession(RealtimeSessionBase):
                 "translation_status": translation_status,
                 "language": language,
                 "source_language": source_language,
+                "_seen_at": time.monotonic(),
             }
 
         input_transcription = (

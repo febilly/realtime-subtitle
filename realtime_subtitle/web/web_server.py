@@ -37,6 +37,7 @@ from realtime_subtitle.llm.llm_client import close_llm_http_session
 import realtime_subtitle.core.local_store as local_store
 import realtime_subtitle.core.timed_notifications as timed_notifications
 import realtime_subtitle.core.desktop_shortcut as desktop_shortcut
+from realtime_subtitle.core.transcript_recorder import TranscriptRecorder
 from realtime_subtitle.outputs.osc_manager import osc_manager
 
 logger = logging.getLogger("web_server")
@@ -73,6 +74,9 @@ class WebServer:
         self.api_key_error_message = None # 新增属性
         self.window_on_top_callback = None
         self.shutdown_callback = None
+        self.transcript_save_dialog_callback = None
+        self.transcript_folder_dialog_callback = None
+        self.transcript_open_folder_callback = None
         # 原生（PySide6）字幕悬浮窗进程管理器；由 server.py 注入。
         self.overlay_manager = None
         self.overlay_ws = None
@@ -112,6 +116,13 @@ class WebServer:
         self._client_version_reported = False
         self.use_bundled_cjk_fonts = False
         self.feature_packs = self._load_initial_feature_packs(stored_settings)
+        self.transcript_recorder = TranscriptRecorder(
+            stored_settings=stored_settings,
+            on_status_changed=self._on_transcript_status_changed,
+        )
+        self.transcript_recorder.set_pack_enabled(self.is_pack_enabled("transcript"))
+        if session is not None and hasattr(session, "set_transcript_recorder"):
+            session.set_transcript_recorder(self.transcript_recorder)
         self.learning_languages, self._learning_languages_initialized = (
             self._load_initial_learning_languages(stored_settings)
         )
@@ -136,6 +147,34 @@ class WebServer:
 
     def set_shutdown_callback(self, callback):
         self.shutdown_callback = callback
+
+    def set_transcript_dialog_callbacks(
+        self,
+        *,
+        save_callback=None,
+        folder_callback=None,
+        open_folder_callback=None,
+    ):
+        self.transcript_save_dialog_callback = save_callback
+        self.transcript_folder_dialog_callback = folder_callback
+        if open_folder_callback is not None:
+            self.transcript_open_folder_callback = open_folder_callback
+
+    def transcript_dialogs_available(self) -> bool:
+        return callable(getattr(self, "transcript_save_dialog_callback", None))
+
+    def _on_transcript_status_changed(self, status: dict) -> None:
+        """Thread-safe bridge from synchronous TranscriptRecorder updates to WebSocket broadcast."""
+        loop = self._event_loop
+        if loop is None or loop.is_closed():
+            return
+        frame = {"type": "transcript_status", **status}
+        try:
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(self.broadcast_to_clients(frame))
+            )
+        except RuntimeError:
+            pass
         
     async def _start_ipc_status_polling(self, app):
         self._ipc_polling_task = asyncio.create_task(self._poll_ipc_status())
@@ -303,6 +342,8 @@ class WebServer:
             print("VR overlay client connected via WebSocket.")
 
         # 添加到客户端列表
+        if self._event_loop is None:
+            self._event_loop = asyncio.get_running_loop()
         self.websocket_clients.add(ws)
         print(f"Client connected. Total clients: {len(self.websocket_clients)}")
 
@@ -340,6 +381,10 @@ class WebServer:
                 "type": "learning_languages",
                 "languages": self.get_learning_languages_state(),
                 "initialized": bool(getattr(self, "_learning_languages_initialized", False)),
+            }))
+            await ws.send_str(json.dumps({
+                "type": "transcript_status",
+                **self.transcript_recorder.get_status(),
             }))
             await ws.send_str(json.dumps({
                 "type": "ticket_notifications_ready",
@@ -533,6 +578,19 @@ class WebServer:
             "client_update_notes": "",
             "client_update_notes_i18n": None,
             "custom_font_available": self.check_custom_font_exists(),
+            "transcript_desktop_available": bool(
+                self._is_loopback_request(request) and self.transcript_dialogs_available()
+            ),
+            "transcript_status": (
+                self.transcript_recorder.get_status()
+                if getattr(self, "transcript_recorder", None) is not None
+                else {"has_entries": False, "entry_count": 0, "pack_enabled": False}
+            ),
+            "transcript_settings": (
+                self.transcript_recorder.get_settings()
+                if getattr(self, "transcript_recorder", None) is not None
+                else {"auto_save": False, "format": "srt", "directory": ""}
+            ),
         }
 
         if getattr(self, "offline_mode", False):
@@ -1994,6 +2052,8 @@ class WebServer:
             # 先停止当前的Soniox会话。stop() 内部 join 会话线程（最长 3s）和音频线程
             # （最长 1.5s），同步执行会冻结整个 aiohttp 事件循环（所有 HTTP/WS 请求
             # 停滞），因此放到线程池里等待。
+            if is_auto and hasattr(self.session, "mark_preserve_transcript_run_once"):
+                self.session.mark_preserve_transcript_run_once()
             await asyncio.to_thread(self.session.stop)
 
             # 关闭当前日志文件（同步文件 IO，同样移出事件循环）
@@ -2610,6 +2670,7 @@ class WebServer:
                 self.feature_packs[pack_id] = raw_packs[pack_id]
 
         packs_state = self.get_feature_packs_state()
+        self.transcript_recorder.set_pack_enabled(packs_state.get("transcript", False))
         await self.broadcast_to_clients({
             "type": "feature_packs",
             "packs": packs_state,
@@ -2692,6 +2753,207 @@ class WebServer:
             "languages": langs_state,
             "initialized": True,
         })
+
+    async def transcript_status_get_handler(self, request):
+        """Return current transcript buffer status (count, has_entries, pack_enabled, run_active)."""
+        return web.json_response({
+            "status": "ok",
+            **self.transcript_recorder.get_status(),
+        })
+
+    async def transcript_settings_get_handler(self, request):
+        """Return transcript auto-save settings and desktop dialog availability."""
+        return web.json_response({
+            "status": "ok",
+            "settings": self.transcript_recorder.get_settings(),
+            "desktop_available": bool(
+                self._is_loopback_request(request) and self.transcript_dialogs_available()
+            ),
+        })
+
+    async def transcript_settings_post_handler(self, request):
+        """Update transcript auto-save settings (auto_save, format, directory)."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        auto_save = None
+        if "auto_save" in payload or "autoSave" in payload:
+            raw_auto = payload.get("auto_save", payload.get("autoSave"))
+            if not isinstance(raw_auto, bool):
+                return web.json_response({"status": "error", "message": "'auto_save' must be a boolean"}, status=400)
+            auto_save = raw_auto
+
+        fmt = None
+        if "format" in payload and payload.get("format") is not None:
+            fmt = str(payload.get("format"))
+
+        directory = None
+        if "directory" in payload and payload.get("directory") is not None:
+            directory = str(payload.get("directory"))
+
+        try:
+            updated = await asyncio.to_thread(
+                self.transcript_recorder.update_settings,
+                auto_save=auto_save,
+                format=fmt,
+                directory=directory,
+            )
+            return web.json_response({"status": "ok", "settings": updated})
+        except ValueError as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=400)
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    async def transcript_export_handler(self, request):
+        """Open native Save As dialog and export the current run's transcript."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not self.transcript_dialogs_available():
+            return web.json_response(
+                {"status": "error", "message": "Desktop save dialog unavailable"},
+                status=403,
+            )
+
+        if not self.transcript_recorder.has_entries():
+            return web.json_response(
+                {"status": "error", "message": "No transcript entries to export"},
+                status=400,
+            )
+
+        requested_fmt = None
+        try:
+            payload = await request.json()
+            if isinstance(payload, dict) and payload.get("format"):
+                raw_fmt = str(payload.get("format")).strip().lower()
+                if raw_fmt in ("srt", "txt"):
+                    requested_fmt = raw_fmt
+        except Exception:
+            pass
+
+        settings = self.transcript_recorder.get_settings()
+        suggested_name = self.transcript_recorder.suggest_export_filename(requested_fmt)
+        loop = asyncio.get_running_loop()
+        try:
+            chosen = await loop.run_in_executor(
+                None,
+                self.transcript_save_dialog_callback,
+                settings["directory"],
+                suggested_name,
+            )
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+        if isinstance(chosen, (list, tuple)):
+            chosen = chosen[0] if chosen else None
+        chosen_path = str(chosen or "").strip()
+        if not chosen_path:
+            return web.json_response({"status": "cancelled"})
+
+        try:
+            result = await asyncio.to_thread(
+                self.transcript_recorder.export_to_file,
+                chosen_path,
+                requested_fmt,
+            )
+            return web.json_response({"status": "ok", **result})
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    async def transcript_folder_handler(self, request):
+        """Open native Folder dialog and update transcript save directory."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        if not callable(self.transcript_folder_dialog_callback):
+            return web.json_response(
+                {"status": "error", "message": "Desktop folder dialog unavailable"},
+                status=403,
+            )
+
+        settings = self.transcript_recorder.get_settings()
+        loop = asyncio.get_running_loop()
+        try:
+            chosen = await loop.run_in_executor(
+                None,
+                self.transcript_folder_dialog_callback,
+                settings["directory"],
+            )
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+        if isinstance(chosen, (list, tuple)):
+            chosen = chosen[0] if chosen else None
+        chosen_dir = str(chosen or "").strip()
+        if not chosen_dir:
+            return web.json_response({
+                "status": "ok",
+                "cancelled": True,
+                "settings": settings,
+            })
+
+        try:
+            updated = await asyncio.to_thread(
+                self.transcript_recorder.update_settings,
+                directory=chosen_dir,
+            )
+            return web.json_response({
+                "status": "ok",
+                "cancelled": False,
+                "directory": updated["directory"],
+                "settings": updated,
+            })
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
+
+    @staticmethod
+    def _open_directory_in_os(target_dir: str) -> None:
+        import subprocess
+        import sys
+
+        os.makedirs(target_dir, exist_ok=True)
+        if os.name == "nt":
+            os.startfile(target_dir)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", target_dir])
+        else:
+            subprocess.Popen(["xdg-open", target_dir])
+
+    async def transcript_open_folder_handler(self, request):
+        """Open the configured transcript directory in the OS file explorer."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        target_dir = self.transcript_recorder.get_settings()["directory"]
+        try:
+            if callable(self.transcript_open_folder_callback):
+                await asyncio.to_thread(os.makedirs, target_dir, exist_ok=True)
+                await asyncio.to_thread(self.transcript_open_folder_callback, target_dir)
+            else:
+                await asyncio.to_thread(self._open_directory_in_os, target_dir)
+            return web.json_response({"status": "ok", "directory": target_dir})
+        except Exception as error:
+            return web.json_response({"status": "error", "message": str(error)}, status=500)
 
     def set_furigana_evaluator(self, evaluator):
         """注入一个 (text, lang)->dict 的回调，用主窗口已加载的注音模块处理。
@@ -3084,6 +3346,12 @@ class WebServer:
         app.router.add_post('/feature-packs', self.feature_packs_post_handler)
         app.router.add_get('/learning-languages', self.learning_languages_get_handler)
         app.router.add_post('/learning-languages', self.learning_languages_post_handler)
+        app.router.add_get('/transcript/status', self.transcript_status_get_handler)
+        app.router.add_get('/transcript/settings', self.transcript_settings_get_handler)
+        app.router.add_post('/transcript/settings', self.transcript_settings_post_handler)
+        app.router.add_post('/transcript/export', self.transcript_export_handler)
+        app.router.add_post('/transcript/folder', self.transcript_folder_handler)
+        app.router.add_post('/transcript/open-folder', self.transcript_open_folder_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
         app.router.add_get('/desktop-shortcut', self.desktop_shortcut_get_handler)
         app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)

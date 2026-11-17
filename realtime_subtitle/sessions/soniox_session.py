@@ -105,6 +105,8 @@ class SonioxSession(RealtimeSessionBase):
         # at runtime from the UI without restarting the process).
         self.target_lang_1: str = normalize_language_code(config.TARGET_LANG_1) or "en"
         self.target_lang_2: str = normalize_language_code(config.TARGET_LANG_2) or ("ja" if self.target_lang_1 == "en" else "en")
+        # Map id(all_final_tokens) -> stream rollover start offset (ms) relative to run start.
+        self._stream_offsets: dict[int, int] = {}
 
     # --- RealtimeSessionBase hooks ---
 
@@ -118,6 +120,35 @@ class SonioxSession(RealtimeSessionBase):
         self._spec_inflight.clear()
         self._spec_cache.clear()
         self._interrupt_history.clear()
+        self._stream_offsets.clear()
+
+    def _close_stream_state(self, stream, reason: str = "stream_close") -> None:
+        if stream is not None:
+            self._stream_offsets.pop(id(stream.all_final_tokens), None)
+        super()._close_stream_state(stream, reason)
+
+    def _extract_token_timing_ms(
+        self,
+        original_tokens: list[dict],
+        *,
+        finalized_at: float | None = None,
+    ) -> tuple[int, int]:
+        starts: list[int] = []
+        ends: list[int] = []
+        for token in original_tokens or []:
+            if not isinstance(token, dict):
+                continue
+            s = token.get("_abs_start_ms")
+            e = token.get("_abs_end_ms")
+            if isinstance(s, (int, float)):
+                starts.append(int(s))
+            if isinstance(e, (int, float)):
+                ends.append(int(e))
+        if starts or ends:
+            start_ms = max(0, min(starts) if starts else min(ends))
+            end_ms = max(start_ms, max(ends) if ends else max(starts))
+            return start_ms, end_ms
+        return self._extract_wall_timing_ms(original_tokens, finalized_at=finalized_at)
 
     def _close_ws(self, ws, reason: str) -> None:
         ws.close(1000, reason)
@@ -638,6 +669,7 @@ class SonioxSession(RealtimeSessionBase):
             )
         )
         self._pending_endpoint_speakers.discard(str(current_speaker))
+        self._retract_transcript_sentence(previous.sentence_id)
         if self.loop:
             asyncio.run_coroutine_threadsafe(
                 self.broadcast_callback({
@@ -718,6 +750,7 @@ class SonioxSession(RealtimeSessionBase):
         translation_tokens: list,
         sentence_id: str | None = None,
         announce: bool = True,
+        timing_ms: tuple[int, int] | None = None,
     ):
         """异步执行 LLM 改进与 OSC 发送"""
         source = self._join_token_texts(original_tokens)
@@ -750,6 +783,20 @@ class SonioxSession(RealtimeSessionBase):
         if not self._translation_enabled():
             llm_can_run = False
         will_llm_translate = llm_can_run and mode == "translate"
+
+        start_ms, end_ms = (
+            timing_ms if timing_ms is not None else self._extract_token_timing_ms(original_tokens)
+        )
+        source_lang = self._infer_source_language(original_tokens) or ""
+        initial_translation = "" if will_llm_translate else translation
+        self._record_transcript_sentence(
+            sentence_id,
+            start_ms,
+            end_ms,
+            source,
+            source_language=source_lang,
+            translation=initial_translation,
+        )
 
         # In accurate mode there is no built-in translation to show, so only bail
         # when nothing at all will be produced.
@@ -860,6 +907,10 @@ class SonioxSession(RealtimeSessionBase):
             # frontend which language the synthesized translation line is in.
             "target_lang": utterance_target_lang,
         })
+
+        if not no_change:
+            effective_trans = "" if fallback_to_source else refined_translation
+            self._update_transcript_translation(sentence_id, effective_trans)
 
         llm_log.log_event(
             "refine_broadcast",
@@ -1026,6 +1077,12 @@ class SonioxSession(RealtimeSessionBase):
             ready_at=time.monotonic(),
             all_final_tokens=[],
         )
+        if not getattr(self, "_transcript_has_opened_stream", False):
+            self._transcript_has_opened_stream = True
+            offset_ms = 0
+        else:
+            offset_ms = max(0, int(round((state.started_at - self._run_start_monotonic) * 1000)))
+        self._stream_offsets[id(state.all_final_tokens)] = offset_ms
         print(f"Session started ({label}{purpose}).")
         return state
 
@@ -1389,10 +1446,20 @@ class SonioxSession(RealtimeSessionBase):
 
         # Parse tokens from current response.
         non_final_tokens: list[dict] = []
+        stream_offset_ms = self._stream_offsets.get(id(all_final_tokens), 0)
+        seen_at = time.monotonic()
 
         for token in res.get("tokens", []):
             text = token.get("text")
             if text:
+                if isinstance(token, dict):
+                    token["_seen_at"] = seen_at
+                    raw_start = token.get("start_ms")
+                    raw_end = token.get("end_ms")
+                    if isinstance(raw_start, (int, float)):
+                        token["_abs_start_ms"] = stream_offset_ms + int(round(float(raw_start)))
+                    if isinstance(raw_end, (int, float)):
+                        token["_abs_end_ms"] = stream_offset_ms + int(round(float(raw_end)))
                 if token.get("is_final"):
                     # Final tokens累积添加. A final token can carry a sentence
                     # boundary INSIDE its text ("...in Japanese. It's") — the
