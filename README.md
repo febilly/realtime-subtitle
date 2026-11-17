@@ -38,7 +38,7 @@ Subtitles can be shown in the main window, a desktop overlay, or a SteamVR overl
 
 **Audio input**
 
-- Capture an output device, a single application window (Windows build 20348+ / Windows 11), a microphone, or desktop audio and microphone mixed together.
+- Capture an output device, a single application window (Windows 11 or Linux PipeWire/PulseAudio), a microphone, or desktop audio and microphone mixed together.
 - Optional Twitch livestream input (via streamlink and ffmpeg).
 - Sleep on silence: the cloud stream closes during long silences and reopens when speech returns, so you don't pay for dead air.
 
@@ -76,7 +76,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Add `--debug` to enable WebView devtools and network logging. `python server.py --help` lists all command-line options. On Linux, see [LINUX_SETUP.md](docs/LINUX_SETUP.md) for the extra GUI dependencies.
+Add `--debug` to enable WebView devtools and network logging. `python server.py --help` lists all command-line options. Linux is supported from source (requires PipeWire/PulseAudio, `libopus`, and X11/XWayland for always-on-top and overlay pass-through; see [LINUX_SETUP.md](docs/LINUX_SETUP.md) for GUI dependencies).
 
 ### First launch
 
@@ -105,7 +105,7 @@ If `TRANSLATION_PROVIDER` is not set, the app uses whichever provider already ha
 
 ### Audio sources
 
-Desktop audio and microphone capture can be enabled independently or mixed. Desktop audio can come from an output device or from one application window. Window capture uses Windows application loopback and captures that application's whole process tree; individual browser tabs can't be isolated. If the window closes, desktop capture goes silent instead of falling back to other apps.
+Desktop audio and microphone capture can be enabled independently or mixed. Desktop audio can come from an output device or from one application window. Window capture uses Windows application loopback (whole process tree) or Linux PipeWire/PulseAudio stream monitoring (for apps actively playing audio); individual browser tabs can't be isolated. If the window closes, desktop capture goes silent instead of falling back to other apps.
 
 The audio and translation panels each have a **Remember my settings** switch. A remembered window is restored only when its executable and title match exactly one open window.
 

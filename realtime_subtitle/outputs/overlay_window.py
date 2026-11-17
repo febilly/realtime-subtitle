@@ -28,9 +28,10 @@ from html import escape as _html_escape
 
 import realtime_subtitle.text.sentence_segmentation as sentence_segmentation
 
-# Win32 窗口样式相关调用集中在这个模块里，不要挪回本文件——火绒会对
-# overlay_window 的字节码误报 Trojan/Python.ShellLoader.am。详见该模块的注释。
+# Win32 / Linux X11 窗口样式相关调用集中在这两个模块里，不要挪回本文件——火绒会对
+# overlay_window 的字节码误报 Trojan/Python.ShellLoader.am。详见 win_overlay_native 的注释。
 import realtime_subtitle.outputs.win_overlay_native as win_overlay_native
+import realtime_subtitle.outputs.linux_overlay_native as linux_overlay_native
 
 from PySide6.QtCore import Qt, QObject, Signal, QTimer, QPoint, QPointF, QRect, QRectF, QSettings, QSize, QEvent, QLocale
 from PySide6.QtGui import (
@@ -83,7 +84,7 @@ RUBY_RT_SCALE = 0.7            # 注音/正文字号比（对齐 350px 宽主窗
 FONT_SC_FAMILY = "Noto Sans CJK SC"
 FONT_JP_FAMILY = "Noto Sans CJK JP"
 FONT_KR_FAMILY = "Noto Sans CJK KR"
-SYSTEM_FONT_STACK = "'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Yu Gothic', 'Meiryo', 'Malgun Gothic', sans-serif"
+SYSTEM_FONT_STACK = "'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans CJK JP', 'Noto Sans CJK KR', 'WenQuanYi Micro Hei', 'Yu Gothic', 'Meiryo', 'Malgun Gothic', sans-serif"
 BUNDLED_CJK_FONT_STACK = f"'{FONT_SC_FAMILY}', '{FONT_JP_FAMILY}', '{FONT_KR_FAMILY}', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI', sans-serif"
 BUNDLED_SC_FONT_STACK = f"'{FONT_SC_FAMILY}', '{FONT_JP_FAMILY}', '{FONT_KR_FAMILY}', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Segoe UI', sans-serif"
 BUNDLED_JP_FONT_STACK = f"'{FONT_JP_FAMILY}', '{FONT_SC_FAMILY}', '{FONT_KR_FAMILY}', 'Yu Gothic', 'Meiryo', 'Segoe UI', sans-serif"
@@ -1660,12 +1661,17 @@ class OverlayWindow(QWidget):
     # --------------------------------------------------------------- UI ----
     def _init_ui(self):
         self.setWindowTitle("Realtime Subtitle Overlay")
-        self.setWindowFlags(
+        flags = (
             Qt.Window
             | Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
             | Qt.WindowDoesNotAcceptFocus
         )
+        if self._is_linux_xcb():
+            # Keep the subtitle overlay in KWin's override-redirect/popup layer
+            # so it remains visible above active fullscreen video/game windows.
+            flags |= Qt.X11BypassWindowManagerHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setMouseTracking(True)
@@ -1852,6 +1858,12 @@ class OverlayWindow(QWidget):
         bh = self.button_bar.height()
         pad = 8
         self.button_bar.move(self.width() - bw - pad, self.height() - bh - pad)
+        if self._passthrough and self._is_linux_xcb() and self._click_through_on:
+            linux_overlay_native.set_click_through(
+                int(self.winId()),
+                True,
+                interactive_rects=self._linux_passthrough_interactive_rects(),
+            )
 
     # --------------------------------------------------------------- paint --
     def paintEvent(self, event):
@@ -1940,17 +1952,21 @@ class OverlayWindow(QWidget):
         if inside != self._mouse_inside:
             self._mouse_inside = inside
             self.update()
-        # 按钮条：鼠标在窗口内才显示（穿透模式下也照常显示）。
-        if inside != self.button_bar.isVisible():
-            self.button_bar.setVisible(inside)
-            if inside:
+        # 按钮条：鼠标在窗口内才显示；Linux XWayland 穿透模式下保留穿透开关按钮可见以便随时点回。
+        show_bar = inside or (self._passthrough and self._is_linux_xcb())
+        if show_bar != self.button_bar.isVisible():
+            self.button_bar.setVisible(show_bar)
+            if show_bar:
                 self._reposition_buttons()
                 self.button_bar.raise_()
-        # 穿透模式：仅当鼠标停留在“鼠标穿透”按钮上时才关闭穿透（使其可点）；其他看不见的位置均可穿透
+        # 穿透模式：Windows 靠全局光标坐标临时关闭穿透；Linux XCB 仅保留穿透按钮区域可点击
         if self._passthrough:
-            over_buttons = (self.button_bar.isVisible()
-                            and self._button_global_rect(self.btn_passthrough).contains(pos))
-            self._set_click_through_state(not over_buttons)
+            if self._is_linux_xcb():
+                self._set_click_through_state(True)
+            else:
+                over_buttons = (self.button_bar.isVisible()
+                                and self._button_global_rect(self.btn_passthrough).contains(pos))
+                self._set_click_through_state(not over_buttons)
 
     # ----------------------------------------------------------- 按钮动作 --
     def _inc_font(self):
@@ -2063,12 +2079,30 @@ class OverlayWindow(QWidget):
         tl = btn.mapToGlobal(QPoint(0, 0))
         return QRect(tl, btn.size())
 
+    @staticmethod
+    def _is_linux_xcb() -> bool:
+        return linux_overlay_native.IS_LINUX and QApplication.platformName() == "xcb"
+
+    def _linux_passthrough_interactive_rects(self) -> list[tuple[int, int, int, int]]:
+        """Return device-pixel rects for btn_passthrough so it stays clickable on XCB/XWayland."""
+        tl = self.btn_passthrough.mapTo(self, QPoint(0, 0))
+        dpr = max(1.0, float(self.devicePixelRatioF()))
+        x = int(math.floor(tl.x() * dpr))
+        y = int(math.floor(tl.y() * dpr))
+        w = max(1, int(math.ceil(self.btn_passthrough.width() * dpr)))
+        h = max(1, int(math.ceil(self.btn_passthrough.height() * dpr)))
+        return [(x, y, w, h)]
+
     def _set_click_through_state(self, enabled: bool):
         """按需切换鼠标穿透，仅在状态变化时调用系统 API。"""
         if enabled == self._click_through_on:
             return
         self._click_through_on = enabled
-        win_overlay_native.set_click_through(int(self.winId()), enabled)
+        if win_overlay_native.IS_WINDOWS:
+            win_overlay_native.set_click_through(int(self.winId()), enabled)
+        elif self._is_linux_xcb():
+            rects = self._linux_passthrough_interactive_rects() if enabled else None
+            linux_overlay_native.set_click_through(int(self.winId()), enabled, interactive_rects=rects)
 
     def _toggle_passthrough(self):
         self._passthrough = not self._passthrough
@@ -2577,6 +2611,20 @@ class OverlayWindow(QWidget):
         threading.Thread(target=self._notify_closed_to_server, daemon=True).start()
 
 
+def _configure_qt_platform():
+    """Prefer XCB on Linux when DISPLAY is available.
+
+    Native Qt Wayland ignores setGeometry()/move() and lacks global pointer
+    tracking for the frameless overlay, while XWayland (xcb) supports them.
+    """
+    if (
+        sys.platform.startswith("linux")
+        and "QT_QPA_PLATFORM" not in os.environ
+        and os.environ.get("DISPLAY")
+    ):
+        os.environ["QT_QPA_PLATFORM"] = "xcb"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Realtime subtitle native overlay")
     parser.add_argument("--url", required=True, help="服务器地址，如 http://127.0.0.1:8000")
@@ -2585,6 +2633,7 @@ def main(argv=None):
                         help="PID of the main app; the overlay quits when it exits")
     args, _ = parser.parse_known_args(argv if argv is not None else sys.argv[1:])
 
+    _configure_qt_platform()
     app = QApplication.instance() or QApplication(sys.argv)
     install_parent_watchdog(app, args.parent_pid)
     load_bundled_fonts()

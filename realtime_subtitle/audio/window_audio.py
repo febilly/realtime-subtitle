@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import ctypes as C
 from ctypes import wintypes as W
+import json
 import os
+import select
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -22,7 +26,11 @@ _activations = {}
 
 
 def supported() -> bool:
-    return sys.platform == "win32" and sys.getwindowsversion().build >= 20348
+    if sys.platform == "win32":
+        return sys.getwindowsversion().build >= 20348
+    if sys.platform.startswith("linux"):
+        return bool(shutil.which("pactl") and shutil.which("parec"))
+    return False
 
 
 def _libraries():
@@ -58,9 +66,99 @@ def _process_identity(kernel, pid):
         kernel.CloseHandle(handle)
 
 
+def _linux_process_identity(pid: int, fallback_binary: str, fallback_id: str) -> tuple[str, str]:
+    executable = fallback_binary or "unknown"
+    created = fallback_id
+    if pid <= 0:
+        return executable, created
+    try:
+        executable = os.readlink(f"/proc/{pid}/exe") or executable
+    except OSError:
+        pass
+    try:
+        with open(f"/proc/{pid}/stat", "r", encoding="utf-8", errors="replace") as handle:
+            stat_text = handle.read()
+        rparen = stat_text.rfind(")")
+        if rparen >= 0:
+            fields = stat_text[rparen + 2 :].split()
+            # Field 22 in /proc/<pid>/stat is index 19 after the comm field.
+            if len(fields) > 19:
+                created = fields[19]
+    except OSError:
+        pass
+    return executable, created
+
+
+def _list_linux_windows() -> list[dict]:
+    try:
+        completed = subprocess.run(
+            ["pactl", "--format=json", "list", "sink-inputs"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0 or not completed.stdout.strip():
+        return []
+    try:
+        inputs = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(inputs, list):
+        return []
+
+    own_pid = os.getpid()
+    result = []
+    for item in inputs:
+        if not isinstance(item, dict):
+            continue
+        index = item.get("index")
+        if index is None:
+            continue
+        props = item.get("properties") or {}
+        if not isinstance(props, dict):
+            continue
+        try:
+            pid = int(props.get("application.process.id") or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid == own_pid:
+            continue
+
+        binary = str(props.get("application.process.binary") or "").strip()
+        app_name = str(props.get("application.name") or "").strip()
+        media_name = str(props.get("media.name") or "").strip()
+        if os.path.basename(binary) in ("parec", "pacat"):
+            continue
+
+        executable, created = _linux_process_identity(pid, binary or app_name, str(index))
+        exe_label = os.path.basename(executable) if executable else ""
+        base_name = app_name or exe_label
+        if media_name and base_name and media_name.casefold() != base_name.casefold():
+            title = f"{base_name} - {media_name}"
+        else:
+            title = base_name or media_name
+        title = title.strip()
+        if not title:
+            continue
+
+        result.append({
+            "hwnd": str(index),
+            "pid": pid,
+            "title": title,
+            "executable": executable,
+            "created": created,
+        })
+    return sorted(result, key=lambda item: item["title"].casefold())
+
+
 def list_windows() -> list[dict]:
     if not supported():
         return []
+    if sys.platform.startswith("linux"):
+        return _list_linux_windows()
     user, kernel = _libraries()
     result = []
     callback_type = C.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
@@ -140,10 +238,16 @@ class ProcessRecorder:
         self.pending = bytearray()
         self.com_initialized = False
         self._activation = None
+        self._linux_proc = None
 
     def __enter__(self):
-        if not supported() or not resolve_window(self.selection):
+        match = resolve_window(self.selection) if supported() else None
+        if not match:
             raise RuntimeError("Selected audio window is unavailable")
+        if sys.platform.startswith("linux"):
+            self.selection = match
+            self._start_linux_stream(str(match["hwnd"]))
+            return self
         self.ole = C.WinDLL("ole32")
         self.ole.CoInitializeEx.argtypes = [C.c_void_p, W.DWORD]
         _check(self.ole.CoInitializeEx(None, 0))  # MTA
@@ -254,7 +358,87 @@ class ProcessRecorder:
                      C.byref(GUID("C8ADBD64-E71E-48A0-A4DE-185C395CD317")), C.byref(self.capture)))
         _check(_call(self.client, 10, C.c_long, []))  # Start
 
+    def _start_linux_stream(self, stream_index: str) -> None:
+        self._stop_linux_stream()
+        proc = subprocess.Popen(
+            [
+                "parec",
+                f"--monitor-stream={stream_index}",
+                f"--rate={int(self.sample_rate)}",
+                "--channels=1",
+                "--format=float32le",
+                "--raw",
+                "--latency-msec=20",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if proc.stdout is not None:
+            os.set_blocking(proc.stdout.fileno(), False)
+        self._linux_proc = proc
+
+    def _stop_linux_stream(self) -> None:
+        proc = self._linux_proc
+        self._linux_proc = None
+        if proc is None:
+            return
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=1.0)
+
+    def _record_linux(self, numframes: int) -> np.ndarray:
+        needed = int(numframes) * 4
+        deadline = time.monotonic() + numframes / self.sample_rate
+        while len(self.pending) < needed and not self.stop():
+            proc = self._linux_proc
+            if proc is None or proc.stdout is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.01, remaining))
+                continue
+
+            fd = proc.stdout.fileno()
+            remaining = max(0.0, deadline - time.monotonic())
+            ready, _, _ = select.select([fd], [], [], min(0.02, remaining))
+            if ready:
+                try:
+                    chunk = os.read(fd, max(4096, needed - len(self.pending)))
+                except BlockingIOError:
+                    chunk = None
+                except OSError:
+                    chunk = b""
+                if chunk:
+                    self.pending.extend(chunk)
+                    continue
+                if chunk == b"":
+                    self._stop_linux_stream()
+                    replacement = resolve_window(self.selection, restore=True)
+                    if replacement and int(replacement.get("pid") or 0) == int(self.selection.get("pid") or -1):
+                        self.selection = replacement
+                        self._start_linux_stream(str(replacement["hwnd"]))
+                        continue
+            if time.monotonic() >= deadline:
+                break
+
+        payload = self.pending[:needed]
+        del self.pending[:needed]
+        if len(payload) < needed:
+            payload.extend(bytes(needed - len(payload)))
+        return np.frombuffer(payload, dtype=np.float32).copy()
+
     def record(self, numframes):
+        if sys.platform.startswith("linux"):
+            return self._record_linux(numframes)
         needed = numframes * 2
         deadline = time.monotonic() + numframes / self.sample_rate
         while len(self.pending) < needed and not self.stop():
@@ -280,6 +464,9 @@ class ProcessRecorder:
         return np.frombuffer(payload, dtype=np.int16).astype(np.float32) / 32768.0
 
     def __exit__(self, *_):
+        if sys.platform.startswith("linux"):
+            self._stop_linux_stream()
+            return
         if self.client:
             _call(self.client, 11, C.c_long, [])  # Stop
         for pointer in (self.capture, self.client, self.operation):

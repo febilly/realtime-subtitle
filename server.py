@@ -751,6 +751,66 @@ def run_server(app, sock):
         sock.close()
 
 
+def _configure_linux_webview_backend() -> None:
+    """Prefer X11 (XWayland) for GTK pywebview on Linux when DISPLAY is set.
+
+    Wayland's xdg_shell ignores Gtk.Window.set_keep_above(), which silently breaks
+    always-on-top; XWayland honors _NET_WM_STATE_ABOVE.
+    """
+    if (
+        sys.platform.startswith("linux")
+        and "GDK_BACKEND" not in os.environ
+        and os.environ.get("DISPLAY")
+    ):
+        os.environ["GDK_BACKEND"] = "x11"
+
+
+def _linux_webview_window_size(base_width: int, base_height: int) -> tuple[int, int]:
+    """Scale logical DIP window size to match Windows HiDPI sizing under GTK/X11.
+
+    Unlike WinForms/pywebview on Windows, GTK under XWayland treats resize(w, h)
+    in raw X11 pixels while WebKit2GTK still applies Xft.dpi (devicePixelRatio).
+    """
+    if not sys.platform.startswith("linux"):
+        return base_width, base_height
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("Gdk", "3.0")
+        from gi.repository import Gdk, Gtk
+
+        ok, _ = Gtk.init_check([])
+        if not ok:
+            return base_width, base_height
+        screen = Gdk.Screen.get_default()
+        display = Gdk.Display.get_default()
+        if screen is None or display is None:
+            return base_width, base_height
+
+        dpi = float(screen.get_resolution() or 0.0)
+        if dpi <= 0.0:
+            return base_width, base_height
+
+        monitor = display.get_primary_monitor() or (
+            display.get_monitor(0) if display.get_n_monitors() > 0 else None
+        )
+        scale_factor = max(1, int(monitor.get_scale_factor())) if monitor is not None else 1
+        ratio = max(1.0, (dpi / 96.0) / scale_factor)
+        width = int(round(base_width * ratio))
+        height = int(round(base_height * ratio))
+
+        if monitor is not None:
+            geom = monitor.get_geometry()
+            if geom.width > 0:
+                width = min(width, max(base_width, int(geom.width * 0.9)))
+            if geom.height > 0:
+                height = min(height, max(base_height, int(geom.height * 0.9)))
+        return width, height
+    except Exception:
+        return base_width, base_height
+
+
 def main():
     # PyInstaller's executable cannot be launched with ``python -m``.  Local
     # GPU probing uses this private child-process entry so Vulkan enumeration
@@ -1074,6 +1134,7 @@ def main():
         web_server.overlay_manager.prewarm()
 
     if AUTO_OPEN_WEBVIEW:
+        _configure_linux_webview_backend()
         try:
             import webview
         except ImportError:
@@ -1088,7 +1149,8 @@ def main():
             finally:
                 logger.close_log_file()
                 os._exit(0)
-        window = webview.create_window(window_title, server_url, width=350, height=600, resizable=True, on_top=True, text_select=True, zoomable=True)
+        win_width, win_height = _linux_webview_window_size(350, 600)
+        window = webview.create_window(window_title, server_url, width=win_width, height=win_height, resizable=True, on_top=True, text_select=True, zoomable=True)
 
         # 让原生悬浮窗复用本窗口已加载的 kuromoji 分词（假名注音），不必在 exe 里
         # 另打包一份 Python 词典。悬浮窗 -> /furigana -> 这里 evaluate_js -> 网页版 tokenizer。
@@ -1162,7 +1224,16 @@ def main():
                     last_applied = requested
 
         try:
-            webview.start(process_window_commands, window, debug=debug, private_mode=False)
+            start_kwargs = {"debug": debug, "private_mode": False}
+            if sys.platform.startswith("linux") and not os.environ.get("PYWEBVIEW_GUI"):
+                import importlib.util
+
+                if (
+                    importlib.util.find_spec("qtpy") is None
+                    and importlib.util.find_spec("gi") is not None
+                ):
+                    start_kwargs["gui"] = "gtk"
+            webview.start(process_window_commands, window, **start_kwargs)
         except KeyboardInterrupt:
             print("\n👋 Server closed by user")
         finally:

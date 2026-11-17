@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 import zipfile
@@ -106,6 +108,9 @@ def _default_models_dir() -> Path:
     configured = os.environ.get("REALTIME_SUBTITLE_LOCAL_MODELS_DIR", "").strip()
     if configured:
         return Path(configured).expanduser()
+    if os.environ.get("APPIMAGE") and not sys.platform.startswith("win32"):
+        xdg_data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        return Path(xdg_data) / "RealtimeSubtitle" / "local_models"
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent / "local_models"
     return PROJECT_ROOT / "local_models"
@@ -188,19 +193,18 @@ def warn_if_weights_not_resident(label: str, weights_path):
         yield
     finally:
         after = _gpu_used_mb()
-        if before is None or after is None or size_mb <= 0:
-            return
-        delta = after - before
-        if delta < size_mb * 0.5:
-            logger.warning(
-                "%s weights may be in shared GPU memory (expected +%.0f MiB, observed +%d MiB); "
-                "free VRAM and reload the model to avoid PCIe-bound decoding",
-                label,
-                size_mb,
-                delta,
-            )
-        else:
-            logger.info("%s weights resident in VRAM (+%d MiB)", label, delta)
+        if before is not None and after is not None and size_mb > 0:
+            delta = after - before
+            if delta < size_mb * 0.5:
+                logger.warning(
+                    "%s weights may be in shared GPU memory (expected +%.0f MiB, observed +%d MiB); "
+                    "free VRAM and reload the model to avoid PCIe-bound decoding",
+                    label,
+                    size_mb,
+                    delta,
+                )
+            else:
+                logger.info("%s weights resident in VRAM (+%d MiB)", label, delta)
 
 
 def prepare_qwen_llama_runtime_env() -> None:
@@ -337,7 +341,7 @@ _DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 _PROGRESS_INTERVAL_SEC = 0.5
 # Check the file header after download: an error page or a truncated file must
 # fail here, not later when llama.cpp tries to load it.
-_FILE_MAGIC = {".gguf": b"GGUF", ".zip": b"PK"}
+_FILE_MAGIC = {".gguf": b"GGUF", ".zip": b"PK", ".gz": b"\x1f\x8b"}
 
 _download_lock = threading.Lock()
 _download_cancel = threading.Event()
@@ -567,11 +571,56 @@ def _download_file(url: str, dest: Path, stage: str, progress_callback=None) -> 
     _stream_download(url, dest, stage, progress_callback)
 
 
+def _linux_llama_archive_name(tag: str) -> str:
+    machine = platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return f"llama-{tag}-bin-ubuntu-vulkan-x64.tar.gz"
+    if machine in ("aarch64", "arm64"):
+        return f"llama-{tag}-bin-ubuntu-vulkan-arm64.tar.gz"
+    raise RuntimeError(f"Unsupported Linux architecture for automatic llama.cpp download: {machine}")
+
+
+def _download_linux_llama_runtime(destination: Path, progress_callback=None) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    archive_name = _linux_llama_archive_name(LLAMA_CPP_TAG)
+    archive_path = MODELS_DIR / archive_name
+    _download_file(
+        LLAMA_CPP_DLL_URL_TEMPLATE.format(tag=LLAMA_CPP_TAG) + archive_name,
+        archive_path,
+        "llama-runtime",
+        progress_callback,
+    )
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            for member in archive.getmembers():
+                name = os.path.basename(member.name)
+                if not name or ".so" not in name:
+                    continue
+                target = destination / name
+                if member.issym():
+                    link_target = os.path.basename(member.linkname)
+                    if not link_target or "/" in link_target or "\\" in link_target:
+                        continue
+                    target.unlink(missing_ok=True)
+                    os.symlink(link_target, target)
+                elif member.isreg():
+                    source = archive.extractfile(member)
+                    if source is None:
+                        continue
+                    with source, open(target, "wb") as out_handle:
+                        shutil.copyfileobj(source, out_handle)
+    finally:
+        archive_path.unlink(missing_ok=True)
+
+
 def _download_llama_runtime(destination: Path, progress_callback=None) -> None:
     if _runtime_ready(destination):
         return
+    if sys.platform.startswith("linux"):
+        _download_linux_llama_runtime(destination, progress_callback)
+        return
     if sys.platform != "win32":
-        raise RuntimeError("Automatic llama.cpp runtime download is currently supported on Windows only")
+        raise RuntimeError("Automatic llama.cpp runtime download is only supported on Windows and Linux")
     destination.mkdir(parents=True, exist_ok=True)
     tag = LLAMA_CPP_TAG
     archive_path = MODELS_DIR / LLAMA_RUNTIME_ZIP

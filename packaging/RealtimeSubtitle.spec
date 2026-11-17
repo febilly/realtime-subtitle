@@ -1,17 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
+import ctypes.util
 import os
 import re
+import subprocess
+import sys
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
-from PyInstaller.utils.win32.versioninfo import (
-    FixedFileInfo,
-    StringFileInfo,
-    StringStruct,
-    StringTable,
-    VarFileInfo,
-    VarStruct,
-    VSVersionInfo,
-)
+
+IS_WINDOWS = sys.platform == 'win32'
+IS_LINUX = sys.platform.startswith('linux')
+
+if IS_WINDOWS:
+    from PyInstaller.utils.win32.versioninfo import (
+        FixedFileInfo,
+        StringFileInfo,
+        StringStruct,
+        StringTable,
+        VarFileInfo,
+        VarStruct,
+        VSVersionInfo,
+    )
 
 # This spec lives in packaging/; every source path below is relative to the
 # repository root one level up.
@@ -51,23 +59,53 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('websockets')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
-# Opus 编码只依赖独立的 libopus（libopus/win64/opus.dll），由 realtime_subtitle/audio/opus_native.py
+# Opus 编码只依赖独立的 libopus（Windows 用内置 libopus/win64/opus.dll，
+# Linux 打包系统 libopus.so.0），由 realtime_subtitle/audio/opus_native.py
 # 在运行时按 frozen 路径加载；不再打包 PyAV 整套 FFmpeg DLL。
-binaries += [(_src('libopus/win64/opus.dll'), '.')]
+def _find_linux_opus():
+    candidates = [
+        '/lib/x86_64-linux-gnu/libopus.so.0',
+        '/usr/lib/x86_64-linux-gnu/libopus.so.0',
+        '/lib/aarch64-linux-gnu/libopus.so.0',
+        '/usr/lib/aarch64-linux-gnu/libopus.so.0',
+        '/usr/lib64/libopus.so.0',
+        '/usr/lib/libopus.so.0',
+    ]
+    found = ctypes.util.find_library('opus')
+    if found and os.path.isabs(found):
+        candidates.insert(0, found)
+    try:
+        out = subprocess.check_output(['ldconfig', '-p'], text=True, stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if 'libopus.so.0' in line and '=>' in line:
+                candidates.insert(0, line.split('=>', 1)[1].strip())
+    except Exception:
+        pass
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return os.path.realpath(path)
+    raise SystemExit('libopus.so.0 not found; install libopus0 (Ubuntu/Debian) or opus (Arch)')
+
+
+if IS_WINDOWS:
+    binaries += [(_src('libopus/win64/opus.dll'), '.')]
+elif IS_LINUX:
+    binaries += [(_find_linux_opus(), 'libopus.so.0')]
 
 # SteamVR 字幕悬浮窗：pyopenvr 用 importlib.resources 在 openvr 包目录里找
-# libopenvr_api_64.dll，所以要放进 openvr/ 子目录。只带 64 位 Windows 版，包里
-# 其余平台的库（32 位/.so/.dylib）以及 OpenGL 示例代码都用不到。
+# 对应平台的 libopenvr_api 动态库，所以要放进 openvr/ 子目录。只带当前平台 64 位库，
+# 其余平台的库以及 OpenGL 示例代码都用不到。
 # 构建环境缺 openvr 时直接报错：否则产物会悄悄丢掉 VR 字幕（主界面不显示 VR 按钮）。
 import importlib.util as _ilu
 _openvr_spec = _ilu.find_spec('openvr')
 if _openvr_spec is None:
     raise SystemExit('openvr is not installed; run "pip install -r requirements.txt" '
                      'so the build includes the SteamVR subtitle overlay')
-_openvr_dll = os.path.join(os.path.dirname(_openvr_spec.origin), 'libopenvr_api_64.dll')
-if not os.path.isfile(_openvr_dll):
-    raise SystemExit(f'OpenVR runtime not found: {_openvr_dll}')
-binaries += [(_openvr_dll, 'openvr')]
+_openvr_lib_name = 'libopenvr_api_64.dll' if IS_WINDOWS else 'libopenvr_api_64.so'
+_openvr_lib = os.path.join(os.path.dirname(_openvr_spec.origin), _openvr_lib_name)
+if not os.path.isfile(_openvr_lib):
+    raise SystemExit(f'OpenVR runtime not found: {_openvr_lib}')
+binaries += [(_openvr_lib, 'openvr')]
 excludes_openvr = ['openvr.glframework', 'openvr.gl_renderer',
                    'openvr.color_cube_actor', 'openvr.tracked_devices_actor']
 tmp_ret = collect_all('pythonosc')
@@ -85,16 +123,28 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 # 这里只声明实际用到的子模块，交给 PyInstaller 自带的 PySide6 hook 按需
 # 收集依赖（平台/样式/图像格式插件等），其余可选模块统一在 excludes 中排除。
 hiddenimports += ['PySide6.QtCore', 'PySide6.QtGui', 'PySide6.QtWidgets', 'PySide6.QtSvg', 'shiboken6']
+if IS_LINUX:
+    hiddenimports += [
+        'gi', 'gi.repository.Gtk', 'gi.repository.Gdk', 'gi.repository.WebKit2',
+        'gi.repository.GLib', 'gi.repository.Gio', 'gi.repository.GObject',
+    ]
 
 # 不需要的模块；排除后其对应的 Qt6*.dll / 插件不会被收集。
 # 重点：QtWebEngine* 必须排除，否则 webview.platforms.qt 会把整套
-# WebEngine（上百 MB）拖进来——主窗口在 Windows 上用的是 EdgeChromium，
-# 不走 Qt 后端。
+# WebEngine（上百 MB）拖进来——主窗口在 Windows 上用 EdgeChromium，在 Linux 上用 GTK。
+_webview_excludes = (
+    ['webview.platforms.qt', 'webview.platforms.gtk', 'webview.platforms.cocoa']
+    if IS_WINDOWS
+    else [
+        'webview.platforms.qt', 'webview.platforms.winforms', 'webview.platforms.edgechromium',
+        'webview.platforms.cef', 'webview.platforms.mshtml', 'webview.platforms.android',
+        'webview.platforms.cocoa',
+    ]
+)
 excludes = [
     # 其它 GUI 绑定 / 无关大库
     'PyQt5', 'PyQt6', 'PySide2', 'tkinter', 'matplotlib',
-    # pywebview 用不到的后端（Windows 走 edgechromium/winforms）
-    'webview.platforms.qt', 'webview.platforms.gtk', 'webview.platforms.cocoa',
+    *_webview_excludes,
     # PySide6 中体积庞大且未使用的可选模块
     'PySide6.QtWebEngineCore', 'PySide6.QtWebEngineWidgets', 'PySide6.QtWebEngineQuick',
     'PySide6.QtWebChannel', 'PySide6.QtWebSockets', 'PySide6.QtWebView',
@@ -154,6 +204,22 @@ _drop_basename = (
     # Qt 的软件 OpenGL 回退渲染器（~20MB）。字幕悬浮窗是纯 QWidget + QPainter
     # 光栅渲染，且已移除 QtQuick/QML，用不到它。
     'opengl32sw.dll',
+    'libqt6quick.so.6', 'libqt6qml.so.6', 'libqt6qmlmodels.so.6',
+    'libqt6qmlworkerscript.so.6', 'libqt6qmlmeta.so.6',
+    'libqt6virtualkeyboard.so.6', 'libqt6pdf.so.6',
+)
+_linux_host_lib_prefixes = (
+    'libc.so', 'libm.so', 'libdl.so', 'librt.so', 'libpthread.so',
+    'libstdc++.so', 'libgcc_s.so',
+    'libglib-2.0.so', 'libgobject-2.0.so', 'libgio-2.0.so',
+    'libgmodule-2.0.so', 'libgthread-2.0.so', 'libgirepository-',
+    'libgtk-3.so', 'libgdk-3.so', 'libgdk_pixbuf-2.0.so',
+    'libpango', 'libcairo', 'libharfbuzz', 'libfreetype', 'libfontconfig',
+    'libexpat.so', 'libgl.so', 'libglx.so', 'libgldispatch.so', 'libegl.so',
+    'libvulkan.so', 'libdrm.so', 'libgbm.so', 'libwayland-',
+    'libx11.so', 'libx11-xcb.so', 'libxext.so',
+    'libxcb.so', 'libxcb-glx.so', 'libxcb-dri', 'libxcb-shm.so',
+    'libpulse', 'libpipewire', 'libasound', 'libdbus-1.so', 'libsystemd.so', 'libudev.so',
 )
 
 
@@ -164,6 +230,14 @@ def _keep_qt(entry):
     base = dest.rsplit('/', 1)[-1]
     if base in _drop_basename:
         return False
+    if IS_LINUX:
+        # 让 AppImage 运行时使用宿主系统的基础/GTK/WebKit/Audio 库，避免跨发行版 ABI 冲突；
+        # PySide6 自带的 Qt/ICU 库保留。
+        if dest.startswith(('gi_typelibs/', 'share/gir-1.0/', 'girepository-1.0/')):
+            return False
+        if not dest.startswith('pyside6/') and base.startswith(_linux_host_lib_prefixes):
+            return False
+        return True
     # Qt on Windows uses the OS ICU API (System32\icu.dll). PATH may contain
     # Poppler/Conda's incompatible ICU 78 (icuuc.dll, icudt78.dll, ...);
     # bundling it shadows System32 and makes PySide6.QtCore fail to import,
@@ -191,50 +265,53 @@ def _client_version():
     return match.group(1)
 
 
-_version = _client_version()
-# FixedFileInfo 只接受 4 个整数；"4.7.1" -> (4, 7, 1, 0)，预发布后缀（如 "-rc1"）
-# 只保留数字部分，字符串表里仍然写完整版本号。
-_numeric = [int(part) for part in re.findall(r'\d+', _version)][:4]
-_numeric += [0] * (4 - len(_numeric))
-_version_tuple = tuple(_numeric)
+if IS_WINDOWS:
+    _version = _client_version()
+    # FixedFileInfo 只接受 4 个整数；"4.7.1" -> (4, 7, 1, 0)，预发布后缀（如 "-rc1"）
+    # 只保留数字部分，字符串表里仍然写完整版本号。
+    _numeric = [int(part) for part in re.findall(r'\d+', _version)][:4]
+    _numeric += [0] * (4 - len(_numeric))
+    _version_tuple = tuple(_numeric)
 
-version_info = VSVersionInfo(
-    ffi=FixedFileInfo(
-        filevers=_version_tuple,
-        prodvers=_version_tuple,
-        mask=0x3F,
-        flags=0x0,
-        OS=0x40004,      # VOS_NT_WINDOWS32
-        fileType=0x1,    # VFT_APP
-        subtype=0x0,
-        date=(0, 0),
-    ),
-    kids=[
-        StringFileInfo([
-            StringTable(
-                '040904B0',  # US English, Unicode
-                [
-                    StringStruct('CompanyName', 'febilly'),
-                    StringStruct('FileDescription', 'Realtime Subtitle'),
-                    StringStruct('FileVersion', _version),
-                    StringStruct('InternalName', 'RealtimeSubtitle'),
-                    StringStruct(
-                        'LegalCopyright',
-                        'Copyright (C) febilly. Licensed under AGPL-3.0.',
-                    ),
-                    StringStruct('OriginalFilename', 'RealtimeSubtitle.exe'),
-                    StringStruct('ProductName', 'Realtime Subtitle'),
-                    StringStruct('ProductVersion', _version),
-                    StringStruct(
-                        'Comments',
-                        'https://github.com/febilly/realtime-subtitle',
-                    ),
-                ],
-            )
-        ]),
-        VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
-    ],
-)
+    version_info = VSVersionInfo(
+        ffi=FixedFileInfo(
+            filevers=_version_tuple,
+            prodvers=_version_tuple,
+            mask=0x3F,
+            flags=0x0,
+            OS=0x40004,      # VOS_NT_WINDOWS32
+            fileType=0x1,    # VFT_APP
+            subtype=0x0,
+            date=(0, 0),
+        ),
+        kids=[
+            StringFileInfo([
+                StringTable(
+                    '040904B0',  # US English, Unicode
+                    [
+                        StringStruct('CompanyName', 'febilly'),
+                        StringStruct('FileDescription', 'Realtime Subtitle'),
+                        StringStruct('FileVersion', _version),
+                        StringStruct('InternalName', 'RealtimeSubtitle'),
+                        StringStruct(
+                            'LegalCopyright',
+                            'Copyright (C) febilly. Licensed under AGPL-3.0.',
+                        ),
+                        StringStruct('OriginalFilename', 'RealtimeSubtitle.exe'),
+                        StringStruct('ProductName', 'Realtime Subtitle'),
+                        StringStruct('ProductVersion', _version),
+                        StringStruct(
+                            'Comments',
+                            'https://github.com/febilly/realtime-subtitle',
+                        ),
+                    ],
+                )
+            ]),
+            VarFileInfo([VarStruct('Translation', [0x0409, 1200])]),
+        ],
+    )
+else:
+    version_info = None
 
 # 单文件 vs 目录版。默认单文件（CI 走这条），设 RTS_ONEDIR=1 则产出目录版，
 # 由调用方压成 zip 分发。
@@ -269,8 +346,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=_src('static/app.ico'),
-    version=version_info,
+    icon=_src('static/app.ico') if IS_WINDOWS else None,
+    version=version_info if IS_WINDOWS else None,
 )
 
 if ONEDIR:

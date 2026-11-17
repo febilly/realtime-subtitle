@@ -101,12 +101,27 @@ def test_default_signature_tracks_current_default_without_binding(monkeypatch):
 def test_system_loopback_uses_output_wasapi_id_not_overlapping_display_name(monkeypatch):
     fake = OverlappingLoopbackSoundcard()
     monkeypatch.setattr(audio_capture, "sc", fake)
+    monkeypatch.setattr(audio_capture.sys, "platform", "win32")
     streamer = audio_capture.AudioStreamer(SimpleNamespace(send=lambda payload: None))
 
     recorder = streamer._create_recorder("system")
 
     assert recorder is not None
     assert fake.microphone_lookups == [("wasapi-headphones", True)]
+
+
+def test_system_loopback_uses_pulseaudio_monitor_id_on_linux(monkeypatch):
+    fake = OverlappingLoopbackSoundcard()
+    monitor_rec = SimpleNamespace(id="wasapi-headphones.monitor", recorder=lambda **kwargs: FakeRecorder())
+    fake.loopbacks["wasapi-headphones.monitor"] = monitor_rec
+    monkeypatch.setattr(audio_capture, "sc", fake)
+    monkeypatch.setattr(audio_capture.sys, "platform", "linux")
+    streamer = audio_capture.AudioStreamer(SimpleNamespace(send=lambda payload: None))
+
+    recorder = streamer._create_recorder("system")
+
+    assert recorder is not None
+    assert fake.microphone_lookups == [("wasapi-headphones.monitor", True)]
 def test_mix_worker_zero_pads_when_system_queue_empty_and_mic_active():
     """FIX-5 / C-01: When system_queue is starved (e.g. WASAPI loopback silent) and microphone_queue
 
@@ -294,3 +309,30 @@ def test_mix_worker_recovers_real_system_data_after_padding():
         local_stop_event.set()
         worker.join(timeout=1.0)
         assert not worker.is_alive()
+
+
+def test_recorder_kwargs_uses_low_latency_blocksize_on_linux(monkeypatch):
+    monkeypatch.setattr(audio_capture.sys, "platform", "linux")
+    streamer = audio_capture.AudioStreamer(
+        SimpleNamespace(send=lambda payload: None),
+        sample_rate=16000,
+        chunk_size=1600,
+    )
+    assert streamer._recorder_kwargs() == {
+        "samplerate": 16000,
+        "channels": 1,
+        "blocksize": 320,
+    }
+
+
+def test_recorder_kwargs_leaves_blocksize_default_on_windows(monkeypatch):
+    monkeypatch.setattr(audio_capture.sys, "platform", "win32")
+    streamer = audio_capture.AudioStreamer(
+        SimpleNamespace(send=lambda payload: None),
+        sample_rate=16000,
+        chunk_size=1600,
+    )
+    assert streamer._recorder_kwargs() == {
+        "samplerate": 16000,
+        "channels": 1,
+    }

@@ -1,10 +1,11 @@
-"""Minimal ctypes binding to the bundled libopus (opus.dll).
+"""Minimal ctypes binding to libopus (bundled opus.dll on Windows, system/bundled libopus on POSIX).
 
 Only the encoder surface is wrapped; this exists so the audio transports do
 not need PyAV/FFmpeg (roughly 30 MB of DLLs) just to encode Opus.
 """
 
 import ctypes
+import ctypes.util
 import os
 import sys
 import threading
@@ -45,25 +46,59 @@ def _configure(lib):
     return lib
 
 
+def _lib_candidates():
+    """Return candidate library paths or sonames for the current platform."""
+    candidates = []
+    root_dir = str(PROJECT_ROOT)
+    meipass = getattr(sys, "_MEIPASS", "") if getattr(sys, "frozen", False) else ""
+    exe_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else ""
+
+    if sys.platform == "win32":
+        if meipass:
+            candidates.append(os.path.join(meipass, "opus.dll"))
+        if exe_dir:
+            candidates.append(os.path.join(exe_dir, "opus.dll"))
+        candidates.append(os.path.join(root_dir, "libopus", "win64", "opus.dll"))
+        return candidates
+
+    if sys.platform == "darwin":
+        names = ("libopus.0.dylib", "libopus.dylib")
+        bundled_subdir = "macos"
+    else:
+        names = ("libopus.so.0", "libopus.so")
+        bundled_subdir = "linux64"
+
+    for base_dir in (meipass, exe_dir, os.path.join(root_dir, "libopus", bundled_subdir)):
+        if not base_dir:
+            continue
+        for name in names:
+            candidates.append(os.path.join(base_dir, name))
+
+    found = ctypes.util.find_library("opus")
+    if found:
+        candidates.append(found)
+    candidates.extend(names)
+    return list(dict.fromkeys(candidates))
+
+
 def _load_lib():
     global _lib
     with _lib_lock:
         if _lib is not None:
             return _lib
-        candidates = []
-        if getattr(sys, "frozen", False):
-            meipass = getattr(sys, "_MEIPASS", "")
-            if meipass:
-                candidates.append(os.path.join(meipass, "opus.dll"))
-            candidates.append(os.path.join(os.path.dirname(sys.executable), "opus.dll"))
-        candidates.append(
-            os.path.join(str(PROJECT_ROOT), "libopus", "win64", "opus.dll")
-        )
-        for path in candidates:
-            if os.path.exists(path):
-                _lib = _configure(ctypes.CDLL(path))
+        candidates = _lib_candidates()
+        errors = []
+        for candidate in candidates:
+            is_path = os.path.sep in candidate or (os.path.altsep and os.path.altsep in candidate)
+            if is_path and not os.path.exists(candidate):
+                continue
+            try:
+                _lib = _configure(ctypes.CDLL(candidate))
                 return _lib
-        raise OpusError("Bundled opus.dll not found; tried: " + "; ".join(candidates))
+            except OSError as exc:
+                errors.append(f"{candidate}: {exc}")
+        detail = "; ".join(errors) if errors else "; ".join(candidates)
+        raise OpusError("libopus not found; tried: " + detail)
 
 
 class LibOpusEncoder:

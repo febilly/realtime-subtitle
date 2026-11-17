@@ -5,6 +5,7 @@ This script creates a single executable file
 
 import PyInstaller.__main__
 import os
+import sys
 
 # Get the current directory
 packaging_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,7 +26,15 @@ PyInstaller.__main__.run([
     f'--workpath={os.path.join(current_dir, "build")}',
 ])
 
+dist_name = os.environ.get('RTS_DIST_NAME') or 'RealtimeSubtitle'
+if os.environ.get('RTS_ONEDIR') == '1':
+    output_path = os.path.join(current_dir, 'dist', dist_name)
+elif sys.platform == 'win32':
+    output_path = os.path.join(current_dir, 'dist', f'{dist_name}.exe')
+else:
+    output_path = os.path.join(current_dir, 'dist', dist_name)
+
 print("\n" + "="*60)
 print("Build completed!")
-print(f"Executable location: {os.path.join(current_dir, 'dist', 'RealtimeSubtitle.exe')}")
+print(f"Executable location: {output_path}")
 print("="*60)

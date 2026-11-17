@@ -5,6 +5,7 @@
 （取值 1/true/yes/y/on 之一时启用）。
 """
 import os
+import sys
 import threading
 from datetime import datetime
 
@@ -32,8 +33,12 @@ class TranscriptLogger:
         if not self.enabled:
             return None
 
-        # 创建logs文件夹
-        logs_dir = os.path.join(os.getcwd(), 'logs')
+        # 创建logs文件夹；AppImage 内运行时写入用户配置目录，避免只读挂载或污染 $HOME
+        if os.environ.get("APPIMAGE") and not sys.platform.startswith("win32"):
+            from realtime_subtitle.core.config import get_app_data_dir
+            logs_dir = os.path.join(get_app_data_dir(), 'logs')
+        else:
+            logs_dir = os.path.join(os.getcwd(), 'logs')
         os.makedirs(logs_dir, exist_ok=True)
         
         # 生成日志文件名（当前日期时间）

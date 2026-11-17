@@ -38,7 +38,7 @@ Realtime Subtitle 可以采集桌面音频、单个应用窗口、麦克风，�
 
 **音频输入**
 
-- 可采集输出设备、单个应用窗口（Windows build 20348+ / Windows 11）、麦克风，或桌面音频与麦克风混合。
+- 可采集输出设备、单个应用窗口（Windows 11 或 Linux PipeWire/PulseAudio）、麦克风，或桌面音频与麦克风混合。
 - 可选 Twitch 直播作为输入（需要 streamlink 和 ffmpeg）。
 - 静音休眠：长时间没人说话时关闭云端连接，有人说话时再重新连上，不为空白时间付费。
 
@@ -76,7 +76,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-加 `--debug` 可打开 WebView 开发者工具和网络日志。`python server.py --help` 列出所有命令行参数。Linux 用户请看 [LINUX_SETUP.md](docs/LINUX_SETUP.md)，需要额外安装 GUI 依赖。
+加 `--debug` 可打开 WebView 开发者工具和网络日志。`python server.py --help` 列出所有命令行参数。支持在 Linux 上从源码运行（需 PipeWire/PulseAudio、`libopus`，以及用于窗口置顶与悬浮窗穿透的 X11/XWayland；GUI 依赖见 [LINUX_SETUP.md](docs/LINUX_SETUP.md)）。
 
 ### 首次启动
 
@@ -105,7 +105,7 @@ GEMINI_API_KEY="<your-key>"
 
 ### 音源
 
-桌面音频和麦克风可以分别开启，也可以混合。桌面音频可以来自某个输出设备，也可以来自某一个应用窗口。窗口采集使用 Windows 应用回环，会采集该应用的整个进程树，无法单独采集某个浏览器标签页。窗口关闭后桌面采集会变成静音，不会改为采集其他应用。
+桌面音频和麦克风可以分别开启，也可以混合。桌面音频可以来自某个输出设备，也可以来自某一个应用窗口。窗口采集在 Windows 下使用应用回环（整个进程树），在 Linux 下使用 PipeWire/PulseAudio 音频流监听（需应用正在发声），均无法单独采集某个浏览器标签页。窗口关闭后桌面采集会变成静音，不会改为采集其他应用。
 
 音频面板和翻译面板各有一个**记住我的设置**开关。记住的窗口只有在可执行文件和标题能唯一对应一个打开的窗口时才会恢复。
 

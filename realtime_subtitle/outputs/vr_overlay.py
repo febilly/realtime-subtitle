@@ -1559,9 +1559,18 @@ class VrOverlayWindow(ow.OverlayWindow):
 
 
 def _setup_log_file():
-    """诊断日志：%LOCALAPPDATA%/RealtimeSubtitle/vr_overlay.log（每次启动覆盖）。"""
-    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
-    folder = os.path.join(base, "RealtimeSubtitle")
+    """诊断日志：Windows 用 %LOCALAPPDATA%/RealtimeSubtitle，Linux 用 XDG 配置目录。"""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+        folder = os.path.join(base, "RealtimeSubtitle")
+    elif sys.platform == "darwin":
+        folder = os.path.join(
+            os.path.expanduser("~/Library/Application Support"),
+            "RealtimeSubtitle",
+        )
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        folder = os.path.join(base, "RealtimeSubtitle")
     try:
         os.makedirs(folder, exist_ok=True)
         handler = logging.FileHandler(os.path.join(folder, "vr_overlay.log"), mode="w",

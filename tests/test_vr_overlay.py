@@ -12,7 +12,7 @@ import pytest
 try:  # 与 test_web_server_security 一样先导入，避免 patch.dict 还原 sys.modules 后被重复导入
     import numpy  # noqa: F401
     import soundcard  # noqa: F401
-except ImportError:
+except Exception:
     pass
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")

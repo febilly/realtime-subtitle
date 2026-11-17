@@ -1,4 +1,5 @@
 """音频捕获模块 - 处理本机/网络音频的录制和流式传输"""
+import sys
 import threading
 import time
 import queue
@@ -654,17 +655,17 @@ class AudioStreamer:
                     print("⚠️  No default speaker available for system audio capture")
                     return None
 
-                # WASAPI loopback microphones share the output endpoint's id.
-                # Do not use the display name: soundcard treats it as a fuzzy
-                # match, so overlapping endpoint names can select a silent
-                # loopback from a different output device.
-                loopback = sc.get_microphone(id=str(speaker.id), include_loopback=True)
+                # On Windows WASAPI, loopback microphones share the output
+                # endpoint's id (never look up by display name, which soundcard
+                # fuzzy-matches). On Linux PulseAudio/PipeWire, monitor sources
+                # use "<sink_id>.monitor".
+                loopback = self._resolve_loopback_microphone(speaker)
                 if loopback is None:
                     print("⚠️  Loopback capture is not available on this device")
                     return None
 
                 print(f"🔊 Capturing system audio from: {speaker.name}")
-                return loopback.recorder(samplerate=self.sample_rate, channels=1)
+                return loopback.recorder(**self._recorder_kwargs())
 
             microphone = self._resolve_microphone_device()
             if microphone is None:
@@ -672,12 +673,39 @@ class AudioStreamer:
                 return None
 
             print(f"🎤 Capturing from microphone: {microphone.name}")
-            return microphone.recorder(samplerate=self.sample_rate, channels=1)
+            return microphone.recorder(**self._recorder_kwargs())
 
         except Exception as init_error:
             self.capture_error = str(init_error)
             print(f"Error initializing audio source '{source}': {init_error}")
             return None
+
+    def _recorder_kwargs(self) -> dict:
+        kwargs = {
+            "samplerate": self.sample_rate,
+            "channels": 1,
+        }
+        if sys.platform.startswith("linux"):
+            # soundcard's PulseAudio backend passes fragsize=-1 when blocksize is
+            # omitted, causing PipeWire/PulseAudio to buffer ~1s (16384 frames)
+            # per read instead of WASAPI's ~10ms device period.
+            target_block = max(160, int(round(self.sample_rate * 0.02)))
+            if self.chunk_size > 0:
+                target_block = min(int(self.chunk_size), target_block)
+            kwargs["blocksize"] = max(1, target_block)
+        return kwargs
+
+    @staticmethod
+    def _resolve_loopback_microphone(speaker):
+        speaker_id = str(speaker.id)
+        if sys.platform.startswith("linux") and not speaker_id.endswith(".monitor"):
+            try:
+                loopback = sc.get_microphone(id=f"{speaker_id}.monitor", include_loopback=True)
+                if loopback is not None:
+                    return loopback
+            except Exception:
+                pass
+        return sc.get_microphone(id=speaker_id, include_loopback=True)
 
     @staticmethod
     def _device_id(device) -> str:

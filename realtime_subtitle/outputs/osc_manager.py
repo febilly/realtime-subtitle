@@ -9,9 +9,22 @@ import threading
 import os
 from typing import Optional
 from dataclasses import dataclass
-from vrchat_oscquery.common import dict_to_dispatcher, vrc_client
-import vrchat_oscquery.common as vrchat_osc_common
-from vrchat_oscquery.threaded import vrc_osc
+try:
+    from vrchat_oscquery.common import dict_to_dispatcher, vrc_client
+    import vrchat_oscquery.common as vrchat_osc_common
+    from vrchat_oscquery.threaded import vrc_osc
+    _oscquery_import_error = None
+except OSError as exc:
+    # vrchat_oscquery.common probes socket.connect(('1.1.1.1', 0)) at import
+    # time, which fails when offline or inside restricted environments.
+    dict_to_dispatcher = None
+    vrchat_osc_common = None
+    vrc_osc = None
+    _oscquery_import_error = exc
+
+    def vrc_client():
+        from pythonosc.udp_client import SimpleUDPClient
+        return SimpleUDPClient("127.0.0.1", 9000)
 from realtime_subtitle.text.text_processor import (
     RTL_PDI,
     RTL_RLI,
@@ -204,6 +217,15 @@ class OSCManager:
             return None
 
     def _start_oscquery_service_blocking(self):
+        global dict_to_dispatcher, vrchat_osc_common, vrc_osc, _oscquery_import_error
+        if vrchat_osc_common is None or dict_to_dispatcher is None or vrc_osc is None:
+            from vrchat_oscquery.common import dict_to_dispatcher as _dict_to_dispatcher
+            import vrchat_oscquery.common as _vrchat_osc_common
+            from vrchat_oscquery.threaded import vrc_osc as _vrc_osc
+            dict_to_dispatcher = _dict_to_dispatcher
+            vrchat_osc_common = _vrchat_osc_common
+            vrc_osc = _vrc_osc
+            _oscquery_import_error = None
         vrchat_osc_common.APP_HOST = "127.0.0.1"
         dispatcher = dict_to_dispatcher({VRCHAT_MUTE_PATH: self._handle_mute_self})
         return vrc_osc(self._oscquery_app_name, dispatcher, foreground=False)

@@ -406,3 +406,33 @@ def test_status_reports_free_space_on_the_download_drive(models_dir, monkeypatch
     monkeypatch.setattr(model_manager.shutil, "disk_usage", fake_usage)
     assert model_manager.get_all_local_models_status()["disk_free_bytes"] == 60
     assert seen == [models_dir.resolve()]
+
+
+def test_linux_runtime_downloads_official_tarball(models_dir, monkeypatch):
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as archive:
+        for name in ("libllama.so", "libggml.so.0", "libggml-base.so", "libmtmd.so", "libggml-vulkan.so"):
+            info = tarfile.TarInfo(name=f"llama-b11985/{name}")
+            payload = b"\x7fELF"
+            info.size = len(payload)
+            archive.addfile(info, io.BytesIO(payload))
+        sym = tarfile.TarInfo(name="llama-b11985/libggml.so")
+        sym.type = tarfile.SYMTYPE
+        sym.linkname = "libggml.so.0"
+        archive.addfile(sym)
+
+    requested = []
+    monkeypatch.setattr(model_manager, "urlopen", lambda req, timeout=None: (requested.append(req.full_url), FakeResponse(buf.getvalue()))[1])
+    monkeypatch.setattr(model_manager.sys, "platform", "linux")
+    monkeypatch.setattr(model_manager.platform, "machine", lambda: "x86_64")
+
+    runtime_dir = models_dir / "runtime_linux"
+    model_manager._download_llama_runtime(runtime_dir)
+
+    assert len(requested) == 1
+    assert f"llama-{model_manager.LLAMA_CPP_TAG}-bin-ubuntu-vulkan-x64.tar.gz" in requested[0]
+    assert model_manager._runtime_ready(runtime_dir) is True
+    assert (runtime_dir / "libggml.so").is_symlink()
+    assert (runtime_dir / "libggml-vulkan.so").is_file()

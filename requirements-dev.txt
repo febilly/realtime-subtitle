@@ -3,6 +3,7 @@
 pytest
 pytest-asyncio
 # Opus decoder for tests/ (the app itself encodes with libopus, see opus_native.py).
-av==16.1.0
+av==16.1.0; python_version < "3.14"
+av>=16.1.0; python_version >= "3.14"
 # Language filter in tools/refine_benchmark.py
 langid
