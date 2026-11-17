@@ -62,6 +62,10 @@ describe('FeaturePacks registry and install detection', () => {
             'furiganaButton',
             'learningSettingsSection',
         ]);
+        expect(FeaturePacks.PACKS.find((p) => p.id === 'transcript').elementIds).toEqual([
+            'exportTranscriptButton',
+            'transcriptSettingsSection',
+        ]);
     });
 
     it('treats empty storage as a brand-new install with all packs disabled', () => {
