@@ -115,8 +115,13 @@ async def discover_peer(discovery_file: str, timeout: float = 30.0) -> Optional[
         if pid:
             if sys.platform == "win32":
                 import ctypes
-                PROCESS_QUERY_INFORMATION = 0x0400
-                handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+                # The limited right is granted on elevated processes too; the
+                # subtitle app runs as admin for VRChat packet capture, and
+                # PROCESS_QUERY_INFORMATION (0x0400) is denied there.
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                handle = ctypes.windll.kernel32.OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+                )
                 if handle == 0:
                     return None
                 ctypes.windll.kernel32.CloseHandle(handle)
