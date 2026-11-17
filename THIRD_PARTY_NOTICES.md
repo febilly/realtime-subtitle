@@ -13,6 +13,8 @@ executable by PyInstaller) are listed with their licenses in
 | [kuromoji.js](https://github.com/takuyaa/kuromoji.js) (browser build) | `static/kuromoji/kuromoji.js` | 0.1.2, unmodified | Apache-2.0 — [LICENSE](static/kuromoji/LICENSE), [NOTICE](static/kuromoji/NOTICE) |
 | ↳ embedded: zlib.js, async, doublearray, Browserify `path`/`process` shims | inside `kuromoji.js` | as bundled | MIT — see [static/kuromoji/NOTICE](static/kuromoji/NOTICE) |
 | mecab-ipadic dictionary (prebuilt for kuromoji.js) | `static/kuromoji/dict/*.dat.gz` | 2.7.0-20070801, unmodified | IPADIC license (NAIST / ICOT) — [static/kuromoji/dict/LICENSE](static/kuromoji/dict/LICENSE) |
+| [pinyin-pro](https://github.com/zh-lx/pinyin-pro) (UMD browser build) | `static/pinyin-pro/pinyin-pro.js` | 3.29.5, unmodified | MIT — [LICENSE](static/pinyin-pro/LICENSE) |
+| [koroman](https://github.com/gerosyab/koroman) (browser build) | `static/koroman/koroman.browser.js` | 1.0.16, unmodified | MIT — [LICENSE](static/koroman/LICENSE) |
 | [Lucide](https://lucide.dev/) icons (subset of `lucide-static`) | `static/icons/lucide-sprite.svg` | 1.21.0 | ISC; Feather-derived icons also MIT — see below |
 | [libopus](https://opus-codec.org/) | `libopus/win64/opus.dll` | prebuilt Windows x64 DLL | BSD-3-Clause — see below |
 | [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) (code and model weights) | `realtime_subtitle/local_inference/models/firered_vad`, `realtime_subtitle/local_inference/vad_processor.py` | Stream-VAD ONNX export, unmodified | Apache-2.0 — `licenses/Apache-2.0.txt`, attribution in `licenses/THIRD_PARTY_VAD.md` |
