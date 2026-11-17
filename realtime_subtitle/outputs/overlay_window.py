@@ -20,6 +20,7 @@ import math
 import time
 import queue
 import base64
+import inspect
 import argparse
 import asyncio
 import threading
@@ -691,6 +692,18 @@ def _subtitle_font_lang(lang) -> str:
     return ""
 
 
+def _learning_lang_code(lang) -> str:
+    code = _normalize_lang_code(lang)
+    primary = code.split("-", 1)[0]
+    if primary == "ja":
+        return "ja"
+    if primary in {"zh", "cmn"}:
+        return "zh"
+    if primary == "ko":
+        return "ko"
+    return ""
+
+
 def _lang_attr(lang) -> str:
     font_lang = _subtitle_font_lang(lang)
     return f' lang="{font_lang}"' if font_lang else ""
@@ -721,17 +734,16 @@ def _font_families_for_lang(lang, use_bundled_cjk_fonts: bool = False) -> list[s
 
 
 # ===========================================================================
-# 日语假名注音（ふりがな）：行为对齐网页版 static/js/furigana.js。
-# 网页版用 kuromoji.js（mecab-ipadic 词典）分词后以 <ruby> 标注；QTextEdit 的
-# 富文本不支持 <ruby>，这里改为把整行 token 逐个画成「注音在上、正文在下」的
-# 内联图片（与语言标识 langtag 同一机制）。
+# 发音注音（日语假名 / 中文拼音 / 韩语罗马音）：行为对齐网页版 static/js/furigana.js。
+# 网页版用 kuromoji / pinyin-pro / koroman 以 <ruby> 标注；QTextEdit 的富文本不支持 <ruby>，
+# 这里改为把整行 token 逐个画成「注音在上、正文在下」的内联图片（与语言标识 langtag 同一机制）。
 #
-# 分词不在本进程做：悬浮窗把整行文本 POST 到 server 的 /furigana，由主窗口里
-# 已加载的 kuromoji 分词后返回 [[表面形, 注音|null], ...]。这样 exe 里只保留网页版
-# 那一份 kuromoji 词典，不再打包 Python 词典，且分词/注音结果与网页版完全一致。
+# 分词与转写不在本进程做：悬浮窗把整行文本及语言 POST 到 server 的 /furigana，
+# 由主窗口里已加载的网页版注音模块处理后返回 [[表面形, 注音|null], ...]。这样 exe 里
+# 只保留网页版那一套词典，不再打包 Python 词典，且注音结果与网页版完全一致。
 # ===========================================================================
 class FuriganaService(QObject):
-    """假名注音服务：整行文本经 server 交给主窗口 kuromoji 分词，结果按行缓存。
+    """多语言注音服务：整行文本经 server 交给主窗口注音模块处理，结果按 (语言, 行文本) 缓存。
 
     语义对齐网页版 Furigana.createService：结果未就绪时 get_pairs 返回 None（调用方
     先按普通文本渲染），拿到结果后发 ready 信号触发整体重渲染。分词是异步网络请求，
@@ -749,14 +761,18 @@ class FuriganaService(QObject):
 
     def __init__(self, fetch_pairs, parent=None):
         super().__init__(parent)
-        # fetch_pairs(text) -> dict|None：执行一次 /furigana 请求，返回解析后的 JSON。
+        # fetch_pairs(text, lang) -> dict|None（兼容旧的 1 参回调）：执行一次 /furigana 请求。
         self._fetch_pairs = fetch_pairs
         self._enabled = False
-        self._cache: dict[str, list] = {}
-        self._failed: dict[str, float] = {}
-        self._queue: "queue.Queue[str]" = queue.Queue()
-        self._queued: set[str] = set()
+        self._cache: dict[tuple[str, str], list] = {}
+        self._failed: dict[tuple[str, str], float] = {}
+        self._queue: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self._queued: set[tuple[str, str]] = set()
         self._worker = None
+
+    @staticmethod
+    def _cache_key(text: str, lang: str = "ja") -> tuple[str, str]:
+        return (_learning_lang_code(lang) or "ja", text)
 
     def set_enabled(self, enabled: bool):
         self._enabled = bool(enabled)
@@ -773,70 +789,85 @@ class FuriganaService(QObject):
             self._worker = threading.Thread(target=self._run, daemon=True)
             self._worker.start()
 
-    def get_pairs(self, text):
+    def get_pairs(self, text, lang: str = "ja"):
         """返回整行的 [(表面形, 注音|None), ...]；未就绪时返回 None 并排队获取。"""
         if not text or not self._enabled:
             return None
-        cached = self._cache.get(text)
+        key = self._cache_key(text, lang)
+        cached = self._cache.get(key)
         if cached is not None:
             return cached
-        if self._in_failed_cooldown(text):
+        if self._in_failed_cooldown(key):
             return None                       # 近期取词失败：不再排队，交由调用方渲染纯文本
-        if text not in self._queued:
-            self._queued.add(text)
-            self._queue.put(text)
+        if key not in self._queued:
+            self._queued.add(key)
+            self._queue.put(key)
         return None
 
-    def is_pending(self, text) -> bool:
+    def is_pending(self, text, lang: str = "ja") -> bool:
         """该行注音是否正在获取（值得阻塞本帧以避免"先纯文本后注音"的闪烁）。
 
         已缓存或处于失败冷却期时返回 False——此时应直接渲染纯文本，而非继续等待。
         """
         if not text or not self._enabled:
             return False
-        if text in self._cache:
+        key = self._cache_key(text, lang)
+        if key in self._cache:
             return False
-        return not self._in_failed_cooldown(text)
+        return not self._in_failed_cooldown(key)
 
-    def _in_failed_cooldown(self, text) -> bool:
-        ts = self._failed.get(text)
+    def _in_failed_cooldown(self, key: tuple[str, str]) -> bool:
+        ts = self._failed.get(key)
         if ts is None:
             return False
         if time.time() - ts < self._FAILED_COOLDOWN:
             return True
-        self._failed.pop(text, None)          # 冷却结束，允许再次尝试
+        self._failed.pop(key, None)           # 冷却结束，允许再次尝试
         return False
 
     def _run(self):
         while True:
-            text = self._queue.get()
+            key = self._queue.get()
+            code, text = key
             try:
                 if not self._enabled:
                     continue
-                pairs = self._resolve(text)
+                pairs = self._resolve(text, code)
                 if pairs is not None:
-                    self._failed.pop(text, None)
+                    self._failed.pop(key, None)
                     if len(self._cache) >= 500:
                         self._cache.clear()
-                    self._cache[text] = pairs
+                    self._cache[key] = pairs
                 else:
                     # 取词失败：记下冷却时间戳，让该行改走纯文本渲染。
                     if len(self._failed) >= 500:
                         self._failed.clear()
-                    self._failed[text] = time.time()
+                    self._failed[key] = time.time()
                 # 无论成功与否都发信号：成功→补注音重渲染；失败→解除阻塞、渲染纯文本。
                 self.ready.emit()
             except Exception:
                 pass
             finally:
-                self._queued.discard(text)
+                self._queued.discard(key)
 
-    def _resolve(self, text):
-        """向 server 请求分词；主窗口词典还在加载就重试，缺失主窗口则放弃。"""
+    def _call_fetch_pairs(self, text: str, lang: str):
+        try:
+            sig = inspect.signature(self._fetch_pairs)
+            params = list(sig.parameters.values())
+            accepts_two = (
+                len(params) >= 2
+                or any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+            )
+        except (TypeError, ValueError):
+            accepts_two = True
+        return self._fetch_pairs(text, lang) if accepts_two else self._fetch_pairs(text)
+
+    def _resolve(self, text, lang: str = "ja"):
+        """向 server 请求注音；主窗口词典还在加载就重试，缺失主窗口则放弃。"""
         for _ in range(self._NOT_READY_RETRIES):
             if not self._enabled:
                 return None
-            resp = self._fetch_pairs(text)
+            resp = self._call_fetch_pairs(text, lang)
             if not isinstance(resp, dict):
                 return None                       # 无主窗口 / 请求失败：降级为纯文本
             if resp.get("ready"):
@@ -865,7 +896,7 @@ class FuriganaService(QObject):
 # 注音图块的 img src 方案（同 langtag 机制，由 SubtitleTextEdit.loadResource 提供）。
 _RUBY_SCHEME = "rubytk:"
 
-# _furigana_line_html 的哨兵返回值：该日语行注音仍在获取中，本帧应阻塞
+# _furigana_line_html 的哨兵返回值：该行注音仍在获取中，本帧应阻塞
 # （保持上一帧），等注音就绪后再整帧刷新，避免"先纯文本后注音"的闪烁。
 _FURIGANA_PENDING = object()
 
@@ -873,30 +904,46 @@ _FURIGANA_PENDING = object()
 # spec 只能用 URL 安全字符（QTextDocument 会把 img src 当 URL 规范化），
 # 所以用 '.' 作分隔符、base64url 去掉 '=' 填充。
 def _encode_ruby_spec(fs: int, non_final: bool, use_bundled: bool,
-                      surface: str, reading) -> str:
+                      surface: str, reading, lang=None) -> str:
     def b64(value):
         raw = base64.urlsafe_b64encode((value or "").encode("utf-8")).decode("ascii")
         return raw.rstrip("=")
-    return (f"{int(fs)}.{1 if non_final else 0}.{1 if use_bundled else 0}"
+    base = (f"{int(fs)}.{1 if non_final else 0}.{1 if use_bundled else 0}"
             f".{b64(surface)}.{b64(reading or '')}")
+    if lang is None:
+        return base
+    return f"{base}.{b64(_learning_lang_code(lang) or 'ja')}"
 
 
-def _decode_ruby_spec(spec: str):
+def _decode_ruby_spec_with_lang(spec: str):
     def unb64(value):
         padded = value + "=" * (-len(value) % 4)
         return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
     try:
-        fs_str, nf_str, bundled_str, surface_b64, reading_b64 = spec.split(".", 4)
+        parts = spec.split(".")
+        if len(parts) not in (5, 6):
+            return None
+        fs_str, nf_str, bundled_str, surface_b64, reading_b64 = parts[:5]
+        lang = unb64(parts[5]) if len(parts) == 6 else "ja"
         return (int(fs_str), nf_str == "1", bundled_str == "1",
-                unb64(surface_b64), unb64(reading_b64))
+                unb64(surface_b64), unb64(reading_b64), lang or "ja")
     except Exception:
         return None
 
 
+def _decode_ruby_spec(spec: str):
+    decoded = _decode_ruby_spec_with_lang(spec)
+    if decoded is None:
+        return None
+    return decoded[:5]
+
+
 # 用固定参考字串量各字体的「实际字形范围」（tight），而非 ascent/descent——后者含
-# 大量内部行距，会在注音与正文之间留下空隙。参考串覆盖较高/带浊半浊/有降部的字形。
+# 大量内部行距，会在注音与正文之间留下空隙。参考串覆盖较高/带声调/有降部的字形。
 _KANA_REF = "あぁきさしせぬのゆよぐぱぽっ"
+_LATIN_RUBY_REF = "āáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜgjpqyÁÉÍ"
 _KANJI_REF = "漢国鬱薔曜同"
+_HANGUL_REF = "한글닭넓삶쐣"
 _VISUAL_EXTENT_CACHE: dict = {}
 
 
@@ -911,15 +958,18 @@ def _visual_extent(fm: QFontMetricsF, ref: str, key) -> tuple[float, float]:
 
 
 def _make_ruby_pixmap(surface: str, reading: str, fs: int, non_final: bool,
-                      use_bundled: bool, dpr: float = 1.0) -> QPixmap:
+                      use_bundled: bool, dpr: float = 1.0,
+                      lang: str = "ja") -> QPixmap:
     """画一个「注音在上、正文在下」的 token 图块。
 
     同一行内所有 token（含无注音的）都用同一套竖直布局，保证注音基线、正文基线在
     整行内对齐。竖直排布按各字体的实际字形范围（tight）计算，让注音直接贴住正文，
     上下都不留字体内部行距造成的空隙。注音与正文水平居中（对应网页版 ruby-align:
-    center，注音更宽时正文居中其下）。
+    center，注音更宽时正文居中其下）。中文拼音/韩语罗马音会额外预留左右内边距，
+    避免相邻宽音节（如 zh / ko 拉丁字母）首尾粘连。
     """
-    families = _font_families_for_lang("ja", use_bundled)
+    code = _learning_lang_code(lang) or "ja"
+    families = _font_families_for_lang(code, use_bundled)
     base_font = QFont()
     base_font.setFamilies(families)
     base_font.setPixelSize(int(fs))
@@ -935,11 +985,16 @@ def _make_ruby_pixmap(surface: str, reading: str, fs: int, non_final: bool,
     rt_text = reading or ""
     base_w = base_fm.horizontalAdvance(text)
     rt_w = rt_fm.horizontalAdvance(rt_text) if rt_text else 0.0
-    w = max(1.0, base_w, rt_w)
+    pad_x = max(2.0, float(round(rt_px * 0.2))) if (rt_text and code in ("zh", "ko")) else 0.0
+    w = max(1.0, base_w, rt_w + pad_x * 2)
 
     fam_key = tuple(families)
-    rt_asc, rt_desc = _visual_extent(rt_fm, _KANA_REF, ("rt", fam_key, rt_px))
-    base_asc, _base_desc = _visual_extent(base_fm, _KANJI_REF, ("base", fam_key, int(fs)))
+    rt_ref = _LATIN_RUBY_REF if code in ("zh", "ko") else _KANA_REF
+    base_ref = _HANGUL_REF if code == "ko" else _KANJI_REF
+    rt_key = ("rt", code, fam_key, rt_px) if code in ("zh", "ko") else ("rt", fam_key, rt_px)
+    base_key = ("base", code, fam_key, int(fs)) if code == "ko" else ("base", fam_key, int(fs))
+    rt_asc, rt_desc = _visual_extent(rt_fm, rt_ref, rt_key)
+    base_asc, _base_desc = _visual_extent(base_fm, base_ref, base_key)
     base_desc = base_fm.descent()          # 正文降部沿用字体度量，保证与普通行竖直节奏一致
 
     top_pad = max(1.0, fs * 0.03)          # 注音顶部一点点留白，别贴到上一行
@@ -1573,14 +1628,14 @@ class SubtitleTextEdit(QTextEdit):
         cached = self._ruby_cache.get(spec)
         if cached is not None:
             return cached
-        decoded = _decode_ruby_spec(spec)
+        decoded = _decode_ruby_spec_with_lang(spec)
         if decoded is None:
             pm = QPixmap(1, 1)
             pm.fill(Qt.transparent)
         else:
-            fs, non_final, use_bundled, surface, reading = decoded
+            fs, non_final, use_bundled, surface, reading, lang = decoded
             pm = _make_ruby_pixmap(surface, reading, fs, non_final, use_bundled,
-                                   self.devicePixelRatioF())
+                                   self.devicePixelRatioF(), lang=lang)
         if len(self._ruby_cache) >= 800:
             self._ruby_cache.clear()
         self._ruby_cache[spec] = pm
@@ -1623,6 +1678,7 @@ class OverlayWindow(QWidget):
         self._user_furigana_enabled = str(
             self.settings.value("furigana_enabled", "false")).lower() in ("true", "1")
         self._learning_pack_enabled = True
+        self._learning_languages = {"ja": True, "zh": True, "ko": True}
         self.furigana_enabled = self._learning_pack_enabled and self._user_furigana_enabled
         self.furigana = FuriganaService(self._fetch_furigana, self)
         self.furigana.ready.connect(self._on_furigana_ready)
@@ -2050,6 +2106,24 @@ class OverlayWindow(QWidget):
         self._last_html = None
         self._render()
 
+    def set_learning_languages(self, languages) -> bool:
+        if not isinstance(languages, dict):
+            return False
+        current = getattr(self, "_learning_languages", None)
+        if not isinstance(current, dict):
+            current = {"ja": True, "zh": True, "ko": True}
+            self._learning_languages = current
+        changed = False
+        for code in ("ja", "zh", "ko"):
+            if code in languages and isinstance(languages[code], bool):
+                if current.get(code) != languages[code]:
+                    current[code] = languages[code]
+                    changed = True
+        if changed:
+            self._last_html = None
+            self._render()
+        return changed
+
     def _toggle_furigana(self):
         if not self._learning_pack_enabled:
             return
@@ -2063,9 +2137,9 @@ class OverlayWindow(QWidget):
         # 避免出现"无原文行→原文+注音"的中间态；关闭时 HTML 自然不同会重建。
         self._render()
 
-    def _fetch_furigana(self, text):
+    def _fetch_furigana(self, text, lang="ja"):
         """FuriganaService 的取词回调：POST /furigana，返回解析后的 JSON（或 None）。"""
-        return self._post_json("/furigana", {"text": text})
+        return self._post_json("/furigana", {"text": text, "lang": lang or "ja"})
 
     def _on_furigana_ready(self):
         """收到一批注音结果（或取词失败）：重渲染一次。
@@ -2291,6 +2365,10 @@ class OverlayWindow(QWidget):
             packs = data.get("packs") if isinstance(data.get("packs"), dict) else {}
             if "learning" in packs:
                 self.set_learning_pack_enabled(bool(packs.get("learning")))
+            if isinstance(data.get("learning_languages"), dict):
+                self.set_learning_languages(data.get("learning_languages"))
+        elif mtype == "learning_languages":
+            self.set_learning_languages(data.get("languages"))
 
     def _apply_refine_result(self, data: dict):
         """应用一条 LLM 译文更新，按 sentence_id 覆盖对应句子的 STT 译文。
@@ -2553,36 +2631,41 @@ class OverlayWindow(QWidget):
         return "".join(parts)
 
     def _furigana_pairs_for(self, tokens, lang):
-        """判断日语原文行是否走假名渲染，返回三态：
+        """判断原文行是否走发音注音渲染（ja/zh/ko），返回三态：
 
           * 注音对列表 [(表面形, 注音|None), ...] —— 已就绪且整行至少一处需注音；
-          * None                —— 不适用（非日语/空行/已就绪但整行无需注音），走普通渲染；
+          * None                —— 不适用（非支持语言/该语言开关关闭/空行/整行无需注音），走普通渲染；
           * _FURIGANA_PENDING   —— 注音仍在获取，本帧应阻塞（避免先纯文本后注音的闪烁）。
         """
-        if _subtitle_font_lang(lang) != "ja":
+        code = _learning_lang_code(lang)
+        if not code:
+            return None
+        enabled_langs = getattr(self, "_learning_languages", None)
+        if isinstance(enabled_langs, dict) and not enabled_langs.get(code, True):
             return None
         plain = "".join(tk.get("text") or "" for tk in tokens)
         if not plain.strip():
             return None
-        pairs = self.furigana.get_pairs(plain)
+        pairs = self.furigana.get_pairs(plain, code)
         if pairs is None:
             # 未就绪：仍在取词就阻塞本帧；已放弃（无主窗口等）则回退纯文本。
-            return _FURIGANA_PENDING if self.furigana.is_pending(plain) else None
+            return _FURIGANA_PENDING if self.furigana.is_pending(plain, code) else None
         if not any(reading for _, reading in pairs):
             return None
         return pairs
 
     def _furigana_line_html(self, pairs, tokens, lang, fs, margin_bottom, tag_fs):
-        """把已就绪的注音对列表渲染成一行假名 HTML。
+        """把已就绪的注音对列表渲染成一行注音 HTML。
 
         与网页版一致：整行 token 逐个画成「注音在上、正文在下」的内联图块；行内有
         非 final token 时整行按进行中着色。
         """
+        code = _learning_lang_code(lang) or "ja"
         non_final = any(not tk.get("is_final", True) for tk in tokens)
         imgs = []
         for surface, reading in pairs:
             spec = _encode_ruby_spec(
-                fs, non_final, self.use_bundled_cjk_fonts, surface, reading)
+                fs, non_final, self.use_bundled_cjk_fonts, surface, reading, lang=code)
             imgs.append(f'<img src="{_RUBY_SCHEME}{spec}">')
         tag_html = ""
         if lang:

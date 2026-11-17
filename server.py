@@ -1152,14 +1152,15 @@ def main():
         win_width, win_height = _linux_webview_window_size(350, 600)
         window = webview.create_window(window_title, server_url, width=win_width, height=win_height, resizable=True, on_top=True, text_select=True, zoomable=True)
 
-        # 让原生悬浮窗复用本窗口已加载的 kuromoji 分词（假名注音），不必在 exe 里
-        # 另打包一份 Python 词典。悬浮窗 -> /furigana -> 这里 evaluate_js -> 网页版 tokenizer。
-        def _furigana_eval(text):
+        # 让原生悬浮窗复用本窗口已加载的 kuromoji / pinyin-pro / koroman，不必在 exe 里
+        # 另打包一份词典。悬浮窗 -> /furigana -> 这里 evaluate_js -> 网页版注音逻辑。
+        def _furigana_eval(text, lang="ja"):
             import json as _json
             try:
                 arg = _json.dumps(text)
+                lang_arg = _json.dumps(lang or "ja")
                 js = ("(function(){try{return window.__overlayFurigana?"
-                      f"window.__overlayFurigana({arg}):"
+                      f"window.__overlayFurigana({arg},{lang_arg}):"
                       "{ready:false,pairs:[]};}catch(e){return {ready:false,pairs:[]};}})()")
                 return window.evaluate_js(js)
             except Exception:

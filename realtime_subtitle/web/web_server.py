@@ -3,6 +3,7 @@ Web服务器模块 - 处理HTTP和WebSocket连接
 """
 import json
 import asyncio
+import inspect
 import os
 import secrets
 import logging
@@ -41,6 +42,7 @@ from realtime_subtitle.outputs.osc_manager import osc_manager
 logger = logging.getLogger("web_server")
 
 FEATURE_PACK_IDS = ("vrchat", "learning", "obs", "transcript")
+LEARNING_LANGUAGES = ("ja", "zh", "ko")
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -48,7 +50,7 @@ async def cache_bypass_middleware(request, handler):
     response = await handler(request)
     if isinstance(response, web.StreamResponse):
         path = str(request.path or "")
-        if path.startswith("/kuromoji/"):
+        if path.startswith(("/kuromoji/", "/pinyin-pro/", "/koroman/")):
             response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
             response.headers.pop('Pragma', None)
             response.headers.pop('Expires', None)
@@ -110,6 +112,9 @@ class WebServer:
         self._client_version_reported = False
         self.use_bundled_cjk_fonts = False
         self.feature_packs = self._load_initial_feature_packs(stored_settings)
+        self.learning_languages, self._learning_languages_initialized = (
+            self._load_initial_learning_languages(stored_settings)
+        )
         self._frontend_frame_log = None
         if os.getenv("FRONTEND_FRAME_LOG") == "1" and not os.getenv("PYTEST_CURRENT_TEST"):
             try:
@@ -330,6 +335,11 @@ class WebServer:
             await ws.send_str(json.dumps({
                 "type": "feature_packs",
                 "packs": self.get_feature_packs_state(),
+            }))
+            await ws.send_str(json.dumps({
+                "type": "learning_languages",
+                "languages": self.get_learning_languages_state(),
+                "initialized": bool(getattr(self, "_learning_languages_initialized", False)),
             }))
             await ws.send_str(json.dumps({
                 "type": "ticket_notifications_ready",
@@ -2604,19 +2614,96 @@ class WebServer:
             "type": "feature_packs",
             "packs": packs_state,
         })
+        if isinstance(payload.get("learning_languages"), dict):
+            self._update_learning_languages(payload["learning_languages"])
+            await self.broadcast_to_clients({
+                "type": "learning_languages",
+                "languages": self.get_learning_languages_state(),
+                "initialized": True,
+            })
         return web.json_response({"status": "ok", "packs": packs_state})
 
+    def _load_initial_learning_languages(self, stored_settings):
+        default_state = {lang: True for lang in LEARNING_LANGUAGES}
+        raw = stored_settings.get("learningLanguages.v1") if isinstance(stored_settings, dict) else None
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    has_any = any(isinstance(parsed.get(lang), bool) for lang in LEARNING_LANGUAGES)
+                    if has_any:
+                        return {
+                            lang: bool(parsed[lang]) if isinstance(parsed.get(lang), bool) else True
+                            for lang in LEARNING_LANGUAGES
+                        }, True
+            except Exception:
+                pass
+        return default_state, False
+
+    def _update_learning_languages(self, raw_langs):
+        for lang in LEARNING_LANGUAGES:
+            if lang in raw_langs and isinstance(raw_langs[lang], bool):
+                self.learning_languages[lang] = raw_langs[lang]
+        self._learning_languages_initialized = True
+
+    def get_learning_languages_state(self):
+        return dict(self.learning_languages)
+
+    def is_learning_language_enabled(self, lang):
+        return bool(self.learning_languages.get(lang, False))
+
+    async def learning_languages_get_handler(self, request):
+        """Return the current enabled state of per-language learning annotations."""
+        return web.json_response({
+            "status": "ok",
+            "languages": self.get_learning_languages_state(),
+            "initialized": bool(getattr(self, "_learning_languages_initialized", False)),
+        })
+
+    async def learning_languages_post_handler(self, request):
+        """Update per-language learning annotation toggles and broadcast to connected windows."""
+        if not self._is_loopback_request(request):
+            remote = getattr(request, "remote", None)
+            path = getattr(request, "path", "<unknown>")
+            logger.warning(f"Rejected non-loopback request to {path} from remote: {remote}")
+            return web.json_response({"status": "error", "message": "localhost only"}, status=403)
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        if not isinstance(payload, dict):
+            return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
+
+        raw_langs = payload.get("languages") if "languages" in payload else payload
+        if not isinstance(raw_langs, dict):
+            return web.json_response({"status": "error", "message": "Invalid languages payload"}, status=400)
+
+        self._update_learning_languages(raw_langs)
+        langs_state = self.get_learning_languages_state()
+        await self.broadcast_to_clients({
+            "type": "learning_languages",
+            "languages": langs_state,
+            "initialized": True,
+        })
+        return web.json_response({
+            "status": "ok",
+            "languages": langs_state,
+            "initialized": True,
+        })
+
     def set_furigana_evaluator(self, evaluator):
-        """注入一个 (text)->dict 的回调，用主窗口已加载的 kuromoji 分词。
+        """注入一个 (text, lang)->dict 的回调，用主窗口已加载的注音模块处理。
 
         由 server.py 在创建 pywebview 窗口后设置：内部调用 window.evaluate_js
-        执行 window.__overlayFurigana(text)。浏览器兜底模式（无主窗口）下不设置，
-        悬浮窗假名请求会拿到 ready:false 并降级为纯文本。
+        执行 window.__overlayFurigana(text, lang)。浏览器兜底模式（无主窗口）下不设置，
+        悬浮窗注音请求会拿到 ready:false 并降级为纯文本。
         """
         self.furigana_evaluator = evaluator
 
     async def furigana_handler(self, request):
-        """原生悬浮窗的假名分词代理：转交主窗口 kuromoji，返回 [[surface, reading|null], ...]。"""
+        """原生悬浮窗的注音代理：转交主窗口 kuromoji/pinyin-pro/koroman，返回 [[surface, reading|null], ...]。"""
         if not self._is_loopback_request(request):
             remote = getattr(request, "remote", None)
             path = getattr(request, "path", "<unknown>")
@@ -2631,12 +2718,25 @@ class WebServer:
         except Exception:
             payload = {}
         text = (payload.get("text") if isinstance(payload, dict) else None) or ""
+        lang = (payload.get("lang") if isinstance(payload, dict) else None) or "ja"
         if not text:
             return web.json_response({"ready": True, "pairs": []})
         try:
             loop = asyncio.get_event_loop()
             # evaluate_js 会阻塞到主窗口 GUI 线程返回结果，放到执行器线程里跑，避免卡事件循环。
-            result = await loop.run_in_executor(None, evaluator, text)
+            def _invoke():
+                try:
+                    sig = inspect.signature(evaluator)
+                    params = list(sig.parameters.values())
+                    accepts_two = (
+                        len(params) >= 2
+                        or any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+                    )
+                except (TypeError, ValueError):
+                    accepts_two = True
+                return evaluator(text, lang) if accepts_two else evaluator(text)
+
+            result = await loop.run_in_executor(None, _invoke)
         except Exception:
             result = None
         if not isinstance(result, dict):
@@ -2982,6 +3082,8 @@ class WebServer:
         app.router.add_post('/subtitle-font', self.subtitle_font_post_handler)
         app.router.add_get('/feature-packs', self.feature_packs_get_handler)
         app.router.add_post('/feature-packs', self.feature_packs_post_handler)
+        app.router.add_get('/learning-languages', self.learning_languages_get_handler)
+        app.router.add_post('/learning-languages', self.learning_languages_post_handler)
         app.router.add_post('/window-on-top', self.window_on_top_handler)
         app.router.add_get('/desktop-shortcut', self.desktop_shortcut_get_handler)
         app.router.add_post('/desktop-shortcut', self.desktop_shortcut_post_handler)
