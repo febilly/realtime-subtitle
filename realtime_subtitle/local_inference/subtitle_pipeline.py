@@ -2,8 +2,11 @@
 
 Display boundaries belong to the text model, not to VAD or the audio locator.
 Each row has an independent Hy-MT revision chain while all chains can share
-one model. Only one translation runs at a time; waiting revisions of a row
-replace one another without dropping the final state of any completed row.
+one model. By default only one translation runs at a time; a translator that
+can serve parallel requests (a cloud LLM) may allow ``max_concurrency`` rows
+at once. A row never runs twice concurrently, since its translator keeps the
+previous revision. Waiting revisions of a row replace one another without
+dropping the final state of any completed row.
 """
 from __future__ import annotations
 
@@ -48,6 +51,7 @@ class LocalSubtitlePipeline:
         publish: Callable[[dict], None],
         on_final: Callable[[dict], None],
         on_error: Callable[[Exception | str], None],
+        max_concurrency: int = 1,
     ) -> None:
         self._make_translator = translator_factory
         self._publish = publish
@@ -61,8 +65,13 @@ class LocalSubtitlePipeline:
         self._translators: dict[str, object] = {}
         self._history: deque[dict] = deque(maxlen=8)
         self._lock = threading.RLock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="local-translation")
-        self._working = False
+        self._max_workers = max(1, int(max_concurrency))
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._max_workers, thread_name_prefix="local-translation",
+        )
+        self._workers = 0
+        # Rows whose translation is running; each row runs on one worker at a time.
+        self._in_flight: set[str] = set()
         self._closed = False
         # False in 准确 mode: rows still await a (cloud LLM) translation, but
         # no local Hy-MT2 runs and per-row translators are released.
@@ -192,18 +201,25 @@ class LocalSubtitlePipeline:
         every per-row translator once the in-flight one returns."""
         with self._lock:
             self._machine_translation = bool(enabled)
-            if self._closed or enabled or self._working:
+            if self._closed or enabled or self._workers:
                 # A running worker cleans up at its next loop iteration.
                 return
-            self._working = True
+            self._workers += 1
             self._executor.submit(self._drain)
 
     def _queue(self, row: _Row) -> None:
         self._pending[row.id] = None
 
+    def _next_pending(self) -> str | None:
+        for row_id in self._pending:
+            if row_id not in self._in_flight:
+                return row_id
+        return None
+
     def _start_worker(self) -> None:
-        if self._pending and not self._working:
-            self._working = True
+        runnable = sum(1 for row_id in self._pending if row_id not in self._in_flight)
+        while self._workers < self._max_workers and runnable > self._workers - len(self._in_flight):
+            self._workers += 1
             self._executor.submit(self._drain)
 
     def _context(self, row: _Row) -> list[dict]:
@@ -217,13 +233,15 @@ class LocalSubtitlePipeline:
         while True:
             with self._lock:
                 self._cleanup_translators()
-                if not self._pending:
-                    self._working = False
+                row_id = self._next_pending()
+                if row_id is None:
+                    self._workers -= 1
                     return
-                row_id, _ = self._pending.popitem(last=False)
+                del self._pending[row_id]
                 row = self._rows.get(row_id)
                 if row is None:
                     continue
+                self._in_flight.add(row_id)
                 source_revision, epoch = row.source_revision, row.epoch
                 source, source_lang, target_lang = row.source, row.source_language, row.target_language
                 final, requires = row.is_final, row.requires_translation
@@ -248,6 +266,7 @@ class LocalSubtitlePipeline:
             if error is not None:
                 self._report_error(error)
             with self._lock:
+                self._in_flight.discard(row_id)
                 row = self._rows.get(row_id)
                 if row is None or row.epoch != epoch:
                     continue
@@ -281,6 +300,8 @@ class LocalSubtitlePipeline:
 
     def _cleanup_translators(self) -> None:
         for row_id in list(self._translators):
+            if row_id in self._in_flight:
+                continue
             if row_id not in self._rows or not self._machine_translation:
                 translator = self._translators.pop(row_id)
                 try:

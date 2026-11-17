@@ -335,7 +335,48 @@ def test_translation_can_be_disabled_or_skipped_for_the_same_language():
             assert source["source"] == "Visible source"
             assert source["translation"] == ""
             assert not source["requires_translation"]
-            wait_until(lambda: not pipeline._working)
+            wait_until(lambda: not pipeline._workers)
             assert not factory.instances
         finally:
             pipeline.close()
+
+
+def test_parallel_translator_serves_a_later_row_while_an_earlier_one_waits():
+    factory = FakeTranslatorFactory(block_first=True)
+    recorder = Recorder()
+    pipeline = LocalSubtitlePipeline(
+        factory, recorder.publish, recorder.on_final, recorder.on_error, max_concurrency=2,
+    )
+    try:
+        pipeline.update("One.", True, "en", "ja")
+        assert factory.blocked_started.wait(1.0)
+        pipeline.update("Two.", True, "en", "ja")
+        wait_until(lambda: any(row["translation"] == "MT:Two." for row in recorder.rows()))
+        # Finals still commit in speech order once the first one returns.
+        assert recorder.finals == []
+        factory.release.set()
+        wait_until(lambda: len(recorder.finals) == 2)
+        assert [row["source"] for row in recorder.finals] == ["One.", "Two."]
+    finally:
+        factory.release.set()
+        pipeline.close()
+
+
+def test_parallel_pipeline_never_runs_one_row_twice_at_once():
+    factory = FakeTranslatorFactory(blocked_sources={"Hello"})
+    recorder = Recorder()
+    pipeline = LocalSubtitlePipeline(
+        factory, recorder.publish, recorder.on_final, recorder.on_error, max_concurrency=3,
+    )
+    try:
+        pipeline.update("Hello", False, "en", "ja")
+        assert factory.blocked_started.wait(1.0)
+        pipeline.update("Hello there", False, "en", "ja")
+        time.sleep(0.1)
+        with factory.lock:
+            assert [call["source"] for call in factory.calls] == ["Hello"]
+        factory.release.set()
+        wait_until(lambda: any(row["translation"] == "MT:Hello there" for row in recorder.rows()))
+    finally:
+        factory.release.set()
+        pipeline.close()
