@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe('ObsRenderer settings & style calculation', () => {
-    it('normalizes all 19 settings with safe bounds, enums, and hex colors', () => {
+    it('normalizes all 18 settings with safe bounds, enums, and hex colors and ignores legacy keys', () => {
         expect(ObsRenderer.normalizeSettings()).toEqual({
             displayContent: 'both',
             fontSize: 42,
@@ -56,10 +56,9 @@ describe('ObsRenderer settings & style calculation', () => {
             bgMode: 'strip',
             bgColor: '#000000',
             bgOpacity: 59,
-            position: 'bottom',
-            alignment: 'center',
-            maxWidth: 80,
-            maxSentences: 3,
+            flowDirection: 'down',
+            alignment: 'left',
+            maxSentences: 2,
             autoHideSeconds: 0,
         });
 
@@ -78,6 +77,7 @@ describe('ObsRenderer settings & style calculation', () => {
             bg_mode: 'BLOCK',
             bg_color: '#0A0B0C',
             bg_opacity: 150,
+            flow_direction: 'UP',
             position: 'TOP',
             alignment: 'RIGHT',
             max_width: 10,
@@ -98,9 +98,8 @@ describe('ObsRenderer settings & style calculation', () => {
             bgMode: 'block',
             bgColor: '#0a0b0c',
             bgOpacity: 100,
-            position: 'top',
+            flowDirection: 'up',
             alignment: 'right',
-            maxWidth: 30,
             maxSentences: 1,
             autoHideSeconds: 30,
         });
@@ -112,7 +111,7 @@ describe('ObsRenderer settings & style calculation', () => {
     });
 
     it('computes scaled overlay CSS custom properties', () => {
-        const computed = ObsRenderer.computeStyleVars({
+        const computedUp = ObsRenderer.computeStyleVars({
             fontSize: 60,
             translationFontScale: 85,
             fontFamily: 'simhei',
@@ -125,11 +124,10 @@ describe('ObsRenderer settings & style calculation', () => {
             bgMode: 'block',
             bgColor: '#102030',
             bgOpacity: 75,
-            position: 'top',
-            alignment: 'left',
-            maxWidth: 70,
+            flowDirection: 'up',
+            alignment: 'right',
         });
-        expect(computed.vars).toEqual({
+        expect(computedUp.vars).toEqual({
             '--fs': '60px',
             '--a': '0.75',
             '--pad': '16px',
@@ -145,12 +143,14 @@ describe('ObsRenderer settings & style calculation', () => {
             '--ov-stroke': '4px #112233',
             '--ov-text-shadow': 'none',
             '--ov-bg-rgba': 'rgba(16, 32, 48, 0.75)',
-            '--ov-justify': 'flex-start',
-            '--ov-align-items': 'flex-start',
-            '--ov-text-align': 'left',
-            '--ov-max-width': '70%',
+            '--ov-justify': 'flex-end',
+            '--ov-text-align': 'right',
         });
-        expect(computed.sentMb).toBe(27);
+        expect(computedUp.sentMb).toBe(27);
+
+        const computedDown = ObsRenderer.computeStyleVars({ flowDirection: 'down', alignment: 'left' });
+        expect(computedDown.vars['--ov-justify']).toBe('flex-start');
+        expect(computedDown.vars['--ov-text-align']).toBe('left');
     });
 });
 
@@ -259,7 +259,7 @@ describe('ObsRenderer rendering & pack gating', () => {
         expect(lines[0].textContent).toContain('Hello');
     });
 
-    it('applies typography, colors, outline, shadow, background mode, layout, showLangTag, and maxSentences', () => {
+    it('applies typography, colors, outline, shadow, background mode, flowDirection ordering/pinning, showLangTag, and maxSentences', () => {
         const dom = createDom();
         const { session, rootElement, container } = createDeps(dom);
         const renderer = ObsRenderer.create({
@@ -284,9 +284,8 @@ describe('ObsRenderer rendering & pack gating', () => {
                 bgMode: 'block',
                 bgColor: '#123456',
                 bgOpacity: 80,
-                position: 'top',
+                flowDirection: 'down',
                 alignment: 'right',
-                maxWidth: 65,
                 maxSentences: 2,
             },
         });
@@ -298,15 +297,20 @@ describe('ObsRenderer rendering & pack gating', () => {
                 { text: 'Second sentence.', is_final: true, language: 'en', translation_status: 'original' },
                 { is_separator: true, is_final: true },
                 { text: 'Third sentence.', is_final: true, language: 'en', translation_status: 'original' },
+                { text: 'Tercera frase.', is_final: true, language: 'es', translation_status: 'translation' },
                 { is_separator: true, is_final: true },
                 { text: 'Fourth sentence.', is_final: true, language: 'en', translation_status: 'original' },
+                { text: 'Cuarta frase.', is_final: true, language: 'es', translation_status: 'translation' },
             ],
         });
+
+        Object.defineProperty(container, 'clientHeight', { value: 300, configurable: true });
+        Object.defineProperty(container, 'scrollHeight', { value: 420, configurable: true });
 
         renderer.render();
         expect(rootElement.getAttribute('data-bg-mode')).toBe('block');
         expect(rootElement.getAttribute('data-font-family')).toBe('noto_sans_cjk');
-        expect(rootElement.getAttribute('data-position')).toBe('top');
+        expect(rootElement.getAttribute('data-flow-direction')).toBe('down');
         expect(rootElement.getAttribute('data-alignment')).toBe('right');
         expect(rootElement.style.getPropertyValue('--ov-font-weight')).toBe('700');
         expect(rootElement.style.getPropertyValue('--ov-tr-scale')).toBe('0.8');
@@ -316,9 +320,7 @@ describe('ObsRenderer rendering & pack gating', () => {
         expect(rootElement.style.getPropertyValue('--ov-text-shadow')).toBe('none');
         expect(rootElement.style.getPropertyValue('--ov-bg-rgba')).toBe('rgba(18, 52, 86, 0.8)');
         expect(rootElement.style.getPropertyValue('--ov-justify')).toBe('flex-start');
-        expect(rootElement.style.getPropertyValue('--ov-align-items')).toBe('flex-end');
         expect(rootElement.style.getPropertyValue('--ov-text-align')).toBe('right');
-        expect(rootElement.style.getPropertyValue('--ov-max-width')).toBe('65%');
 
         expect(container.querySelectorAll('.ov-tag')).toHaveLength(0);
         const text = container.textContent;
@@ -326,6 +328,49 @@ describe('ObsRenderer rendering & pack gating', () => {
         expect(text).not.toContain('Second sentence.');
         expect(text).toContain('Third sentence.');
         expect(text).toContain('Fourth sentence.');
+        // Downward flow places newest sentence at top while keeping original above translation
+        const linesDown = [...container.querySelectorAll('.ov-line')].map((el) => el.textContent);
+        expect(linesDown).toEqual([
+            'Fourth sentence.',
+            'Cuarta frase.',
+            'Third sentence.',
+            'Tercera frase.',
+        ]);
+        expect(container.scrollTop).toBe(0);
+
+        // If newest sentence alone overflows container.clientHeight, scrollTop advances to keep its bottom in view
+        const origRender = renderer.render;
+        const origInnerDesc = Object.getOwnPropertyDescriptor(dom.window.Element.prototype, 'innerHTML');
+        Object.defineProperty(container, 'innerHTML', {
+            set(v) {
+                origInnerDesc.set.call(this, v);
+                if (this.children && this.children[1]) {
+                    Object.defineProperty(this.children[1], 'offsetTop', { value: 260, configurable: true });
+                    Object.defineProperty(this.children[1], 'offsetHeight', { value: 120, configurable: true });
+                }
+            },
+            get() {
+                return origInnerDesc.get.call(this);
+            },
+            configurable: true,
+        });
+        origRender();
+        expect(container.scrollTop).toBe(80);
+        delete container.innerHTML;
+
+        // Upward flow reverses back to oldest-first and pins scrollTop to bottom
+        renderer.setSettings({ ...renderer.getSettings(), flowDirection: 'up', maxSentences: 2 });
+        renderer.render();
+        expect(rootElement.getAttribute('data-flow-direction')).toBe('up');
+        expect(rootElement.style.getPropertyValue('--ov-justify')).toBe('flex-end');
+        const linesUp = [...container.querySelectorAll('.ov-line')].map((el) => el.textContent);
+        expect(linesUp).toEqual([
+            'Third sentence.',
+            'Tercera frase.',
+            'Fourth sentence.',
+            'Cuarta frase.',
+        ]);
+        expect(container.scrollTop).toBe(420);
     });
 
     it('hides overlay after autoHideSeconds of inactivity and wakes on text update', () => {
@@ -525,14 +570,16 @@ describe('ObsApp WebSocket & preview orchestration', () => {
                     fontSize: 64,
                     showLangTag: false,
                     bgMode: 'none',
-                    alignment: 'left',
+                    flowDirection: 'up',
+                    alignment: 'right',
                 },
             },
         }));
 
         expect(root.style.getPropertyValue('--fs')).toBe('64px');
         expect(root.getAttribute('data-bg-mode')).toBe('none');
-        expect(root.getAttribute('data-alignment')).toBe('left');
+        expect(root.getAttribute('data-flow-direction')).toBe('up');
+        expect(root.getAttribute('data-alignment')).toBe('right');
         expect(container.querySelectorAll('.ov-tag')).toHaveLength(0);
         expect(container.textContent).toContain('リアルタイム字幕のテストをしています。');
 

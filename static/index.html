@@ -559,6 +559,7 @@
                     <ul class="obs-howto-list">
                         <li id="obsHowToDrag"></li>
                         <li id="obsHowToCopy"></li>
+                        <li id="obsHowToScaleTip"></li>
                         <li id="obsHowToKeepRunning"></li>
                     </ul>
                 </details>
@@ -696,31 +697,21 @@
                     <span class="obs-group-chevron" aria-hidden="true"></span>
                 </summary>
                 <div class="settings-card obs-group-card">
-                    <div class="settings-item form-field" id="obsPositionField">
-                        <span id="obsPositionLabel">Position</span>
-                        <div id="obsPositionPicker"></div>
+                    <div class="settings-item form-field" id="obsFlowDirectionField">
+                        <span id="obsFlowDirectionLabel">Subtitle flow direction</span>
+                        <div id="obsFlowDirectionPicker"></div>
                     </div>
                     <div class="settings-item form-field" id="obsAlignmentField">
                         <span id="obsAlignmentLabel">Alignment</span>
                         <div id="obsAlignmentPicker"></div>
                     </div>
-                    <label class="settings-item form-field range-field" id="obsMaxWidthField" for="obsMaxWidthSlider">
-                        <span class="range-field-header">
-                            <span id="obsMaxWidthLabel">Max width</span>
-                            <output id="obsMaxWidthValue" for="obsMaxWidthSlider">80%</output>
-                        </span>
-                        <span class="range-track" style="--default-frac: 0.714286;">
-                            <input id="obsMaxWidthSlider" type="range" min="30" max="100" step="5" value="80" data-default="80">
-                            <span class="range-default-mark" id="obsMaxWidthDefaultMark" aria-hidden="true"></span>
-                        </span>
-                    </label>
                     <label class="settings-item form-field range-field" id="obsMaxSentencesField" for="obsMaxSentencesSlider">
                         <span class="range-field-header">
                             <span id="obsMaxSentencesLabel">Max sentences</span>
-                            <output id="obsMaxSentencesValue" for="obsMaxSentencesSlider">3</output>
+                            <output id="obsMaxSentencesValue" for="obsMaxSentencesSlider">2</output>
                         </span>
-                        <span class="range-track" style="--default-frac: 0.222222;">
-                            <input id="obsMaxSentencesSlider" type="range" min="1" max="10" step="1" value="3" data-default="3">
+                        <span class="range-track" style="--default-frac: 0.111111;">
+                            <input id="obsMaxSentencesSlider" type="range" min="1" max="10" step="1" value="2" data-default="2">
                             <span class="range-default-mark" id="obsMaxSentencesDefaultMark" aria-hidden="true"></span>
                         </span>
                     </label>

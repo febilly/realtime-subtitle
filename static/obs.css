@@ -43,9 +43,9 @@ body {
     inset: 0;
     display: flex;
     flex-direction: column;
-    justify-content: var(--ov-justify, flex-end);
-    align-items: var(--ov-align-items, center);
-    padding: 16px 24px;
+    justify-content: var(--ov-justify, flex-start);
+    align-items: stretch;
+    padding: 12px 20px;
     box-sizing: border-box;
     background: transparent;
     pointer-events: none;
@@ -65,8 +65,8 @@ body {
 }
 
 .ov-text {
-    width: fit-content;
-    max-width: var(--ov-max-width, 80%);
+    position: relative;
+    width: 100%;
     max-height: 100%;
     box-sizing: border-box;
     padding: 0;
@@ -93,7 +93,7 @@ body {
 .ov-line {
     --line-scale: 1;
     line-height: 1.45;
-    text-align: var(--ov-text-align, center);
+    text-align: var(--ov-text-align, left);
     overflow-wrap: break-word;
     word-break: break-word;
 }

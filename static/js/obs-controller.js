@@ -20,9 +20,6 @@
         BG_OPACITY_DEFAULT,
         BG_OPACITY_MIN,
         BG_OPACITY_MAX,
-        MAX_WIDTH_DEFAULT,
-        MAX_WIDTH_MIN,
-        MAX_WIDTH_MAX,
         MAX_SENTENCES_DEFAULT,
         MAX_SENTENCES_MIN,
         MAX_SENTENCES_MAX,
@@ -47,8 +44,10 @@
         background: false,
         layout: false,
     });
-    const PREVIEW_VIRTUAL_WIDTH = 1280;
-    const PREVIEW_VIRTUAL_HEIGHT = 720;
+    const DEFAULT_SOURCE_WIDTH = 1600;
+    const DEFAULT_SOURCE_HEIGHT = 320;
+    const PREVIEW_VIRTUAL_WIDTH = DEFAULT_SOURCE_WIDTH;
+    const PREVIEW_VIRTUAL_HEIGHT = DEFAULT_SOURCE_HEIGHT;
     const COPIED_RESET_DELAY_MS = 1500;
     const MOBILE_UA_PATTERN = /Mobi|Android|iPhone|iPad|iPod/i;
 
@@ -210,7 +209,7 @@
             const baseUrl = getObsUrl();
             const layerName = encodeURIComponent(t('obs_layer_name'));
             const sep = baseUrl.includes('?') ? '&' : '?';
-            return `${baseUrl}${sep}layer-name=${layerName}`;
+            return `${baseUrl}${sep}layer-name=${layerName}&layer-width=${DEFAULT_SOURCE_WIDTH}&layer-height=${DEFAULT_SOURCE_HEIGHT}`;
         }
 
         function updatePortWarning() {
@@ -331,16 +330,6 @@
                 format: (v) => `${v}%`,
             },
             {
-                key: 'maxWidth',
-                sliderId: 'obsMaxWidthSlider',
-                valueId: 'obsMaxWidthValue',
-                markId: 'obsMaxWidthDefaultMark',
-                min: MAX_WIDTH_MIN,
-                max: MAX_WIDTH_MAX,
-                def: MAX_WIDTH_DEFAULT,
-                format: (v) => `${v}%`,
-            },
-            {
                 key: 'maxSentences',
                 sliderId: 'obsMaxSentencesSlider',
                 valueId: 'obsMaxSentencesValue',
@@ -440,11 +429,11 @@
                     ],
                 },
                 {
-                    key: 'position',
-                    hostId: 'obsPositionPicker',
+                    key: 'flowDirection',
+                    hostId: 'obsFlowDirectionPicker',
                     options: [
-                        { value: 'bottom', label: t('obs_position_bottom') },
-                        { value: 'top', label: t('obs_position_top') },
+                        { value: 'down', label: t('subtitle_flow_option_down') },
+                        { value: 'up', label: t('subtitle_flow_option_up') },
                     ],
                 },
                 {
@@ -585,6 +574,7 @@
                 ['obsHowToSummary', 'obs_howto_title'],
                 ['obsHowToDrag', 'obs_howto_drag'],
                 ['obsHowToCopy', 'obs_howto_copy'],
+                ['obsHowToScaleTip', 'obs_howto_scale_tip'],
                 ['obsHowToKeepRunning', 'obs_howto_keep_running'],
                 ['obsPreviewLabel', 'obs_preview_label'],
                 ['obsGroupTextTitle', 'obs_group_text'],
@@ -605,9 +595,8 @@
                 ['obsBgColorLabel', 'obs_bg_color'],
                 ['obsBgOpacityLabel', 'obs_bg_opacity'],
                 ['obsGroupLayoutTitle', 'obs_group_layout'],
-                ['obsPositionLabel', 'obs_position'],
+                ['obsFlowDirectionLabel', 'subtitle_flow_setting'],
                 ['obsAlignmentLabel', 'obs_alignment'],
-                ['obsMaxWidthLabel', 'obs_max_width'],
                 ['obsMaxSentencesLabel', 'obs_max_sentences'],
                 ['obsAutoHideLabel', 'obs_auto_hide'],
                 ['obsResetDefaultsButton', 'obs_reset_defaults'],
@@ -642,8 +631,8 @@
             const box = el('previewBox', 'obsPreviewBox');
             const frame = el('previewFrame', 'obsPreviewFrame');
             if (!box || !frame) return;
-            const width = box.clientWidth || (box.getBoundingClientRect && box.getBoundingClientRect().width) || 432;
-            const scale = width > 0 ? width / PREVIEW_VIRTUAL_WIDTH : 0.3375;
+            const width = box.clientWidth || (box.getBoundingClientRect && box.getBoundingClientRect().width) || 434;
+            const scale = width > 0 ? width / PREVIEW_VIRTUAL_WIDTH : (434 / PREVIEW_VIRTUAL_WIDTH);
             if (frame.style) {
                 frame.style.width = `${PREVIEW_VIRTUAL_WIDTH}px`;
                 frame.style.height = `${PREVIEW_VIRTUAL_HEIGHT}px`;

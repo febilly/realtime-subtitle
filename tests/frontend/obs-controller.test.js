@@ -51,6 +51,7 @@ function buildObsDom(url = 'http://127.0.0.1:19001/') {
                         <ul>
                             <li id="obsHowToDrag"></li>
                             <li id="obsHowToCopy"></li>
+                            <li id="obsHowToScaleTip"></li>
                             <li id="obsHowToKeepRunning"></li>
                         </ul>
                     </details>
@@ -143,23 +144,16 @@ function buildObsDom(url = 'http://127.0.0.1:19001/') {
                 <details id="obsGroupLayout" data-obs-group="layout">
                     <summary><span id="obsGroupLayoutTitle"></span></summary>
                     <div>
-                        <span id="obsPositionLabel"></span>
-                        <div id="obsPositionPicker"></div>
+                        <span id="obsFlowDirectionLabel"></span>
+                        <div id="obsFlowDirectionPicker"></div>
 
                         <span id="obsAlignmentLabel"></span>
                         <div id="obsAlignmentPicker"></div>
 
-                        <span id="obsMaxWidthLabel"></span>
-                        <output id="obsMaxWidthValue"></output>
-                        <span>
-                            <input id="obsMaxWidthSlider" type="range" min="30" max="100" step="5" value="80">
-                            <span id="obsMaxWidthDefaultMark"></span>
-                        </span>
-
                         <span id="obsMaxSentencesLabel"></span>
                         <output id="obsMaxSentencesValue"></output>
                         <span>
-                            <input id="obsMaxSentencesSlider" type="range" min="1" max="10" step="1" value="3">
+                            <input id="obsMaxSentencesSlider" type="range" min="1" max="10" step="1" value="2">
                             <span id="obsMaxSentencesDefaultMark"></span>
                         </span>
 
@@ -283,7 +277,7 @@ describe('ObsController dialog gating, opening/closing, and link sharing', () =>
         controller.dispose();
     });
 
-    it('configures draggable link card with ?layer-name only and copies plain URL on click or Copy button', async () => {
+    it('configures draggable link card with ?layer-name, layer-width=1600, layer-height=320 and copies plain URL on click or Copy button', async () => {
         vi.useFakeTimers();
         const dom = buildObsDom();
         const storage = createMemoryStorage();
@@ -307,11 +301,13 @@ describe('ObsController dialog gating, opening/closing, and link sharing', () =>
             obs_url: 'http://127.0.0.1:19001/obs',
         });
 
+        expect(ObsController.PREVIEW_VIRTUAL_WIDTH).toBe(1600);
+        expect(ObsController.PREVIEW_VIRTUAL_HEIGHT).toBe(320);
+        expect(dom.window.document.getElementById('obsHowToScaleTip').textContent).toBe('obs_howto_scale_tip');
+
         const dragCard = dom.window.document.getElementById('obsDragCard');
-        const expectedDragUrl = 'http://127.0.0.1:19001/obs?layer-name=%E5%AE%9E%E6%97%B6%E5%AD%97%E5%B9%95';
+        const expectedDragUrl = 'http://127.0.0.1:19001/obs?layer-name=%E5%AE%9E%E6%97%B6%E5%AD%97%E5%B9%95&layer-width=1600&layer-height=320';
         expect(dragCard.getAttribute('href')).toBe(expectedDragUrl);
-        expect(expectedDragUrl).not.toContain('layer-width');
-        expect(expectedDragUrl).not.toContain('layer-height');
 
         // dragstart sets text/uri-list & text/plain and records port
         const transferred = {};
@@ -521,23 +517,32 @@ describe('ObsController settings persistence, groups, preview sync, and reset', 
         const bgSelect = dom.window.document.querySelector('#obsBgModePicker select');
         bgSelect.value = 'block';
         bgSelect.dispatchEvent(new dom.window.Event('change'));
+        const flowSelect = dom.window.document.querySelector('#obsFlowDirectionPicker select');
+        flowSelect.value = 'up';
+        flowSelect.dispatchEvent(new dom.window.Event('change'));
 
         expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toMatchObject({
             bold: true,
             bgMode: 'block',
+            flowDirection: 'up',
         });
         expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
             method: 'POST',
-            body: expect.stringContaining('"bg_mode":"block"'),
+            body: expect.stringContaining('"flow_direction":"up"'),
         }));
 
-        // Reset button restores all 19 defaults
+        // Reset button restores all 18 defaults
         dom.window.document.getElementById('obsResetDefaultsButton').click();
         expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toEqual(ObsSettings.DEFAULT_SETTINGS);
+        expect(ObsSettings.DEFAULT_SETTINGS.flowDirection).toBe('down');
+        expect(ObsSettings.DEFAULT_SETTINGS.alignment).toBe('left');
+        expect(ObsSettings.DEFAULT_SETTINGS.maxSentences).toBe(2);
         expect(dom.window.document.getElementById('obsFontSizeValue').textContent).toBe('42 px');
         expect(dom.window.document.getElementById('obsOriginalColorValue').textContent).toBe('#e5e7eb');
         expect(boldSwitch.getAttribute('aria-checked')).toBe('false');
         expect(bgSelect.value).toBe('strip');
+        expect(flowSelect.value).toBe('down');
+        expect(dom.window.document.querySelector('#obsAlignmentPicker select').value).toBe('left');
         expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
             method: 'POST',
             body: JSON.stringify(ObsSettings.toBackendPayload(ObsSettings.DEFAULT_SETTINGS)),

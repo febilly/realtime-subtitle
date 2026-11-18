@@ -25,10 +25,9 @@ EXPECTED_DEFAULT_OBS_SETTINGS = {
     "bg_mode": "strip",
     "bg_color": "#000000",
     "bg_opacity": 59,
-    "position": "bottom",
-    "alignment": "center",
-    "max_width": 80,
-    "max_sentences": 3,
+    "flow_direction": "down",
+    "alignment": "left",
+    "max_sentences": 2,
     "auto_hide_seconds": 0,
 }
 
@@ -154,7 +153,7 @@ class TestWebServerObsPack:
                 {"display_content": "invalid"},
                 {"font_family": "comic_sans"},
                 {"bg_mode": "gradient"},
-                {"position": "middle"},
+                {"flow_direction": "sideways"},
                 {"alignment": "justify"},
                 {"bold": "yes"},
                 {"show_lang_tag": 1},
@@ -170,7 +169,7 @@ class TestWebServerObsPack:
                 _, code = _async_run(server.obs_settings_post_handler(req_bad))
                 assert code == 400, f"Expected 400 for {bad_payload}"
 
-            # Clamps numeric fields, accepts camelCase & snake_case, normalizes hex, broadcasts
+            # Clamps numeric fields, accepts camelCase & snake_case, normalizes hex, ignores legacy keys, broadcasts
             req_ok = AsyncMock()
             req_ok.remote = "127.0.0.1"
             req_ok.content_type = "application/json"
@@ -189,6 +188,7 @@ class TestWebServerObsPack:
                 "bg_mode": "block",
                 "bg_color": "#102030",
                 "bg_opacity": -5,
+                "flowDirection": "up",
                 "position": "top",
                 "alignment": "right",
                 "max_width": 10,
@@ -210,9 +210,8 @@ class TestWebServerObsPack:
                 "bg_mode": "block",
                 "bg_color": "#102030",
                 "bg_opacity": 0,
-                "position": "top",
+                "flow_direction": "up",
                 "alignment": "right",
-                "max_width": 30,
                 "max_sentences": 10,
                 "auto_hide_seconds": 30,
             }
@@ -227,12 +226,13 @@ class TestWebServerObsPack:
             # Partial update preserves remaining fields
             req_partial = AsyncMock()
             req_partial.remote = "127.0.0.1"
-            req_partial.json.return_value = {"alignment": "left", "bg_opacity": 75}
+            req_partial.json.return_value = {"alignment": "center", "bg_opacity": 75}
             body, code = _async_run(server.obs_settings_post_handler(req_partial))
             assert code == 200
-            assert body["settings"]["alignment"] == "left"
+            assert body["settings"]["alignment"] == "center"
             assert body["settings"]["bg_opacity"] == 75
             assert body["settings"]["font_family"] == "noto_sans_cjk"
+            assert body["settings"]["flow_direction"] == "up"
 
     def test_legacy_stored_obs_settings_falls_back_gracefully(self):
         with patch_modules({
@@ -247,6 +247,8 @@ class TestWebServerObsPack:
                 "obsSettings.v1": json.dumps({
                     "fontSize": 56,
                     "displayContent": "original",
+                    "position": "top",
+                    "maxWidth": 65,
                     "unknownField": "ignored",
                     "bgColor": "not-a-hex",
                 }),
@@ -257,6 +259,8 @@ class TestWebServerObsPack:
             expected["font_size"] = 56
             expected["display_content"] = "original"
             assert loaded == expected
+            assert "position" not in loaded
+            assert "max_width" not in loaded
 
     def test_clipboard_post_endpoint_loopback_validation_and_callback(self):
         with patch_modules({

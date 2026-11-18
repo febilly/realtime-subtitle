@@ -17,11 +17,7 @@
     const BG_OPACITY_MIN = 0;
     const BG_OPACITY_MAX = 100;
 
-    const MAX_WIDTH_DEFAULT = 80;
-    const MAX_WIDTH_MIN = 30;
-    const MAX_WIDTH_MAX = 100;
-
-    const MAX_SENTENCES_DEFAULT = 3;
+    const MAX_SENTENCES_DEFAULT = 2;
     const MAX_SENTENCES_MIN = 1;
     const MAX_SENTENCES_MAX = 10;
 
@@ -39,7 +35,7 @@
         'noto_sans_cjk',
     ]);
     const VALID_BG_MODES = Object.freeze(['none', 'strip', 'block']);
-    const VALID_POSITIONS = Object.freeze(['bottom', 'top']);
+    const VALID_FLOW_DIRECTIONS = Object.freeze(['down', 'up']);
     const VALID_ALIGNMENTS = Object.freeze(['left', 'center', 'right']);
 
     const FONT_FAMILY_STACKS = Object.freeze({
@@ -68,9 +64,8 @@
         bgMode: 'strip',
         bgColor: '#000000',
         bgOpacity: BG_OPACITY_DEFAULT,
-        position: 'bottom',
-        alignment: 'center',
-        maxWidth: MAX_WIDTH_DEFAULT,
+        flowDirection: 'down',
+        alignment: 'left',
         maxSentences: MAX_SENTENCES_DEFAULT,
         autoHideSeconds: AUTO_HIDE_SECONDS_DEFAULT,
     });
@@ -90,9 +85,8 @@
         bgMode: 'bg_mode',
         bgColor: 'bg_color',
         bgOpacity: 'bg_opacity',
-        position: 'position',
+        flowDirection: 'flow_direction',
         alignment: 'alignment',
-        maxWidth: 'max_width',
         maxSentences: 'max_sentences',
         autoHideSeconds: 'auto_hide_seconds',
     });
@@ -179,21 +173,15 @@
                 BG_OPACITY_MAX,
                 DEFAULT_SETTINGS.bgOpacity,
             ),
-            position: normalizeEnum(
-                pickField(source, 'position', 'position'),
-                VALID_POSITIONS,
-                DEFAULT_SETTINGS.position,
+            flowDirection: normalizeEnum(
+                pickField(source, 'flowDirection', 'flow_direction'),
+                VALID_FLOW_DIRECTIONS,
+                DEFAULT_SETTINGS.flowDirection,
             ),
             alignment: normalizeEnum(
                 pickField(source, 'alignment', 'alignment'),
                 VALID_ALIGNMENTS,
                 DEFAULT_SETTINGS.alignment,
-            ),
-            maxWidth: clampInt(
-                pickField(source, 'maxWidth', 'max_width'),
-                MAX_WIDTH_MIN,
-                MAX_WIDTH_MAX,
-                DEFAULT_SETTINGS.maxWidth,
             ),
             maxSentences: clampInt(
                 pickField(source, 'maxSentences', 'max_sentences'),
@@ -253,10 +241,7 @@
         const textShadow = settings.dropShadow
             ? '0 1px 3px rgba(0, 0, 0, .85), 0 2px 6px rgba(0, 0, 0, .55)'
             : 'none';
-        const justify = settings.position === 'top' ? 'flex-start' : 'flex-end';
-        const alignItems = settings.alignment === 'left'
-            ? 'flex-start'
-            : (settings.alignment === 'right' ? 'flex-end' : 'center');
+        const justify = settings.flowDirection === 'up' ? 'flex-end' : 'flex-start';
 
         const vars = {
             '--fs': `${fs}px`,
@@ -275,9 +260,7 @@
             '--ov-text-shadow': textShadow,
             '--ov-bg-rgba': bgRgba,
             '--ov-justify': justify,
-            '--ov-align-items': alignItems,
             '--ov-text-align': settings.alignment,
-            '--ov-max-width': `${settings.maxWidth}%`,
         };
         const sentMb = Math.max(5, Math.floor(fs * 0.45));
         return { fs, tagFs, sentMb, settings, vars };
@@ -296,9 +279,6 @@
         BG_OPACITY_DEFAULT,
         BG_OPACITY_MIN,
         BG_OPACITY_MAX,
-        MAX_WIDTH_DEFAULT,
-        MAX_WIDTH_MIN,
-        MAX_WIDTH_MAX,
         MAX_SENTENCES_DEFAULT,
         MAX_SENTENCES_MIN,
         MAX_SENTENCES_MAX,
@@ -308,7 +288,7 @@
         VALID_DISPLAY_CONTENTS,
         VALID_FONT_FAMILIES,
         VALID_BG_MODES,
-        VALID_POSITIONS,
+        VALID_FLOW_DIRECTIONS,
         VALID_ALIGNMENTS,
         FONT_FAMILY_STACKS,
         DEFAULT_SETTINGS,

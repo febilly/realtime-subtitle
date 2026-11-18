@@ -56,7 +56,7 @@ OBS_FONT_SIZE_MAX = 120
 OBS_DISPLAY_MODES = ("both", "original", "translation")
 OBS_FONT_FAMILIES = ("system", "microsoft_yahei", "simhei", "simsun", "kaiti", "noto_sans_cjk")
 OBS_BG_MODES = ("none", "strip", "block")
-OBS_POSITIONS = ("bottom", "top")
+OBS_FLOW_DIRECTIONS = ("down", "up")
 OBS_ALIGNMENTS = ("left", "center", "right")
 OBS_HEX_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$", re.IGNORECASE)
 OBS_SETTINGS_DEFAULTS = {
@@ -74,10 +74,9 @@ OBS_SETTINGS_DEFAULTS = {
     "bg_mode": "strip",
     "bg_color": "#000000",
     "bg_opacity": 59,
-    "position": "bottom",
-    "alignment": "center",
-    "max_width": 80,
-    "max_sentences": 3,
+    "flow_direction": "down",
+    "alignment": "left",
+    "max_sentences": 2,
     "auto_hide_seconds": 0,
 }
 OBS_INT_SPECS = {
@@ -85,16 +84,15 @@ OBS_INT_SPECS = {
     "translation_font_scale": ("translationFontScale", 50, 150, 100),
     "outline_width": ("outlineWidth", 0, 8, 0),
     "bg_opacity": ("bgOpacity", 0, 100, 59),
-    "max_width": ("maxWidth", 30, 100, 80),
-    "max_sentences": ("maxSentences", 1, 10, 3),
+    "max_sentences": ("maxSentences", 1, 10, 2),
     "auto_hide_seconds": ("autoHideSeconds", 0, 30, 0),
 }
 OBS_ENUM_SPECS = {
     "display_content": ("displayContent", OBS_DISPLAY_MODES, "both"),
     "font_family": ("fontFamily", OBS_FONT_FAMILIES, "system"),
     "bg_mode": ("bgMode", OBS_BG_MODES, "strip"),
-    "position": ("position", OBS_POSITIONS, "bottom"),
-    "alignment": ("alignment", OBS_ALIGNMENTS, "center"),
+    "flow_direction": ("flowDirection", OBS_FLOW_DIRECTIONS, "down"),
+    "alignment": ("alignment", OBS_ALIGNMENTS, "left"),
 }
 OBS_BOOL_SPECS = {
     "bold": ("bold", False),

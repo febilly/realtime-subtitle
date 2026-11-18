@@ -30,7 +30,7 @@
         if (element && typeof element.setAttribute === 'function') {
             element.setAttribute('data-bg-mode', computed.settings.bgMode);
             element.setAttribute('data-font-family', computed.settings.fontFamily);
-            element.setAttribute('data-position', computed.settings.position);
+            element.setAttribute('data-flow-direction', computed.settings.flowDirection);
             element.setAttribute('data-alignment', computed.settings.alignment);
         }
         return computed;
@@ -360,8 +360,13 @@
                 ? Math.min(settings.maxSentences, explicitMaxSentences)
                 : settings.maxSentences;
             const visibleSentences = allSentences.slice(-limit);
+            const orderedSentences = settings.flowDirection === 'down'
+                ? [...visibleSentences].reverse()
+                : visibleSentences;
             const parts = [];
-            for (const sentence of visibleSentences) {
+            let newestLinesCount = 0;
+            for (const sentence of orderedSentences) {
+                const startLen = parts.length;
                 const originalBody = model.showOriginal ? buildOriginalBody(sentence) : '';
                 const translationLine = model.showTranslation
                     ? buildTranslationLine(sentence, model.showOriginal, sentMb)
@@ -374,12 +379,32 @@
                 } else if (translationLine) {
                     parts.push(translationLine);
                 }
+                if (settings.flowDirection === 'down' && newestLinesCount === 0 && parts.length > startLen) {
+                    newestLinesCount = parts.length - startLen;
+                }
             }
 
             const html = parts.join('');
             container.innerHTML = html;
             if (typeof container.scrollHeight === 'number') {
-                container.scrollTop = container.scrollHeight;
+                if (settings.flowDirection === 'up') {
+                    container.scrollTop = container.scrollHeight;
+                } else if (newestLinesCount > 0 && container.children && container.clientHeight > 0) {
+                    const lastNewestEl = container.children[newestLinesCount - 1];
+                    if (lastNewestEl) {
+                        const newestBottom = (lastNewestEl.offsetTop || 0) + (lastNewestEl.offsetHeight || 0);
+                        let padBottom = 0;
+                        if (root && typeof root.getComputedStyle === 'function') {
+                            padBottom = parseFloat(root.getComputedStyle(container).paddingBottom) || 0;
+                        }
+                        const overflow = newestBottom + padBottom - container.clientHeight;
+                        container.scrollTop = overflow > 0 ? overflow : 0;
+                    } else {
+                        container.scrollTop = 0;
+                    }
+                } else {
+                    container.scrollTop = 0;
+                }
             }
             const nextSignature = html ? (container.textContent || html) : '';
             if (!nextSignature) {
