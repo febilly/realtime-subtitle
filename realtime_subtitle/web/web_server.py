@@ -50,7 +50,7 @@ logger = logging.getLogger("web_server")
 
 FEATURE_PACK_IDS = ("vrchat", "learning", "obs", "transcript")
 LEARNING_LANGUAGES = ("ja", "zh", "ko")
-OBS_FONT_SIZE_DEFAULT = 42
+OBS_FONT_SIZE_DEFAULT = 32
 OBS_FONT_SIZE_MIN = 16
 OBS_FONT_SIZE_MAX = 120
 OBS_DISPLAY_MODES = ("both", "original", "translation")

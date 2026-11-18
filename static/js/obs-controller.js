@@ -44,8 +44,8 @@
         background: false,
         layout: false,
     });
-    const DEFAULT_SOURCE_WIDTH = 1600;
-    const DEFAULT_SOURCE_HEIGHT = 320;
+    const DEFAULT_SOURCE_WIDTH = 1200;
+    const DEFAULT_SOURCE_HEIGHT = 224;
     const PREVIEW_VIRTUAL_WIDTH = DEFAULT_SOURCE_WIDTH;
     const PREVIEW_VIRTUAL_HEIGHT = DEFAULT_SOURCE_HEIGHT;
     const COPIED_RESET_DELAY_MS = 1500;

@@ -43,7 +43,7 @@ describe('ObsRenderer settings & style calculation', () => {
     it('normalizes all 18 settings with safe bounds, enums, and hex colors and ignores legacy keys', () => {
         expect(ObsRenderer.normalizeSettings()).toEqual({
             displayContent: 'both',
-            fontSize: 42,
+            fontSize: 32,
             translationFontScale: 100,
             fontFamily: 'system',
             bold: false,
@@ -205,7 +205,7 @@ describe('ObsRenderer rendering & pack gating', () => {
         const res = renderer.render();
         expect(res.rendered).toBe(true);
         expect(res.disabled).toBe(false);
-        expect(rootElement.style.getPropertyValue('--fs')).toBe('42px');
+        expect(rootElement.style.getPropertyValue('--fs')).toBe('32px');
         expect(container.querySelectorAll('.ov-line')).toHaveLength(2);
         expect(container.querySelector('.ov-tag').textContent).toBe('JA');
         expect(container.querySelector('.ov-nf').textContent).toBe('世界');
@@ -244,7 +244,7 @@ describe('ObsRenderer rendering & pack gating', () => {
         expect(lines[0].getAttribute('dir')).toBe('rtl');
         expect(lines[0].getAttribute('lang')).toBe('ar');
         expect(lines[0].style.marginBottom).toBe('0px');
-        expect(lines[1].style.marginBottom).toBe('18px');
+        expect(lines[1].style.marginBottom).toBe('14px');
 
         renderer.setSettings({ fontSize: 50, displayContent: 'original' });
         renderer.render();

@@ -72,7 +72,7 @@ body {
     padding: 0;
     overflow: hidden;
     scrollbar-width: none;
-    font-size: var(--fs, 42px);
+    font-size: var(--fs, 32px);
     color: var(--ov-orig-color, #e5e7eb);
 }
 
@@ -109,7 +109,7 @@ body {
 .ov-line--translation {
     --line-scale: var(--ov-tr-scale, 1);
     color: var(--ov-trans-color, #e5e7eb);
-    font-size: calc(var(--fs, 42px) * var(--ov-tr-scale, 1));
+    font-size: calc(var(--fs, 32px) * var(--ov-tr-scale, 1));
 }
 
 .ov.text-mode[data-font-family="system"] .ov-line[lang="ja"],

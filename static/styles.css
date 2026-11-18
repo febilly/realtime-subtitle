@@ -2980,7 +2980,7 @@ body.dark-theme .obs-howto-details summary {
 .obs-preview-box {
     position: relative;
     width: 100%;
-    aspect-ratio: 5 / 1;
+    aspect-ratio: 1200 / 224;
     overflow: hidden;
     border-radius: 10px;
     border: 1px solid rgba(0, 0, 0, 0.14);
@@ -3002,8 +3002,8 @@ body.dark-theme .obs-preview-box {
     position: absolute;
     top: 0;
     left: 0;
-    width: 1600px;
-    height: 320px;
+    width: 1200px;
+    height: 224px;
     border: 0;
     transform-origin: top left;
     pointer-events: none;

@@ -12,7 +12,7 @@ from module_stubs import patch_modules, pop_module, set_module
 
 EXPECTED_DEFAULT_OBS_SETTINGS = {
     "display_content": "both",
-    "font_size": 42,
+    "font_size": 32,
     "translation_font_scale": 100,
     "font_family": "system",
     "bold": False,

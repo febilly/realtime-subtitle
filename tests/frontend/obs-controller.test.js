@@ -277,7 +277,7 @@ describe('ObsController dialog gating, opening/closing, and link sharing', () =>
         controller.dispose();
     });
 
-    it('configures draggable link card with ?layer-name, layer-width=1600, layer-height=320 and copies plain URL on click or Copy button', async () => {
+    it('configures draggable link card with ?layer-name, layer-width=1200, layer-height=224 and copies plain URL on click or Copy button', async () => {
         vi.useFakeTimers();
         const dom = buildObsDom();
         const storage = createMemoryStorage();
@@ -301,12 +301,12 @@ describe('ObsController dialog gating, opening/closing, and link sharing', () =>
             obs_url: 'http://127.0.0.1:19001/obs',
         });
 
-        expect(ObsController.PREVIEW_VIRTUAL_WIDTH).toBe(1600);
-        expect(ObsController.PREVIEW_VIRTUAL_HEIGHT).toBe(320);
+        expect(ObsController.PREVIEW_VIRTUAL_WIDTH).toBe(1200);
+        expect(ObsController.PREVIEW_VIRTUAL_HEIGHT).toBe(224);
         expect(dom.window.document.getElementById('obsHowToScaleTip').textContent).toBe('obs_howto_scale_tip');
 
         const dragCard = dom.window.document.getElementById('obsDragCard');
-        const expectedDragUrl = 'http://127.0.0.1:19001/obs?layer-name=%E5%AE%9E%E6%97%B6%E5%AD%97%E5%B9%95&layer-width=1600&layer-height=320';
+        const expectedDragUrl = 'http://127.0.0.1:19001/obs?layer-name=%E5%AE%9E%E6%97%B6%E5%AD%97%E5%B9%95&layer-width=1200&layer-height=224';
         expect(dragCard.getAttribute('href')).toBe(expectedDragUrl);
 
         // dragstart sets text/uri-list & text/plain and records port
@@ -537,7 +537,7 @@ describe('ObsController settings persistence, groups, preview sync, and reset', 
         expect(ObsSettings.DEFAULT_SETTINGS.flowDirection).toBe('down');
         expect(ObsSettings.DEFAULT_SETTINGS.alignment).toBe('left');
         expect(ObsSettings.DEFAULT_SETTINGS.maxSentences).toBe(2);
-        expect(dom.window.document.getElementById('obsFontSizeValue').textContent).toBe('42 px');
+        expect(dom.window.document.getElementById('obsFontSizeValue').textContent).toBe('32 px');
         expect(dom.window.document.getElementById('obsOriginalColorValue').textContent).toBe('#e5e7eb');
         expect(boldSwitch.getAttribute('aria-checked')).toBe('false');
         expect(bgSelect.value).toBe('strip');

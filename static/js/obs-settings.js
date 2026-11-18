@@ -1,7 +1,7 @@
 (function (root) {
     'use strict';
 
-    const FONT_SIZE_DEFAULT = 42;
+    const FONT_SIZE_DEFAULT = 32;
     const FONT_SIZE_MIN = 16;
     const FONT_SIZE_MAX = 120;
 
