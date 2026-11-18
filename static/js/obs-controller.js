@@ -955,6 +955,12 @@
 
             const dragCard = el('dragCard', 'obsDragCard');
             bindEvent(dragCard, 'dragstart', (event) => {
+                // pywebview (draggable=False) adds a document-level dragstart
+                // listener that cancels every <a>/<img> drag; keep this one
+                // card draggable without enabling drag app-wide.
+                if (event && typeof event.stopPropagation === 'function') {
+                    event.stopPropagation();
+                }
                 const dragUrl = getObsDragUrl();
                 if (event && event.dataTransfer) {
                     try {

@@ -315,7 +315,11 @@ describe('ObsController dialog gating, opening/closing, and link sharing', () =>
 
         // dragstart sets text/uri-list & text/plain and records port
         const transferred = {};
-        const dragEvent = new dom.window.Event('dragstart');
+        // Same listener pywebview injects when draggable=False.
+        dom.window.document.addEventListener('dragstart', (e) => {
+            if (e.target.tagName === 'IMG' || e.target.tagName === 'A') e.preventDefault();
+        });
+        const dragEvent = new dom.window.Event('dragstart', { bubbles: true, cancelable: true });
         dragEvent.dataTransfer = {
             effectAllowed: 'uninitialized',
             setData: (mime, value) => {
@@ -323,6 +327,7 @@ describe('ObsController dialog gating, opening/closing, and link sharing', () =>
             },
         };
         dragCard.dispatchEvent(dragEvent);
+        expect(dragEvent.defaultPrevented).toBe(false);
         expect(transferred).toEqual({
             'text/uri-list': expectedDragUrl,
             'text/plain': expectedDragUrl,
