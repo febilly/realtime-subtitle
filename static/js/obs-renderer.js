@@ -1,63 +1,37 @@
 (function (root) {
     'use strict';
 
-    const FONT_SIZE_DEFAULT = 42;
-    const FONT_SIZE_MIN = 16;
-    const FONT_SIZE_MAX = 120;
-    const DISPLAY_MODES = Object.freeze(['both', 'original', 'translation']);
-    const DEFAULT_SETTINGS = Object.freeze({
-        fontSize: FONT_SIZE_DEFAULT,
-        displayContent: 'both',
-    });
+    const obsSettings = root.ObsSettings
+        || (typeof require === 'function' ? require('./obs-settings') : null);
+    if (!obsSettings) {
+        throw new Error('ObsRenderer requires ObsSettings');
+    }
+
+    const {
+        FONT_SIZE_DEFAULT,
+        FONT_SIZE_MIN,
+        FONT_SIZE_MAX,
+        VALID_DISPLAY_CONTENTS: DISPLAY_MODES,
+        DEFAULT_SETTINGS,
+        normalizeFontSize,
+        normalizeDisplayContent,
+        normalizeSettings,
+        computeStyleVars,
+    } = obsSettings;
     const MAX_RENDERED_SENTENCES = 20;
 
-    function normalizeFontSize(value) {
-        if (typeof value === 'boolean') return FONT_SIZE_DEFAULT;
-        const parsed = Number(value);
-        if (!Number.isFinite(parsed)) return FONT_SIZE_DEFAULT;
-        return Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(parsed)));
-    }
-
-    function normalizeDisplayContent(value) {
-        if (typeof value !== 'string') return 'both';
-        const normalized = value.trim().toLowerCase();
-        return DISPLAY_MODES.includes(normalized) ? normalized : 'both';
-    }
-
-    function normalizeSettings(raw) {
-        const source = raw && typeof raw === 'object' ? raw : {};
-        return {
-            fontSize: normalizeFontSize(
-                source.fontSize !== undefined ? source.fontSize : source.font_size,
-            ),
-            displayContent: normalizeDisplayContent(
-                source.displayContent !== undefined ? source.displayContent : source.display_content,
-            ),
-        };
-    }
-
-    function computeStyleVars(fontSize) {
-        const fs = normalizeFontSize(fontSize);
-        const tagFs = Math.max(9, Math.floor(fs * 0.55));
-        const vars = {
-            '--fs': `${fs}px`,
-            '--a': '0.592',
-            '--pad': `${Math.max(5, Math.round(fs * 0.26))}px`,
-            '--tag-fs': `${tagFs}px`,
-            '--tag-px': `${Math.max(5, Math.floor(tagFs * 0.6))}px`,
-            '--tag-py': `${Math.max(2, Math.floor(tagFs * 0.3))}px`,
-            '--tag-gap': `${Math.max(4, Math.floor(tagFs * 0.45))}px`,
-        };
-        const sentMb = Math.max(5, Math.floor(fs * 0.45));
-        return { fs, tagFs, sentMb, vars };
-    }
-
-    function applyStyleVars(element, fontSize) {
-        const computed = computeStyleVars(fontSize);
+    function applyStyleVars(element, input) {
+        const computed = computeStyleVars(input);
         if (element && element.style && typeof element.style.setProperty === 'function') {
             for (const [prop, val] of Object.entries(computed.vars)) {
                 element.style.setProperty(prop, val);
             }
+        }
+        if (element && typeof element.setAttribute === 'function') {
+            element.setAttribute('data-bg-mode', computed.settings.bgMode);
+            element.setAttribute('data-font-family', computed.settings.fontFamily);
+            element.setAttribute('data-position', computed.settings.position);
+            element.setAttribute('data-alignment', computed.settings.alignment);
         }
         return computed;
     }
@@ -79,6 +53,12 @@
         const renderModel = options.RenderModel || root.RenderModel;
         const renderHtmlApi = options.RenderHtml || root.RenderHtml;
         const segmentation = options.Segmentation || root.Segmentation;
+        const setTimeoutFn = typeof options.setTimeout === 'function'
+            ? options.setTimeout
+            : root.setTimeout.bind(root);
+        const clearTimeoutFn = typeof options.clearTimeout === 'function'
+            ? options.clearTimeout
+            : root.clearTimeout.bind(root);
 
         if (!container || !session) {
             throw new TypeError('ObsRenderer.create requires container and session');
@@ -99,9 +79,9 @@
             ? renderHtmlApi.getLangDir
             : () => 'ltr';
         const { endsWithSentenceEnding, splitIntoSentenceSegments } = segmentation;
-        const maxSentences = Number.isFinite(Number(options.maxSentences)) && Number(options.maxSentences) > 0
+        const explicitMaxSentences = Number.isFinite(Number(options.maxSentences)) && Number(options.maxSentences) > 0
             ? Math.floor(Number(options.maxSentences))
-            : MAX_RENDERED_SENTENCES;
+            : null;
 
         let settings = normalizeSettings(options.settings);
         let packEnabled = options.packEnabled !== undefined ? !!options.packEnabled : true;
@@ -112,8 +92,39 @@
             currentTranslationTargetLang: '',
             ...(options.uiState && typeof options.uiState === 'object' ? options.uiState : {}),
         };
+        let autoHideTimer = null;
+        let isAutoHidden = false;
+        let lastContentSignature = '';
 
-        applyStyleVars(rootElement || container, settings.fontSize);
+        const targetEl = rootElement || container;
+        applyStyleVars(targetEl, settings);
+
+        function setAutoHidden(hidden) {
+            isAutoHidden = !!hidden;
+            if (targetEl && targetEl.classList && typeof targetEl.classList.toggle === 'function') {
+                targetEl.classList.toggle('is-auto-hidden', isAutoHidden);
+            }
+        }
+
+        function clearAutoHideTimer() {
+            if (autoHideTimer !== null) {
+                clearTimeoutFn(autoHideTimer);
+                autoHideTimer = null;
+            }
+        }
+
+        function scheduleAutoHideTimer() {
+            clearAutoHideTimer();
+            if (settings.autoHideSeconds <= 0 || !lastContentSignature) {
+                setAutoHidden(false);
+                return;
+            }
+            setAutoHidden(false);
+            autoHideTimer = setTimeoutFn(() => {
+                autoHideTimer = null;
+                setAutoHidden(true);
+            }, settings.autoHideSeconds * 1000);
+        }
 
         function renderTrimmedPlainRuns(tokens, { normalizeTranslationSpacing = false } = {}) {
             if (!Array.isArray(tokens) || tokens.length === 0) return '';
@@ -191,17 +202,18 @@
         }
 
         function formatLangTag(lang) {
-            if (!lang) return '';
+            if (!settings.showLangTag || !lang) return '';
             return `<span class="ov-tag">${escapeHtml(String(lang).toUpperCase())}</span>`;
         }
 
-        function formatOverlayLine(lang, bodyHtml, marginBottomPx) {
+        function formatOverlayLine(kind, lang, bodyHtml, marginBottomPx) {
             if (!bodyHtml) return '';
             const safeLang = lang ? String(lang) : '';
             const dir = getLangDir(safeLang);
             const tagHtml = formatLangTag(safeLang);
             const langAttr = safeLang ? ` lang="${escapeHtml(safeLang)}"` : '';
-            return `<div class="ov-line"${langAttr} dir="${dir}" style="margin-bottom:${marginBottomPx}px"><span class="ov-bg">${tagHtml}${bodyHtml}</span></div>`;
+            const kindClass = kind === 'translation' ? 'ov-line--translation' : 'ov-line--original';
+            return `<div class="ov-line ${kindClass}"${langAttr} dir="${dir}" style="margin-bottom:${marginBottomPx}px"><span class="ov-bg">${tagHtml}${bodyHtml}</span></div>`;
         }
 
         function buildOriginalBody(sentence) {
@@ -236,7 +248,7 @@
                     : renderTrimmedPlainRuns(sentence.translationTokens, {
                         normalizeTranslationSpacing: true,
                     });
-                return formatOverlayLine(sentence.translationLang, body, marginBottomPx);
+                return formatOverlayLine('translation', sentence.translationLang, body, marginBottomPx);
             }
 
             if (uiState.translationUiMode === 'accurate' && (!showOriginal || sentence.originalTokens.length > 0)) {
@@ -245,7 +257,7 @@
                     const lang = session.getTranslationLanguage(sentenceId)
                         || uiState.currentTranslationTargetLang
                         || '';
-                    return formatOverlayLine(lang, escapeHtml(override), marginBottomPx);
+                    return formatOverlayLine('translation', lang, escapeHtml(override), marginBottomPx);
                 }
                 if (override || !sourceText) return '';
 
@@ -270,7 +282,7 @@
                 const body = parts
                     .map((part) => `<span class="ov-nf">${escapeHtml(part.text)}</span>`)
                     .join('');
-                return formatOverlayLine(lang, body, marginBottomPx);
+                return formatOverlayLine('translation', lang, body, marginBottomPx);
             }
 
             return '';
@@ -278,7 +290,8 @@
 
         function setSettings(next) {
             settings = normalizeSettings(next);
-            applyStyleVars(rootElement || container, settings.fontSize);
+            applyStyleVars(targetEl, settings);
+            scheduleAutoHideTimer();
             return { ...settings };
         }
 
@@ -305,11 +318,19 @@
             // OBS renderer renders directly from session state on each tick.
         }
 
+        function dispose() {
+            clearAutoHideTimer();
+            setAutoHidden(false);
+        }
+
         function render() {
-            const { sentMb } = applyStyleVars(rootElement || container, settings.fontSize);
+            const { sentMb } = applyStyleVars(targetEl, settings);
             if (!packEnabled) {
                 container.innerHTML = '';
                 if (rootElement) rootElement.hidden = true;
+                lastContentSignature = '';
+                clearAutoHideTimer();
+                setAutoHidden(false);
                 return { rendered: false, disabled: true, empty: true };
             }
             if (rootElement) rootElement.hidden = false;
@@ -318,6 +339,9 @@
             session.assignRenderTokenSequences(tokens);
             if (!tokens.length) {
                 container.innerHTML = '';
+                lastContentSignature = '';
+                clearAutoHideTimer();
+                setAutoHidden(false);
                 return { rendered: false, disabled: false, empty: true };
             }
 
@@ -332,7 +356,10 @@
                     allSentences.push(sentence);
                 }
             }
-            const visibleSentences = allSentences.slice(-maxSentences);
+            const limit = explicitMaxSentences !== null
+                ? Math.min(settings.maxSentences, explicitMaxSentences)
+                : settings.maxSentences;
+            const visibleSentences = allSentences.slice(-limit);
             const parts = [];
             for (const sentence of visibleSentences) {
                 const originalBody = model.showOriginal ? buildOriginalBody(sentence) : '';
@@ -340,10 +367,10 @@
                     ? buildTranslationLine(sentence, model.showOriginal, sentMb)
                     : '';
                 if (originalBody && translationLine) {
-                    parts.push(formatOverlayLine(sentence.originalLang, originalBody, 0));
+                    parts.push(formatOverlayLine('original', sentence.originalLang, originalBody, 0));
                     parts.push(translationLine);
                 } else if (originalBody) {
-                    parts.push(formatOverlayLine(sentence.originalLang, originalBody, sentMb));
+                    parts.push(formatOverlayLine('original', sentence.originalLang, originalBody, sentMb));
                 } else if (translationLine) {
                     parts.push(translationLine);
                 }
@@ -353,6 +380,15 @@
             container.innerHTML = html;
             if (typeof container.scrollHeight === 'number') {
                 container.scrollTop = container.scrollHeight;
+            }
+            const nextSignature = html ? (container.textContent || html) : '';
+            if (!nextSignature) {
+                lastContentSignature = '';
+                clearAutoHideTimer();
+                setAutoHidden(false);
+            } else if (nextSignature !== lastContentSignature) {
+                lastContentSignature = nextSignature;
+                scheduleAutoHideTimer();
             }
             return {
                 rendered: html.length > 0,
@@ -369,6 +405,7 @@
             isPackEnabled,
             setUiState,
             invalidateAll,
+            dispose,
         };
     }
 

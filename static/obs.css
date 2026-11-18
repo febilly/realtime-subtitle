@@ -1,3 +1,33 @@
+@font-face {
+    font-family: 'Noto Sans CJK SC';
+    src: url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKsc-Regular') format('collection'),
+         url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKsc-Regular') format('truetype-collection'),
+         url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKsc-Regular') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Noto Sans CJK JP';
+    src: url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKjp-Regular') format('collection'),
+         url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKjp-Regular') format('truetype-collection'),
+         url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKjp-Regular') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
+@font-face {
+    font-family: 'Noto Sans CJK KR';
+    src: url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKkr-Regular') format('collection'),
+         url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKkr-Regular') format('truetype-collection'),
+         url('fonts/NotoSansCJK-Regular.ttc#NotoSansCJKkr-Regular') format('truetype');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
 html,
 body {
     margin: 0;
@@ -11,11 +41,23 @@ body {
 .ov.text-mode {
     position: fixed;
     inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: var(--ov-justify, flex-end);
+    align-items: var(--ov-align-items, center);
+    padding: 16px 24px;
+    box-sizing: border-box;
     background: transparent;
     pointer-events: none;
     user-select: none;
     -webkit-user-select: none;
-    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic", "Meiryo", "Malgun Gothic", "Noto Sans SC", sans-serif;
+    font-family: var(--ov-font-family, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Yu Gothic", "Meiryo", "Malgun Gothic", "Noto Sans SC", sans-serif);
+    opacity: 1;
+    transition: opacity 0.35s ease;
+}
+
+.ov.text-mode.is-auto-hidden {
+    opacity: 0;
 }
 
 .ov.text-mode[hidden] {
@@ -23,33 +65,60 @@ body {
 }
 
 .ov-text {
-    position: absolute;
-    inset: 12px;
-    padding: max(4px, var(--pad, 11px));
+    width: fit-content;
+    max-width: var(--ov-max-width, 80%);
+    max-height: 100%;
+    box-sizing: border-box;
+    padding: 0;
     overflow: hidden;
     scrollbar-width: none;
     font-size: var(--fs, 42px);
-    color: #e5e7eb;
+    color: var(--ov-orig-color, #e5e7eb);
+}
+
+.ov-text:empty {
+    display: none;
 }
 
 .ov-text::-webkit-scrollbar {
     display: none;
 }
 
+.ov.text-mode[data-bg-mode="block"] .ov-text {
+    background: var(--ov-bg-rgba, rgba(0, 0, 0, 0.59));
+    padding: max(8px, var(--pad, 11px)) max(14px, calc(var(--pad, 11px) * 1.4));
+    border-radius: 10px;
+}
+
 .ov-line {
+    --line-scale: 1;
     line-height: 1.45;
-    text-align: start;
+    text-align: var(--ov-text-align, center);
     overflow-wrap: break-word;
     word-break: break-word;
 }
 
-.ov-line[lang="ja"],
-.ov-text [lang="ja"] {
+.ov-line:last-child {
+    margin-bottom: 0 !important;
+}
+
+.ov-line--original {
+    color: var(--ov-orig-color, #e5e7eb);
+}
+
+.ov-line--translation {
+    --line-scale: var(--ov-tr-scale, 1);
+    color: var(--ov-trans-color, #e5e7eb);
+    font-size: calc(var(--fs, 42px) * var(--ov-tr-scale, 1));
+}
+
+.ov.text-mode[data-font-family="system"] .ov-line[lang="ja"],
+.ov.text-mode[data-font-family="system"] .ov-text [lang="ja"] {
     font-family: "Yu Gothic UI", "Yu Gothic", "Meiryo", "Noto Sans JP", "Segoe UI", sans-serif;
 }
 
-.ov-line[lang="ar"],
-.ov-text [lang="ar"] {
+.ov.text-mode[data-font-family="system"] .ov-line[lang="ar"],
+.ov.text-mode[data-font-family="system"] .ov-text [lang="ar"] {
     font-family: "Segoe UI", Tahoma, "Noto Sans Arabic", sans-serif;
 }
 
@@ -60,19 +129,38 @@ body {
 .ov-tag {
     display: inline-block;
     vertical-align: middle;
-    font: 700 var(--tag-fs, 23px)/1.17 Consolas, "Cascadia Mono", ui-monospace, monospace;
-    padding: var(--tag-py, 6px) var(--tag-px, 13px);
-    border-radius: calc((var(--tag-fs, 23px) * 1.17 + 2 * var(--tag-py, 6px)) * .4);
+    font-family: Consolas, "Cascadia Mono", ui-monospace, monospace;
+    font-weight: 700;
+    font-size: calc(var(--tag-fs, 23px) * var(--line-scale, 1));
+    line-height: 1.17;
+    padding: calc(var(--tag-py, 6px) * var(--line-scale, 1)) calc(var(--tag-px, 13px) * var(--line-scale, 1));
+    border-radius: calc((var(--tag-fs, 23px) * 1.17 + 2 * var(--tag-py, 6px)) * 0.4 * var(--line-scale, 1));
     background: rgba(255, 255, 255, .16);
     color: #d1d5db;
-    margin-inline-end: var(--tag-gap, 10px);
+    margin-inline-end: calc(var(--tag-gap, 10px) * var(--line-scale, 1));
     text-transform: uppercase;
+    -webkit-text-stroke: 0;
+    text-shadow: none;
 }
 
 .ov.text-mode .ov-bg {
-    background: rgba(0, 0, 0, var(--a, 0.592));
+    font-weight: var(--ov-font-weight, 400);
+    text-shadow: var(--ov-text-shadow, 0 1px 3px rgba(0, 0, 0, .85), 0 2px 6px rgba(0, 0, 0, .55));
+    paint-order: stroke fill;
+    -webkit-text-stroke: var(--ov-stroke, 0px transparent);
+}
+
+.ov.text-mode[data-bg-mode="strip"] .ov-bg,
+.ov.text-mode:not([data-bg-mode]) .ov-bg {
+    background: var(--ov-bg-rgba, rgba(0, 0, 0, 0.59));
     padding: .06em var(--pad, 11px);
+    border-radius: 4px;
     -webkit-box-decoration-break: clone;
     box-decoration-break: clone;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, .85);
+}
+
+.ov.text-mode[data-bg-mode="none"] .ov-bg,
+.ov.text-mode[data-bg-mode="block"] .ov-bg {
+    background: transparent;
+    padding: 0;
 }
