@@ -678,7 +678,7 @@
             call('renderBundledCjkFontPicker');
             if (elements.saveButton) elements.saveButton.textContent = t('save');
             if (elements.cancelButton) elements.cancelButton.textContent = t('cancel');
-            if (elements.backButton) elements.backButton.textContent = t('mode_back_to_chooser');
+            if (elements.featurePacksButton) elements.featurePacksButton.textContent = t('feature_packs_section');
             if (elements.resetButton) elements.resetButton.textContent = t('reset_all');
             if (elements.settingsButton) elements.settingsButton.title = t('settings');
             if (elements.closeButton) elements.closeButton.title = t('close');
@@ -713,9 +713,6 @@
             const hideClose = forcedOpen ? 'none' : '';
             if (elements.cancelButton) elements.cancelButton.style.display = hideClose;
             if (elements.closeButton) elements.closeButton.style.display = hideClose;
-            if (elements.backButton) {
-                elements.backButton.hidden = !(forcedOpen && current.relayAvailable);
-            }
             return true;
         }
 

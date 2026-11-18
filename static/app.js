@@ -66,7 +66,7 @@ const settingsForm = document.getElementById('settingsForm');
 const settingsCloseButton = document.getElementById('settingsCloseButton');
 const settingsCancelButton = document.getElementById('settingsCancelButton');
 const settingsSaveButton = document.getElementById('settingsSaveButton');
-const settingsModeBackButton = document.getElementById('settingsModeBackButton');
+const settingsFeaturePacksButton = document.getElementById('settingsFeaturePacksButton');
 const resetAllButton = document.getElementById('resetAllButton');
 const settingsErrorEl = document.getElementById('settingsError');
 const confirmOverlay = document.getElementById('confirmOverlay');
@@ -416,7 +416,6 @@ const hostedPorts = {
     updateAccountSection: () => { if (hostedAccount) hostedAccount.updateSection(); },
     updateAccountBalance: () => { if (hostedAccount) hostedAccount.updateBalance(); },
     ensureHostedVersionAllowed: (options = {}) => hostedUpdate.ensure(options),
-    returnToModeChooser: () => hostedMode.returnToModeChooser(),
     switchToDirectMode: () => hostedMode.switchToDirectMode(),
     switchToOwnKeyMode: () => hostedMode.switchToOwnKeyMode(),
     maybeRunFirstLaunchFlow: () => hostedMode.maybeRunFirstLaunchFlow(),
@@ -1306,7 +1305,7 @@ const settingsUi = SettingsUI.create({
     actions: {
         openSettings: (options) => settingsFlowController.open(options),
         closeSettings: () => settingsFlowController.close(),
-        returnToModeChooser: hostedPorts.returnToModeChooser,
+        openFeaturePacks: () => featurePacks.openPicker({ cancellable: true }),
         handleResetAll: resetAllController.handle,
         handleSettingsSave: (event) => settingsFlowController.handleSubmit(event),
     },
@@ -1343,7 +1342,6 @@ featurePacks = FeaturePacks.create({
     storage: localStorage,
     fetch,
     t,
-    buildToggleSwitch: settingsPorts.buildToggleSwitch,
     getRuntimeState: () => ({
         lockManualControls,
         relayAvailable,
@@ -1615,7 +1613,7 @@ const settingsPanelController = SettingsPanel.create({
         closeButton: settingsCloseButton,
         cancelButton: settingsCancelButton,
         saveButton: settingsSaveButton,
-        backButton: settingsModeBackButton,
+        featurePacksButton: settingsFeaturePacksButton,
         resetButton: resetAllButton,
         errorElement: settingsErrorEl,
         apiKeyLabel: document.getElementById('apiKeyLabel'),
@@ -1839,16 +1837,14 @@ settingsUi.init({
     settingsButton,
     closeButton: settingsCloseButton,
     cancelButton: settingsCancelButton,
-    backButton: settingsModeBackButton,
+    featurePacksButton: settingsFeaturePacksButton,
     resetButton: resetAllButton,
     overlay: settingsOverlay,
     form: settingsForm,
 });
 
-// ===================== Relay (hosted) client: chooser / login / account / balance =====================
+// ===================== Relay (hosted) client: login / account / balance =====================
 
-const modeChooserOverlay = document.getElementById('modeChooserOverlay');
-const modeChooserEl = document.getElementById('modeChooser');
 const clientUpdateOverlay = document.getElementById('clientUpdateOverlay');
 const clientUpdateDialog = document.getElementById('clientUpdateDialog');
 const clientUpdateTitle = document.getElementById('clientUpdateTitle');
@@ -1965,12 +1961,6 @@ const hostedMode = HostedMode.create({
         updateAccountSection: hostedPorts.updateAccountSection,
         openSettings: settingsFlowController.open,
         maybeShowFeaturePacksPicker: (mode) => featurePacks.maybeShowOnModeEnter(mode),
-    },
-    elements: {
-        chooserOverlay: modeChooserOverlay,
-        chooser: modeChooserEl,
-        relayButton: document.getElementById('modeChooserRelay'),
-        directButton: document.getElementById('modeChooserDirect'),
     },
 });
 const desktopShortcut = DesktopShortcut.create({

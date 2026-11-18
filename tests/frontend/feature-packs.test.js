@@ -27,15 +27,12 @@ function buildFeaturePacksDom() {
         <div id="vrOverlaySection"></div>
         <button id="furiganaButton"></button>
         <div id="learningSettingsSection"></div>
-        <div id="featurePacksSection">
-            <label id="featurePacksLabel"></label>
-            <div id="featurePacksList"></div>
-        </div>
         <div id="featurePackOverlay" hidden>
             <div id="featurePackDialog" hidden>
                 <h2 id="featurePackTitle"></h2>
                 <p id="featurePackHint"></p>
                 <div id="featurePackList"></div>
+                <button id="featurePackCancelButton" hidden></button>
                 <button id="featurePackConfirmButton"></button>
             </div>
         </div>
@@ -153,14 +150,53 @@ describe('FeaturePacks visibility, hooks, backend sync, and settings UI', () => 
         expect(dom.window.document.getElementById('furiganaButton').hidden).toBe(true);
         expect(dom.window.document.getElementById('learningSettingsSection').hidden).toBe(true);
         expect(hooks.vrchat.onEnable).toHaveBeenCalledWith(true);
-
-        const rows = [...dom.window.document.querySelectorAll('#featurePacksList .settings-row')];
-        expect(rows.map((r) => r.dataset.packId)).toEqual(['vrchat', 'learning', 'obs', 'transcript']);
-        expect(rows[0].querySelector('input[type="checkbox"]').checked).toBe(true);
-        expect(rows[1].querySelector('input[type="checkbox"]').checked).toBe(false);
     });
 
-    it('applies backend WebSocket updates without overriding confirmed flag and refreshes settings UI', () => {
+    it('reopens the picker from Settings with the current selection and lets the user cancel or change it', async () => {
+        const dom = buildFeaturePacksDom();
+        const doc = dom.window.document;
+        const storage = createMemoryStorage();
+        const fp = FeaturePacks.create({
+            document: doc,
+            storage,
+            fetch: vi.fn().mockResolvedValue({ ok: true }),
+            t: (k) => k,
+        });
+        fp.confirmSelection({ vrchat: true, learning: false, obs: true, transcript: false }, { sync: false });
+
+        const checkedState = () => Object.fromEntries(
+            [...doc.querySelectorAll('#featurePackList .feature-pack-checkbox')].map((cb) => [cb.value, cb.checked]),
+        );
+
+        // Cancel leaves everything unchanged.
+        let pending = fp.openPicker({ cancellable: true });
+        expect(doc.getElementById('featurePackCancelButton').hidden).toBe(false);
+        expect(checkedState()).toEqual({ vrchat: true, learning: false, obs: true, transcript: false });
+        const learningBox = doc.querySelector('#featurePackList .feature-pack-checkbox[value="learning"]');
+        learningBox.checked = true;
+        learningBox.dispatchEvent(new dom.window.Event('change'));
+        doc.getElementById('featurePackCancelButton').click();
+        await expect(pending).resolves.toBeNull();
+        expect(doc.getElementById('featurePackDialog').hidden).toBe(true);
+        expect(fp.getEnabledMap()).toEqual({ vrchat: true, learning: false, obs: true, transcript: false });
+
+        // Confirm applies the change.
+        pending = fp.openPicker({ cancellable: true });
+        expect(checkedState()).toEqual({ vrchat: true, learning: false, obs: true, transcript: false });
+        const vrchatBox = doc.querySelector('#featurePackList .feature-pack-checkbox[value="vrchat"]');
+        vrchatBox.checked = false;
+        vrchatBox.dispatchEvent(new dom.window.Event('change'));
+        doc.getElementById('featurePackConfirmButton').click();
+        await pending;
+        expect(fp.getEnabledMap()).toEqual({ vrchat: false, learning: false, obs: true, transcript: false });
+        expect(doc.getElementById('oscTranslationButton').hidden).toBe(true);
+
+        // The first-run picker has no Cancel.
+        fp.openPicker();
+        expect(doc.getElementById('featurePackCancelButton').hidden).toBe(true);
+    });
+
+    it('applies backend WebSocket updates without overriding confirmed flag', () => {
         const dom = buildFeaturePacksDom();
         const storage = createMemoryStorage();
         const onLearningEnable = vi.fn();

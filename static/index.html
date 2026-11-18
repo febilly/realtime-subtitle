@@ -152,11 +152,6 @@
                 <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
             </div>
 
-            <section class="settings-group" id="featurePacksSection">
-                <h2 class="settings-group-title" id="featurePacksLabel">Feature packs</h2>
-                <div class="settings-card" id="featurePacksList"></div>
-            </section>
-
             <section class="settings-group">
                 <h2 class="settings-group-title" id="serviceGroupLabel">Service</h2>
                 <div class="settings-card">
@@ -478,7 +473,7 @@
 
             <div class="settings-actions">
                 <div class="settings-actions-left">
-                    <button class="secondary-button" id="settingsModeBackButton" type="button" hidden>Back to mode selection</button>
+                    <button class="secondary-button" id="settingsFeaturePacksButton" type="button">Feature packs</button>
                     <button class="danger-button" id="resetAllButton" type="button"></button>
                 </div>
                 <div class="settings-actions-right">
@@ -516,23 +511,6 @@
         </div>
     </div>
 
-    <!-- First-launch connection-mode chooser (hosted vs own key) -->
-    <div class="confirm-overlay" id="modeChooserOverlay" hidden></div>
-    <div class="mode-chooser" id="modeChooser" role="dialog" aria-modal="true" aria-labelledby="modeChooserTitle" hidden>
-        <h1 id="modeChooserTitle">How do you want to connect?</h1>
-        <p class="field-hint" id="modeChooserHint"></p>
-        <div class="mode-chooser-options">
-            <button class="mode-card" id="modeChooserRelay" type="button">
-                <span class="mode-card-title" id="modeChooserRelayTitle">Hosted</span>
-                <span class="mode-card-desc" id="modeChooserRelayDesc"></span>
-            </button>
-            <button class="mode-card" id="modeChooserDirect" type="button">
-                <span class="mode-card-title" id="modeChooserDirectTitle">Own key</span>
-                <span class="mode-card-desc" id="modeChooserDirectDesc"></span>
-            </button>
-        </div>
-    </div>
-
     <!-- Offered after a successful hosted sign-in when no app shortcut exists. -->
     <div class="confirm-overlay" id="desktopShortcutOverlay" hidden></div>
     <div class="mode-chooser" id="desktopShortcutDialog" role="dialog" aria-modal="true" aria-labelledby="desktopShortcutTitle" hidden>
@@ -557,6 +535,7 @@
         <p class="field-hint" id="featurePackHint">You can change these anytime in Settings.</p>
         <div class="feature-pack-list" id="featurePackList"></div>
         <div class="feature-pack-actions">
+            <button class="secondary-button" id="featurePackCancelButton" type="button" hidden>Cancel</button>
             <button class="primary-button" id="featurePackConfirmButton" type="button">Confirm</button>
         </div>
     </div>

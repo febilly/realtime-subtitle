@@ -35,7 +35,7 @@ function setup(overrides = {}) {
                 <section id="sonioxRegionSection"><div id="sonioxRegionPicker"></div></section>
                 <div id="settingsError"></div>
                 <button id="settingsSaveButton"></button><button id="settingsCancelButton"></button>
-                <button id="settingsModeBackButton"></button><button id="resetAllButton"></button>
+                <button id="settingsFeaturePacksButton"></button><button id="resetAllButton"></button>
                 <button id="settingsCloseButton"></button><button id="redeemPasteButton"></button>
             </form>
             <span id="settingsVersion"></span>
@@ -111,7 +111,7 @@ function setup(overrides = {}) {
             closeButton: document.getElementById('settingsCloseButton'),
             cancelButton: document.getElementById('settingsCancelButton'),
             saveButton: document.getElementById('settingsSaveButton'),
-            backButton: document.getElementById('settingsModeBackButton'),
+            featurePacksButton: document.getElementById('settingsFeaturePacksButton'),
             resetButton: document.getElementById('resetAllButton'),
             errorElement: document.getElementById('settingsError'),
             apiKeyLabel: document.getElementById('apiKeyLabel'),
@@ -455,7 +455,6 @@ describe('SettingsPanel pricing and lifecycle', () => {
         expect(page.document.getElementById('settingsPanel').hidden).toBe(false);
         expect(page.document.getElementById('settingsCloseButton').style.display).toBe('none');
         expect(page.document.getElementById('settingsCancelButton').style.display).toBe('none');
-        expect(page.document.getElementById('settingsModeBackButton').hidden).toBe(false);
         expect(page.controller.close()).toBe(false);
         expect(page.document.getElementById('settingsPanel').hidden).toBe(false);
         page.controller.hide();

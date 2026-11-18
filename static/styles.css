@@ -2370,16 +2370,8 @@ body.dark-theme .feature-pack-card.is-selected {
 .feature-pack-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 10px;
     margin-top: 18px;
-}
-
-.feature-pack-settings-name {
-    font-weight: 500;
-}
-
-.feature-pack-settings-desc {
-    font-size: 12px;
-    opacity: 0.72;
 }
 
 .client-update-dialog {

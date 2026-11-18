@@ -4,19 +4,11 @@
     function create(options = {}) {
         const policy = options.policy || root.SettingsPolicy;
         if (!policy) throw new TypeError('HostedMode.create requires SettingsPolicy');
-        const documentRef = options.document || root.document;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const loadServerSettings = options.loadServerSettings || (() => ({}));
         const saveServerSettings = options.saveServerSettings || (() => {});
         const getState = typeof options.getState === 'function' ? options.getState : () => ({});
         const actions = options.actions || {};
-        const elements = options.elements || {};
-        const chooserOverlay = elements.chooserOverlay || null;
-        const chooser = elements.chooser || null;
-        const relayButton = elements.relayButton
-            || (documentRef && documentRef.getElementById('modeChooserRelay'));
-        const directButton = elements.directButton
-            || (documentRef && documentRef.getElementById('modeChooserDirect'));
         let startupLoginPreopened = false;
 
         function state() {
@@ -26,46 +18,6 @@
 
         function call(name, ...args) {
             return typeof actions[name] === 'function' ? actions[name](...args) : undefined;
-        }
-
-        function setText(id, value) {
-            const element = documentRef && documentRef.getElementById(id);
-            if (element) element.textContent = value;
-        }
-
-        function applyChooserI18n() {
-            setText('modeChooserTitle', t('chooser_title'));
-            setText('modeChooserHint', t('chooser_hint'));
-            setText('modeChooserRelayTitle', t('chooser_relay_title'));
-            setText('modeChooserRelayDesc', t('chooser_relay_desc'));
-            setText('modeChooserDirectTitle', t('chooser_direct_title'));
-            setText('modeChooserDirectDesc', t('chooser_direct_desc'));
-        }
-
-        async function openModeChooser() {
-            return new Promise((resolve) => {
-                applyChooserI18n();
-                if (chooserOverlay) chooserOverlay.hidden = false;
-                if (chooser) chooser.hidden = false;
-                const choose = (mode) => {
-                    const server = loadServerSettings();
-                    server.mode = mode;
-                    server.modeChosen = true;
-                    saveServerSettings(server);
-                    if (chooserOverlay) chooserOverlay.hidden = true;
-                    if (chooser) chooser.hidden = true;
-                    resolve(mode);
-                };
-                if (relayButton) relayButton.onclick = () => choose('relay');
-                if (directButton) directButton.onclick = () => choose('direct');
-            });
-        }
-
-        function clearConnectionModeChoice() {
-            const server = loadServerSettings();
-            server.mode = null;
-            server.modeChosen = false;
-            saveServerSettings(server);
         }
 
         function persistDirectMode() {
@@ -118,23 +70,6 @@
             }
             call('applyLoginI18n');
             call('updateLoginSubmitState');
-        }
-
-        async function returnToModeChooser() {
-            const current = state();
-            if (current.lockManualControls || !current.relayAvailable) return;
-            clearConnectionModeChoice();
-            call('resetBootGuard');
-            call('hideSettingsPanel');
-            call('hideLogin');
-            const chosenMode = await openModeChooser();
-            await call('ensureHostedVersionAllowed');
-            await call('syncProviderFromStorage');
-            call('maybeForceOpenSettings');
-            call('updateBalanceBarVisibility');
-            if (chosenMode === 'direct') {
-                await call('maybeShowFeaturePacksPicker', 'direct');
-            }
         }
 
         async function switchToOwnKeyMode() {
@@ -193,14 +128,10 @@
         }
 
         return {
-            applyChooserI18n,
             ensureStartupConnection,
-            clearConnectionModeChoice,
             maybeRunFirstLaunchFlow,
-            openModeChooser,
             preopenHostedLoginIfNeeded,
             refreshPreopenedHostedLogin,
-            returnToModeChooser,
             shouldPreopenHostedLogin,
             switchToDirectMode,
             switchToOwnKeyMode,

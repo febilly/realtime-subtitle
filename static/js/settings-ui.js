@@ -228,7 +228,7 @@
             bind(elements.settingsButton, 'click', actions.openSettings);
             bind(elements.closeButton, 'click', actions.closeSettings);
             bind(elements.cancelButton, 'click', actions.closeSettings);
-            bind(elements.backButton, 'click', actions.returnToModeChooser);
+            bind(elements.featurePacksButton, 'click', actions.openFeaturePacks);
             bind(elements.resetButton, 'click', actions.handleResetAll);
             bind(elements.overlay, 'click', actions.closeSettings);
             bind(elements.form, 'submit', actions.handleSettingsSave);

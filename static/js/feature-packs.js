@@ -113,9 +113,6 @@
             ? options.fetch
             : (typeof root.fetch === 'function' ? root.fetch.bind(root) : null);
         const t = typeof options.t === 'function' ? options.t : (key) => key;
-        const buildToggleSwitch = typeof options.buildToggleSwitch === 'function'
-            ? options.buildToggleSwitch
-            : null;
         const getRuntimeState = typeof options.getRuntimeState === 'function'
             ? options.getRuntimeState
             : () => ({});
@@ -255,7 +252,6 @@
                     invokeHook(pack.id, isEnabled(pack.id));
                 }
             }
-            renderSettingsSection();
             if (sync) {
                 void syncToBackend();
             }
@@ -280,7 +276,6 @@
                 applyPackVisibility(pack);
                 invokeHook(pack.id, isEnabled(pack.id));
             }
-            renderSettingsSection();
             return true;
         }
 
@@ -299,7 +294,6 @@
             });
             applyPackVisibility(pack);
             invokeHook(pack.id, enabled);
-            renderSettingsSection();
             if (sync) {
                 void syncToBackend();
             }
@@ -320,60 +314,6 @@
             return getEnabledMap();
         }
 
-        function renderSettingsSection() {
-            const titleEl = elements.settingsSectionLabel
-                || (documentRef && documentRef.getElementById('featurePacksLabel'));
-            if (titleEl) titleEl.textContent = t('feature_packs_section');
-            const listEl = elements.settingsList
-                || (documentRef && documentRef.getElementById('featurePacksList'));
-            if (!listEl || !documentRef) return;
-            listEl.innerHTML = '';
-            for (const pack of PACKS) {
-                const enabled = isEnabled(pack.id);
-                const row = documentRef.createElement('label');
-                row.className = 'settings-item settings-row';
-                row.dataset.packId = pack.id;
-
-                const textWrap = documentRef.createElement('span');
-                textWrap.className = 'settings-row-text';
-
-                const nameEl = documentRef.createElement('span');
-                nameEl.className = 'feature-pack-settings-name';
-                nameEl.textContent = t(pack.nameKey);
-
-                const descEl = documentRef.createElement('span');
-                descEl.className = 'field-hint feature-pack-settings-desc';
-                descEl.textContent = t(pack.descKey);
-
-                textWrap.appendChild(nameEl);
-                textWrap.appendChild(descEl);
-                row.appendChild(textWrap);
-
-                if (buildToggleSwitch) {
-                    const toggle = buildToggleSwitch({
-                        value: enabled ? 'true' : 'false',
-                        onValue: 'true',
-                        offValue: 'false',
-                        onChange: (nextValue) => {
-                            setEnabled(pack.id, nextValue === 'true');
-                        },
-                    });
-                    toggle.setAttribute('aria-label', t(pack.nameKey));
-                    row.appendChild(toggle);
-                } else {
-                    const checkbox = documentRef.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.checked = enabled;
-                    checkbox.setAttribute('aria-label', t(pack.nameKey));
-                    checkbox.addEventListener('change', () => {
-                        setEnabled(pack.id, checkbox.checked);
-                    });
-                    row.appendChild(checkbox);
-                }
-                listEl.appendChild(row);
-            }
-        }
-
         function getPickerElements() {
             const overlay = elements.pickerOverlay
                 || (documentRef && documentRef.getElementById('featurePackOverlay'));
@@ -387,14 +327,17 @@
                 || (documentRef && documentRef.getElementById('featurePackList'));
             const confirmButton = elements.pickerConfirmButton
                 || (documentRef && documentRef.getElementById('featurePackConfirmButton'));
-            return { overlay, dialog, title, hint, list, confirmButton };
+            const cancelButton = elements.pickerCancelButton
+                || (documentRef && documentRef.getElementById('featurePackCancelButton'));
+            return { overlay, dialog, title, hint, list, confirmButton, cancelButton };
         }
 
         function renderPickerCards() {
-            const { title, hint, list, confirmButton } = getPickerElements();
+            const { title, hint, list, confirmButton, cancelButton } = getPickerElements();
             if (title) title.textContent = t('feature_packs_picker_title');
             if (hint) hint.textContent = t('feature_packs_picker_hint');
             if (confirmButton) confirmButton.textContent = t('feature_packs_picker_confirm');
+            if (cancelButton) cancelButton.textContent = t('cancel');
             if (!list || !documentRef) return;
 
             list.innerHTML = '';
@@ -446,8 +389,13 @@
             }
         }
 
-        function openPicker() {
-            const { overlay, dialog, confirmButton } = getPickerElements();
+        /**
+         * Show the picker. The first-run picker (no prior choice) must be
+         * confirmed; `cancellable` (opened from the Settings button) adds a
+         * Cancel that resolves null and changes nothing.
+         */
+        function openPicker({ cancellable = false } = {}) {
+            const { overlay, dialog, confirmButton, cancelButton } = getPickerElements();
             if (!overlay || !dialog) {
                 return Promise.resolve(getEnabledMap());
             }
@@ -461,9 +409,13 @@
                 });
             }
             pickerOpen = true;
-            pickerSelection = state.isUpgrade
-                ? normalizeEnabledMap(state.enabled, DEFAULT_UPGRADE_ENABLED)
-                : normalizeEnabledMap(null, DEFAULT_NEW_ENABLED);
+            if (state.confirmed) {
+                pickerSelection = getEnabledMap();
+            } else {
+                pickerSelection = state.isUpgrade
+                    ? normalizeEnabledMap(state.enabled, DEFAULT_UPGRADE_ENABLED)
+                    : normalizeEnabledMap(null, DEFAULT_NEW_ENABLED);
+            }
             renderPickerCards();
             overlay.hidden = false;
             dialog.hidden = false;
@@ -475,6 +427,10 @@
                         const result = confirmSelection(pickerSelection);
                         closePicker(result);
                     };
+                }
+                if (cancelButton) {
+                    cancelButton.hidden = !cancellable;
+                    cancelButton.onclick = cancellable ? () => closePicker(null) : null;
                 }
             });
         }
@@ -514,7 +470,6 @@
         }
 
         function applyI18n() {
-            renderSettingsSection();
             if (pickerOpen) {
                 renderPickerCards();
             }
@@ -537,7 +492,6 @@
             maybeShowOnModeEnter,
             maybeShowStartupPicker,
             openPicker,
-            renderSettingsSection,
             setEnabled,
             syncToBackend,
         };

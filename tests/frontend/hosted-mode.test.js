@@ -3,13 +3,7 @@ const SettingsPolicy = require('../../static/js/settings-policy');
 const HostedMode = require('../../static/js/hosted-mode');
 
 function setup(overrides = {}) {
-    const dom = new JSDOM(`<!doctype html><body>
-        <div id="overlay" hidden></div><section id="chooser" hidden>
-            <h2 id="modeChooserTitle"></h2><p id="modeChooserHint"></p>
-            <button id="relay"><span id="modeChooserRelayTitle"></span><span id="modeChooserRelayDesc"></span></button>
-            <button id="direct"><span id="modeChooserDirectTitle"></span><span id="modeChooserDirectDesc"></span></button>
-        </section>
-    </body>`);
+    const dom = new JSDOM('<!doctype html><body></body>');
     const document = dom.window.document;
     let server = {
         mode: null,
@@ -35,18 +29,11 @@ function setup(overrides = {}) {
     const saveServerSettings = vi.fn((value) => { server = { ...value }; });
     const controller = HostedMode.create({
         policy: SettingsPolicy,
-        document,
         t: (key) => key,
         loadServerSettings: () => ({ ...server }),
         saveServerSettings,
         getState: () => state,
         actions,
-        elements: {
-            chooserOverlay: document.getElementById('overlay'),
-            chooser: document.getElementById('chooser'),
-            relayButton: document.getElementById('relay'),
-            directButton: document.getElementById('direct'),
-        },
     });
     return {
         actions,
@@ -60,7 +47,7 @@ function setup(overrides = {}) {
     };
 }
 
-describe('HostedMode chooser and startup', () => {
+describe('HostedMode startup', () => {
     it('retries a failed hosted startup without saving settings', async () => {
         const page = setup({ state: { connectionMode: 'relay', hostedReachable: false, offlineModels: { asr: true } } });
         page.actions.showConnectionDialog = vi.fn(async () => true);
@@ -115,18 +102,6 @@ describe('HostedMode chooser and startup', () => {
         page.dom.window.close();
     });
 
-    it('opens the chooser, localizes it, and persists a direct choice', async () => {
-        const page = setup();
-        const result = page.controller.openModeChooser();
-        expect(page.document.getElementById('chooser').hidden).toBe(false);
-        expect(page.document.getElementById('modeChooserTitle').textContent).toBe('chooser_title');
-        page.document.getElementById('direct').click();
-        await expect(result).resolves.toBe('direct');
-        expect(page.getServer()).toMatchObject({ mode: 'direct', modeChosen: true });
-        expect(page.document.getElementById('chooser').hidden).toBe(true);
-        page.dom.window.close();
-    });
-
     it('defaults first launch to direct without relay and hosted with relay', async () => {
         const direct = setup({ state: { relayAvailable: false } });
         await direct.controller.maybeRunFirstLaunchFlow();
@@ -157,23 +132,6 @@ describe('HostedMode transitions', () => {
         page.dom.window.close();
     });
 
-    it('returns to the chooser and resumes startup effects in order', async () => {
-        const page = setup({ state: { connectionMode: 'relay' }, server: { mode: 'relay', token: 'token' } });
-        const operation = page.controller.returnToModeChooser();
-        page.document.getElementById('direct').click();
-        await operation;
-        expect(page.events.map(([name]) => name)).toEqual([
-            'resetBootGuard',
-            'hideSettingsPanel',
-            'hideLogin',
-            'ensureHostedVersionAllowed',
-            'syncProviderFromStorage',
-            'maybeForceOpenSettings',
-            'updateBalanceBarVisibility',
-        ]);
-        page.dom.window.close();
-    });
-
     it('switches to own-key mode and opens forced settings', async () => {
         const page = setup({ state: { connectionMode: 'relay' }, server: { mode: 'relay' } });
         await page.controller.switchToOwnKeyMode();
@@ -194,7 +152,6 @@ describe('HostedMode transitions', () => {
 
     it('ignores transitions while locked', async () => {
         const page = setup({ state: { lockManualControls: true } });
-        await page.controller.returnToModeChooser();
         await page.controller.switchToOwnKeyMode();
         expect(page.events).toEqual([]);
         expect(page.saveServerSettings).not.toHaveBeenCalled();

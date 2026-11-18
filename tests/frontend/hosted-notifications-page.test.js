@@ -104,7 +104,6 @@ describe('hosted notification flows', () => {
             expect(toast.textContent).toContain('Insufficient balance');
             expect(toast.querySelector('.toast').classList.contains('error')).toBe(false);
             expect(page.document.getElementById('settingsOverlay').hidden).toBe(true);
-            expect(page.document.getElementById('settingsModeBackButton').hidden).toBe(true);
 
             await new Promise((resolve) => setTimeout(resolve, 550));
             await page.flush(4);
@@ -166,7 +165,6 @@ describe('hosted notification flows', () => {
             expect(toast.textContent).toContain('speech model has insufficient quota');
             expect(toast.querySelector('.toast').classList.contains('error')).toBe(true);
             expect(page.document.getElementById('settingsOverlay').hidden).toBe(true);
-            expect(page.document.getElementById('settingsModeBackButton').hidden).toBe(true);
         } finally {
             page.close();
         }

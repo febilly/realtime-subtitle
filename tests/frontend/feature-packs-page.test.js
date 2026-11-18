@@ -105,7 +105,7 @@ describe('full-page feature packs wiring', () => {
         }
     });
 
-    it('pre-ticks vrchat and learning for upgrading users, places #featurePacksSection first in settings, and preserves user prefs when toggled off/on', async () => {
+    it('pre-ticks vrchat and learning for upgrading users, edits packs from the Settings button, and preserves user prefs when toggled off/on', async () => {
         const page = await createPageHarness({
             localStorage: {
                 vrOverlayEnabled: 'true',
@@ -137,34 +137,53 @@ describe('full-page feature packs wiring', () => {
             await page.flush(10);
             expect(doc.getElementById('featurePackDialog').hidden).toBe(true);
 
-            // Open Settings and verify #featurePacksSection is the first settings group
+            const setPack = async (packId, checked) => {
+                doc.getElementById('settingsFeaturePacksButton').click();
+                await page.flush(2);
+                expect(doc.getElementById('featurePackDialog').hidden).toBe(false);
+                expect(doc.getElementById('featurePackCancelButton').hidden).toBe(false);
+                const box = doc.querySelector(`#featurePackList .feature-pack-checkbox[value="${packId}"]`);
+                box.checked = checked;
+                box.dispatchEvent(new page.window.Event('change'));
+                doc.getElementById('featurePackConfirmButton').click();
+                await page.flush(6);
+                expect(doc.getElementById('featurePackDialog').hidden).toBe(true);
+            };
+
+            // Settings no longer lists the packs inline; the bottom-left button opens the picker.
             doc.getElementById('settingsButton').click();
             await page.flush(4);
-            const firstGroup = doc.querySelector('#settingsForm .settings-group');
-            expect(firstGroup.id).toBe('featurePacksSection');
+            expect(doc.getElementById('featurePacksSection')).toBeNull();
+            const packsButton = doc.getElementById('settingsFeaturePacksButton');
+            expect(packsButton.hidden).toBe(false);
+            expect(packsButton.closest('.settings-actions-left')).not.toBeNull();
 
-            // Toggle Learning pack off in Settings -> hides furiganaButton & learningSettingsSection, preserves sessionStorage
-            const learningSwitch = doc.querySelector('#featurePacksList [data-pack-id="learning"] .settings-switch');
-            expect(learningSwitch.getAttribute('aria-checked')).toBe('true');
-            learningSwitch.click();
-            await page.flush(6);
+            // Cancel keeps the current selection.
+            packsButton.click();
+            await page.flush(2);
+            const learningBox = doc.querySelector('#featurePackList .feature-pack-checkbox[value="learning"]');
+            expect(learningBox.checked).toBe(true);
+            learningBox.checked = false;
+            learningBox.dispatchEvent(new page.window.Event('change'));
+            doc.getElementById('featurePackCancelButton').click();
+            await page.flush(4);
+            expect(doc.getElementById('furiganaButton').hidden).toBe(false);
+
+            // Turn Learning off -> hides furiganaButton & learningSettingsSection, preserves sessionStorage
+            await setPack('learning', false);
             expect(doc.getElementById('furiganaButton').hidden).toBe(true);
             expect(doc.getElementById('learningSettingsSection').hidden).toBe(true);
             expect(doc.getElementById('furiganaButton').classList.contains('active')).toBe(false);
             expect(page.window.sessionStorage.getItem('furiganaEnabled')).toBe('true');
 
-            // Re-enable Learning pack -> restores furiganaButton, learningSettingsSection & active state
-            const learningSwitchRe = doc.querySelector('#featurePacksList [data-pack-id="learning"] .settings-switch');
-            learningSwitchRe.click();
-            await page.flush(6);
+            // Re-enable Learning -> restores furiganaButton, learningSettingsSection & active state
+            await setPack('learning', true);
             expect(doc.getElementById('furiganaButton').hidden).toBe(false);
             expect(doc.getElementById('learningSettingsSection').hidden).toBe(false);
             expect(doc.getElementById('furiganaButton').classList.contains('active')).toBe(true);
 
-            // Toggle VRChat pack off -> hides VRChat UI & sends stop requests without wiping vrOverlayEnabled
-            const vrchatSwitch = doc.querySelector('#featurePacksList [data-pack-id="vrchat"] .settings-switch');
-            vrchatSwitch.click();
-            await page.flush(6);
+            // Turn VRChat off -> hides VRChat UI & sends stop requests without wiping vrOverlayEnabled
+            await setPack('vrchat', false);
             expect(doc.getElementById('oscTranslationButton').hidden).toBe(true);
             expect(doc.getElementById('vrOverlayButton').hidden).toBe(true);
             expect(doc.getElementById('oscSettingsSection').hidden).toBe(true);
