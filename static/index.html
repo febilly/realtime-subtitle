@@ -119,7 +119,7 @@
                 </svg>
             </button>
 
-            <button class="control-button" id="obsCopyLinkButton" type="button" title="Copy OBS browser source link" hidden>
+            <button class="control-button" id="obsCopyLinkButton" type="button" title="OBS subtitles" hidden>
                 <svg class="control-icon" id="obsCopyLinkIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#radio"></use>
                 </svg>
@@ -395,26 +395,6 @@
                 </div>
             </section>
 
-            <section class="settings-group" id="obsSettingsSection" hidden>
-                <h2 class="settings-group-title" id="obsSettingsLabel">OBS subtitles</h2>
-                <div class="settings-card">
-                    <label class="settings-item form-field range-field" id="obsFontSizeSettingField" for="obsFontSizeSlider">
-                        <span class="range-field-header">
-                            <span id="obsFontSizeLabel">Font size</span>
-                            <output id="obsFontSizeValue" for="obsFontSizeSlider">42px</output>
-                        </span>
-                        <span class="range-track" style="--default-frac: 0.25;">
-                            <input id="obsFontSizeSlider" type="range" min="16" max="120" step="1" value="42" data-default="42">
-                            <span class="range-default-mark" id="obsFontSizeDefaultMark" aria-hidden="true"></span>
-                        </span>
-                    </label>
-                    <div class="settings-item form-field" id="obsDisplayContentSettingField">
-                        <span id="obsDisplayContentLabel">Display content</span>
-                        <div id="obsDisplayContentPicker"></div>
-                    </div>
-                </div>
-            </section>
-
             <section class="settings-group" id="appearanceSection">
                 <h2 class="settings-group-title" id="appearanceLabel">Appearance</h2>
                 <div class="settings-card">
@@ -543,6 +523,229 @@
         </div>
     </div>
 
+    <!-- OBS subtitles dialog -->
+    <div class="confirm-overlay" id="obsDialogOverlay" hidden></div>
+    <div class="obs-dialog" id="obsDialog" role="dialog" aria-modal="true" aria-labelledby="obsDialogTitle" hidden>
+        <div class="obs-dialog-header">
+            <h1 id="obsDialogTitle">OBS subtitles</h1>
+            <button class="panel-close-button" id="obsDialogCloseButton" title="Close" type="button">×</button>
+        </div>
+
+        <div class="obs-dialog-body" id="obsDialogBody">
+            <section class="obs-dialog-section" id="obsAddSection">
+                <div class="obs-section-title" id="obsAddSectionLabel">Add to OBS</div>
+                <div class="obs-add-row">
+                    <a class="obs-drag-card" id="obsDragCard" draggable="true" href="#">
+                        <svg class="obs-drag-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="9" cy="6" r="1.5" fill="currentColor" stroke="none"></circle>
+                            <circle cx="15" cy="6" r="1.5" fill="currentColor" stroke="none"></circle>
+                            <circle cx="9" cy="12" r="1.5" fill="currentColor" stroke="none"></circle>
+                            <circle cx="15" cy="12" r="1.5" fill="currentColor" stroke="none"></circle>
+                            <circle cx="9" cy="18" r="1.5" fill="currentColor" stroke="none"></circle>
+                            <circle cx="15" cy="18" r="1.5" fill="currentColor" stroke="none"></circle>
+                        </svg>
+                        <span class="obs-drag-card-text" id="obsDragCardText">Drag me into the OBS preview</span>
+                    </a>
+                    <button class="secondary-button obs-copy-button" id="obsCopyUrlButton" type="button">
+                        <svg class="obs-copy-icon" id="obsCopyUrlIcon" aria-hidden="true">
+                            <use href="icons/lucide-sprite.svg#link"></use>
+                        </svg>
+                        <span id="obsCopyUrlText">Copy link</span>
+                    </button>
+                </div>
+                <p class="field-hint field-hint-warn obs-port-warning" id="obsPortWarning" hidden></p>
+                <details class="obs-howto-details" id="obsHowToDetails">
+                    <summary id="obsHowToSummary">How to add</summary>
+                    <ul class="obs-howto-list">
+                        <li id="obsHowToDrag"></li>
+                        <li id="obsHowToCopy"></li>
+                        <li id="obsHowToKeepRunning"></li>
+                    </ul>
+                </details>
+            </section>
+
+            <section class="obs-dialog-section" id="obsPreviewSection">
+                <div class="obs-section-title" id="obsPreviewLabel">Preview</div>
+                <div class="obs-preview-box" id="obsPreviewBox">
+                    <iframe class="obs-preview-iframe" id="obsPreviewFrame" title="OBS subtitle preview" tabindex="-1"></iframe>
+                </div>
+            </section>
+
+            <details class="obs-settings-group" id="obsGroupText" data-obs-group="text" open>
+                <summary class="obs-group-summary">
+                    <span class="obs-group-title" id="obsGroupTextTitle">Text</span>
+                    <span class="obs-group-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="settings-card obs-group-card">
+                    <div class="settings-item form-field" id="obsDisplayContentSettingField">
+                        <span id="obsDisplayContentLabel">Display content</span>
+                        <div id="obsDisplayContentPicker"></div>
+                    </div>
+                    <label class="settings-item form-field range-field" id="obsFontSizeSettingField" for="obsFontSizeSlider">
+                        <span class="range-field-header">
+                            <span id="obsFontSizeLabel">Font size</span>
+                            <output id="obsFontSizeValue" for="obsFontSizeSlider">42 px</output>
+                        </span>
+                        <span class="range-track" style="--default-frac: 0.25;">
+                            <input id="obsFontSizeSlider" type="range" min="16" max="120" step="1" value="42" data-default="42">
+                            <span class="range-default-mark" id="obsFontSizeDefaultMark" aria-hidden="true"></span>
+                        </span>
+                    </label>
+                    <label class="settings-item form-field range-field" id="obsTranslationScaleField" for="obsTranslationScaleSlider">
+                        <span class="range-field-header">
+                            <span id="obsTranslationScaleLabel">Translation size</span>
+                            <output id="obsTranslationScaleValue" for="obsTranslationScaleSlider">100%</output>
+                        </span>
+                        <span class="range-track" style="--default-frac: 0.5;">
+                            <input id="obsTranslationScaleSlider" type="range" min="50" max="150" step="5" value="100" data-default="100">
+                            <span class="range-default-mark" id="obsTranslationScaleDefaultMark" aria-hidden="true"></span>
+                        </span>
+                    </label>
+                    <div class="settings-item form-field" id="obsFontFamilyField">
+                        <span id="obsFontFamilyLabel">Font</span>
+                        <div id="obsFontFamilyPicker"></div>
+                    </div>
+                    <label class="settings-item settings-row" id="obsBoldField">
+                        <span class="settings-row-text" id="obsBoldLabel">Bold</span>
+                        <span id="obsBoldPicker"></span>
+                    </label>
+                    <label class="settings-item settings-row" id="obsShowLangTagField">
+                        <span class="settings-row-text" id="obsShowLangTagLabel">Language tag</span>
+                        <span id="obsShowLangTagPicker"></span>
+                    </label>
+                </div>
+            </details>
+
+            <details class="obs-settings-group" id="obsGroupColor" data-obs-group="color">
+                <summary class="obs-group-summary">
+                    <span class="obs-group-title" id="obsGroupColorTitle">Color &amp; outline</span>
+                    <span class="obs-group-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="settings-card obs-group-card">
+                    <label class="settings-item settings-row obs-color-row" for="obsOriginalColorInput">
+                        <span class="settings-row-text" id="obsOriginalColorLabel">Original color</span>
+                        <span class="obs-color-control">
+                            <span class="obs-color-hex" id="obsOriginalColorValue">#e5e7eb</span>
+                            <input class="obs-color-input" id="obsOriginalColorInput" type="color" value="#e5e7eb">
+                        </span>
+                    </label>
+                    <label class="settings-item settings-row obs-color-row" for="obsTranslationColorInput">
+                        <span class="settings-row-text" id="obsTranslationColorLabel">Translation color</span>
+                        <span class="obs-color-control">
+                            <span class="obs-color-hex" id="obsTranslationColorValue">#e5e7eb</span>
+                            <input class="obs-color-input" id="obsTranslationColorInput" type="color" value="#e5e7eb">
+                        </span>
+                    </label>
+                    <label class="settings-item form-field range-field" id="obsOutlineWidthField" for="obsOutlineWidthSlider">
+                        <span class="range-field-header">
+                            <span id="obsOutlineWidthLabel">Outline width</span>
+                            <output id="obsOutlineWidthValue" for="obsOutlineWidthSlider">0 px</output>
+                        </span>
+                        <span class="range-track" style="--default-frac: 0;">
+                            <input id="obsOutlineWidthSlider" type="range" min="0" max="8" step="1" value="0" data-default="0">
+                            <span class="range-default-mark" id="obsOutlineWidthDefaultMark" aria-hidden="true"></span>
+                        </span>
+                    </label>
+                    <label class="settings-item settings-row obs-color-row" for="obsOutlineColorInput">
+                        <span class="settings-row-text" id="obsOutlineColorLabel">Outline color</span>
+                        <span class="obs-color-control">
+                            <span class="obs-color-hex" id="obsOutlineColorValue">#000000</span>
+                            <input class="obs-color-input" id="obsOutlineColorInput" type="color" value="#000000">
+                        </span>
+                    </label>
+                    <label class="settings-item settings-row" id="obsDropShadowField">
+                        <span class="settings-row-text" id="obsDropShadowLabel">Drop shadow</span>
+                        <span id="obsDropShadowPicker"></span>
+                    </label>
+                </div>
+            </details>
+
+            <details class="obs-settings-group" id="obsGroupBackground" data-obs-group="background">
+                <summary class="obs-group-summary">
+                    <span class="obs-group-title" id="obsGroupBackgroundTitle">Background</span>
+                    <span class="obs-group-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="settings-card obs-group-card">
+                    <div class="settings-item form-field" id="obsBgModeField">
+                        <span id="obsBgModeLabel">Background style</span>
+                        <div id="obsBgModePicker"></div>
+                    </div>
+                    <label class="settings-item settings-row obs-color-row" for="obsBgColorInput">
+                        <span class="settings-row-text" id="obsBgColorLabel">Background color</span>
+                        <span class="obs-color-control">
+                            <span class="obs-color-hex" id="obsBgColorValue">#000000</span>
+                            <input class="obs-color-input" id="obsBgColorInput" type="color" value="#000000">
+                        </span>
+                    </label>
+                    <label class="settings-item form-field range-field" id="obsBgOpacityField" for="obsBgOpacitySlider">
+                        <span class="range-field-header">
+                            <span id="obsBgOpacityLabel">Background opacity</span>
+                            <output id="obsBgOpacityValue" for="obsBgOpacitySlider">59%</output>
+                        </span>
+                        <span class="range-track" style="--default-frac: 0.59;">
+                            <input id="obsBgOpacitySlider" type="range" min="0" max="100" step="1" value="59" data-default="59">
+                            <span class="range-default-mark" id="obsBgOpacityDefaultMark" aria-hidden="true"></span>
+                        </span>
+                    </label>
+                </div>
+            </details>
+
+            <details class="obs-settings-group" id="obsGroupLayout" data-obs-group="layout">
+                <summary class="obs-group-summary">
+                    <span class="obs-group-title" id="obsGroupLayoutTitle">Layout</span>
+                    <span class="obs-group-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="settings-card obs-group-card">
+                    <div class="settings-item form-field" id="obsPositionField">
+                        <span id="obsPositionLabel">Position</span>
+                        <div id="obsPositionPicker"></div>
+                    </div>
+                    <div class="settings-item form-field" id="obsAlignmentField">
+                        <span id="obsAlignmentLabel">Alignment</span>
+                        <div id="obsAlignmentPicker"></div>
+                    </div>
+                    <label class="settings-item form-field range-field" id="obsMaxWidthField" for="obsMaxWidthSlider">
+                        <span class="range-field-header">
+                            <span id="obsMaxWidthLabel">Max width</span>
+                            <output id="obsMaxWidthValue" for="obsMaxWidthSlider">80%</output>
+                        </span>
+                        <span class="range-track" style="--default-frac: 0.714286;">
+                            <input id="obsMaxWidthSlider" type="range" min="30" max="100" step="5" value="80" data-default="80">
+                            <span class="range-default-mark" id="obsMaxWidthDefaultMark" aria-hidden="true"></span>
+                        </span>
+                    </label>
+                    <label class="settings-item form-field range-field" id="obsMaxSentencesField" for="obsMaxSentencesSlider">
+                        <span class="range-field-header">
+                            <span id="obsMaxSentencesLabel">Max sentences</span>
+                            <output id="obsMaxSentencesValue" for="obsMaxSentencesSlider">3</output>
+                        </span>
+                        <span class="range-track" style="--default-frac: 0.222222;">
+                            <input id="obsMaxSentencesSlider" type="range" min="1" max="10" step="1" value="3" data-default="3">
+                            <span class="range-default-mark" id="obsMaxSentencesDefaultMark" aria-hidden="true"></span>
+                        </span>
+                    </label>
+                    <label class="settings-item form-field range-field" id="obsAutoHideField" for="obsAutoHideSlider">
+                        <span class="range-field-header">
+                            <span id="obsAutoHideLabel">Auto-hide when idle</span>
+                            <output id="obsAutoHideValue" for="obsAutoHideSlider">Off</output>
+                        </span>
+                        <span class="range-track" style="--default-frac: 0;">
+                            <input id="obsAutoHideSlider" type="range" min="0" max="30" step="1" value="0" data-default="0">
+                            <span class="range-default-mark" id="obsAutoHideDefaultMark" aria-hidden="true"></span>
+                        </span>
+                    </label>
+                    <div class="settings-item obs-reset-row">
+                        <button class="secondary-button" id="obsResetDefaultsButton" type="button">Reset style to defaults</button>
+                    </div>
+                </div>
+            </details>
+        </div>
+
+        <div class="obs-dialog-footer">
+            <button class="primary-button" id="obsDialogDoneButton" type="button">Done</button>
+        </div>
+    </div>
+
     <!-- Subtitle-server sign-in (web one-time code) -->
     <div class="settings-overlay" id="loginOverlay" hidden></div>
     <aside class="settings-panel" id="loginPanel" aria-label="Sign in" hidden>
@@ -653,6 +856,7 @@
     <script src="js/websocket-controller.js"></script>
     <script src="js/feature-packs.js"></script>
     <script src="js/transcript-controller.js"></script>
+    <script src="js/obs-settings.js"></script>
     <script src="js/obs-controller.js"></script>
     <script src="app.js"></script>
 </body>

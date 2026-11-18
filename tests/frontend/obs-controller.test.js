@@ -1,5 +1,8 @@
+const fs = require('fs');
+const path = require('path');
 const { JSDOM } = require('jsdom');
 const ControlIcon = require('../../static/js/control-icon');
+const ObsSettings = require('../../static/js/obs-settings');
 const ObsController = require('../../static/js/obs-controller');
 
 const doms = [];
@@ -18,27 +21,164 @@ function createMemoryStorage(initial = {}) {
     };
 }
 
-function buildObsDom() {
+function buildObsDom(url = 'http://127.0.0.1:19001/') {
     const dom = new JSDOM(`<!doctype html>
         <button class="control-button" id="obsCopyLinkButton" type="button" hidden>
             <svg class="control-icon" id="obsCopyLinkIcon" aria-hidden="true">
                 <use href="icons/lucide-sprite.svg#radio"></use>
             </svg>
         </button>
-        <section id="obsSettingsSection" hidden>
-            <h2 id="obsSettingsLabel"></h2>
-            <label>
-                <span id="obsFontSizeLabel"></span>
-                <output id="obsFontSizeValue"></output>
-                <span class="range-track" style="--default-frac: 0.25;">
-                    <input id="obsFontSizeSlider" type="range" min="16" max="120" step="1" value="42" data-default="42">
-                    <span class="range-default-mark" id="obsFontSizeDefaultMark"></span>
-                </span>
-            </label>
-            <span id="obsDisplayContentLabel"></span>
-            <div id="obsDisplayContentPicker"></div>
-        </section>
-    `, { url: 'http://127.0.0.1:19001/' });
+
+        <div class="confirm-overlay" id="obsDialogOverlay" hidden></div>
+        <div class="obs-dialog" id="obsDialog" role="dialog" hidden>
+            <div class="obs-dialog-header">
+                <h1 id="obsDialogTitle">OBS subtitles</h1>
+                <button id="obsDialogCloseButton" type="button">×</button>
+            </div>
+            <div class="obs-dialog-body" id="obsDialogBody">
+                <section id="obsAddSection">
+                    <div id="obsAddSectionLabel"></div>
+                    <a id="obsDragCard" draggable="true" href="#">
+                        <span id="obsDragCardText"></span>
+                    </a>
+                    <button id="obsCopyUrlButton" type="button">
+                        <svg id="obsCopyUrlIcon"><use href="icons/lucide-sprite.svg#link"></use></svg>
+                        <span id="obsCopyUrlText"></span>
+                    </button>
+                    <p id="obsPortWarning" hidden></p>
+                    <details id="obsHowToDetails">
+                        <summary id="obsHowToSummary"></summary>
+                        <ul>
+                            <li id="obsHowToDrag"></li>
+                            <li id="obsHowToCopy"></li>
+                            <li id="obsHowToKeepRunning"></li>
+                        </ul>
+                    </details>
+                </section>
+
+                <section id="obsPreviewSection">
+                    <div id="obsPreviewLabel"></div>
+                    <div id="obsPreviewBox">
+                        <iframe id="obsPreviewFrame"></iframe>
+                    </div>
+                </section>
+
+                <details id="obsGroupText" data-obs-group="text" open>
+                    <summary><span id="obsGroupTextTitle"></span></summary>
+                    <div>
+                        <span id="obsDisplayContentLabel"></span>
+                        <div id="obsDisplayContentPicker"></div>
+
+                        <span id="obsFontSizeLabel"></span>
+                        <output id="obsFontSizeValue"></output>
+                        <span>
+                            <input id="obsFontSizeSlider" type="range" min="16" max="120" step="1" value="42">
+                            <span id="obsFontSizeDefaultMark"></span>
+                        </span>
+
+                        <span id="obsTranslationScaleLabel"></span>
+                        <output id="obsTranslationScaleValue"></output>
+                        <span>
+                            <input id="obsTranslationScaleSlider" type="range" min="50" max="150" step="5" value="100">
+                            <span id="obsTranslationScaleDefaultMark"></span>
+                        </span>
+
+                        <span id="obsFontFamilyLabel"></span>
+                        <div id="obsFontFamilyPicker"></div>
+
+                        <span id="obsBoldLabel"></span>
+                        <span id="obsBoldPicker"></span>
+
+                        <span id="obsShowLangTagLabel"></span>
+                        <span id="obsShowLangTagPicker"></span>
+                    </div>
+                </details>
+
+                <details id="obsGroupColor" data-obs-group="color">
+                    <summary><span id="obsGroupColorTitle"></span></summary>
+                    <div>
+                        <span id="obsOriginalColorLabel"></span>
+                        <span id="obsOriginalColorValue"></span>
+                        <input id="obsOriginalColorInput" type="color" value="#e5e7eb">
+
+                        <span id="obsTranslationColorLabel"></span>
+                        <span id="obsTranslationColorValue"></span>
+                        <input id="obsTranslationColorInput" type="color" value="#e5e7eb">
+
+                        <span id="obsOutlineWidthLabel"></span>
+                        <output id="obsOutlineWidthValue"></output>
+                        <span>
+                            <input id="obsOutlineWidthSlider" type="range" min="0" max="8" step="1" value="0">
+                            <span id="obsOutlineWidthDefaultMark"></span>
+                        </span>
+
+                        <span id="obsOutlineColorLabel"></span>
+                        <span id="obsOutlineColorValue"></span>
+                        <input id="obsOutlineColorInput" type="color" value="#000000">
+
+                        <span id="obsDropShadowLabel"></span>
+                        <span id="obsDropShadowPicker"></span>
+                    </div>
+                </details>
+
+                <details id="obsGroupBackground" data-obs-group="background">
+                    <summary><span id="obsGroupBackgroundTitle"></span></summary>
+                    <div>
+                        <span id="obsBgModeLabel"></span>
+                        <div id="obsBgModePicker"></div>
+
+                        <span id="obsBgColorLabel"></span>
+                        <span id="obsBgColorValue"></span>
+                        <input id="obsBgColorInput" type="color" value="#000000">
+
+                        <span id="obsBgOpacityLabel"></span>
+                        <output id="obsBgOpacityValue"></output>
+                        <span>
+                            <input id="obsBgOpacitySlider" type="range" min="0" max="100" step="1" value="59">
+                            <span id="obsBgOpacityDefaultMark"></span>
+                        </span>
+                    </div>
+                </details>
+
+                <details id="obsGroupLayout" data-obs-group="layout">
+                    <summary><span id="obsGroupLayoutTitle"></span></summary>
+                    <div>
+                        <span id="obsPositionLabel"></span>
+                        <div id="obsPositionPicker"></div>
+
+                        <span id="obsAlignmentLabel"></span>
+                        <div id="obsAlignmentPicker"></div>
+
+                        <span id="obsMaxWidthLabel"></span>
+                        <output id="obsMaxWidthValue"></output>
+                        <span>
+                            <input id="obsMaxWidthSlider" type="range" min="30" max="100" step="5" value="80">
+                            <span id="obsMaxWidthDefaultMark"></span>
+                        </span>
+
+                        <span id="obsMaxSentencesLabel"></span>
+                        <output id="obsMaxSentencesValue"></output>
+                        <span>
+                            <input id="obsMaxSentencesSlider" type="range" min="1" max="10" step="1" value="3">
+                            <span id="obsMaxSentencesDefaultMark"></span>
+                        </span>
+
+                        <span id="obsAutoHideLabel"></span>
+                        <output id="obsAutoHideValue"></output>
+                        <span>
+                            <input id="obsAutoHideSlider" type="range" min="0" max="30" step="1" value="0">
+                            <span id="obsAutoHideDefaultMark"></span>
+                        </span>
+
+                        <button id="obsResetDefaultsButton" type="button">Reset</button>
+                    </div>
+                </details>
+            </div>
+            <div class="obs-dialog-footer">
+                <button id="obsDialogDoneButton" type="button">Done</button>
+            </div>
+        </div>
+    `, { url });
     doms.push(dom);
     return dom;
 }
@@ -48,38 +188,40 @@ afterEach(() => {
     while (doms.length) doms.pop().window.close();
 });
 
-describe('ObsController gating, settings persistence, and copy link flow', () => {
-    it('gates copy button to desktop main window + enabled pack and hides on mobile or non-desktop', () => {
+describe('ObsController dialog gating, opening/closing, and link sharing', () => {
+    it('gates toolbar button to desktop main window + enabled pack and hides on mobile or disabled pack', () => {
         const dom = buildObsDom();
-        const desktopController = ObsController.create({
+        const controller = ObsController.create({
             document: dom.window.document,
             window: dom.window,
             storage: createMemoryStorage(),
             fetch: vi.fn().mockResolvedValue({ ok: true }),
-            t: (k, vars) => (vars && vars.value !== undefined ? `${vars.value} px` : k),
+            t: (k) => (k === 'obs_layer_name' ? 'Realtime Subtitle' : k),
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             isPackEnabled: () => true,
             ControlIcon,
         });
-        desktopController.init();
+        controller.init();
 
-        // Not desktop available yet
-        expect(dom.window.document.getElementById('obsSettingsSection').hidden).toBe(false);
-        expect(dom.window.document.getElementById('obsCopyLinkButton').hidden).toBe(true);
+        const btn = dom.window.document.getElementById('obsCopyLinkButton');
+        expect(btn.hidden).toBe(true);
 
-        desktopController.applyConfig({
+        controller.applyConfig({
             obs_desktop_available: true,
             obs_url: 'http://127.0.0.1:19001/obs',
-            obs_settings: { font_size: 42, display_content: 'both' },
         });
-        expect(dom.window.document.getElementById('obsCopyLinkButton').hidden).toBe(false);
+        expect(btn.hidden).toBe(false);
 
-        desktopController.setPackEnabled(false);
-        expect(dom.window.document.getElementById('obsSettingsSection').hidden).toBe(true);
-        expect(dom.window.document.getElementById('obsCopyLinkButton').hidden).toBe(true);
-        desktopController.dispose();
+        // Open dialog, then disable pack -> dialog auto-closes & button hides
+        btn.click();
+        expect(controller.isDialogOpen()).toBe(true);
+        controller.setPackEnabled(false);
+        expect(controller.isDialogOpen()).toBe(false);
+        expect(dom.window.document.getElementById('obsDialog').hidden).toBe(true);
+        expect(btn.hidden).toBe(true);
+        controller.dispose();
 
-        // Mobile browser should still hide the copy link button even if server reports desktop
+        // Mobile browser should always hide button
         const mobileDom = buildObsDom();
         const mobileController = ObsController.create({
             document: mobileDom.window.document,
@@ -97,67 +239,64 @@ describe('ObsController gating, settings persistence, and copy link flow', () =>
         mobileController.dispose();
     });
 
-    it('persists font size & display content to obsSettings.v1 and POSTs to /obs-settings', async () => {
+    it('opens and closes dialog via close button, Done button, overlay click, and Escape', () => {
+        const dom = buildObsDom();
+        const controller = ObsController.create({
+            document: dom.window.document,
+            window: dom.window,
+            storage: createMemoryStorage(),
+            fetch: vi.fn().mockResolvedValue({ ok: true }),
+            t: (k) => k,
+            getLang: () => 'zh',
+            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            isPackEnabled: () => true,
+            desktopAvailable: true,
+            ControlIcon,
+        });
+        controller.init();
+
+        const openBtn = dom.window.document.getElementById('obsCopyLinkButton');
+        const overlay = dom.window.document.getElementById('obsDialogOverlay');
+        const dialog = dom.window.document.getElementById('obsDialog');
+        const frame = dom.window.document.getElementById('obsPreviewFrame');
+
+        openBtn.click();
+        expect(overlay.hidden).toBe(false);
+        expect(dialog.hidden).toBe(false);
+        expect(frame.getAttribute('src')).toBe('/obs?preview=1&lang=zh');
+
+        dom.window.document.getElementById('obsDialogCloseButton').click();
+        expect(dialog.hidden).toBe(true);
+
+        openBtn.click();
+        dom.window.document.getElementById('obsDialogDoneButton').click();
+        expect(dialog.hidden).toBe(true);
+
+        openBtn.click();
+        overlay.click();
+        expect(dialog.hidden).toBe(true);
+
+        openBtn.click();
+        dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' }));
+        expect(dialog.hidden).toBe(true);
+
+        controller.dispose();
+    });
+
+    it('configures draggable link card with ?layer-name only and copies plain URL on click or Copy button', async () => {
+        vi.useFakeTimers();
         const dom = buildObsDom();
         const storage = createMemoryStorage();
+        const writeText = vi.fn().mockRejectedValue(new Error('clipboard blocked'));
         const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+
         const controller = ObsController.create({
             document: dom.window.document,
             window: dom.window,
             storage,
             fetch: fetchMock,
-            t: (k, vars) => (vars && vars.value !== undefined ? `${vars.value} px` : k),
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            isPackEnabled: () => true,
-            ControlIcon,
-        });
-        controller.init();
-
-        const slider = dom.window.document.getElementById('obsFontSizeSlider');
-        const mark = dom.window.document.getElementById('obsFontSizeDefaultMark');
-        const output = dom.window.document.getElementById('obsFontSizeValue');
-        expect(output.textContent).toBe('42 px');
-        expect(mark.classList.contains('is-current')).toBe(true);
-
-        slider.value = '68';
-        slider.dispatchEvent(new dom.window.Event('change'));
-        expect(output.textContent).toBe('68 px');
-        expect(mark.classList.contains('is-current')).toBe(false);
-        expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toEqual({
-            fontSize: 68,
-            displayContent: 'both',
-        });
-        expect(fetchMock).toHaveBeenCalledWith('/obs-settings', expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({ font_size: 68, display_content: 'both' }),
-        }));
-
-        const select = dom.window.document.querySelector('#obsDisplayContentPicker select');
-        select.value = 'translation';
-        select.dispatchEvent(new dom.window.Event('change'));
-        expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toEqual({
-            fontSize: 68,
-            displayContent: 'translation',
-        });
-        expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({ font_size: 68, display_content: 'translation' }),
-        }));
-        controller.dispose();
-    });
-
-    it('copies OBS URL via clipboard API or /clipboard fallback and swaps radio -> check -> radio after 1500ms', async () => {
-        vi.useFakeTimers();
-        const dom = buildObsDom();
-        const writeText = vi.fn().mockRejectedValue(new Error('clipboard blocked in webview'));
-        const fetchMock = vi.fn().mockResolvedValue({ ok: true });
-        const controller = ObsController.create({
-            document: dom.window.document,
-            window: dom.window,
-            storage: createMemoryStorage(),
-            fetch: fetchMock,
             navigator: { clipboard: { writeText }, userAgent: 'Windows' },
-            t: (k) => k,
+            t: (k) => (k === 'obs_layer_name' ? '实时字幕' : k),
             isPackEnabled: () => true,
             desktopAvailable: true,
             ControlIcon,
@@ -168,24 +307,237 @@ describe('ObsController gating, settings persistence, and copy link flow', () =>
             obs_url: 'http://127.0.0.1:19001/obs',
         });
 
-        const btn = dom.window.document.getElementById('obsCopyLinkButton');
-        const useEl = dom.window.document.querySelector('#obsCopyLinkIcon use');
-        expect(useEl.getAttribute('href')).toBe('icons/lucide-sprite.svg#radio');
+        const dragCard = dom.window.document.getElementById('obsDragCard');
+        const expectedDragUrl = 'http://127.0.0.1:19001/obs?layer-name=%E5%AE%9E%E6%97%B6%E5%AD%97%E5%B9%95';
+        expect(dragCard.getAttribute('href')).toBe(expectedDragUrl);
+        expect(expectedDragUrl).not.toContain('layer-width');
+        expect(expectedDragUrl).not.toContain('layer-height');
 
-        btn.click();
+        // dragstart sets text/uri-list & text/plain and records port
+        const transferred = {};
+        const dragEvent = new dom.window.Event('dragstart');
+        dragEvent.dataTransfer = {
+            effectAllowed: 'uninitialized',
+            setData: (mime, value) => {
+                transferred[mime] = value;
+            },
+        };
+        dragCard.dispatchEvent(dragEvent);
+        expect(transferred).toEqual({
+            'text/uri-list': expectedDragUrl,
+            'text/plain': expectedDragUrl,
+        });
+        expect(storage.getItem(ObsController.LAST_PORT_STORAGE_KEY)).toBe('19001');
+
+        // Clicking drag card prevents navigation and copies plain URL
+        const clickEvent = new dom.window.MouseEvent('click', { cancelable: true });
+        dragCard.dispatchEvent(clickEvent);
+        expect(clickEvent.defaultPrevented).toBe(true);
         await vi.advanceTimersByTimeAsync(0);
-
         expect(writeText).toHaveBeenCalledWith('http://127.0.0.1:19001/obs');
         expect(fetchMock).toHaveBeenCalledWith('/clipboard', expect.objectContaining({
             method: 'POST',
             body: JSON.stringify({ text: 'http://127.0.0.1:19001/obs' }),
         }));
-        expect(useEl.getAttribute('href')).toBe('icons/lucide-sprite.svg#check');
-        expect(btn.classList.contains('copied')).toBe(true);
+
+        // Copy URL button swaps link -> check -> link after 1500ms
+        const copyBtn = dom.window.document.getElementById('obsCopyUrlButton');
+        const copyUse = dom.window.document.querySelector('#obsCopyUrlIcon use');
+        vi.advanceTimersByTime(1500);
+        expect(copyUse.getAttribute('href')).toBe('icons/lucide-sprite.svg#link');
+
+        copyBtn.click();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(copyUse.getAttribute('href')).toBe('icons/lucide-sprite.svg#check');
+        expect(copyBtn.classList.contains('copied')).toBe(true);
 
         vi.advanceTimersByTime(1500);
-        expect(useEl.getAttribute('href')).toBe('icons/lucide-sprite.svg#radio');
-        expect(btn.classList.contains('copied')).toBe(false);
+        expect(copyUse.getAttribute('href')).toBe('icons/lucide-sprite.svg#link');
+        expect(copyBtn.classList.contains('copied')).toBe(false);
+
+        controller.dispose();
+    });
+
+    it('shows port warning when stored obsLastPort differs and clears it once new port is copied/dragged', async () => {
+        const dom = buildObsDom('http://127.0.0.1:19002/');
+        const storage = createMemoryStorage({ [ObsController.LAST_PORT_STORAGE_KEY]: '8080' });
+        const writeText = vi.fn().mockResolvedValue(undefined);
+
+        const controller = ObsController.create({
+            document: dom.window.document,
+            window: dom.window,
+            storage,
+            fetch: vi.fn().mockResolvedValue({ ok: true }),
+            navigator: { clipboard: { writeText }, userAgent: 'Windows' },
+            t: (k) => k,
+            isPackEnabled: () => true,
+            desktopAvailable: true,
+            ControlIcon,
+        });
+        controller.init();
+        controller.applyConfig({
+            obs_desktop_available: true,
+            obs_url: 'http://127.0.0.1:19002/obs',
+        });
+
+        controller.openDialog();
+        const warnEl = dom.window.document.getElementById('obsPortWarning');
+        expect(warnEl.hidden).toBe(false);
+        expect(warnEl.textContent).toBe('obs_port_changed_warning');
+
+        await controller.copyObsLink();
+        expect(storage.getItem(ObsController.LAST_PORT_STORAGE_KEY)).toBe('19002');
+        expect(warnEl.hidden).toBe(true);
+
+        controller.dispose();
+    });
+});
+
+describe('ObsController settings persistence, groups, preview sync, and reset', () => {
+    it('persists collapsible group open state locally and restores it without syncing to local-store-sync allowlist', () => {
+        const syncSource = fs.readFileSync(
+            path.resolve(__dirname, '../../static/local-store-sync.js'),
+            'utf8',
+        );
+        expect(syncSource).toContain(`'${ObsController.STORAGE_KEY}'`);
+        expect(syncSource).toContain(`'${ObsController.LAST_PORT_STORAGE_KEY}'`);
+        expect(syncSource).not.toContain(ObsController.GROUPS_STORAGE_KEY);
+
+        const dom = buildObsDom();
+        const storage = createMemoryStorage();
+        const controller = ObsController.create({
+            document: dom.window.document,
+            window: dom.window,
+            storage,
+            fetch: vi.fn().mockResolvedValue({ ok: true }),
+            t: (k) => k,
+            userAgent: 'Windows',
+            isPackEnabled: () => true,
+            ControlIcon,
+        });
+        controller.init();
+
+        const textGroup = dom.window.document.getElementById('obsGroupText');
+        const colorGroup = dom.window.document.getElementById('obsGroupColor');
+        expect(textGroup.open).toBe(true);
+        expect(colorGroup.open).toBe(false);
+
+        textGroup.open = false;
+        textGroup.dispatchEvent(new dom.window.Event('toggle'));
+        colorGroup.open = true;
+        colorGroup.dispatchEvent(new dom.window.Event('toggle'));
+
+        expect(JSON.parse(storage.getItem(ObsController.GROUPS_STORAGE_KEY))).toEqual({
+            text: false,
+            color: true,
+            background: false,
+            layout: false,
+        });
+        controller.dispose();
+
+        // New controller instance restores group state from storage
+        const dom2 = buildObsDom();
+        const controller2 = ObsController.create({
+            document: dom2.window.document,
+            window: dom2.window,
+            storage,
+            fetch: vi.fn().mockResolvedValue({ ok: true }),
+            t: (k) => k,
+            userAgent: 'Windows',
+            isPackEnabled: () => true,
+            ControlIcon,
+        });
+        controller2.init();
+        expect(dom2.window.document.getElementById('obsGroupText').open).toBe(false);
+        expect(dom2.window.document.getElementById('obsGroupColor').open).toBe(true);
+        controller2.dispose();
+    });
+
+    it('updates storage, preview postMessage, backend /obs-settings, and resets defaults', async () => {
+        vi.useFakeTimers();
+        const dom = buildObsDom();
+        const storage = createMemoryStorage();
+        const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+        const postMessageMock = vi.fn();
+        const frame = dom.window.document.getElementById('obsPreviewFrame');
+        Object.defineProperty(frame, 'contentWindow', {
+            value: { postMessage: postMessageMock },
+            configurable: true,
+        });
+
+        const controller = ObsController.create({
+            document: dom.window.document,
+            window: dom.window,
+            storage,
+            fetch: fetchMock,
+            t: (k, vars) => (vars && vars.value !== undefined ? `${vars.value} px` : k),
+            getLang: () => 'en',
+            userAgent: 'Windows',
+            isPackEnabled: () => true,
+            desktopAvailable: true,
+            ControlIcon,
+        });
+        controller.init();
+        controller.openDialog();
+        postMessageMock.mockClear();
+
+        // Slider input debounces POST /obs-settings but immediately sends postMessage
+        const fontSizeSlider = dom.window.document.getElementById('obsFontSizeSlider');
+        fontSizeSlider.value = '68';
+        fontSizeSlider.dispatchEvent(new dom.window.Event('input'));
+        expect(dom.window.document.getElementById('obsFontSizeValue').textContent).toBe('68 px');
+        expect(postMessageMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            type: 'obs_preview_update',
+            lang: 'en',
+            settings: expect.objectContaining({ fontSize: 68 }),
+        }), '*');
+        expect(fetchMock).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(60);
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('"font_size":68'),
+        }));
+
+        // Color change syncs immediately
+        const origColorInput = dom.window.document.getElementById('obsOriginalColorInput');
+        origColorInput.value = '#38bdf8';
+        origColorInput.dispatchEvent(new dom.window.Event('change'));
+        expect(dom.window.document.getElementById('obsOriginalColorValue').textContent).toBe('#38bdf8');
+        expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toMatchObject({
+            fontSize: 68,
+            originalColor: '#38bdf8',
+        });
+
+        // Toggle & select controls update immediately
+        const boldSwitch = dom.window.document.querySelector('#obsBoldPicker button');
+        boldSwitch.click();
+        const bgSelect = dom.window.document.querySelector('#obsBgModePicker select');
+        bgSelect.value = 'block';
+        bgSelect.dispatchEvent(new dom.window.Event('change'));
+
+        expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toMatchObject({
+            bold: true,
+            bgMode: 'block',
+        });
+        expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
+            method: 'POST',
+            body: expect.stringContaining('"bg_mode":"block"'),
+        }));
+
+        // Reset button restores all 19 defaults
+        dom.window.document.getElementById('obsResetDefaultsButton').click();
+        expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toEqual(ObsSettings.DEFAULT_SETTINGS);
+        expect(dom.window.document.getElementById('obsFontSizeValue').textContent).toBe('42 px');
+        expect(dom.window.document.getElementById('obsOriginalColorValue').textContent).toBe('#e5e7eb');
+        expect(boldSwitch.getAttribute('aria-checked')).toBe('false');
+        expect(bgSelect.value).toBe('strip');
+        expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify(ObsSettings.toBackendPayload(ObsSettings.DEFAULT_SETTINGS)),
+        }));
+
         controller.dispose();
     });
 });

@@ -1,15 +1,54 @@
 (function (root) {
     'use strict';
 
+    const obsSettings = root.ObsSettings
+        || (typeof require === 'function' ? require('./obs-settings') : null);
+    if (!obsSettings) {
+        throw new Error('ObsController requires ObsSettings');
+    }
+
+    const {
+        FONT_SIZE_DEFAULT,
+        FONT_SIZE_MIN,
+        FONT_SIZE_MAX,
+        TRANSLATION_FONT_SCALE_DEFAULT,
+        TRANSLATION_FONT_SCALE_MIN,
+        TRANSLATION_FONT_SCALE_MAX,
+        OUTLINE_WIDTH_DEFAULT,
+        OUTLINE_WIDTH_MIN,
+        OUTLINE_WIDTH_MAX,
+        BG_OPACITY_DEFAULT,
+        BG_OPACITY_MIN,
+        BG_OPACITY_MAX,
+        MAX_WIDTH_DEFAULT,
+        MAX_WIDTH_MIN,
+        MAX_WIDTH_MAX,
+        MAX_SENTENCES_DEFAULT,
+        MAX_SENTENCES_MIN,
+        MAX_SENTENCES_MAX,
+        AUTO_HIDE_SECONDS_DEFAULT,
+        AUTO_HIDE_SECONDS_MIN,
+        AUTO_HIDE_SECONDS_MAX,
+        VALID_DISPLAY_CONTENTS,
+        DEFAULT_SETTINGS,
+        normalizeFontSize,
+        normalizeDisplayContent,
+        normalizeSettings,
+        toBackendPayload,
+        areSettingsEqual,
+    } = obsSettings;
+
     const STORAGE_KEY = 'obsSettings.v1';
-    const FONT_SIZE_DEFAULT = 42;
-    const FONT_SIZE_MIN = 16;
-    const FONT_SIZE_MAX = 120;
-    const VALID_DISPLAY_CONTENTS = Object.freeze(['both', 'original', 'translation']);
-    const DEFAULT_SETTINGS = Object.freeze({
-        fontSize: FONT_SIZE_DEFAULT,
-        displayContent: 'both',
+    const GROUPS_STORAGE_KEY = 'obsDialogGroups.v1';
+    const LAST_PORT_STORAGE_KEY = 'obsLastPort';
+    const DEFAULT_GROUP_STATES = Object.freeze({
+        text: true,
+        color: false,
+        background: false,
+        layout: false,
     });
+    const PREVIEW_VIRTUAL_WIDTH = 1280;
+    const PREVIEW_VIRTUAL_HEIGHT = 720;
     const COPIED_RESET_DELAY_MS = 1500;
     const MOBILE_UA_PATTERN = /Mobi|Android|iPhone|iPad|iPod/i;
 
@@ -20,29 +59,18 @@
         return MOBILE_UA_PATTERN.test(String(userAgent || ''));
     }
 
-    function normalizeFontSize(value) {
-        if (typeof value === 'boolean') return FONT_SIZE_DEFAULT;
-        const parsed = Number(value);
-        if (!Number.isFinite(parsed)) return FONT_SIZE_DEFAULT;
-        return Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, Math.round(parsed)));
-    }
-
-    function normalizeDisplayContent(value) {
-        if (typeof value !== 'string') return 'both';
-        const normalized = value.trim().toLowerCase();
-        return VALID_DISPLAY_CONTENTS.includes(normalized) ? normalized : 'both';
-    }
-
-    function normalizeSettings(raw) {
-        const source = raw && typeof raw === 'object' ? raw : {};
-        return {
-            fontSize: normalizeFontSize(
-                source.fontSize !== undefined ? source.fontSize : source.font_size,
-            ),
-            displayContent: normalizeDisplayContent(
-                source.displayContent !== undefined ? source.displayContent : source.display_content,
-            ),
-        };
+    function extractPort(urlStr) {
+        if (!urlStr || typeof urlStr !== 'string') return '';
+        try {
+            const parsed = new URL(urlStr);
+            if (parsed.port) return parsed.port;
+            if (parsed.protocol === 'https:') return '443';
+            if (parsed.protocol === 'http:') return '80';
+        } catch (_) {
+            const match = /:(\d+)(?:[/?#]|$)/.exec(urlStr);
+            if (match) return match[1];
+        }
+        return '';
     }
 
     function create(options = {}) {
@@ -54,9 +82,15 @@
             : (typeof root.fetch === 'function' ? root.fetch.bind(root) : null);
         const navigatorRef = options.navigator || root.navigator;
         const t = typeof options.t === 'function' ? options.t : (key) => key;
+        const getLang = typeof options.getLang === 'function'
+            ? options.getLang
+            : () => (root.I18N && root.I18N.lang) || (navigatorRef && navigatorRef.language) || 'en';
         const showToast = typeof options.showToast === 'function' ? options.showToast : () => {};
         const buildCustomSelect = typeof options.buildCustomSelect === 'function'
             ? options.buildCustomSelect
+            : null;
+        const buildToggleSwitch = typeof options.buildToggleSwitch === 'function'
+            ? options.buildToggleSwitch
             : null;
         const controlIcon = options.ControlIcon || root.ControlIcon;
         const isPackEnabledFn = typeof options.isPackEnabled === 'function'
@@ -80,14 +114,19 @@
 
         let hasStoredSettings = false;
         let settings = loadStoredSettings();
+        let groupStates = loadGroupStates();
         let packEnabled = !!isPackEnabledFn();
         let desktopAvailable = !!options.desktopAvailable;
         let backendObsUrl = '';
+        let dialogOpen = false;
+        let previewLoadedUrl = '';
         let copied = false;
         let copiedResetTimer = null;
         let inputDebounceTimer = null;
-        let displayContentControl = null;
+        let previewObserver = null;
         let initialized = false;
+        const selectControls = {};
+        const toggleControls = {};
         const boundListeners = [];
 
         function el(key, id) {
@@ -126,6 +165,36 @@
             return { ...settings };
         }
 
+        function loadGroupStates() {
+            const defaults = { ...DEFAULT_GROUP_STATES };
+            if (!storage || typeof storage.getItem !== 'function') return defaults;
+            try {
+                const raw = storage.getItem(GROUPS_STORAGE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (parsed && typeof parsed === 'object') {
+                        for (const key of Object.keys(defaults)) {
+                            if (typeof parsed[key] === 'boolean') {
+                                defaults[key] = parsed[key];
+                            }
+                        }
+                    }
+                }
+            } catch (_) {
+                // ignore malformed group state
+            }
+            return defaults;
+        }
+
+        function saveGroupStates() {
+            if (!storage || typeof storage.setItem !== 'function') return;
+            try {
+                storage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(groupStates));
+            } catch (_) {
+                // ignore storage write failures
+            }
+        }
+
         function isDesktopMainWindow() {
             return desktopAvailable && !mobile;
         }
@@ -137,125 +206,516 @@
             return `http://127.0.0.1${port}/obs`;
         }
 
-        function setCopyButtonIcon(iconName) {
-            const iconEl = el('copyLinkIcon', 'obsCopyLinkIcon');
+        function getObsDragUrl() {
+            const baseUrl = getObsUrl();
+            const layerName = encodeURIComponent(t('obs_layer_name'));
+            const sep = baseUrl.includes('?') ? '&' : '?';
+            return `${baseUrl}${sep}layer-name=${layerName}`;
+        }
+
+        function updatePortWarning() {
+            const warnEl = el('portWarning', 'obsPortWarning');
+            if (!warnEl) return;
+            let storedPort = '';
+            if (storage && typeof storage.getItem === 'function') {
+                try {
+                    storedPort = String(storage.getItem(LAST_PORT_STORAGE_KEY) || '').trim();
+                } catch (_) {
+                    storedPort = '';
+                }
+            }
+            const currentPort = extractPort(getObsUrl());
+            const mismatch = !!(storedPort && currentPort && storedPort !== currentPort);
+            warnEl.hidden = !mismatch;
+            warnEl.textContent = mismatch ? t('obs_port_changed_warning') : '';
+        }
+
+        function recordHandedOutPort() {
+            const currentPort = extractPort(getObsUrl());
+            if (!currentPort || !storage || typeof storage.setItem !== 'function') return;
+            try {
+                storage.setItem(LAST_PORT_STORAGE_KEY, currentPort);
+            } catch (_) {
+                // ignore storage errors
+            }
+            updatePortWarning();
+        }
+
+        function setIconHref(iconEl, iconName) {
             if (!iconEl) return false;
             if (controlIcon && typeof controlIcon.set === 'function') {
                 return controlIcon.set(iconEl, iconName);
             }
             const useEl = iconEl.querySelector && iconEl.querySelector('use');
             if (!useEl) return false;
-            const href = `icons/lucide-sprite.svg#${iconName}`;
-            useEl.setAttribute('href', href);
+            useEl.setAttribute('href', `icons/lucide-sprite.svg#${iconName}`);
             return true;
         }
 
-        function updateCopyButton() {
+        function updateToolbarButton() {
             const btn = el('copyLinkButton', 'obsCopyLinkButton');
             if (!btn) return;
             btn.hidden = !(packEnabled && isDesktopMainWindow());
-            const title = t(copied ? 'obs_link_copied' : 'obs_copy_link');
+            const title = t('obs_dialog_title');
             btn.title = title;
             btn.setAttribute('aria-label', title);
-            if (btn.classList) btn.classList.toggle('copied', copied);
         }
 
-        function renderFontSizeSlider() {
-            const slider = el('fontSizeSlider', 'obsFontSizeSlider');
-            const output = el('fontSizeValue', 'obsFontSizeValue');
-            const mark = el('fontSizeDefaultMark', 'obsFontSizeDefaultMark');
-            const fs = normalizeFontSize(settings.fontSize);
+        function updateCopyUrlButton() {
+            const btn = el('copyUrlButton', 'obsCopyUrlButton');
+            const textEl = el('copyUrlText', 'obsCopyUrlText');
+            const iconEl = el('copyUrlIcon', 'obsCopyUrlIcon');
+            if (iconEl) {
+                setIconHref(iconEl, copied ? 'check' : 'link');
+            }
+            if (textEl) {
+                textEl.textContent = t(copied ? 'obs_copied_short' : 'obs_copy_link_btn');
+            }
+            if (btn) {
+                if (btn.classList) btn.classList.toggle('copied', copied);
+                btn.title = t(copied ? 'obs_link_copied' : 'obs_copy_link');
+                btn.setAttribute('aria-label', btn.title);
+            }
+        }
+
+        function updateDragCard() {
+            const card = el('dragCard', 'obsDragCard');
+            const textEl = el('dragCardText', 'obsDragCardText');
+            if (card) {
+                card.setAttribute('href', getObsDragUrl());
+            }
+            if (textEl) {
+                textEl.textContent = t('obs_drag_to_obs');
+            }
+        }
+
+        const SLIDER_SPECS = [
+            {
+                key: 'fontSize',
+                sliderId: 'obsFontSizeSlider',
+                valueId: 'obsFontSizeValue',
+                markId: 'obsFontSizeDefaultMark',
+                min: FONT_SIZE_MIN,
+                max: FONT_SIZE_MAX,
+                def: FONT_SIZE_DEFAULT,
+                format: (v) => t('obs_font_size_value', { value: v }),
+            },
+            {
+                key: 'translationFontScale',
+                sliderId: 'obsTranslationScaleSlider',
+                valueId: 'obsTranslationScaleValue',
+                markId: 'obsTranslationScaleDefaultMark',
+                min: TRANSLATION_FONT_SCALE_MIN,
+                max: TRANSLATION_FONT_SCALE_MAX,
+                def: TRANSLATION_FONT_SCALE_DEFAULT,
+                format: (v) => `${v}%`,
+            },
+            {
+                key: 'outlineWidth',
+                sliderId: 'obsOutlineWidthSlider',
+                valueId: 'obsOutlineWidthValue',
+                markId: 'obsOutlineWidthDefaultMark',
+                min: OUTLINE_WIDTH_MIN,
+                max: OUTLINE_WIDTH_MAX,
+                def: OUTLINE_WIDTH_DEFAULT,
+                format: (v) => t('obs_font_size_value', { value: v }),
+            },
+            {
+                key: 'bgOpacity',
+                sliderId: 'obsBgOpacitySlider',
+                valueId: 'obsBgOpacityValue',
+                markId: 'obsBgOpacityDefaultMark',
+                min: BG_OPACITY_MIN,
+                max: BG_OPACITY_MAX,
+                def: BG_OPACITY_DEFAULT,
+                format: (v) => `${v}%`,
+            },
+            {
+                key: 'maxWidth',
+                sliderId: 'obsMaxWidthSlider',
+                valueId: 'obsMaxWidthValue',
+                markId: 'obsMaxWidthDefaultMark',
+                min: MAX_WIDTH_MIN,
+                max: MAX_WIDTH_MAX,
+                def: MAX_WIDTH_DEFAULT,
+                format: (v) => `${v}%`,
+            },
+            {
+                key: 'maxSentences',
+                sliderId: 'obsMaxSentencesSlider',
+                valueId: 'obsMaxSentencesValue',
+                markId: 'obsMaxSentencesDefaultMark',
+                min: MAX_SENTENCES_MIN,
+                max: MAX_SENTENCES_MAX,
+                def: MAX_SENTENCES_DEFAULT,
+                format: (v) => `${v}`,
+            },
+            {
+                key: 'autoHideSeconds',
+                sliderId: 'obsAutoHideSlider',
+                valueId: 'obsAutoHideValue',
+                markId: 'obsAutoHideDefaultMark',
+                min: AUTO_HIDE_SECONDS_MIN,
+                max: AUTO_HIDE_SECONDS_MAX,
+                def: AUTO_HIDE_SECONDS_DEFAULT,
+                format: (v) => (v === 0 ? t('obs_auto_hide_off') : t('local_seconds_value', { value: v })),
+            },
+        ];
+
+        function renderSlider(spec) {
+            const slider = el(spec.key + 'Slider', spec.sliderId);
+            const output = el(spec.key + 'Value', spec.valueId);
+            const mark = el(spec.key + 'Mark', spec.markId);
+            const val = Number(settings[spec.key]);
             if (output) {
-                output.textContent = t('obs_font_size_value', { value: fs });
+                output.textContent = spec.format(val);
             }
             if (!slider) return;
-            slider.min = String(FONT_SIZE_MIN);
-            slider.max = String(FONT_SIZE_MAX);
-            slider.value = String(fs);
-            const span = FONT_SIZE_MAX - FONT_SIZE_MIN;
-            const fill = span > 0 ? ((fs - FONT_SIZE_MIN) / span) * 100 : 0;
+            slider.min = String(spec.min);
+            slider.max = String(spec.max);
+            slider.value = String(val);
+            const span = spec.max - spec.min;
+            const fill = span > 0 ? ((val - spec.min) / span) * 100 : 0;
             if (slider.parentElement && slider.parentElement.style) {
                 slider.parentElement.style.setProperty('--fill', `${fill}%`);
             }
             if (mark && mark.classList) {
-                mark.classList.toggle('is-current', fs === FONT_SIZE_DEFAULT);
+                mark.classList.toggle('is-current', val === spec.def);
             }
         }
 
-        function renderDisplayContentControl() {
-            const host = el('displayContentPickerHost', 'obsDisplayContentPicker');
-            if (!host || !documentRef) return null;
-            host.innerHTML = '';
-            const selectOptions = [
-                { value: 'both', label: t('obs_display_both') },
-                { value: 'original', label: t('obs_display_original') },
-                { value: 'translation', label: t('obs_display_translation') },
+        function renderAllSliders() {
+            for (const spec of SLIDER_SPECS) {
+                renderSlider(spec);
+            }
+        }
+
+        const COLOR_SPECS = [
+            { key: 'originalColor', inputId: 'obsOriginalColorInput', valueId: 'obsOriginalColorValue' },
+            { key: 'translationColor', inputId: 'obsTranslationColorInput', valueId: 'obsTranslationColorValue' },
+            { key: 'outlineColor', inputId: 'obsOutlineColorInput', valueId: 'obsOutlineColorValue' },
+            { key: 'bgColor', inputId: 'obsBgColorInput', valueId: 'obsBgColorValue' },
+        ];
+
+        function renderAllColors() {
+            for (const spec of COLOR_SPECS) {
+                const input = el(spec.key + 'Input', spec.inputId);
+                const output = el(spec.key + 'Value', spec.valueId);
+                const val = settings[spec.key];
+                if (input) input.value = val;
+                if (output) output.textContent = val;
+            }
+        }
+
+        function getSelectSpecs() {
+            return [
+                {
+                    key: 'displayContent',
+                    hostId: 'obsDisplayContentPicker',
+                    options: [
+                        { value: 'both', label: t('obs_display_both') },
+                        { value: 'original', label: t('obs_display_original') },
+                        { value: 'translation', label: t('obs_display_translation') },
+                    ],
+                },
+                {
+                    key: 'fontFamily',
+                    hostId: 'obsFontFamilyPicker',
+                    options: [
+                        { value: 'system', label: t('obs_font_system') },
+                        { value: 'microsoft_yahei', label: t('obs_font_microsoft_yahei') },
+                        { value: 'simhei', label: t('obs_font_simhei') },
+                        { value: 'simsun', label: t('obs_font_simsun') },
+                        { value: 'kaiti', label: t('obs_font_kaiti') },
+                        { value: 'noto_sans_cjk', label: t('obs_font_noto_sans_cjk') },
+                    ],
+                },
+                {
+                    key: 'bgMode',
+                    hostId: 'obsBgModePicker',
+                    options: [
+                        { value: 'none', label: t('obs_bg_mode_none') },
+                        { value: 'strip', label: t('obs_bg_mode_strip') },
+                        { value: 'block', label: t('obs_bg_mode_block') },
+                    ],
+                },
+                {
+                    key: 'position',
+                    hostId: 'obsPositionPicker',
+                    options: [
+                        { value: 'bottom', label: t('obs_position_bottom') },
+                        { value: 'top', label: t('obs_position_top') },
+                    ],
+                },
+                {
+                    key: 'alignment',
+                    hostId: 'obsAlignmentPicker',
+                    options: [
+                        { value: 'left', label: t('obs_alignment_left') },
+                        { value: 'center', label: t('obs_alignment_center') },
+                        { value: 'right', label: t('obs_alignment_right') },
+                    ],
+                },
             ];
-            const onSelect = (nextValue) => {
-                const updated = saveSettings({
-                    ...settings,
-                    displayContent: nextValue,
-                });
-                void syncSettingsToBackend(updated);
-            };
-            if (buildCustomSelect) {
-                const picker = buildCustomSelect(selectOptions, {
-                    value: settings.displayContent,
-                    onChange: onSelect,
-                });
-                host.appendChild(picker);
-                displayContentControl = picker;
-                return picker;
+        }
+
+        function renderSelectControls() {
+            if (!documentRef) return;
+            for (const spec of getSelectSpecs()) {
+                const host = el(spec.key + 'Picker', spec.hostId);
+                if (!host) continue;
+                if (selectControls[spec.key] && typeof selectControls[spec.key].close === 'function') {
+                    selectControls[spec.key].close();
+                }
+                host.innerHTML = '';
+                const onSelect = (nextValue) => {
+                    const updated = saveSettings({
+                        ...settings,
+                        [spec.key]: nextValue,
+                    });
+                    postPreviewUpdate();
+                    void syncSettingsToBackend(updated);
+                };
+                if (buildCustomSelect) {
+                    const picker = buildCustomSelect(spec.options, {
+                        value: settings[spec.key],
+                        onChange: onSelect,
+                    });
+                    host.appendChild(picker);
+                    selectControls[spec.key] = picker;
+                } else {
+                    const select = documentRef.createElement('select');
+                    for (const entry of spec.options) {
+                        const opt = documentRef.createElement('option');
+                        opt.value = entry.value;
+                        opt.textContent = entry.label;
+                        select.appendChild(opt);
+                    }
+                    select.value = settings[spec.key];
+                    select.addEventListener('change', () => onSelect(select.value));
+                    host.appendChild(select);
+                    selectControls[spec.key] = select;
+                }
             }
-            const select = documentRef.createElement('select');
-            for (const entry of selectOptions) {
-                const opt = documentRef.createElement('option');
-                opt.value = entry.value;
-                opt.textContent = entry.label;
-                select.appendChild(opt);
+        }
+
+        const TOGGLE_SPECS = [
+            { key: 'bold', hostId: 'obsBoldPicker' },
+            { key: 'showLangTag', hostId: 'obsShowLangTagPicker' },
+            { key: 'dropShadow', hostId: 'obsDropShadowPicker' },
+        ];
+
+        function renderToggleControls() {
+            if (!documentRef) return;
+            for (const spec of TOGGLE_SPECS) {
+                const host = el(spec.key + 'Picker', spec.hostId);
+                if (!host) continue;
+                host.innerHTML = '';
+                const currentVal = settings[spec.key] ? 'true' : 'false';
+                const onToggle = (nextStr) => {
+                    const updated = saveSettings({
+                        ...settings,
+                        [spec.key]: nextStr === 'true',
+                    });
+                    postPreviewUpdate();
+                    void syncSettingsToBackend(updated);
+                };
+                if (buildToggleSwitch) {
+                    const toggle = buildToggleSwitch({
+                        value: currentVal,
+                        onValue: 'true',
+                        offValue: 'false',
+                        onChange: onToggle,
+                    });
+                    host.appendChild(toggle);
+                    toggleControls[spec.key] = toggle;
+                } else {
+                    const toggle = documentRef.createElement('button');
+                    toggle.type = 'button';
+                    toggle.className = 'settings-switch';
+                    toggle.setAttribute('role', 'switch');
+                    toggle.setAttribute('aria-checked', currentVal);
+                    let val = currentVal;
+                    Object.defineProperty(toggle, 'value', {
+                        get: () => val,
+                        set: (next) => {
+                            val = next === 'true' ? 'true' : 'false';
+                            toggle.setAttribute('aria-checked', val);
+                        },
+                    });
+                    toggle.addEventListener('click', () => {
+                        val = val === 'true' ? 'false' : 'true';
+                        toggle.setAttribute('aria-checked', val);
+                        onToggle(val);
+                    });
+                    host.appendChild(toggle);
+                    toggleControls[spec.key] = toggle;
+                }
             }
-            select.value = settings.displayContent;
-            select.addEventListener('change', () => onSelect(select.value));
-            host.appendChild(select);
-            displayContentControl = select;
-            return select;
+        }
+
+        function syncControlValuesFromSettings() {
+            renderAllSliders();
+            renderAllColors();
+            for (const key of Object.keys(selectControls)) {
+                const ctrl = selectControls[key];
+                if (ctrl) ctrl.value = settings[key];
+            }
+            for (const key of Object.keys(toggleControls)) {
+                const ctrl = toggleControls[key];
+                if (ctrl) ctrl.value = settings[key] ? 'true' : 'false';
+            }
+        }
+
+        function applyGroupOpenStates() {
+            if (!documentRef || typeof documentRef.querySelectorAll !== 'function') return;
+            const groups = documentRef.querySelectorAll('details[data-obs-group]');
+            groups.forEach((details) => {
+                const key = details.getAttribute('data-obs-group');
+                if (key && Object.prototype.hasOwnProperty.call(groupStates, key)) {
+                    details.open = !!groupStates[key];
+                }
+            });
         }
 
         function applyStaticText() {
-            const titleEl = el('settingsTitle', 'obsSettingsLabel');
-            if (titleEl) titleEl.textContent = t('obs_settings_section');
-            const fontLabel = el('fontSizeLabel', 'obsFontSizeLabel');
-            if (fontLabel) fontLabel.textContent = t('obs_font_size');
-            const displayLabel = el('displayContentLabel', 'obsDisplayContentLabel');
-            if (displayLabel) displayLabel.textContent = t('obs_display_content');
-        }
-
-        function applyVisibility() {
-            const section = el('settingsSection', 'obsSettingsSection');
-            if (section) {
-                section.hidden = !packEnabled;
+            const textMap = [
+                ['obsDialogTitle', 'obs_dialog_title'],
+                ['obsAddSectionLabel', 'obs_add_section'],
+                ['obsHowToSummary', 'obs_howto_title'],
+                ['obsHowToDrag', 'obs_howto_drag'],
+                ['obsHowToCopy', 'obs_howto_copy'],
+                ['obsHowToKeepRunning', 'obs_howto_keep_running'],
+                ['obsPreviewLabel', 'obs_preview_label'],
+                ['obsGroupTextTitle', 'obs_group_text'],
+                ['obsDisplayContentLabel', 'obs_display_content'],
+                ['obsFontSizeLabel', 'obs_font_size'],
+                ['obsTranslationScaleLabel', 'obs_translation_scale'],
+                ['obsFontFamilyLabel', 'obs_font_family'],
+                ['obsBoldLabel', 'obs_bold'],
+                ['obsShowLangTagLabel', 'obs_show_lang_tag'],
+                ['obsGroupColorTitle', 'obs_group_color'],
+                ['obsOriginalColorLabel', 'obs_original_color'],
+                ['obsTranslationColorLabel', 'obs_translation_color'],
+                ['obsOutlineWidthLabel', 'obs_outline_width'],
+                ['obsOutlineColorLabel', 'obs_outline_color'],
+                ['obsDropShadowLabel', 'obs_drop_shadow'],
+                ['obsGroupBackgroundTitle', 'obs_group_background'],
+                ['obsBgModeLabel', 'obs_bg_mode'],
+                ['obsBgColorLabel', 'obs_bg_color'],
+                ['obsBgOpacityLabel', 'obs_bg_opacity'],
+                ['obsGroupLayoutTitle', 'obs_group_layout'],
+                ['obsPositionLabel', 'obs_position'],
+                ['obsAlignmentLabel', 'obs_alignment'],
+                ['obsMaxWidthLabel', 'obs_max_width'],
+                ['obsMaxSentencesLabel', 'obs_max_sentences'],
+                ['obsAutoHideLabel', 'obs_auto_hide'],
+                ['obsResetDefaultsButton', 'obs_reset_defaults'],
+                ['obsDialogDoneButton', 'obs_done'],
+            ];
+            for (const [id, i18nKey] of textMap) {
+                const node = documentRef && documentRef.getElementById(id);
+                if (node) node.textContent = t(i18nKey);
             }
-            updateCopyButton();
+            const closeBtn = el('dialogCloseButton', 'obsDialogCloseButton');
+            if (closeBtn) {
+                const closeText = t('close');
+                closeBtn.title = closeText;
+                closeBtn.setAttribute('aria-label', closeText);
+            }
+            updateDragCard();
+            updateCopyUrlButton();
+            updatePortWarning();
         }
 
-        function renderSettingsSection() {
+        function renderDialog() {
             applyStaticText();
-            renderFontSizeSlider();
-            renderDisplayContentControl();
-            applyVisibility();
+            renderAllSliders();
+            renderAllColors();
+            renderSelectControls();
+            renderToggleControls();
+            applyGroupOpenStates();
+            updateToolbarButton();
+        }
+
+        function updatePreviewScale() {
+            const box = el('previewBox', 'obsPreviewBox');
+            const frame = el('previewFrame', 'obsPreviewFrame');
+            if (!box || !frame) return;
+            const width = box.clientWidth || (box.getBoundingClientRect && box.getBoundingClientRect().width) || 432;
+            const scale = width > 0 ? width / PREVIEW_VIRTUAL_WIDTH : 0.3375;
+            if (frame.style) {
+                frame.style.width = `${PREVIEW_VIRTUAL_WIDTH}px`;
+                frame.style.height = `${PREVIEW_VIRTUAL_HEIGHT}px`;
+                frame.style.transform = `scale(${scale})`;
+            }
+        }
+
+        function postPreviewUpdate() {
+            const frame = el('previewFrame', 'obsPreviewFrame');
+            if (!frame || !frame.contentWindow || typeof frame.contentWindow.postMessage !== 'function') {
+                return false;
+            }
+            try {
+                frame.contentWindow.postMessage({
+                    type: 'obs_preview_update',
+                    settings: { ...settings },
+                    lang: String(getLang() || 'en'),
+                }, '*');
+                return true;
+            } catch (_) {
+                return false;
+            }
+        }
+
+        function ensurePreviewFrameLoaded() {
+            const frame = el('previewFrame', 'obsPreviewFrame');
+            if (!frame) return;
+            const lang = encodeURIComponent(String(getLang() || 'en'));
+            const targetSrc = `/obs?preview=1&lang=${lang}`;
+            if (previewLoadedUrl !== targetSrc) {
+                previewLoadedUrl = targetSrc;
+                frame.setAttribute('src', targetSrc);
+            }
+            updatePreviewScale();
+            postPreviewUpdate();
+        }
+
+        function openDialog() {
+            const overlay = el('dialogOverlay', 'obsDialogOverlay');
+            const dialog = el('dialog', 'obsDialog');
+            if (!overlay || !dialog) return false;
+            dialogOpen = true;
+            overlay.hidden = false;
+            dialog.hidden = false;
+            updateDragCard();
+            updateCopyUrlButton();
+            updatePortWarning();
+            applyGroupOpenStates();
+            ensurePreviewFrameLoaded();
+            return true;
+        }
+
+        function closeDialog() {
+            const overlay = el('dialogOverlay', 'obsDialogOverlay');
+            const dialog = el('dialog', 'obsDialog');
+            for (const ctrl of Object.values(selectControls)) {
+                if (ctrl && typeof ctrl.close === 'function') ctrl.close();
+            }
+            if (overlay) overlay.hidden = true;
+            if (dialog) dialog.hidden = true;
+            dialogOpen = false;
+            return true;
         }
 
         async function syncSettingsToBackend(target = settings) {
             if (!fetchImpl) return false;
-            const normalized = normalizeSettings(target);
+            const payload = toBackendPayload(target);
             try {
                 const response = await fetchImpl('/obs-settings', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        font_size: normalized.fontSize,
-                        display_content: normalized.displayContent,
-                    }),
+                    body: JSON.stringify(payload),
                 });
                 return !!(response && response.ok);
             } catch (error) {
@@ -298,16 +758,14 @@
 
         function markCopiedVisual() {
             copied = true;
-            setCopyButtonIcon('check');
-            updateCopyButton();
+            updateCopyUrlButton();
             if (copiedResetTimer !== null) {
                 clearTimeoutFn(copiedResetTimer);
             }
             copiedResetTimer = setTimeoutFn(() => {
                 copiedResetTimer = null;
                 copied = false;
-                setCopyButtonIcon('radio');
-                updateCopyButton();
+                updateCopyUrlButton();
             }, COPIED_RESET_DELAY_MS);
         }
 
@@ -315,11 +773,24 @@
             const url = getObsUrl();
             const ok = await copyTextWithFallback(url);
             if (ok) {
+                recordHandedOutPort();
                 markCopiedVisual();
             } else {
                 showToast(t('obs_copy_failed'));
             }
             return ok;
+        }
+
+        function resetToDefaults() {
+            if (inputDebounceTimer !== null) {
+                clearTimeoutFn(inputDebounceTimer);
+                inputDebounceTimer = null;
+            }
+            const updated = saveSettings({ ...DEFAULT_SETTINGS });
+            syncControlValuesFromSettings();
+            postPreviewUpdate();
+            void syncSettingsToBackend(updated);
+            return updated;
         }
 
         function applyConfig(data = {}) {
@@ -333,31 +804,39 @@
             let dirty = false;
             if (data.obs_settings && typeof data.obs_settings === 'object' && !hasStoredSettings) {
                 const incoming = normalizeSettings(data.obs_settings);
-                if (
-                    incoming.fontSize !== settings.fontSize
-                    || incoming.displayContent !== settings.displayContent
-                ) {
+                if (!areSettingsEqual(incoming, settings)) {
                     settings = incoming;
                     dirty = true;
                 }
             }
-            if (dirty || !displayContentControl) {
-                renderSettingsSection();
+            if (dirty || !selectControls.displayContent) {
+                renderDialog();
             } else {
-                renderFontSizeSlider();
-                applyVisibility();
+                syncControlValuesFromSettings();
+                updateToolbarButton();
+                updateDragCard();
+                updatePortWarning();
+            }
+            if (dialogOpen) {
+                postPreviewUpdate();
             }
             return true;
         }
 
         function setPackEnabled(enabled) {
             packEnabled = !!enabled;
-            applyVisibility();
+            updateToolbarButton();
+            if (!packEnabled && dialogOpen) {
+                closeDialog();
+            }
             return packEnabled;
         }
 
         function applyI18n() {
-            renderSettingsSection();
+            renderDialog();
+            if (dialogOpen) {
+                postPreviewUpdate();
+            }
         }
 
         function bindEvent(target, type, handler) {
@@ -366,7 +845,7 @@
             boundListeners.push(() => target.removeEventListener(type, handler));
         }
 
-        function scheduleFontSizeSync(nextSettings) {
+        function scheduleSettingsSync(nextSettings) {
             if (inputDebounceTimer !== null) {
                 clearTimeoutFn(inputDebounceTimer);
             }
@@ -376,40 +855,153 @@
             }, 60);
         }
 
+        function bindSliderEvents() {
+            for (const spec of SLIDER_SPECS) {
+                const slider = el(spec.key + 'Slider', spec.sliderId);
+                if (!slider) continue;
+                bindEvent(slider, 'input', () => {
+                    const updated = saveSettings({
+                        ...settings,
+                        [spec.key]: slider.value,
+                    });
+                    renderSlider(spec);
+                    postPreviewUpdate();
+                    scheduleSettingsSync(updated);
+                });
+                bindEvent(slider, 'change', () => {
+                    if (inputDebounceTimer !== null) {
+                        clearTimeoutFn(inputDebounceTimer);
+                        inputDebounceTimer = null;
+                    }
+                    const updated = saveSettings({
+                        ...settings,
+                        [spec.key]: slider.value,
+                    });
+                    renderSlider(spec);
+                    postPreviewUpdate();
+                    void syncSettingsToBackend(updated);
+                });
+            }
+        }
+
+        function bindColorEvents() {
+            for (const spec of COLOR_SPECS) {
+                const input = el(spec.key + 'Input', spec.inputId);
+                if (!input) continue;
+                bindEvent(input, 'input', () => {
+                    const updated = saveSettings({
+                        ...settings,
+                        [spec.key]: input.value,
+                    });
+                    renderAllColors();
+                    postPreviewUpdate();
+                    scheduleSettingsSync(updated);
+                });
+                bindEvent(input, 'change', () => {
+                    if (inputDebounceTimer !== null) {
+                        clearTimeoutFn(inputDebounceTimer);
+                        inputDebounceTimer = null;
+                    }
+                    const updated = saveSettings({
+                        ...settings,
+                        [spec.key]: input.value,
+                    });
+                    renderAllColors();
+                    postPreviewUpdate();
+                    void syncSettingsToBackend(updated);
+                });
+            }
+        }
+
+        function bindGroupToggleEvents() {
+            if (!documentRef || typeof documentRef.querySelectorAll !== 'function') return;
+            const groups = documentRef.querySelectorAll('details[data-obs-group]');
+            groups.forEach((details) => {
+                bindEvent(details, 'toggle', () => {
+                    const key = details.getAttribute('data-obs-group');
+                    if (!key || !Object.prototype.hasOwnProperty.call(DEFAULT_GROUP_STATES, key)) return;
+                    groupStates[key] = !!details.open;
+                    saveGroupStates();
+                });
+            });
+        }
+
         function init() {
             if (initialized) {
-                renderSettingsSection();
+                renderDialog();
                 return;
             }
             initialized = true;
-            setCopyButtonIcon('radio');
-            renderSettingsSection();
+            setIconHref(el('copyLinkIcon', 'obsCopyLinkIcon'), 'radio');
+            renderDialog();
 
             bindEvent(el('copyLinkButton', 'obsCopyLinkButton'), 'click', () => {
+                openDialog();
+            });
+            bindEvent(el('dialogCloseButton', 'obsDialogCloseButton'), 'click', () => {
+                closeDialog();
+            });
+            bindEvent(el('dialogDoneButton', 'obsDialogDoneButton'), 'click', () => {
+                closeDialog();
+            });
+            bindEvent(el('dialogOverlay', 'obsDialogOverlay'), 'click', () => {
+                closeDialog();
+            });
+            bindEvent(documentRef, 'keydown', (event) => {
+                if (dialogOpen && event && event.key === 'Escape') {
+                    closeDialog();
+                }
+            });
+
+            const dragCard = el('dragCard', 'obsDragCard');
+            bindEvent(dragCard, 'dragstart', (event) => {
+                const dragUrl = getObsDragUrl();
+                if (event && event.dataTransfer) {
+                    try {
+                        event.dataTransfer.effectAllowed = 'copyLink';
+                    } catch (_) {
+                        // ignore read-only effectAllowed in test mocks
+                    }
+                    if (typeof event.dataTransfer.setData === 'function') {
+                        event.dataTransfer.setData('text/uri-list', dragUrl);
+                        event.dataTransfer.setData('text/plain', dragUrl);
+                    }
+                }
+                recordHandedOutPort();
+            });
+            bindEvent(dragCard, 'click', (event) => {
+                if (event && typeof event.preventDefault === 'function') {
+                    event.preventDefault();
+                }
                 void copyObsLink();
             });
 
-            const slider = el('fontSizeSlider', 'obsFontSizeSlider');
-            bindEvent(slider, 'input', () => {
-                const updated = saveSettings({
-                    ...settings,
-                    fontSize: slider.value,
-                });
-                renderFontSizeSlider();
-                scheduleFontSizeSync(updated);
+            bindEvent(el('copyUrlButton', 'obsCopyUrlButton'), 'click', () => {
+                void copyObsLink();
             });
-            bindEvent(slider, 'change', () => {
-                if (inputDebounceTimer !== null) {
-                    clearTimeoutFn(inputDebounceTimer);
-                    inputDebounceTimer = null;
-                }
-                const updated = saveSettings({
-                    ...settings,
-                    fontSize: slider.value,
-                });
-                renderFontSizeSlider();
-                void syncSettingsToBackend(updated);
+
+            bindEvent(el('resetDefaultsButton', 'obsResetDefaultsButton'), 'click', () => {
+                resetToDefaults();
             });
+
+            const previewFrame = el('previewFrame', 'obsPreviewFrame');
+            bindEvent(previewFrame, 'load', () => {
+                updatePreviewScale();
+                postPreviewUpdate();
+            });
+
+            const previewBox = el('previewBox', 'obsPreviewBox');
+            if (previewBox && typeof windowRef.ResizeObserver === 'function') {
+                previewObserver = new windowRef.ResizeObserver(() => updatePreviewScale());
+                previewObserver.observe(previewBox);
+            }
+            bindEvent(windowRef, 'resize', () => {
+                if (dialogOpen) updatePreviewScale();
+            });
+
+            bindSliderEvents();
+            bindColorEvents();
+            bindGroupToggleEvents();
         }
 
         function dispose() {
@@ -421,6 +1013,13 @@
                 clearTimeoutFn(inputDebounceTimer);
                 inputDebounceTimer = null;
             }
+            if (previewObserver && typeof previewObserver.disconnect === 'function') {
+                previewObserver.disconnect();
+                previewObserver = null;
+            }
+            for (const ctrl of Object.values(selectControls)) {
+                if (ctrl && typeof ctrl.close === 'function') ctrl.close();
+            }
             while (boundListeners.length) {
                 const unbind = boundListeners.pop();
                 unbind();
@@ -431,25 +1030,37 @@
         return {
             init,
             dispose,
+            openDialog,
+            closeDialog,
+            isDialogOpen: () => dialogOpen,
             applyConfig,
             applyI18n,
             setPackEnabled,
             syncToBackend,
             copyObsLink,
+            resetToDefaults,
             getObsUrl,
+            getObsDragUrl,
             getSettings: () => ({ ...settings }),
+            getGroupStates: () => ({ ...groupStates }),
             isDesktopMainWindow,
         };
     }
 
     const api = {
         STORAGE_KEY,
+        GROUPS_STORAGE_KEY,
+        LAST_PORT_STORAGE_KEY,
+        DEFAULT_GROUP_STATES,
         FONT_SIZE_DEFAULT,
         FONT_SIZE_MIN,
         FONT_SIZE_MAX,
         VALID_DISPLAY_CONTENTS,
         DEFAULT_SETTINGS,
         COPIED_RESET_DELAY_MS,
+        PREVIEW_VIRTUAL_WIDTH,
+        PREVIEW_VIRTUAL_HEIGHT,
+        extractPort,
         normalizeFontSize,
         normalizeDisplayContent,
         normalizeSettings,

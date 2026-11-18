@@ -9,7 +9,18 @@ const REQUIRED_LANGUAGES = ['en', 'zh', 'ja', 'ko', 'ru', 'es', 'pt'];
 // Intentional identical wording: brands, abbreviations, and natural cognates.
 // Scope exceptions to both the language and exact English value so later copy
 // changes do not silently inherit an old exception.
-const SHARED_COPY = { provider_soniox: 'Soniox', provider_gemini: 'Gemini', pack_vrchat_name: 'VRChat', local_seconds_value: '{value} s', obs_font_size_value: '{value} px' };
+const SHARED_COPY = {
+    provider_soniox: 'Soniox',
+    provider_gemini: 'Gemini',
+    pack_vrchat_name: 'VRChat',
+    local_seconds_value: '{value} s',
+    obs_font_size_value: '{value} px',
+    obs_font_microsoft_yahei: 'Microsoft YaHei',
+    obs_font_simhei: 'SimHei',
+    obs_font_simsun: 'SimSun',
+    obs_font_kaiti: 'KaiTi',
+    obs_font_noto_sans_cjk: 'Noto Sans CJK',
+};
 const SAME_AS_ENGLISH = {
     zh: { api_key: 'API Key' },
     es: { error_title: 'Error', provider_local: 'Local' },

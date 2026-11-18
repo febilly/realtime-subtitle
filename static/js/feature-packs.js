@@ -56,7 +56,6 @@
             descKey: 'pack_obs_desc',
             elementIds: Object.freeze([
                 'obsCopyLinkButton',
-                'obsSettingsSection',
             ]),
         }),
         Object.freeze({

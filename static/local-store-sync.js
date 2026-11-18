@@ -54,6 +54,7 @@
         'featurePacks.v1': true,
         'learningLanguages.v1': true,
         'obsSettings.v1': true,
+        'obsLastPort': true,
         'transcriptSettings.v1': true,
     };
 

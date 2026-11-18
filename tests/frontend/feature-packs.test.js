@@ -61,7 +61,6 @@ describe('FeaturePacks registry and install detection', () => {
         ]);
         expect(FeaturePacks.PACKS.find((p) => p.id === 'obs').elementIds).toEqual([
             'obsCopyLinkButton',
-            'obsSettingsSection',
         ]);
         expect(FeaturePacks.PACKS.find((p) => p.id === 'transcript').elementIds).toEqual([
             'exportTranscriptButton',
