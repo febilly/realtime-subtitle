@@ -7,6 +7,8 @@ import inspect
 import os
 import secrets
 import logging
+import math
+import re
 import time
 import aiohttp
 from aiohttp import web
@@ -52,6 +54,59 @@ OBS_FONT_SIZE_DEFAULT = 42
 OBS_FONT_SIZE_MIN = 16
 OBS_FONT_SIZE_MAX = 120
 OBS_DISPLAY_MODES = ("both", "original", "translation")
+OBS_FONT_FAMILIES = ("system", "microsoft_yahei", "simhei", "simsun", "kaiti", "noto_sans_cjk")
+OBS_BG_MODES = ("none", "strip", "block")
+OBS_POSITIONS = ("bottom", "top")
+OBS_ALIGNMENTS = ("left", "center", "right")
+OBS_HEX_COLOR_RE = re.compile(r"^#[0-9a-f]{6}$", re.IGNORECASE)
+OBS_SETTINGS_DEFAULTS = {
+    "display_content": "both",
+    "font_size": OBS_FONT_SIZE_DEFAULT,
+    "translation_font_scale": 100,
+    "font_family": "system",
+    "bold": False,
+    "show_lang_tag": True,
+    "original_color": "#e5e7eb",
+    "translation_color": "#e5e7eb",
+    "outline_width": 0,
+    "outline_color": "#000000",
+    "drop_shadow": True,
+    "bg_mode": "strip",
+    "bg_color": "#000000",
+    "bg_opacity": 59,
+    "position": "bottom",
+    "alignment": "center",
+    "max_width": 80,
+    "max_sentences": 3,
+    "auto_hide_seconds": 0,
+}
+OBS_INT_SPECS = {
+    "font_size": ("fontSize", OBS_FONT_SIZE_MIN, OBS_FONT_SIZE_MAX, OBS_FONT_SIZE_DEFAULT),
+    "translation_font_scale": ("translationFontScale", 50, 150, 100),
+    "outline_width": ("outlineWidth", 0, 8, 0),
+    "bg_opacity": ("bgOpacity", 0, 100, 59),
+    "max_width": ("maxWidth", 30, 100, 80),
+    "max_sentences": ("maxSentences", 1, 10, 3),
+    "auto_hide_seconds": ("autoHideSeconds", 0, 30, 0),
+}
+OBS_ENUM_SPECS = {
+    "display_content": ("displayContent", OBS_DISPLAY_MODES, "both"),
+    "font_family": ("fontFamily", OBS_FONT_FAMILIES, "system"),
+    "bg_mode": ("bgMode", OBS_BG_MODES, "strip"),
+    "position": ("position", OBS_POSITIONS, "bottom"),
+    "alignment": ("alignment", OBS_ALIGNMENTS, "center"),
+}
+OBS_BOOL_SPECS = {
+    "bold": ("bold", False),
+    "show_lang_tag": ("showLangTag", True),
+    "drop_shadow": ("dropShadow", True),
+}
+OBS_COLOR_SPECS = {
+    "original_color": ("originalColor", "#e5e7eb"),
+    "translation_color": ("translationColor", "#e5e7eb"),
+    "outline_color": ("outlineColor", "#000000"),
+    "bg_color": ("bgColor", "#000000"),
+}
 
 @web.middleware
 async def cache_bypass_middleware(request, handler):
@@ -3033,32 +3088,76 @@ class WebServer:
             return web.json_response({"status": "error", "message": str(error)}, status=500)
 
     @staticmethod
-    def _normalize_obs_font_size(value) -> int:
-        if isinstance(value, bool):
-            return OBS_FONT_SIZE_DEFAULT
+    def _normalize_obs_int(value, minimum: int, maximum: int, default: int) -> int:
+        if isinstance(value, bool) or value is None or value == "":
+            return default
         try:
             numeric = float(value)
         except (TypeError, ValueError):
-            return OBS_FONT_SIZE_DEFAULT
-        if numeric != numeric:  # NaN
-            return OBS_FONT_SIZE_DEFAULT
-        return max(OBS_FONT_SIZE_MIN, min(OBS_FONT_SIZE_MAX, int(round(numeric))))
+            return default
+        if not math.isfinite(numeric):
+            return default
+        return max(minimum, min(maximum, int(round(numeric))))
+
+    @staticmethod
+    def _normalize_obs_font_size(value) -> int:
+        return WebServer._normalize_obs_int(value, OBS_FONT_SIZE_MIN, OBS_FONT_SIZE_MAX, OBS_FONT_SIZE_DEFAULT)
+
+    @staticmethod
+    def _normalize_obs_enum(value, valid_values, default: str) -> str:
+        if not isinstance(value, str):
+            return default
+        normalized = value.strip().lower()
+        return normalized if normalized in valid_values else default
 
     @staticmethod
     def _normalize_obs_display_content(value) -> str:
+        return WebServer._normalize_obs_enum(value, OBS_DISPLAY_MODES, "both")
+
+    @staticmethod
+    def _normalize_obs_bool(value, default: bool) -> bool:
+        return value if isinstance(value, bool) else default
+
+    @staticmethod
+    def _normalize_obs_hex_color(value, default: str) -> str:
         if not isinstance(value, str):
-            return "both"
-        normalized = value.strip().lower()
-        return normalized if normalized in OBS_DISPLAY_MODES else "both"
+            return default
+        trimmed = value.strip()
+        return trimmed.lower() if OBS_HEX_COLOR_RE.match(trimmed) else default
+
+    @staticmethod
+    def _pick_obs_field(source: dict, snake_key: str, camel_key: str):
+        if snake_key in source:
+            return True, source[snake_key]
+        if camel_key in source:
+            return True, source[camel_key]
+        return False, None
 
     def _normalize_obs_settings(self, raw) -> dict:
         source = raw if isinstance(raw, dict) else {}
-        raw_font = source.get("font_size", source.get("fontSize", OBS_FONT_SIZE_DEFAULT))
-        raw_display = source.get("display_content", source.get("displayContent", "both"))
-        return {
-            "font_size": self._normalize_obs_font_size(raw_font),
-            "display_content": self._normalize_obs_display_content(raw_display),
-        }
+        result = dict(OBS_SETTINGS_DEFAULTS)
+
+        for snake_key, (camel_key, minimum, maximum, default) in OBS_INT_SPECS.items():
+            present, raw_val = self._pick_obs_field(source, snake_key, camel_key)
+            if present:
+                result[snake_key] = self._normalize_obs_int(raw_val, minimum, maximum, default)
+
+        for snake_key, (camel_key, valid_values, default) in OBS_ENUM_SPECS.items():
+            present, raw_val = self._pick_obs_field(source, snake_key, camel_key)
+            if present:
+                result[snake_key] = self._normalize_obs_enum(raw_val, valid_values, default)
+
+        for snake_key, (camel_key, default) in OBS_BOOL_SPECS.items():
+            present, raw_val = self._pick_obs_field(source, snake_key, camel_key)
+            if present:
+                result[snake_key] = self._normalize_obs_bool(raw_val, default)
+
+        for snake_key, (camel_key, default) in OBS_COLOR_SPECS.items():
+            present, raw_val = self._pick_obs_field(source, snake_key, camel_key)
+            if present:
+                result[snake_key] = self._normalize_obs_hex_color(raw_val, default)
+
+        return result
 
     def _load_initial_obs_settings(self, stored_settings) -> dict:
         raw = stored_settings.get("obsSettings.v1") if isinstance(stored_settings, dict) else None
@@ -3220,32 +3319,59 @@ class WebServer:
             return web.json_response({"status": "error", "message": "Invalid JSON payload"}, status=400)
 
         current = self.get_obs_settings()
-        if "font_size" in payload or "fontSize" in payload:
-            raw_font = payload.get("font_size", payload.get("fontSize"))
-            if isinstance(raw_font, bool):
-                return web.json_response({"status": "error", "message": "'font_size' must be numeric"}, status=400)
-            try:
-                numeric_font = float(raw_font)
-            except (TypeError, ValueError):
-                return web.json_response({"status": "error", "message": "'font_size' must be numeric"}, status=400)
-            if numeric_font != numeric_font:
-                return web.json_response({"status": "error", "message": "'font_size' must be numeric"}, status=400)
-            current["font_size"] = self._normalize_obs_font_size(numeric_font)
 
-        if "display_content" in payload or "displayContent" in payload:
-            raw_display = payload.get("display_content", payload.get("displayContent"))
-            if not isinstance(raw_display, str):
+        for snake_key, (camel_key, minimum, maximum, _) in OBS_INT_SPECS.items():
+            present, raw_val = self._pick_obs_field(payload, snake_key, camel_key)
+            if not present:
+                continue
+            if isinstance(raw_val, bool) or raw_val is None or raw_val == "":
+                return web.json_response({"status": "error", "message": f"'{snake_key}' must be numeric"}, status=400)
+            try:
+                numeric_val = float(raw_val)
+            except (TypeError, ValueError):
+                return web.json_response({"status": "error", "message": f"'{snake_key}' must be numeric"}, status=400)
+            if not math.isfinite(numeric_val):
+                return web.json_response({"status": "error", "message": f"'{snake_key}' must be numeric"}, status=400)
+            current[snake_key] = max(minimum, min(maximum, int(round(numeric_val))))
+
+        for snake_key, (camel_key, valid_values, _) in OBS_ENUM_SPECS.items():
+            present, raw_val = self._pick_obs_field(payload, snake_key, camel_key)
+            if not present:
+                continue
+            if not isinstance(raw_val, str):
                 return web.json_response(
-                    {"status": "error", "message": "'display_content' must be a string"},
+                    {"status": "error", "message": f"'{snake_key}' must be a string"},
                     status=400,
                 )
-            normalized_display = raw_display.strip().lower()
-            if normalized_display not in OBS_DISPLAY_MODES:
+            normalized_val = raw_val.strip().lower()
+            if normalized_val not in valid_values:
                 return web.json_response(
-                    {"status": "error", "message": "Invalid 'display_content' value"},
+                    {"status": "error", "message": f"Invalid '{snake_key}' value"},
                     status=400,
                 )
-            current["display_content"] = normalized_display
+            current[snake_key] = normalized_val
+
+        for snake_key, (camel_key, _) in OBS_BOOL_SPECS.items():
+            present, raw_val = self._pick_obs_field(payload, snake_key, camel_key)
+            if not present:
+                continue
+            if not isinstance(raw_val, bool):
+                return web.json_response(
+                    {"status": "error", "message": f"'{snake_key}' must be a boolean"},
+                    status=400,
+                )
+            current[snake_key] = raw_val
+
+        for snake_key, (camel_key, _) in OBS_COLOR_SPECS.items():
+            present, raw_val = self._pick_obs_field(payload, snake_key, camel_key)
+            if not present:
+                continue
+            if not isinstance(raw_val, str) or not OBS_HEX_COLOR_RE.match(raw_val.strip()):
+                return web.json_response(
+                    {"status": "error", "message": f"'{snake_key}' must be a #rrggbb hex color"},
+                    status=400,
+                )
+            current[snake_key] = raw_val.strip().lower()
 
         self.obs_settings = current
         await self.broadcast_to_clients(self._obs_settings_frame())

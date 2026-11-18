@@ -10,6 +10,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from module_stubs import patch_modules, pop_module, set_module
 
 
+EXPECTED_DEFAULT_OBS_SETTINGS = {
+    "display_content": "both",
+    "font_size": 42,
+    "translation_font_scale": 100,
+    "font_family": "system",
+    "bold": False,
+    "show_lang_tag": True,
+    "original_color": "#e5e7eb",
+    "translation_color": "#e5e7eb",
+    "outline_width": 0,
+    "outline_color": "#000000",
+    "drop_shadow": True,
+    "bg_mode": "strip",
+    "bg_color": "#000000",
+    "bg_opacity": 59,
+    "position": "bottom",
+    "alignment": "center",
+    "max_width": 80,
+    "max_sentences": 3,
+    "auto_hide_seconds": 0,
+}
+
+
 def _async_run(coro):
     loop = asyncio.new_event_loop()
     try:
@@ -86,7 +109,6 @@ class TestWebServerObsPack:
             module.get_resource_path = lambda p: os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), p
             )
-            file_responses = []
             module.web.FileResponse.side_effect = lambda path, headers=None: (path, headers)
             server, _ = self._make_server(module)
             assert server.is_pack_enabled("obs") is False
@@ -94,12 +116,11 @@ class TestWebServerObsPack:
             req = MagicMock()
             req.remote = "192.168.1.99"
             path, headers = _async_run(server.obs_handler(req))
-            file_responses.append(path)
             assert path.endswith(os.path.join("static", "obs.html"))
             assert os.path.exists(path)
             assert "no-store" in headers["Cache-Control"]
 
-    def test_obs_settings_validation_loopback_and_broadcast(self):
+    def test_obs_settings_validation_loopback_clamping_and_broadcast(self):
         with patch_modules({
             "aiohttp": MagicMock(),
             "aiohttp.web": MagicMock(),
@@ -117,7 +138,7 @@ class TestWebServerObsPack:
             req_get.host = "127.0.0.1:18777"
             body, code = _async_run(server.obs_settings_get_handler(req_get))
             assert code == 200
-            assert body["settings"] == {"font_size": 42, "display_content": "both"}
+            assert body["settings"] == EXPECTED_DEFAULT_OBS_SETTINGS
             assert body["desktop_available"] is False
             assert body["obs_url"] == "http://127.0.0.1:18777/obs"
 
@@ -128,25 +149,114 @@ class TestWebServerObsPack:
             _, code = _async_run(server.obs_settings_post_handler(req_lan))
             assert code == 403
 
-            # Invalid display_content rejected
-            req_bad = AsyncMock()
-            req_bad.remote = "127.0.0.1"
-            req_bad.json.return_value = {"display_content": "invalid"}
-            _, code = _async_run(server.obs_settings_post_handler(req_bad))
-            assert code == 400
+            # Invalid payloads rejected with 400
+            for bad_payload in (
+                {"display_content": "invalid"},
+                {"font_family": "comic_sans"},
+                {"bg_mode": "gradient"},
+                {"position": "middle"},
+                {"alignment": "justify"},
+                {"bold": "yes"},
+                {"show_lang_tag": 1},
+                {"drop_shadow": "true"},
+                {"original_color": "red"},
+                {"bg_color": "#12345"},
+                {"outline_width": True},
+                {"auto_hide_seconds": "NaN"},
+            ):
+                req_bad = AsyncMock()
+                req_bad.remote = "127.0.0.1"
+                req_bad.json.return_value = bad_payload
+                _, code = _async_run(server.obs_settings_post_handler(req_bad))
+                assert code == 400, f"Expected 400 for {bad_payload}"
 
-            # Clamps font size and broadcasts obs_settings frame
+            # Clamps numeric fields, accepts camelCase & snake_case, normalizes hex, broadcasts
             req_ok = AsyncMock()
             req_ok.remote = "127.0.0.1"
             req_ok.content_type = "application/json"
-            req_ok.json.return_value = {"font_size": 200, "display_content": "translation"}
+            req_ok.json.return_value = {
+                "font_size": 200,
+                "display_content": "translation",
+                "translationFontScale": 20,
+                "font_family": "noto_sans_cjk",
+                "bold": True,
+                "showLangTag": False,
+                "original_color": "#AABBCC",
+                "translationColor": "#112233",
+                "outline_width": 99,
+                "outline_color": "#FFFFFF",
+                "drop_shadow": False,
+                "bg_mode": "block",
+                "bg_color": "#102030",
+                "bg_opacity": -5,
+                "position": "top",
+                "alignment": "right",
+                "max_width": 10,
+                "max_sentences": 50,
+                "auto_hide_seconds": 99,
+            }
+            expected_after = {
+                "display_content": "translation",
+                "font_size": 120,
+                "translation_font_scale": 50,
+                "font_family": "noto_sans_cjk",
+                "bold": True,
+                "show_lang_tag": False,
+                "original_color": "#aabbcc",
+                "translation_color": "#112233",
+                "outline_width": 8,
+                "outline_color": "#ffffff",
+                "drop_shadow": False,
+                "bg_mode": "block",
+                "bg_color": "#102030",
+                "bg_opacity": 0,
+                "position": "top",
+                "alignment": "right",
+                "max_width": 30,
+                "max_sentences": 10,
+                "auto_hide_seconds": 30,
+            }
             body, code = _async_run(server.obs_settings_post_handler(req_ok))
             assert code == 200
-            assert body["settings"] == {"font_size": 120, "display_content": "translation"}
+            assert body["settings"] == expected_after
             server.broadcast_to_clients.assert_awaited_once_with({
                 "type": "obs_settings",
-                "settings": {"font_size": 120, "display_content": "translation"},
+                "settings": expected_after,
             })
+
+            # Partial update preserves remaining fields
+            req_partial = AsyncMock()
+            req_partial.remote = "127.0.0.1"
+            req_partial.json.return_value = {"alignment": "left", "bg_opacity": 75}
+            body, code = _async_run(server.obs_settings_post_handler(req_partial))
+            assert code == 200
+            assert body["settings"]["alignment"] == "left"
+            assert body["settings"]["bg_opacity"] == 75
+            assert body["settings"]["font_family"] == "noto_sans_cjk"
+
+    def test_legacy_stored_obs_settings_falls_back_gracefully(self):
+        with patch_modules({
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "realtime_subtitle.core.config": MagicMock(),
+            "realtime_subtitle.llm.llm_client": MagicMock(),
+        }):
+            import realtime_subtitle.web.web_server as module
+
+            stored = {
+                "obsSettings.v1": json.dumps({
+                    "fontSize": 56,
+                    "displayContent": "original",
+                    "unknownField": "ignored",
+                    "bgColor": "not-a-hex",
+                }),
+            }
+            server, _ = self._make_server(module, stored=stored)
+            loaded = server.get_obs_settings()
+            expected = dict(EXPECTED_DEFAULT_OBS_SETTINGS)
+            expected["font_size"] = 56
+            expected["display_content"] = "original"
+            assert loaded == expected
 
     def test_clipboard_post_endpoint_loopback_validation_and_callback(self):
         with patch_modules({
@@ -233,7 +343,7 @@ class TestWebServerObsPack:
 
             sent_frames = [json.loads(raw) for raw in fake_ws.sent]
             obs_frames = [f for f in sent_frames if f.get("type") == "obs_settings"]
-            assert obs_frames == [{"type": "obs_settings", "settings": {"font_size": 42, "display_content": "both"}}]
+            assert obs_frames == [{"type": "obs_settings", "settings": EXPECTED_DEFAULT_OBS_SETTINGS}]
 
             # Direct notice helper also skips any active obs_ws_clients
             server._osc_sensitive_filter_notice_triggered = True
