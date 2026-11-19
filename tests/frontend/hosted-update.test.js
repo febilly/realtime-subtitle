@@ -101,6 +101,9 @@ describe('HostedUpdate state', () => {
         ['current', { mode: 'relay', currentVersion: '1.1.0', latestVersion: '1.1.0' }, { needed: false, forced: false }],
         ['optional', { mode: 'relay', currentVersion: '1.0.0', latestVersion: '1.1.0', minimumVersion: '0.9.0' }, { needed: true, forced: false }],
         ['forced', { mode: 'relay', currentVersion: '1.0.0', latestVersion: '1.2.0', minimumVersion: '1.1.0' }, { needed: true, forced: true }],
+        ['prerelease below latest', { mode: 'relay', currentVersion: '5.3.0-rc1', latestVersion: '5.3.0', minimumVersion: '5.2.0' }, { needed: true, forced: false }],
+        ['prerelease below minimum', { mode: 'relay', currentVersion: '5.3.0-rc1', latestVersion: '5.3.0', minimumVersion: '5.3.0' }, { needed: true, forced: true }],
+        ['unparseable policy versions stay safe', { mode: 'relay', currentVersion: '5.3.0', latestVersion: 'TBD', minimumVersion: 'unknown' }, { needed: false, forced: false }],
     ])('%s', (_label, input, expected) => {
         expect(HostedUpdate.resolveUpdateState({ relayAvailable: true, ...input }, Hosted.Billing))
             .toMatchObject(expected);

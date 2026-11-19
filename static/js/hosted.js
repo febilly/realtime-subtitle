@@ -9,30 +9,58 @@
         return (Math.round(number * 100) / 100).toString();
     }
 
-    function versionParts(version) {
-        const raw = String(version || '').trim().replace(/^v/i, '');
-        if (!raw) return null;
-        const parts = raw.split(/[.+_-]/).map((part) => {
-            const match = part.match(/^\d+/);
-            return match ? Number(match[0]) : 0;
-        });
-        if (!parts.length || (parts.every((part) => part === 0) && !/^0(?:[.+_-]0)*$/.test(raw))) {
-            return null;
+    const VERSION_RE = /^(\d+(?:\.\d+)*)(?:[-_.]?(.*))?$/;
+    const VERSION_TOKEN_RE = /\d+|[A-Za-z]+/g;
+
+    function parseVersion(version) {
+        if (version === null || version === undefined) return null;
+        // SemVer build metadata does not affect precedence; strip an optional leading "v".
+        const precedence = String(version).trim().split('+', 1)[0].replace(/^v/i, '');
+        const match = VERSION_RE.exec(precedence);
+        if (!match) return null;
+        const core = match[1].split('.').map((part) => Number(part));
+        const rawPre = (match[2] || '').replace(/^[-_.]+|[-_.]+$/g, '');
+        if (!rawPre) {
+            return { core, pre: null };
         }
-        while (parts.length < 3) parts.push(0);
-        return parts;
+        const tokens = (rawPre.match(VERSION_TOKEN_RE) || []).map((token) => (
+            /^\d+$/.test(token) ? Number(token) : token.toLowerCase()
+        ));
+        return tokens.length ? { core, pre: tokens } : null;
     }
 
     function compareVersions(leftVersion, rightVersion) {
-        const left = versionParts(leftVersion);
-        const right = versionParts(rightVersion);
-        if (!left || !right) return 0;
-        const length = Math.max(left.length, right.length);
-        for (let index = 0; index < length; index += 1) {
-            const difference = (left[index] || 0) - (right[index] || 0);
-            if (difference !== 0) return difference < 0 ? -1 : 1;
+        const left = parseVersion(leftVersion);
+        const right = parseVersion(rightVersion);
+        if (!left || !right) return null;
+        const coreLength = Math.max(left.core.length, right.core.length);
+        for (let index = 0; index < coreLength; index += 1) {
+            const leftPart = left.core[index] || 0;
+            const rightPart = right.core[index] || 0;
+            if (leftPart !== rightPart) return leftPart < rightPart ? -1 : 1;
         }
-        return 0;
+        if (left.pre === null || right.pre === null) {
+            if (left.pre === right.pre) return 0;
+            return left.pre === null ? 1 : -1;
+        }
+        const minPreLength = Math.min(left.pre.length, right.pre.length);
+        for (let index = 0; index < minPreLength; index += 1) {
+            const leftToken = left.pre[index];
+            const rightToken = right.pre[index];
+            if (leftToken === rightToken) continue;
+            const leftIsNum = typeof leftToken === 'number';
+            const rightIsNum = typeof rightToken === 'number';
+            if (leftIsNum && rightIsNum) {
+                return leftToken < rightToken ? -1 : 1;
+            }
+            if (leftIsNum !== rightIsNum) {
+                // SemVer: numeric prerelease identifiers have lower precedence.
+                return leftIsNum ? -1 : 1;
+            }
+            return leftToken < rightToken ? -1 : 1;
+        }
+        if (left.pre.length === right.pre.length) return 0;
+        return left.pre.length > right.pre.length ? 1 : -1;
     }
 
     function formatCredits(value) {
@@ -300,7 +328,7 @@
 
     const Billing = {
         formatRate,
-        versionParts,
+        parseVersion,
         compareVersions,
         formatCredits,
         hasPositiveCredits,

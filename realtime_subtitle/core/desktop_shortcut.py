@@ -73,8 +73,8 @@ def executable_version(path: str | Path) -> str | None:
 
 
 def _parse_version(value: str) -> tuple[tuple[int, ...], tuple[int | str, ...] | None] | None:
-    # SemVer build metadata does not affect precedence.
-    precedence = str(value or "").strip().split("+", 1)[0]
+    # SemVer build metadata does not affect precedence; strip an optional leading "v".
+    precedence = re.sub(r"^[vV]", "", str(value or "").strip().split("+", 1)[0])
     match = _VERSION_RE.fullmatch(precedence)
     if not match:
         return None

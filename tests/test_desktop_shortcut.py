@@ -45,9 +45,12 @@ def test_non_windows_packaged_process_skips_the_entire_feature():
 
 @pytest.mark.parametrize(("left", "right", "expected"), [
     ("4.1.3", "4.1.2", 1),
+    ("v4.1.3", "4.1.3", 0),
+    ("V5.3.0-rc1", "5.3.0-rc.1", 0),
     ("4.1.3", "4.1.3", 0),
     ("4.1.3", "4.1.3-rc.10", 1),
     ("4.1.3-rc.2", "4.1.3-rc.10", -1),
+    ("4.1.3-1", "4.1.3-alpha", -1),
     ("4.1.3rc2", "4.1.3rc1", 1),
     ("4.1.3-preview.2", "4.1.3-beta.9", 1),
     ("4.1.3-beta.2+build.7", "4.1.3-beta.2+build.1", 0),
