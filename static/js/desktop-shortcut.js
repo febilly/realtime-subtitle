@@ -9,37 +9,68 @@
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const showToast = typeof options.showToast === 'function' ? options.showToast : () => {};
         const elements = options.elements || {};
-        const field = elements.field
-            || (documentRef && documentRef.getElementById('loginDesktopShortcutField'));
-        const checkbox = elements.checkbox
-            || (documentRef && documentRef.getElementById('loginDesktopShortcutCheckbox'));
-        const label = elements.label
-            || (documentRef && documentRef.getElementById('loginDesktopShortcutLabel'));
+
+        function resolveTargets() {
+            if (elements.targets && typeof elements.targets === 'object') {
+                return Object.entries(elements.targets).map(([name, target]) => ({
+                    name,
+                    field: (target && target.field) || null,
+                    checkbox: (target && target.checkbox) || null,
+                    label: (target && target.label) || null,
+                }));
+            }
+            return [{
+                name: 'default',
+                field: elements.field
+                    || (documentRef && documentRef.getElementById('loginDesktopShortcutField')),
+                checkbox: elements.checkbox
+                    || (documentRef && documentRef.getElementById('loginDesktopShortcutCheckbox')),
+                label: elements.label
+                    || (documentRef && documentRef.getElementById('loginDesktopShortcutLabel')),
+            }];
+        }
+
+        const targets = resolveTargets();
         let initialized = false;
         let busy = false;
         let eligible = false;
         let syncSequence = 0;
 
+        function getTarget(targetName = null) {
+            if (!targetName) return targets[0] || null;
+            return targets.find((entry) => entry.name === targetName) || null;
+        }
+
         function applyI18n() {
             const text = t('desktop_shortcut_create');
-            if (label) {
-                label.textContent = text;
+            for (const target of targets) {
+                if (target.label) target.label.textContent = text;
+            }
+        }
+
+        function hideAllFields() {
+            eligible = false;
+            for (const target of targets) {
+                if (target.field) target.field.hidden = true;
+            }
+        }
+
+        function setTargetVisible(target, visible) {
+            if (!visible) {
+                if (target && target.field) target.field.hidden = true;
+                eligible = false;
                 return;
             }
-            const element = documentRef && documentRef.getElementById('loginDesktopShortcutLabel');
-            if (element) element.textContent = text;
+            eligible = true;
+            if (target && target.field) target.field.hidden = false;
         }
 
-        function setVisible(visible) {
-            eligible = !!visible;
-            if (field) field.hidden = !eligible;
-        }
-
-        async function syncOption({ resetChecked = false } = {}) {
+        async function syncOption({ resetChecked = false, target: targetName = null } = {}) {
             const token = ++syncSequence;
-            if (resetChecked && checkbox) checkbox.checked = true;
-            if (!fetchRef || !field || !checkbox) {
-                setVisible(false);
+            const active = getTarget(targetName);
+            if (resetChecked && active && active.checkbox) active.checkbox.checked = true;
+            if (!fetchRef || !active || !active.field || !active.checkbox) {
+                setTargetVisible(active, false);
                 return false;
             }
             try {
@@ -47,20 +78,22 @@
                 const data = await response.json().catch(() => ({}));
                 if (token !== syncSequence) return false;
                 if (!response.ok || !data.available || data.exists) {
-                    setVisible(false);
+                    hideAllFields();
                     return false;
                 }
                 applyI18n();
-                setVisible(true);
+                setTargetVisible(active, true);
                 return true;
             } catch (error) {
-                if (token === syncSequence) setVisible(false);
+                if (token === syncSequence) hideAllFields();
                 return false;
             }
         }
 
-        async function createIfRequested() {
-            if (!fetchRef || busy || !eligible || !field || field.hidden || !checkbox || !checkbox.checked) {
+        async function createIfRequested({ target: targetName = null } = {}) {
+            const active = getTarget(targetName);
+            if (!fetchRef || busy || !eligible || !active || !active.field || active.field.hidden
+                || !active.checkbox || !active.checkbox.checked) {
                 return false;
             }
             busy = true;
@@ -68,7 +101,7 @@
                 const statusResponse = await fetchRef('/desktop-shortcut');
                 const statusData = await statusResponse.json().catch(() => ({}));
                 if (!statusResponse.ok || !statusData.available || statusData.exists) {
-                    setVisible(false);
+                    hideAllFields();
                     return false;
                 }
                 const response = await fetchRef('/desktop-shortcut', {
@@ -81,8 +114,7 @@
                     showToast(t('desktop_shortcut_failed'), true);
                     return false;
                 }
-                setVisible(false);
-                showToast(t('desktop_shortcut_created'));
+                hideAllFields();
                 return true;
             } catch (error) {
                 showToast(t('desktop_shortcut_failed'), true);
@@ -95,8 +127,10 @@
         function init() {
             if (initialized) return false;
             initialized = true;
-            if (checkbox) checkbox.checked = true;
-            setVisible(false);
+            for (const target of targets) {
+                if (target.checkbox) target.checkbox.checked = true;
+            }
+            hideAllFields();
             applyI18n();
             return true;
         }

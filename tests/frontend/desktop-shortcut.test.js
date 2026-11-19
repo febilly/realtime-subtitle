@@ -78,7 +78,7 @@ describe('DesktopShortcut', () => {
             body: JSON.stringify({ action: 'create' }),
         });
         expect(page.document.getElementById('loginDesktopShortcutField').hidden).toBe(true);
-        expect(page.showToast).toHaveBeenCalledWith('translated:desktop_shortcut_created');
+        expect(page.showToast).not.toHaveBeenCalled();
         page.dom.window.close();
     });
 
@@ -105,5 +105,58 @@ describe('DesktopShortcut', () => {
         await expect(page.controller.createIfRequested()).resolves.toBe(false);
         expect(page.showToast).toHaveBeenCalledWith('translated:desktop_shortcut_failed', true);
         page.dom.window.close();
+    });
+
+    it('supports multiple targets (login and ownKey) and hides all fields once created', async () => {
+        const dom = new JSDOM(`<!doctype html><body>
+            <label id="loginField" hidden><input id="loginCheckbox" type="checkbox" checked><span id="loginLabel"></span></label>
+            <label id="ownKeyField" hidden><input id="ownKeyCheckbox" type="checkbox" checked><span id="ownKeyLabel"></span></label>
+        </body>`);
+        const document = dom.window.document;
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response({ available: true, exists: false }))
+            .mockResolvedValueOnce(response({ available: true, exists: false }))
+            .mockResolvedValueOnce(response({ available: true, exists: false }))
+            .mockResolvedValueOnce(response({ available: true, exists: true, created: true }));
+        const controller = DesktopShortcut.create({
+            document,
+            fetch,
+            t: (key) => `translated:${key}`,
+            elements: {
+                targets: {
+                    login: {
+                        field: document.getElementById('loginField'),
+                        checkbox: document.getElementById('loginCheckbox'),
+                        label: document.getElementById('loginLabel'),
+                    },
+                    ownKey: {
+                        field: document.getElementById('ownKeyField'),
+                        checkbox: document.getElementById('ownKeyCheckbox'),
+                        label: document.getElementById('ownKeyLabel'),
+                    },
+                },
+            },
+        });
+        controller.init();
+
+        await expect(controller.syncOption({ resetChecked: true, target: 'login' })).resolves.toBe(true);
+        await expect(controller.syncOption({ resetChecked: true, target: 'ownKey' })).resolves.toBe(true);
+        expect(document.getElementById('loginField').hidden).toBe(false);
+        expect(document.getElementById('ownKeyField').hidden).toBe(false);
+
+        document.getElementById('ownKeyCheckbox').checked = false;
+        await expect(controller.createIfRequested({ target: 'ownKey' })).resolves.toBe(false);
+        expect(fetch).toHaveBeenCalledTimes(2);
+
+        document.getElementById('ownKeyCheckbox').checked = true;
+        await expect(controller.createIfRequested({ target: 'ownKey' })).resolves.toBe(true);
+        expect(fetch).toHaveBeenLastCalledWith('/desktop-shortcut', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'create' }),
+        });
+        expect(document.getElementById('loginField').hidden).toBe(true);
+        expect(document.getElementById('ownKeyField').hidden).toBe(true);
+        dom.window.close();
     });
 });

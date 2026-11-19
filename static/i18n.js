@@ -285,7 +285,6 @@
             chooser_direct_desc: 'Connect directly to Soniox / Gemini with your own API key.',
             mode_back_to_chooser: 'Back to mode selection',
             desktop_shortcut_create: 'Create desktop shortcut',
-            desktop_shortcut_created: 'Desktop shortcut created',
             desktop_shortcut_failed: 'Could not create the desktop shortcut',
 
             login_title: 'Sign in',
@@ -710,7 +709,6 @@
             chooser_direct_desc: '用你自己的 API key 直连 Soniox / Gemini。',
             mode_back_to_chooser: '返回模式选择',
             desktop_shortcut_create: '创建桌面快捷方式',
-            desktop_shortcut_created: '桌面快捷方式已创建',
             desktop_shortcut_failed: '桌面快捷方式创建失败',
 
             login_title: '登录',
@@ -1123,7 +1121,6 @@
             chooser_direct_desc: 'ご自身の API キーを使用して Soniox / Gemini に直接接続します。',
             mode_back_to_chooser: '接続方法の選択に戻る',
             desktop_shortcut_create: 'デスクトップショートカットを作成',
-            desktop_shortcut_created: 'デスクトップショートカットを作成しました',
             desktop_shortcut_failed: 'デスクトップショートカットを作成できませんでした',
 
             login_title: 'ログイン',
@@ -1548,7 +1545,6 @@
             chooser_direct_desc: '자신의 API 키를 사용하여 Soniox / Gemini에 직접 연결합니다.',
             mode_back_to_chooser: '연결 방식 선택으로 돌아가기',
             desktop_shortcut_create: '바탕 화면 바로 가기 만들기',
-            desktop_shortcut_created: '바탕 화면 바로 가기를 만들었습니다',
             desktop_shortcut_failed: '바탕 화면 바로 가기를 만들 수 없습니다',
 
             login_title: '로그인',
@@ -1973,7 +1969,6 @@
             chooser_direct_desc: 'Подключайтесь напрямую к Soniox / Gemini с помощью собственного API-ключа.',
             mode_back_to_chooser: 'Назад к выбору режима',
             desktop_shortcut_create: 'Создать ярлык на рабочем столе',
-            desktop_shortcut_created: 'Ярлык на рабочем столе создан',
             desktop_shortcut_failed: 'Не удалось создать ярлык на рабочем столе',
 
             login_title: 'Вход',
@@ -2398,7 +2393,6 @@
             chooser_direct_desc: 'Conéctate directamente a Soniox / Gemini usando tu propia clave API.',
             mode_back_to_chooser: 'Volver a selección de modo',
             desktop_shortcut_create: 'Crear acceso directo en el escritorio',
-            desktop_shortcut_created: 'Acceso directo creado en el escritorio',
             desktop_shortcut_failed: 'No se pudo crear el acceso directo',
 
             login_title: 'Iniciar sesión',
@@ -2822,7 +2816,6 @@
             chooser_direct_desc: 'Conecte-se diretamente ao Soniox / Gemini com sua própria chave de API.',
             mode_back_to_chooser: 'Voltar para a seleção de modo',
             desktop_shortcut_create: 'Criar atalho na área de trabalho',
-            desktop_shortcut_created: 'Atalho criado na área de trabalho',
             desktop_shortcut_failed: 'Não foi possível criar o atalho',
 
             login_title: 'Entrar',
