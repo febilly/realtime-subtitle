@@ -1,6 +1,8 @@
 (function (root) {
     'use strict';
 
+    const OBS_RELOAD_BUILD_KEY = 'obsBuildReloaded';
+
     const PREVIEW_SAMPLES = Object.freeze({
         en: [
             { origLang: 'ja', origFinal: '今日はとてもいい天気ですね。', origNonFinal: '', transLang: 'en', transText: 'The weather is really nice today.' },
@@ -94,6 +96,72 @@
         );
         let receivedPreviewMessage = false;
         let messageListener = null;
+        let pageBuildVersion = null;
+        let reloadedBuildVersion = null;
+
+        const reloadPage = typeof options.reload === 'function'
+            ? options.reload
+            : () => {
+                if (windowRef.location && typeof windowRef.location.reload === 'function') {
+                    windowRef.location.reload();
+                }
+            };
+
+        function getSessionStorage() {
+            if (options.sessionStorage !== undefined) {
+                return options.sessionStorage;
+            }
+            try {
+                return windowRef.sessionStorage || null;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        function hasReloadedForBuild(build) {
+            if (reloadedBuildVersion === build) {
+                return true;
+            }
+            try {
+                const store = getSessionStorage();
+                if (store && typeof store.getItem === 'function') {
+                    return store.getItem(OBS_RELOAD_BUILD_KEY) === build;
+                }
+            } catch (_) {
+                // ignore storage errors
+            }
+            return false;
+        }
+
+        function markReloadedForBuild(build) {
+            reloadedBuildVersion = build;
+            try {
+                const store = getSessionStorage();
+                if (store && typeof store.setItem === 'function') {
+                    store.setItem(OBS_RELOAD_BUILD_KEY, build);
+                }
+            } catch (_) {
+                // ignore storage errors
+            }
+        }
+
+        function handleObsBuildFrame(data) {
+            if (previewMode) return;
+            const build = typeof data.build === 'string' ? data.build.trim() : '';
+            if (!build) return;
+            if (pageBuildVersion === null) {
+                pageBuildVersion = build;
+                return;
+            }
+            if (build === pageBuildVersion) {
+                return;
+            }
+            if (hasReloadedForBuild(build)) {
+                return;
+            }
+            markReloadedForBuild(build);
+            reloadPage();
+        }
 
         const uiState = {
             translateMode: false,
@@ -255,6 +323,10 @@
 
         function handleFrame(data) {
             if (!data || typeof data !== 'object') return false;
+            if (data.type === 'obs_build') {
+                handleObsBuildFrame(data);
+                return true;
+            }
             if (data.type === 'feature_packs' && data.packs && typeof data.packs === 'object') {
                 renderer.setPackEnabled(!!data.packs.obs);
                 renderSubtitles();

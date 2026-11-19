@@ -657,4 +657,127 @@ describe('ObsApp WebSocket & preview orchestration', () => {
 
         app.dispose();
     });
+
+    it('reloads once when obs_build changes on reconnect and skips duplicates or preview mode', async () => {
+        vi.useFakeTimers();
+        const dom = createDom();
+        const sockets = [];
+        class FakeWebSocket {
+            constructor(url) {
+                this.url = url;
+                this.readyState = FakeWebSocket.OPEN;
+                sockets.push(this);
+            }
+            close() {
+                this.readyState = FakeWebSocket.CLOSED;
+                if (this.onclose) this.onclose({ code: 1000 });
+            }
+        }
+        FakeWebSocket.CONNECTING = 0;
+        FakeWebSocket.OPEN = 1;
+        FakeWebSocket.CLOSED = 3;
+
+        dom.window.WebSocket = FakeWebSocket;
+        const reloadSpy = vi.fn();
+        const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+
+        const app = ObsApp.create({
+            window: dom.window,
+            document: dom.window.document,
+            fetch: fetchMock,
+            reload: reloadSpy,
+            ObsRenderer,
+            SubtitleSession,
+            SubtitleFrameController,
+            WsClient,
+        });
+        app.start();
+        await Promise.resolve();
+
+        // 1. First obs_build records initial page version and does NOT reload
+        sockets[0].onmessage({ data: JSON.stringify({ type: 'obs_build', build: '5.2.0-aaa111222333' }) });
+        expect(reloadSpy).not.toHaveBeenCalled();
+
+        // 2. Reconnect with the same version does NOT reload
+        sockets[0].close();
+        vi.advanceTimersByTime(2000);
+        expect(sockets).toHaveLength(2);
+        sockets[1].onmessage({ data: JSON.stringify({ type: 'obs_build', build: '5.2.0-aaa111222333' }) });
+        expect(reloadSpy).not.toHaveBeenCalled();
+
+        // 3. Reconnect with a new version reloads once and stores it in sessionStorage
+        sockets[1].close();
+        vi.advanceTimersByTime(2000);
+        expect(sockets).toHaveLength(3);
+        sockets[2].onmessage({ data: JSON.stringify({ type: 'obs_build', build: '5.2.0-bbb444555666' }) });
+        expect(reloadSpy).toHaveBeenCalledTimes(1);
+        expect(dom.window.sessionStorage.getItem('obsBuildReloaded')).toBe('5.2.0-bbb444555666');
+
+        // 4. Receiving the same new build version again does NOT reload repeatedly
+        sockets[2].close();
+        vi.advanceTimersByTime(2000);
+        expect(sockets).toHaveLength(4);
+        sockets[3].onmessage({ data: JSON.stringify({ type: 'obs_build', build: '5.2.0-bbb444555666' }) });
+        expect(reloadSpy).toHaveBeenCalledTimes(1);
+
+        // New instance with the same sessionStorage also refuses to reload-loop for that build
+        const reloadSpy2 = vi.fn();
+        const app2 = ObsApp.create({
+            window: dom.window,
+            document: dom.window.document,
+            fetch: fetchMock,
+            reload: reloadSpy2,
+            ObsRenderer,
+            SubtitleSession,
+            SubtitleFrameController,
+            WsClient,
+        });
+        app2.handleFrame({ type: 'obs_build', build: '5.2.0-aaa111222333' });
+        app2.handleFrame({ type: 'obs_build', build: '5.2.0-bbb444555666' });
+        expect(reloadSpy2).not.toHaveBeenCalled();
+        app2.dispose();
+        app.dispose();
+
+        // 5. Storage errors are swallowed safely and still guard against duplicate reloads in memory
+        const throwingStorage = {
+            getItem() { throw new Error('blocked'); },
+            setItem() { throw new Error('blocked'); },
+        };
+        const reloadSpy3 = vi.fn();
+        const app3 = ObsApp.create({
+            window: dom.window,
+            document: dom.window.document,
+            fetch: fetchMock,
+            sessionStorage: throwingStorage,
+            reload: reloadSpy3,
+            ObsRenderer,
+            SubtitleSession,
+            SubtitleFrameController,
+            WsClient,
+        });
+        app3.handleFrame({ type: 'obs_build', build: '5.2.0-v1' });
+        app3.handleFrame({ type: 'obs_build', build: '5.2.0-v2' });
+        app3.handleFrame({ type: 'obs_build', build: '5.2.0-v2' });
+        expect(reloadSpy3).toHaveBeenCalledTimes(1);
+        app3.dispose();
+
+        // 6. Preview mode ignores obs_build frames completely
+        const previewDom = createDom('http://127.0.0.1:18765/obs?preview=1');
+        const previewReloadSpy = vi.fn();
+        const previewApp = ObsApp.create({
+            window: previewDom.window,
+            document: previewDom.window.document,
+            fetch: fetchMock,
+            reload: previewReloadSpy,
+            ObsRenderer,
+            SubtitleSession,
+            SubtitleFrameController,
+            WsClient,
+        });
+        previewApp.handleFrame({ type: 'obs_build', build: '5.2.0-v1' });
+        previewApp.handleFrame({ type: 'obs_build', build: '5.2.0-v2' });
+        expect(previewReloadSpy).not.toHaveBeenCalled();
+        expect(previewDom.window.sessionStorage.getItem('obsBuildReloaded')).toBeNull();
+        previewApp.dispose();
+    });
 });

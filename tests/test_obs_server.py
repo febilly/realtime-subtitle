@@ -363,6 +363,20 @@ class TestWebServerObsPack:
             sent_frames = [json.loads(raw) for raw in fake_ws.sent]
             obs_frames = [f for f in sent_frames if f.get("type") == "obs_settings"]
             assert obs_frames == [{"type": "obs_settings", "settings": EXPECTED_DEFAULT_OBS_SETTINGS}]
+            build_frames = [f for f in sent_frames if f.get("type") == "obs_build"]
+            assert build_frames == [{"type": "obs_build", "build": server.obs_build_version}]
+            assert isinstance(server.obs_build_version, str) and len(server.obs_build_version) >= 12
+
+            # Regular (non-OBS) client should NOT receive obs_build
+            regular_ws = _FakeWebSocket()
+            module.web.WebSocketResponse.return_value = regular_ws
+            req_regular = MagicMock()
+            req_regular.query = {}
+            server._deliver_osc_sensitive_filter_notice = AsyncMock()
+            _async_run(server.websocket_handler(req_regular))
+            server._deliver_osc_sensitive_filter_notice = orig_deliver
+            regular_frames = [json.loads(raw) for raw in regular_ws.sent]
+            assert [f for f in regular_frames if f.get("type") == "obs_build"] == []
 
             # Direct notice helper also skips any active obs_ws_clients
             server._osc_sensitive_filter_notice_triggered = True
@@ -373,3 +387,61 @@ class TestWebServerObsPack:
             delivered = _async_run(server._deliver_osc_sensitive_filter_notice())
             assert delivered is False
             obs_client.send_str.assert_not_awaited()
+
+    def test_obs_build_version_tracks_obs_html_and_referenced_assets(self, tmp_path):
+        static_dir = tmp_path / "static"
+        js_dir = static_dir / "js"
+        js_dir.mkdir(parents=True)
+        (static_dir / "obs.html").write_text(
+            '<!doctype html><link rel="stylesheet" href="obs.css"><script src="js/obs-app.js"></script>',
+            encoding="utf-8",
+        )
+        (static_dir / "obs.css").write_text("body { color: white; }", encoding="utf-8")
+        (js_dir / "obs-app.js").write_text("console.log('v1');", encoding="utf-8")
+        (static_dir / "index.html").write_text("<h1>unrelated</h1>", encoding="utf-8")
+
+        fake_config = MagicMock()
+        fake_config.CLIENT_VERSION = "5.2.0"
+
+        with patch_modules({
+            "aiohttp": MagicMock(),
+            "aiohttp.web": MagicMock(),
+            "realtime_subtitle.core.config": fake_config,
+            "realtime_subtitle.llm.llm_client": MagicMock(),
+        }):
+            import realtime_subtitle.web.web_server as module
+
+            module.get_resource_path = lambda p: str(tmp_path / p)
+
+            v1 = module.compute_obs_build_version()
+            assert v1.startswith("5.2.0-")
+            assert len(v1.split("-", 1)[1]) == 12
+            assert module.compute_obs_build_version() == v1
+
+            # Unrelated file change does NOT alter OBS build version
+            (static_dir / "index.html").write_text("<h1>changed</h1>", encoding="utf-8")
+            assert module.compute_obs_build_version() == v1
+
+            # Referenced JS change DOES alter OBS build version
+            (js_dir / "obs-app.js").write_text("console.log('v2');", encoding="utf-8")
+            v2 = module.compute_obs_build_version()
+            assert v2 != v1
+
+            # Referenced CSS change DOES alter OBS build version
+            (static_dir / "obs.css").write_text("body { color: black; }", encoding="utf-8")
+            v3 = module.compute_obs_build_version()
+            assert v3 != v2
+
+            # obs.html change DOES alter OBS build version
+            (static_dir / "obs.html").write_text(
+                '<!doctype html><link rel="stylesheet" href="obs.css"><script src="js/obs-app.js"></script><!-- x -->',
+                encoding="utf-8",
+            )
+            v4 = module.compute_obs_build_version()
+            assert v4 != v3
+
+            # CLIENT_VERSION change DOES alter OBS build version
+            fake_config.CLIENT_VERSION = "5.2.1"
+            v5 = module.compute_obs_build_version()
+            assert v5.startswith("5.2.1-")
+            assert v5 != v4

@@ -3,6 +3,7 @@ Web服务器模块 - 处理HTTP和WebSocket连接
 """
 import json
 import asyncio
+import hashlib
 import inspect
 import os
 import secrets
@@ -47,6 +48,72 @@ from realtime_subtitle.hosted.feature_usage import (
 from realtime_subtitle.outputs.osc_manager import osc_manager
 
 logger = logging.getLogger("web_server")
+
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_OBS_SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+_OBS_LINK_HREF_RE = re.compile(r"<link\b[^>]*\bhref\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
+
+
+def _extract_obs_asset_refs(html_text: str) -> list[str]:
+    """Extract local CSS/JS asset paths referenced by obs.html."""
+    cleaned = _HTML_COMMENT_RE.sub("", html_text)
+    refs: list[str] = []
+    seen: set[str] = set()
+    for pattern in (_OBS_LINK_HREF_RE, _OBS_SCRIPT_SRC_RE):
+        for raw_ref in pattern.findall(cleaned):
+            ref = raw_ref.split("#", 1)[0].split("?", 1)[0].strip()
+            if not ref:
+                continue
+            lowered = ref.lower()
+            if lowered.startswith(("http://", "https://", "//", "data:")):
+                continue
+            rel = ref.lstrip("/").replace("\\", "/")
+            if rel and rel not in seen:
+                seen.add(rel)
+                refs.append(rel)
+    return refs
+
+
+def compute_obs_build_version() -> str:
+    """Compute a resource version string for the OBS page from CLIENT_VERSION and OBS assets."""
+    raw_client_ver = getattr(config, "CLIENT_VERSION", "")
+    client_ver = raw_client_ver.strip() if isinstance(raw_client_ver, str) else ""
+
+    static_dir = os.path.abspath(get_resource_path("static"))
+    obs_html_path = os.path.join(static_dir, "obs.html")
+    hasher = hashlib.sha256()
+
+    try:
+        with open(obs_html_path, "rb") as f:
+            html_bytes = f.read()
+    except OSError:
+        html_bytes = None
+
+    if html_bytes is not None:
+        hasher.update(b"obs.html\0")
+        hasher.update(html_bytes)
+        hasher.update(b"\0")
+        html_text = html_bytes.decode("utf-8", errors="replace")
+        for rel in _extract_obs_asset_refs(html_text):
+            asset_path = os.path.abspath(os.path.join(static_dir, *rel.split("/")))
+            try:
+                if os.path.commonpath([static_dir, asset_path]) != static_dir:
+                    continue
+            except ValueError:
+                continue
+            hasher.update(rel.encode("utf-8"))
+            hasher.update(b"\0")
+            try:
+                with open(asset_path, "rb") as af:
+                    hasher.update(af.read())
+            except OSError:
+                hasher.update(b"<missing>")
+            hasher.update(b"\0")
+    else:
+        hasher.update(b"obs.html:<missing>\0")
+
+    digest = hasher.hexdigest()[:12]
+    return f"{client_ver}-{digest}" if client_ver else digest
 
 FEATURE_PACK_IDS = ("vrchat", "learning", "obs", "transcript")
 LEARNING_LANGUAGES = ("ja", "zh", "ko")
@@ -179,6 +246,7 @@ class WebServer:
         # startup account-validation GET /me request.
         self._client_version_reported = False
         self.use_bundled_cjk_fonts = False
+        self.obs_build_version = compute_obs_build_version()
         self.feature_packs = self._load_initial_feature_packs(stored_settings)
         self.obs_settings = self._load_initial_obs_settings(stored_settings)
         self.feature_usage = FeatureUsageReporter(
@@ -491,6 +559,8 @@ class WebServer:
                 "type": "feature_packs",
                 "packs": self.get_feature_packs_state(),
             }))
+            if client_type == "obs":
+                await ws.send_str(json.dumps(self._obs_build_frame()))
             await ws.send_str(json.dumps(self._obs_settings_frame()))
             await ws.send_str(json.dumps({
                 "type": "learning_languages",
@@ -3172,6 +3242,12 @@ class WebServer:
 
     def get_obs_settings(self) -> dict:
         return self._normalize_obs_settings(getattr(self, "obs_settings", None))
+
+    def _obs_build_frame(self) -> dict:
+        return {
+            "type": "obs_build",
+            "build": self.obs_build_version,
+        }
 
     def _obs_settings_frame(self) -> dict:
         return {
