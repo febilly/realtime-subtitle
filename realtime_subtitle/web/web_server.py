@@ -76,7 +76,7 @@ OBS_SETTINGS_DEFAULTS = {
     "bg_opacity": 59,
     "flow_direction": "down",
     "alignment": "left",
-    "max_sentences": 2,
+    "max_sentences": 0,
     "auto_hide_seconds": 0,
 }
 OBS_INT_SPECS = {
@@ -84,7 +84,7 @@ OBS_INT_SPECS = {
     "translation_font_scale": ("translationFontScale", 50, 150, 100),
     "outline_width": ("outlineWidth", 0, 8, 0),
     "bg_opacity": ("bgOpacity", 0, 100, 59),
-    "max_sentences": ("maxSentences", 1, 10, 2),
+    "max_sentences": ("maxSentences", 0, 10, 0),
     "auto_hide_seconds": ("autoHideSeconds", 0, 30, 0),
 }
 OBS_ENUM_SPECS = {

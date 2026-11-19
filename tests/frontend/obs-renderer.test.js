@@ -58,7 +58,7 @@ describe('ObsRenderer settings & style calculation', () => {
             bgOpacity: 59,
             flowDirection: 'down',
             alignment: 'left',
-            maxSentences: 2,
+            maxSentences: 0,
             autoHideSeconds: 0,
         });
 
@@ -100,14 +100,28 @@ describe('ObsRenderer settings & style calculation', () => {
             bgOpacity: 100,
             flowDirection: 'up',
             alignment: 'right',
-            maxSentences: 1,
+            maxSentences: 0,
             autoHideSeconds: 30,
         });
 
         expect(ObsRenderer.normalizeSettings({ fontSize: 300, displayContent: 'bogus' })).toMatchObject({
             fontSize: 120,
             displayContent: 'both',
+            maxSentences: 0,
         });
+
+        expect(ObsSettings.normalizeMaxSentences(0)).toBe(0);
+        for (let count = 1; count <= 10; count += 1) {
+            expect(ObsSettings.normalizeMaxSentences(count)).toBe(count);
+        }
+        expect(ObsSettings.normalizeMaxSentences(11)).toBe(10);
+        expect(ObsSettings.normalizeMaxSentences(-2)).toBe(0);
+        expect(ObsSettings.normalizeMaxSentences('invalid')).toBe(0);
+        expect(ObsSettings.normalizeMaxSentences(null)).toBe(0);
+        expect(ObsSettings.normalizeMaxSentences(true)).toBe(0);
+        expect(ObsSettings.normalizeMaxSentences(Number.NaN)).toBe(0);
+        expect(ObsSettings.normalizeSettings({ maxSentences: 11 }).maxSentences).toBe(10);
+        expect(ObsSettings.normalizeSettings({ maxSentences: 'bad' }).maxSentences).toBe(0);
     });
 
     it('computes scaled overlay CSS custom properties', () => {
@@ -371,6 +385,55 @@ describe('ObsRenderer rendering & pack gating', () => {
             'Cuarta frase.',
         ]);
         expect(container.scrollTop).toBe(420);
+    });
+
+    it('renders more than 10 sentences up to MAX_RENDERED_SENTENCES (20) when maxSentences is 0 and keeps newest visible on overflow', () => {
+        const dom = createDom();
+        const { session, rootElement, container } = createDeps(dom);
+        const renderer = ObsRenderer.create({
+            document: dom.window.document,
+            rootElement,
+            container,
+            session,
+            RenderModel,
+            RenderHtml,
+            Segmentation,
+            packEnabled: true,
+            settings: { maxSentences: 0, flowDirection: 'down', showLangTag: false },
+        });
+
+        const finalTokens = [];
+        for (let i = 1; i <= 25; i += 1) {
+            if (i > 1) finalTokens.push({ is_separator: true, is_final: true });
+            finalTokens.push({
+                text: `Sentence #${i}.`,
+                is_final: true,
+                language: 'en',
+                translation_status: 'original',
+            });
+        }
+        session.applyUpdateFrame({ final_tokens: finalTokens });
+
+        Object.defineProperty(container, 'clientHeight', { value: 200, configurable: true });
+        Object.defineProperty(container, 'scrollHeight', { value: 900, configurable: true });
+
+        renderer.render();
+        const linesDown = [...container.querySelectorAll('.ov-line')].map((el) => el.textContent);
+        expect(linesDown).toHaveLength(ObsRenderer.MAX_RENDERED_SENTENCES);
+        expect(linesDown[0]).toBe('Sentence #25.');
+        expect(linesDown[linesDown.length - 1]).toBe('Sentence #6.');
+        expect(container.textContent).not.toContain('Sentence #5.');
+        // Downward flow keeps scrollTop at 0 when newest sentence fits, clipping older bottom sentences
+        expect(container.scrollTop).toBe(0);
+
+        // Upward flow keeps oldest-to-newest ordering and pins scrollTop to bottom, clipping older top sentences
+        renderer.setSettings({ ...renderer.getSettings(), flowDirection: 'up', maxSentences: 0 });
+        renderer.render();
+        const linesUp = [...container.querySelectorAll('.ov-line')].map((el) => el.textContent);
+        expect(linesUp).toHaveLength(ObsRenderer.MAX_RENDERED_SENTENCES);
+        expect(linesUp[0]).toBe('Sentence #6.');
+        expect(linesUp[linesUp.length - 1]).toBe('Sentence #25.');
+        expect(container.scrollTop).toBe(900);
     });
 
     it('hides overlay after autoHideSeconds of inactivity and wakes on text update', () => {

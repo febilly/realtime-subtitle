@@ -27,7 +27,7 @@ EXPECTED_DEFAULT_OBS_SETTINGS = {
     "bg_opacity": 59,
     "flow_direction": "down",
     "alignment": "left",
-    "max_sentences": 2,
+    "max_sentences": 0,
     "auto_hide_seconds": 0,
 }
 
@@ -162,6 +162,8 @@ class TestWebServerObsPack:
                 {"bg_color": "#12345"},
                 {"outline_width": True},
                 {"auto_hide_seconds": "NaN"},
+                {"max_sentences": "unlimited"},
+                {"max_sentences": False},
             ):
                 req_bad = AsyncMock()
                 req_bad.remote = "127.0.0.1"
@@ -234,6 +236,15 @@ class TestWebServerObsPack:
             assert body["settings"]["font_family"] == "noto_sans_cjk"
             assert body["settings"]["flow_direction"] == "up"
 
+            # Explicit 0 (unlimited) is accepted, 11 clamps to 10, negative clamps to 0
+            for raw_val, expected_val in ((0, 0), (11, 10), (-4, 0), (3, 3)):
+                req_max = AsyncMock()
+                req_max.remote = "127.0.0.1"
+                req_max.json.return_value = {"max_sentences": raw_val}
+                body, code = _async_run(server.obs_settings_post_handler(req_max))
+                assert code == 200
+                assert body["settings"]["max_sentences"] == expected_val
+
     def test_legacy_stored_obs_settings_falls_back_gracefully(self):
         with patch_modules({
             "aiohttp": MagicMock(),
@@ -261,6 +272,10 @@ class TestWebServerObsPack:
             assert loaded == expected
             assert "position" not in loaded
             assert "max_width" not in loaded
+
+            assert server._normalize_obs_settings({"max_sentences": 0})["max_sentences"] == 0
+            assert server._normalize_obs_settings({"max_sentences": 11})["max_sentences"] == 10
+            assert server._normalize_obs_settings({"max_sentences": "bad"})["max_sentences"] == 0
 
     def test_clipboard_post_endpoint_loopback_validation_and_callback(self):
         with patch_modules({

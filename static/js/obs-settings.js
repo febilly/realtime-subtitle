@@ -17,8 +17,8 @@
     const BG_OPACITY_MIN = 0;
     const BG_OPACITY_MAX = 100;
 
-    const MAX_SENTENCES_DEFAULT = 2;
-    const MAX_SENTENCES_MIN = 1;
+    const MAX_SENTENCES_DEFAULT = 0;
+    const MAX_SENTENCES_MIN = 0;
     const MAX_SENTENCES_MAX = 10;
 
     const AUTO_HIDE_SECONDS_DEFAULT = 0;
@@ -122,6 +122,10 @@
         return normalizeEnum(value, VALID_DISPLAY_CONTENTS, DEFAULT_SETTINGS.displayContent);
     }
 
+    function normalizeMaxSentences(value) {
+        return clampInt(value, MAX_SENTENCES_MIN, MAX_SENTENCES_MAX, MAX_SENTENCES_DEFAULT);
+    }
+
     function pickField(source, camelKey, snakeKey) {
         if (source[camelKey] !== undefined) return source[camelKey];
         if (source[snakeKey] !== undefined) return source[snakeKey];
@@ -183,11 +187,8 @@
                 VALID_ALIGNMENTS,
                 DEFAULT_SETTINGS.alignment,
             ),
-            maxSentences: clampInt(
+            maxSentences: normalizeMaxSentences(
                 pickField(source, 'maxSentences', 'max_sentences'),
-                MAX_SENTENCES_MIN,
-                MAX_SENTENCES_MAX,
-                DEFAULT_SETTINGS.maxSentences,
             ),
             autoHideSeconds: clampInt(
                 pickField(source, 'autoHideSeconds', 'auto_hide_seconds'),
@@ -295,6 +296,7 @@
         CAMEL_TO_SNAKE,
         normalizeFontSize,
         normalizeDisplayContent,
+        normalizeMaxSentences,
         normalizeHexColor,
         normalizeSettings,
         toBackendPayload,

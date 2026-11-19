@@ -356,9 +356,12 @@
                     allSentences.push(sentence);
                 }
             }
+            const configuredLimit = settings.maxSentences > 0
+                ? Math.min(settings.maxSentences, MAX_RENDERED_SENTENCES)
+                : MAX_RENDERED_SENTENCES;
             const limit = explicitMaxSentences !== null
-                ? Math.min(settings.maxSentences, explicitMaxSentences)
-                : settings.maxSentences;
+                ? Math.min(configuredLimit, explicitMaxSentences)
+                : configuredLimit;
             const visibleSentences = allSentences.slice(-limit);
             const orderedSentences = settings.flowDirection === 'down'
                 ? [...visibleSentences].reverse()
