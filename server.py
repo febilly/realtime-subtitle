@@ -1091,34 +1091,23 @@ def main():
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
     
-    def create_listening_socket(host: str, preferred_port: int) -> tuple[socket.socket, int]:
-        candidates = []
-        if preferred_port and preferred_port > 0:
-            candidates.append(preferred_port)
-        candidates.append(0)
-
-        last_error = None
-        for port in candidates:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.bind((host, port))
-                sock.listen(128)
-                sock.setblocking(False)
-                actual_port = sock.getsockname()[1]
-                return sock, actual_port
-            except OSError as error:
-                last_error = error
-                sock.close()
-                continue
-
-        raise last_error if last_error else RuntimeError("Failed to allocate listening socket")
+    from realtime_subtitle.core.port_selection import (
+        DEFAULT_SERVER_PORT,
+        build_port_candidates,
+        load_last_server_port,
+        save_last_server_port,
+        select_listening_socket,
+    )
 
     if AUTO_OPEN_WEBVIEW:
         bind_host = "127.0.0.1"
     else:
         bind_host = SERVER_HOST if SERVER_HOST not in ("localhost", "127.0.0.1") else "0.0.0.0"
 
-    listener_socket, actual_port = create_listening_socket(bind_host, SERVER_PORT)
+    last_port = load_last_server_port() if SERVER_PORT == DEFAULT_SERVER_PORT else None
+    port_candidates = build_port_candidates(SERVER_PORT, last_port=last_port)
+    listener_socket, actual_port = select_listening_socket(bind_host, port_candidates)
+    save_last_server_port(actual_port)
     web_server.actual_port = actual_port
 
     if SERVER_PORT and SERVER_PORT > 0 and SERVER_PORT != actual_port:
