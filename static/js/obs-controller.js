@@ -21,7 +21,6 @@
         BG_OPACITY_MIN,
         BG_OPACITY_MAX,
         MAX_SENTENCES_DEFAULT,
-        MAX_SENTENCES_MIN,
         MAX_SENTENCES_MAX,
         AUTO_HIDE_SECONDS_DEFAULT,
         AUTO_HIDE_SECONDS_MIN,
@@ -38,6 +37,8 @@
     const STORAGE_KEY = 'obsSettings.v1';
     const GROUPS_STORAGE_KEY = 'obsDialogGroups.v1';
     const LAST_PORT_STORAGE_KEY = 'obsLastPort';
+    const MAX_SENTENCES_SLIDER_MIN = 1;
+    const MAX_SENTENCES_SLIDER_MAX = MAX_SENTENCES_MAX + 1;
     const DEFAULT_GROUP_STATES = Object.freeze({
         text: true,
         color: false,
@@ -334,10 +335,12 @@
                 sliderId: 'obsMaxSentencesSlider',
                 valueId: 'obsMaxSentencesValue',
                 markId: 'obsMaxSentencesDefaultMark',
-                min: MAX_SENTENCES_MIN,
-                max: MAX_SENTENCES_MAX,
+                min: MAX_SENTENCES_SLIDER_MIN,
+                max: MAX_SENTENCES_SLIDER_MAX,
                 def: MAX_SENTENCES_DEFAULT,
-                format: (v) => `${v}`,
+                toSlider: (v) => (v === 0 ? MAX_SENTENCES_SLIDER_MAX : v),
+                fromSlider: (v) => (Number(v) >= MAX_SENTENCES_SLIDER_MAX ? 0 : Number(v)),
+                format: (v) => (v === 0 ? t('obs_max_sentences_unlimited') : `${v}`),
             },
             {
                 key: 'autoHideSeconds',
@@ -356,17 +359,23 @@
             const output = el(spec.key + 'Value', spec.valueId);
             const mark = el(spec.key + 'Mark', spec.markId);
             const val = Number(settings[spec.key]);
+            const sliderVal = typeof spec.toSlider === 'function' ? spec.toSlider(val) : val;
             if (output) {
                 output.textContent = spec.format(val);
             }
             if (!slider) return;
             slider.min = String(spec.min);
             slider.max = String(spec.max);
-            slider.value = String(val);
+            slider.value = String(sliderVal);
             const span = spec.max - spec.min;
-            const fill = span > 0 ? ((val - spec.min) / span) * 100 : 0;
+            const fill = span > 0 ? ((sliderVal - spec.min) / span) * 100 : 0;
             if (slider.parentElement && slider.parentElement.style) {
                 slider.parentElement.style.setProperty('--fill', `${fill}%`);
+                if (typeof spec.toSlider === 'function') {
+                    const defSliderVal = spec.toSlider(spec.def);
+                    const defFrac = span > 0 ? (defSliderVal - spec.min) / span : 0;
+                    slider.parentElement.style.setProperty('--default-frac', String(defFrac));
+                }
             }
             if (mark && mark.classList) {
                 mark.classList.toggle('is-current', val === spec.def);
@@ -848,10 +857,15 @@
             for (const spec of SLIDER_SPECS) {
                 const slider = el(spec.key + 'Slider', spec.sliderId);
                 if (!slider) continue;
+                const readSliderValue = () => (
+                    typeof spec.fromSlider === 'function'
+                        ? spec.fromSlider(slider.value)
+                        : slider.value
+                );
                 bindEvent(slider, 'input', () => {
                     const updated = saveSettings({
                         ...settings,
-                        [spec.key]: slider.value,
+                        [spec.key]: readSliderValue(),
                     });
                     renderSlider(spec);
                     postPreviewUpdate();
@@ -864,7 +878,7 @@
                     }
                     const updated = saveSettings({
                         ...settings,
-                        [spec.key]: slider.value,
+                        [spec.key]: readSliderValue(),
                     });
                     renderSlider(spec);
                     postPreviewUpdate();

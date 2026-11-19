@@ -153,7 +153,7 @@ function buildObsDom(url = 'http://127.0.0.1:19001/') {
                         <span id="obsMaxSentencesLabel"></span>
                         <output id="obsMaxSentencesValue"></output>
                         <span>
-                            <input id="obsMaxSentencesSlider" type="range" min="1" max="10" step="1" value="2">
+                            <input id="obsMaxSentencesSlider" type="range" min="1" max="11" step="1" value="11">
                             <span id="obsMaxSentencesDefaultMark"></span>
                         </span>
 
@@ -536,8 +536,10 @@ describe('ObsController settings persistence, groups, preview sync, and reset', 
         expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY))).toEqual(ObsSettings.DEFAULT_SETTINGS);
         expect(ObsSettings.DEFAULT_SETTINGS.flowDirection).toBe('down');
         expect(ObsSettings.DEFAULT_SETTINGS.alignment).toBe('left');
-        expect(ObsSettings.DEFAULT_SETTINGS.maxSentences).toBe(2);
+        expect(ObsSettings.DEFAULT_SETTINGS.maxSentences).toBe(0);
         expect(dom.window.document.getElementById('obsFontSizeValue').textContent).toBe('32 px');
+        expect(dom.window.document.getElementById('obsMaxSentencesSlider').value).toBe('11');
+        expect(dom.window.document.getElementById('obsMaxSentencesValue').textContent).toBe('obs_max_sentences_unlimited');
         expect(dom.window.document.getElementById('obsOriginalColorValue').textContent).toBe('#e5e7eb');
         expect(boldSwitch.getAttribute('aria-checked')).toBe('false');
         expect(bgSelect.value).toBe('strip');
@@ -549,5 +551,100 @@ describe('ObsController settings persistence, groups, preview sync, and reset', 
         }));
 
         controller.dispose();
+    });
+
+    it('maps maxSentences slider tick 11 <-> stored 0 (Unlimited) and preserves legacy 1-10 values', async () => {
+        const dom = buildObsDom();
+        const storage = createMemoryStorage();
+        const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+        const postMessageMock = vi.fn();
+        const frame = dom.window.document.getElementById('obsPreviewFrame');
+        Object.defineProperty(frame, 'contentWindow', {
+            value: { postMessage: postMessageMock },
+            configurable: true,
+        });
+        let lang = 'zh';
+        const translate = (key) => {
+            if (key === 'obs_max_sentences_unlimited') return lang === 'zh' ? '不限' : 'Unlimited';
+            return key;
+        };
+
+        const controller = ObsController.create({
+            document: dom.window.document,
+            window: dom.window,
+            storage,
+            fetch: fetchMock,
+            t: translate,
+            getLang: () => lang,
+            userAgent: 'Windows',
+            isPackEnabled: () => true,
+            desktopAvailable: true,
+            ControlIcon,
+        });
+        controller.init();
+        controller.openDialog();
+
+        const slider = dom.window.document.getElementById('obsMaxSentencesSlider');
+        const valueEl = dom.window.document.getElementById('obsMaxSentencesValue');
+        const markEl = dom.window.document.getElementById('obsMaxSentencesDefaultMark');
+
+        // Default is unlimited (stored 0 -> slider position 11 -> "不限")
+        expect(slider.min).toBe('1');
+        expect(slider.max).toBe('11');
+        expect(slider.value).toBe('11');
+        expect(valueEl.textContent).toBe('不限');
+        expect(markEl.classList.contains('is-current')).toBe(true);
+        expect(slider.parentElement.style.getPropertyValue('--fill')).toBe('100%');
+        expect(slider.parentElement.style.getPropertyValue('--default-frac')).toBe('1');
+
+        // Switching language updates Unlimited label immediately
+        lang = 'en';
+        controller.applyI18n();
+        expect(valueEl.textContent).toBe('Unlimited');
+
+        // Dragging to 5 stores 5 and moves mark out of current state
+        slider.value = '5';
+        slider.dispatchEvent(new dom.window.Event('change'));
+        expect(valueEl.textContent).toBe('5');
+        expect(markEl.classList.contains('is-current')).toBe(false);
+        expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY)).maxSentences).toBe(5);
+        expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
+            body: expect.stringContaining('"max_sentences":5'),
+        }));
+
+        // Dragging to 11 stores 0 ("Unlimited") and re-marks default
+        slider.value = '11';
+        slider.dispatchEvent(new dom.window.Event('change'));
+        expect(valueEl.textContent).toBe('Unlimited');
+        expect(markEl.classList.contains('is-current')).toBe(true);
+        expect(JSON.parse(storage.getItem(ObsController.STORAGE_KEY)).maxSentences).toBe(0);
+        expect(postMessageMock).toHaveBeenLastCalledWith(expect.objectContaining({
+            settings: expect.objectContaining({ maxSentences: 0 }),
+        }), '*');
+        expect(fetchMock).toHaveBeenLastCalledWith('/obs-settings', expect.objectContaining({
+            body: expect.stringContaining('"max_sentences":0'),
+        }));
+        controller.dispose();
+
+        // Legacy stored value 4 restores cleanly
+        const dom2 = buildObsDom();
+        const storage2 = createMemoryStorage({
+            [ObsController.STORAGE_KEY]: JSON.stringify({ maxSentences: 4 }),
+        });
+        const controller2 = ObsController.create({
+            document: dom2.window.document,
+            window: dom2.window,
+            storage: storage2,
+            fetch: fetchMock,
+            t: translate,
+            userAgent: 'Windows',
+            isPackEnabled: () => true,
+            ControlIcon,
+        });
+        controller2.init();
+        expect(dom2.window.document.getElementById('obsMaxSentencesSlider').value).toBe('4');
+        expect(dom2.window.document.getElementById('obsMaxSentencesValue').textContent).toBe('4');
+        expect(dom2.window.document.getElementById('obsMaxSentencesDefaultMark').classList.contains('is-current')).toBe(false);
+        controller2.dispose();
     });
 });
