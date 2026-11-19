@@ -1104,10 +1104,13 @@ def main():
     else:
         bind_host = SERVER_HOST if SERVER_HOST not in ("localhost", "127.0.0.1") else "0.0.0.0"
 
-    last_port = load_last_server_port() if SERVER_PORT == DEFAULT_SERVER_PORT else None
+    uses_sticky_port = SERVER_PORT == DEFAULT_SERVER_PORT
+    last_port = load_last_server_port() if uses_sticky_port else None
     port_candidates = build_port_candidates(SERVER_PORT, last_port=last_port)
     listener_socket, actual_port = select_listening_socket(bind_host, port_candidates)
-    save_last_server_port(actual_port)
+    if uses_sticky_port:
+        # A one-off --server-port run must not overwrite the sticky port.
+        save_last_server_port(actual_port)
     web_server.actual_port = actual_port
 
     if SERVER_PORT and SERVER_PORT > 0 and SERVER_PORT != actual_port:
