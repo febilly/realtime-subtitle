@@ -2361,9 +2361,19 @@ body.dark-theme .challenge-box code {
     font-weight: 700;
 }
 
-#loginStepInput .form-field > span,
+#loginStepInput .form-field:not(.checkbox-field) > span,
 #loginBonusSection .settings-section-label {
     font-weight: 700;
+}
+
+.login-shortcut-field {
+    font-size: 13.5px;
+}
+
+#loginPanel .settings-actions:not(:has(button:not([hidden]))) {
+    border-top-color: transparent;
+    background: transparent;
+    padding-top: 0;
 }
 
 .login-code-action {

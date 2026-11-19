@@ -9,61 +9,68 @@
         const t = typeof options.t === 'function' ? options.t : (key) => key;
         const showToast = typeof options.showToast === 'function' ? options.showToast : () => {};
         const elements = options.elements || {};
-        const overlay = elements.overlay || null;
-        const dialog = elements.dialog || null;
-        const createButton = elements.createButton || null;
-        const skipButton = elements.skipButton || null;
+        const field = elements.field
+            || (documentRef && documentRef.getElementById('loginDesktopShortcutField'));
+        const checkbox = elements.checkbox
+            || (documentRef && documentRef.getElementById('loginDesktopShortcutCheckbox'));
+        const label = elements.label
+            || (documentRef && documentRef.getElementById('loginDesktopShortcutLabel'));
         let initialized = false;
         let busy = false;
-
-        function setText(id, value) {
-            const element = documentRef && documentRef.getElementById(id);
-            if (element) element.textContent = value;
-        }
+        let eligible = false;
+        let syncSequence = 0;
 
         function applyI18n() {
-            setText('desktopShortcutTitle', t('desktop_shortcut_title'));
-            setText('desktopShortcutHint', t('desktop_shortcut_hint'));
-            setText('desktopShortcutCreateTitle', t('desktop_shortcut_create'));
-            setText('desktopShortcutCreateDesc', t('desktop_shortcut_create_desc'));
-            setText('desktopShortcutSkipTitle', t('desktop_shortcut_skip'));
-            setText('desktopShortcutSkipDesc', t('desktop_shortcut_skip_desc'));
+            const text = t('desktop_shortcut_create');
+            if (label) {
+                label.textContent = text;
+                return;
+            }
+            const element = documentRef && documentRef.getElementById('loginDesktopShortcutLabel');
+            if (element) element.textContent = text;
         }
 
-        function show() {
-            applyI18n();
-            if (overlay) overlay.hidden = false;
-            if (dialog) dialog.hidden = false;
+        function setVisible(visible) {
+            eligible = !!visible;
+            if (field) field.hidden = !eligible;
         }
 
-        function hide() {
-            if (overlay) overlay.hidden = true;
-            if (dialog) dialog.hidden = true;
-        }
-
-        function setBusy(value) {
-            busy = !!value;
-            if (createButton) createButton.disabled = busy;
-            if (skipButton) skipButton.disabled = busy;
-        }
-
-        async function offer() {
-            if (!fetchRef || busy) return false;
+        async function syncOption({ resetChecked = false } = {}) {
+            const token = ++syncSequence;
+            if (resetChecked && checkbox) checkbox.checked = true;
+            if (!fetchRef || !field || !checkbox) {
+                setVisible(false);
+                return false;
+            }
             try {
                 const response = await fetchRef('/desktop-shortcut');
                 const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.available || data.exists) return false;
-                show();
+                if (token !== syncSequence) return false;
+                if (!response.ok || !data.available || data.exists) {
+                    setVisible(false);
+                    return false;
+                }
+                applyI18n();
+                setVisible(true);
                 return true;
             } catch (error) {
+                if (token === syncSequence) setVisible(false);
                 return false;
             }
         }
 
-        async function createShortcut() {
-            if (!fetchRef || busy) return false;
-            setBusy(true);
+        async function createIfRequested() {
+            if (!fetchRef || busy || !eligible || !field || field.hidden || !checkbox || !checkbox.checked) {
+                return false;
+            }
+            busy = true;
             try {
+                const statusResponse = await fetchRef('/desktop-shortcut');
+                const statusData = await statusResponse.json().catch(() => ({}));
+                if (!statusResponse.ok || !statusData.available || statusData.exists) {
+                    setVisible(false);
+                    return false;
+                }
                 const response = await fetchRef('/desktop-shortcut', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -74,27 +81,27 @@
                     showToast(t('desktop_shortcut_failed'), true);
                     return false;
                 }
-                hide();
+                setVisible(false);
                 showToast(t('desktop_shortcut_created'));
                 return true;
             } catch (error) {
                 showToast(t('desktop_shortcut_failed'), true);
                 return false;
             } finally {
-                setBusy(false);
+                busy = false;
             }
         }
 
         function init() {
             if (initialized) return false;
             initialized = true;
-            if (createButton) createButton.addEventListener('click', () => { void createShortcut(); });
-            if (skipButton) skipButton.addEventListener('click', hide);
+            if (checkbox) checkbox.checked = true;
+            setVisible(false);
             applyI18n();
             return true;
         }
 
-        return { applyI18n, createShortcut, hide, init, offer, show };
+        return { applyI18n, createIfRequested, init, syncOption };
     }
 
     const api = { create };

@@ -32,7 +32,6 @@
         const closeButton = elements.closeButton || null;
         const userInput = elements.userInput || null;
         const primaryButton = elements.primaryButton || null;
-        const modeBackButton = elements.modeBackButton || null;
         const backButton = elements.backButton || null;
         const pasteButton = elements.pasteButton || null;
         const codeLink = elements.codeLink || null;
@@ -73,11 +72,11 @@
                 pasteButton.setAttribute('aria-label', label);
                 pasteButton.setAttribute('title', label);
             }
-            setText('loginModeBackButton', t('use_own_key_mode'));
             setText('loginBackButton', t('login_back'));
             setText('loginCodeLink', t('login_vrchat_button'));
             setText('loginManualToggle', t('login_manual_toggle'));
             setText('loginWaitingHint', t('login_waiting'));
+            call('applyDesktopShortcutI18n');
             const serverHint = documentRef && documentRef.getElementById('loginServerHint');
             const relayServerUrl = runtimeState().relayServerUrl || '';
             if (serverHint) serverHint.textContent = relayServerUrl
@@ -227,7 +226,7 @@
             if (panel) panel.hidden = false;
             if (manualToggle) manualToggle.hidden = false;
             if (closeButton) closeButton.style.display = forcedOpen ? 'none' : '';
-            if (modeBackButton) modeBackButton.hidden = !current.relayAvailable;
+            void call('syncDesktopShortcutOption', { resetChecked: true });
         }
 
         function hide() {
@@ -302,7 +301,7 @@
                 name: server.displayName || data.display_name || '',
             }), false, { timeoutMs: 5000 });
             hide();
-            void call('offerDesktopShortcut');
+            void call('createDesktopShortcutIfRequested');
             call('updateBalanceBarVisibility');
             void call('fetchBalance');
             call('clearSubtitleState');
@@ -403,7 +402,6 @@
             bind(userInput, 'input', updateSubmitState);
             bind(codeLink, 'click', (event) => { event.preventDefault(); void startHostedLogin(); });
             bind(manualToggle, 'click', () => setManualShown(!manualShown));
-            bind(modeBackButton, 'click', () => call('switchToOwnKeyMode'));
             bind(closeButton, 'click', close);
             bind(overlay, 'click', close);
             bind(pasteButton, 'click', async () => {

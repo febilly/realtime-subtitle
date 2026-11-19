@@ -468,23 +468,6 @@
         </div>
     </div>
 
-    <!-- Offered after a successful hosted sign-in when no app shortcut exists. -->
-    <div class="confirm-overlay" id="desktopShortcutOverlay" hidden></div>
-    <div class="mode-chooser" id="desktopShortcutDialog" role="dialog" aria-modal="true" aria-labelledby="desktopShortcutTitle" hidden>
-        <h1 id="desktopShortcutTitle">Create a desktop shortcut?</h1>
-        <p class="field-hint" id="desktopShortcutHint"></p>
-        <div class="mode-chooser-options">
-            <button class="mode-card" id="desktopShortcutCreate" type="button">
-                <span class="mode-card-title" id="desktopShortcutCreateTitle">Create shortcut</span>
-                <span class="mode-card-desc" id="desktopShortcutCreateDesc"></span>
-            </button>
-            <button class="mode-card" id="desktopShortcutSkip" type="button">
-                <span class="mode-card-title" id="desktopShortcutSkipTitle">Not now</span>
-                <span class="mode-card-desc" id="desktopShortcutSkipDesc"></span>
-            </button>
-        </div>
-    </div>
-
     <!-- Subtitle-server sign-in (web one-time code) -->
     <div class="settings-overlay" id="loginOverlay" hidden></div>
     <aside class="settings-panel" id="loginPanel" aria-label="Sign in" hidden>
@@ -501,6 +484,10 @@
                 </div>
                 <p class="field-hint login-waiting-hint" id="loginWaitingHint" hidden></p>
                 <button class="link-button" id="loginManualToggle" type="button" hidden></button>
+                <label class="form-field checkbox-field login-shortcut-field" id="loginDesktopShortcutField" for="loginDesktopShortcutCheckbox" hidden>
+                    <input id="loginDesktopShortcutCheckbox" type="checkbox" checked>
+                    <span id="loginDesktopShortcutLabel">Create desktop shortcut</span>
+                </label>
                 <label class="form-field" id="loginManualField" for="loginUserInput" hidden>
                     <span id="loginUserInputLabel">One-time login code</span>
                     <div class="embedded-paste-control">
@@ -521,9 +508,7 @@
             <p class="settings-error" id="loginError" role="alert"></p>
 
             <div class="settings-actions">
-                <div class="settings-actions-left">
-                    <button class="secondary-button" id="loginModeBackButton" type="button" hidden>Back to mode selection</button>
-                </div>
+                <div class="settings-actions-left"></div>
                 <div class="settings-actions-right">
                     <button class="secondary-button" id="loginBackButton" type="button" hidden>Back</button>
                     <button class="primary-button" id="loginPrimaryButton" type="submit" disabled>Start</button>

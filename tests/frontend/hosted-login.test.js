@@ -12,7 +12,7 @@ function setup(overrides = {}) {
             <div id="loginStepInput"><label id="loginUserInputLabel"></label></div>
             <div id="loginStepMethod"></div><div id="loginStepChallenge"></div>
             <form id="loginForm"><input id="loginUserInput"><button id="loginPrimaryButton"></button></form>
-            <button id="loginModeBackButton"></button><button id="loginBackButton"></button>
+            <button id="loginBackButton"></button>
             <button id="loginPasteButton"></button><button id="loginCodeLink"></button>
             <button id="loginManualToggle"></button><div id="loginManualField"></div>
             <div id="loginWaitingHint"></div><div id="loginError"></div>
@@ -42,7 +42,8 @@ function setup(overrides = {}) {
     const calls = [];
     const actionNames = [
         'showToast', 'updateBalanceBarVisibility', 'fetchBalance', 'clearSubtitleState',
-        'setTranslationModeSynced', 'pushSetup', 'switchToOwnKeyMode', 'offerDesktopShortcut',
+        'setTranslationModeSynced', 'pushSetup',
+        'applyDesktopShortcutI18n', 'syncDesktopShortcutOption', 'createDesktopShortcutIfRequested',
     ];
     const actions = Object.fromEntries(actionNames.map((name) => [
         name,
@@ -79,7 +80,6 @@ function setup(overrides = {}) {
             closeButton: document.getElementById('loginCloseButton'),
             userInput: document.getElementById('loginUserInput'),
             primaryButton: document.getElementById('loginPrimaryButton'),
-            modeBackButton: document.getElementById('loginModeBackButton'),
             backButton: document.getElementById('loginBackButton'),
             pasteButton: document.getElementById('loginPasteButton'),
             codeLink: document.getElementById('loginCodeLink'),
@@ -114,6 +114,8 @@ describe('HostedLogin presentation and input', () => {
         expect(page.document.getElementById('loginCloseButton').style.display).toBe('none');
         expect(page.document.getElementById('loginServerHint').textContent)
             .toBe('login_server:https://relay.example/');
+        expect(page.actions.applyDesktopShortcutI18n).toHaveBeenCalledOnce();
+        expect(page.actions.syncDesktopShortcutOption).toHaveBeenCalledWith({ resetChecked: true });
         page.controller.close();
         expect(page.document.getElementById('loginPanel').hidden).toBe(false);
         page.controller.hide();
@@ -207,6 +209,7 @@ describe('HostedLogin browser callback polling', () => {
         await page.controller.pollLoginCallback();
         expect(page.document.getElementById('loginError').textContent).toBe('login_rate_limited');
         expect(page.controller.getDebugState().pollState).toBeNull();
+        expect(page.actions.createDesktopShortcutIfRequested).not.toHaveBeenCalled();
         page.dom.window.close();
     });
 
@@ -230,7 +233,7 @@ describe('HostedLogin browser callback polling', () => {
             false,
             { timeoutMs: 5000 },
         );
-        expect(page.actions.offerDesktopShortcut).toHaveBeenCalledOnce();
+        expect(page.actions.createDesktopShortcutIfRequested).toHaveBeenCalledOnce();
         expect(page.controller.getDebugState().waitingForBrowser).toBe(false);
         page.dom.window.close();
     });
@@ -252,6 +255,7 @@ describe('HostedLogin browser callback polling', () => {
 
         expect(page.saveServerSettings).not.toHaveBeenCalled();
         expect(page.actions.pushSetup).not.toHaveBeenCalled();
+        expect(page.actions.createDesktopShortcutIfRequested).not.toHaveBeenCalled();
         expect(page.controller.getDebugState().pollState).toBeNull();
         page.dom.window.close();
     });
@@ -272,6 +276,7 @@ describe('HostedLogin manual verification', () => {
         expect(page.actions.setTranslationModeSynced).toHaveBeenCalledWith(false);
         expect(page.actions.updateBalanceBarVisibility).toHaveBeenCalledOnce();
         expect(page.actions.clearSubtitleState).toHaveBeenCalledOnce();
+        expect(page.actions.createDesktopShortcutIfRequested).toHaveBeenCalledOnce();
         page.dom.window.close();
     });
 
@@ -282,6 +287,7 @@ describe('HostedLogin manual verification', () => {
         expect(page.document.getElementById('loginError').textContent).toBe('localized:bad code');
         await page.controller.handleLoginInput();
         expect(page.document.getElementById('loginError').textContent).toBe('login_code_required');
+        expect(page.actions.createDesktopShortcutIfRequested).not.toHaveBeenCalled();
         page.dom.window.close();
     });
 });

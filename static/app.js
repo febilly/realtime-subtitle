@@ -1743,7 +1743,6 @@ const loginForm = document.getElementById('loginForm');
 const loginCloseButton = document.getElementById('loginCloseButton');
 const loginUserInput = document.getElementById('loginUserInput');
 const loginPrimaryButton = document.getElementById('loginPrimaryButton');
-const loginModeBackButton = document.getElementById('loginModeBackButton');
 const loginBackButton = document.getElementById('loginBackButton');
 const loginPasteButton = document.getElementById('loginPasteButton');
 const loginCodeLink = document.getElementById('loginCodeLink');
@@ -1802,10 +1801,9 @@ const desktopShortcut = DesktopShortcut.create({
     t,
     showToast,
     elements: {
-        overlay: document.getElementById('desktopShortcutOverlay'),
-        dialog: document.getElementById('desktopShortcutDialog'),
-        createButton: document.getElementById('desktopShortcutCreate'),
-        skipButton: document.getElementById('desktopShortcutSkip'),
+        field: document.getElementById('loginDesktopShortcutField'),
+        checkbox: document.getElementById('loginDesktopShortcutCheckbox'),
+        label: document.getElementById('loginDesktopShortcutLabel'),
     },
 });
 desktopShortcut.init();
@@ -1832,8 +1830,9 @@ const hostedLogin = HostedLogin.create({
         clearSubtitleState: subtitleRuntimeController.clear,
         setTranslationModeSynced: translationModeController.setTranslationModeSynced,
         pushSetup: settingsPorts.pushSetup,
-        switchToOwnKeyMode: hostedPorts.switchToOwnKeyMode,
-        offerDesktopShortcut: desktopShortcut.offer,
+        applyDesktopShortcutI18n: desktopShortcut.applyI18n,
+        syncDesktopShortcutOption: desktopShortcut.syncOption,
+        createDesktopShortcutIfRequested: desktopShortcut.createIfRequested,
     },
     elements: {
         overlay: loginOverlay,
@@ -1842,7 +1841,6 @@ const hostedLogin = HostedLogin.create({
         closeButton: loginCloseButton,
         userInput: loginUserInput,
         primaryButton: loginPrimaryButton,
-        modeBackButton: loginModeBackButton,
         backButton: loginBackButton,
         pasteButton: loginPasteButton,
         codeLink: loginCodeLink,

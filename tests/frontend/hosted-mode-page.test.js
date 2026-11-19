@@ -1,7 +1,7 @@
 const { createPageHarness } = require('./helpers/page-harness');
 
 describe('full-page hosted mode wiring', () => {
-    it('preopens first-launch login and switches to forced own-key settings', async () => {
+    it('preopens first-launch login without an own-key switch button', async () => {
         const hostedConfig = {
             relay_available: true,
             server_url: 'https://relay.example',
@@ -16,16 +16,9 @@ describe('full-page hosted mode wiring', () => {
         try {
             expect(page.document.getElementById('loginPanel').hidden).toBe(false);
             expect(page.document.getElementById('loginOverlay').hidden).toBe(false);
-            expect(page.document.getElementById('loginModeBackButton').hidden).toBe(false);
+            expect(page.document.getElementById('loginModeBackButton')).toBeNull();
             expect(JSON.parse(page.window.localStorage.getItem('subtitleServer.v1')))
                 .toMatchObject({ mode: 'relay', modeChosen: true });
-
-            page.document.getElementById('loginModeBackButton').click();
-            await page.flush(12);
-            expect(JSON.parse(page.window.localStorage.getItem('subtitleServer.v1')))
-                .toMatchObject({ mode: 'direct', modeChosen: true });
-            expect(page.document.getElementById('loginPanel').hidden).toBe(true);
-            expect(page.document.getElementById('settingsPanel').hidden).toBe(false);
         } finally {
             page.close();
         }

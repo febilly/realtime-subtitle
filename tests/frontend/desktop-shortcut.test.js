@@ -7,13 +7,10 @@ function response(data, { ok = true } = {}) {
 
 function setup(fetch = vi.fn()) {
     const dom = new JSDOM(`<!doctype html><body>
-        <div id="desktopShortcutOverlay" hidden></div>
-        <section id="desktopShortcutDialog" hidden>
-            <h1 id="desktopShortcutTitle"></h1>
-            <p id="desktopShortcutHint"></p>
-            <button id="desktopShortcutCreate"><span id="desktopShortcutCreateTitle"></span><span id="desktopShortcutCreateDesc"></span></button>
-            <button id="desktopShortcutSkip"><span id="desktopShortcutSkipTitle"></span><span id="desktopShortcutSkipDesc"></span></button>
-        </section>
+        <label id="loginDesktopShortcutField" hidden>
+            <input id="loginDesktopShortcutCheckbox" type="checkbox" checked>
+            <span id="loginDesktopShortcutLabel"></span>
+        </label>
     </body>`);
     const document = dom.window.document;
     const showToast = vi.fn();
@@ -23,10 +20,9 @@ function setup(fetch = vi.fn()) {
         t: (key) => `translated:${key}`,
         showToast,
         elements: {
-            overlay: document.getElementById('desktopShortcutOverlay'),
-            dialog: document.getElementById('desktopShortcutDialog'),
-            createButton: document.getElementById('desktopShortcutCreate'),
-            skipButton: document.getElementById('desktopShortcutSkip'),
+            field: document.getElementById('loginDesktopShortcutField'),
+            checkbox: document.getElementById('loginDesktopShortcutCheckbox'),
+            label: document.getElementById('loginDesktopShortcutLabel'),
         },
     });
     controller.init();
@@ -34,51 +30,79 @@ function setup(fetch = vi.fn()) {
 }
 
 describe('DesktopShortcut', () => {
-    it('offers creation only when the packaged Windows client has no shortcut', async () => {
+    it('shows a default-checked checkbox when packaged Windows client has no shortcut', async () => {
         const fetch = vi.fn().mockResolvedValue(response({ available: true, exists: false }));
         const page = setup(fetch);
-        await expect(page.controller.offer()).resolves.toBe(true);
-        expect(page.document.getElementById('desktopShortcutDialog').hidden).toBe(false);
-        expect(page.document.getElementById('desktopShortcutTitle').textContent)
-            .toBe('translated:desktop_shortcut_title');
+        await expect(page.controller.syncOption({ resetChecked: true })).resolves.toBe(true);
+        expect(page.document.getElementById('loginDesktopShortcutField').hidden).toBe(false);
+        expect(page.document.getElementById('loginDesktopShortcutCheckbox').checked).toBe(true);
+        expect(page.document.getElementById('loginDesktopShortcutLabel').textContent)
+            .toBe('translated:desktop_shortcut_create');
         page.dom.window.close();
     });
 
     it.each([
         { available: false, exists: false },
         { available: true, exists: true },
-    ])('does not show for status %j', async (status) => {
-        const page = setup(vi.fn().mockResolvedValue(response(status)));
-        await expect(page.controller.offer()).resolves.toBe(false);
-        expect(page.document.getElementById('desktopShortcutDialog').hidden).toBe(true);
+    ])('hides checkbox and skips creation for status %j', async (status) => {
+        const fetch = vi.fn().mockResolvedValue(response(status));
+        const page = setup(fetch);
+        await expect(page.controller.syncOption({ resetChecked: true })).resolves.toBe(false);
+        expect(page.document.getElementById('loginDesktopShortcutField').hidden).toBe(true);
+        await expect(page.controller.createIfRequested()).resolves.toBe(false);
+        expect(fetch).toHaveBeenCalledTimes(1);
         page.dom.window.close();
     });
 
-    it('creates the shortcut, closes the prompt, and confirms success', async () => {
+    it('does not create a shortcut when the user unchecks the checkbox', async () => {
+        const fetch = vi.fn().mockResolvedValue(response({ available: true, exists: false }));
+        const page = setup(fetch);
+        await page.controller.syncOption({ resetChecked: true });
+        page.document.getElementById('loginDesktopShortcutCheckbox').checked = false;
+        await expect(page.controller.createIfRequested()).resolves.toBe(false);
+        expect(fetch).toHaveBeenCalledTimes(1);
+        page.dom.window.close();
+    });
+
+    it('creates the shortcut after login when checked and hides the option', async () => {
         const fetch = vi.fn()
+            .mockResolvedValueOnce(response({ available: true, exists: false }))
             .mockResolvedValueOnce(response({ available: true, exists: false }))
             .mockResolvedValueOnce(response({ available: true, exists: true, created: true }));
         const page = setup(fetch);
-        await page.controller.offer();
-        await expect(page.controller.createShortcut()).resolves.toBe(true);
+        await page.controller.syncOption({ resetChecked: true });
+        await expect(page.controller.createIfRequested()).resolves.toBe(true);
         expect(fetch).toHaveBeenLastCalledWith('/desktop-shortcut', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: 'create' }),
         });
-        expect(page.document.getElementById('desktopShortcutDialog').hidden).toBe(true);
+        expect(page.document.getElementById('loginDesktopShortcutField').hidden).toBe(true);
         expect(page.showToast).toHaveBeenCalledWith('translated:desktop_shortcut_created');
         page.dom.window.close();
     });
 
-    it('keeps the prompt open and shows an error when creation fails', async () => {
+    it('avoids duplicate creation if a shortcut already exists at login completion', async () => {
         const fetch = vi.fn()
+            .mockResolvedValueOnce(response({ available: true, exists: false }))
+            .mockResolvedValueOnce(response({ available: true, exists: true }));
+        const page = setup(fetch);
+        await page.controller.syncOption({ resetChecked: true });
+        await expect(page.controller.createIfRequested()).resolves.toBe(false);
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(page.document.getElementById('loginDesktopShortcutField').hidden).toBe(true);
+        expect(page.showToast).not.toHaveBeenCalled();
+        page.dom.window.close();
+    });
+
+    it('shows an error toast when shortcut creation fails', async () => {
+        const fetch = vi.fn()
+            .mockResolvedValueOnce(response({ available: true, exists: false }))
             .mockResolvedValueOnce(response({ available: true, exists: false }))
             .mockResolvedValueOnce(response({ status: 'error' }, { ok: false }));
         const page = setup(fetch);
-        await page.controller.offer();
-        await expect(page.controller.createShortcut()).resolves.toBe(false);
-        expect(page.document.getElementById('desktopShortcutDialog').hidden).toBe(false);
+        await page.controller.syncOption({ resetChecked: true });
+        await expect(page.controller.createIfRequested()).resolves.toBe(false);
         expect(page.showToast).toHaveBeenCalledWith('translated:desktop_shortcut_failed', true);
         page.dom.window.close();
     });
