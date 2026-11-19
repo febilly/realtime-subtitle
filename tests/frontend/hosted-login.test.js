@@ -12,7 +12,7 @@ function setup(overrides = {}) {
             <div id="loginStepInput"><label id="loginUserInputLabel"></label></div>
             <div id="loginStepMethod"></div><div id="loginStepChallenge"></div>
             <form id="loginForm"><input id="loginUserInput"><button id="loginPrimaryButton"></button></form>
-            <button id="loginBackButton"></button>
+            <button id="loginModeBackButton"></button><button id="loginBackButton"></button>
             <button id="loginPasteButton"></button><button id="loginCodeLink"></button>
             <button id="loginManualToggle"></button><div id="loginManualField"></div>
             <div id="loginWaitingHint"></div><div id="loginError"></div>
@@ -44,6 +44,7 @@ function setup(overrides = {}) {
         'showToast', 'updateBalanceBarVisibility', 'fetchBalance', 'clearSubtitleState',
         'setTranslationModeSynced', 'pushSetup',
         'applyDesktopShortcutI18n', 'syncDesktopShortcutOption', 'createDesktopShortcutIfRequested',
+        'applyOwnKeyDialogI18n', 'openOwnKeyDialog', 'hideOwnKeyDialog',
     ];
     const actions = Object.fromEntries(actionNames.map((name) => [
         name,
@@ -80,6 +81,7 @@ function setup(overrides = {}) {
             closeButton: document.getElementById('loginCloseButton'),
             userInput: document.getElementById('loginUserInput'),
             primaryButton: document.getElementById('loginPrimaryButton'),
+            modeBackButton: document.getElementById('loginModeBackButton'),
             backButton: document.getElementById('loginBackButton'),
             pasteButton: document.getElementById('loginPasteButton'),
             codeLink: document.getElementById('loginCodeLink'),
@@ -115,11 +117,29 @@ describe('HostedLogin presentation and input', () => {
         expect(page.document.getElementById('loginServerHint').textContent)
             .toBe('login_server:https://relay.example/');
         expect(page.actions.applyDesktopShortcutI18n).toHaveBeenCalledOnce();
-        expect(page.actions.syncDesktopShortcutOption).toHaveBeenCalledWith({ resetChecked: true });
+        expect(page.actions.applyOwnKeyDialogI18n).toHaveBeenCalledOnce();
+        expect(page.actions.syncDesktopShortcutOption).toHaveBeenCalledWith({
+            resetChecked: true,
+            target: 'login',
+        });
+        expect(page.document.getElementById('loginModeBackButton').hidden).toBe(false);
+        expect(page.document.getElementById('loginModeBackButton').textContent).toBe('use_own_key_mode');
         page.controller.close();
         expect(page.document.getElementById('loginPanel').hidden).toBe(false);
         page.controller.hide();
+        expect(page.actions.hideOwnKeyDialog).toHaveBeenCalledOnce();
         expect(page.document.getElementById('loginPanel').hidden).toBe(true);
+        page.dom.window.close();
+    });
+
+    it('opens the own-key dialog when the own-key mode button is clicked', () => {
+        const page = setup();
+        page.controller.init();
+        page.controller.open({ forced: true });
+        page.document.getElementById('loginModeBackButton').click();
+        expect(page.actions.openOwnKeyDialog).toHaveBeenCalledOnce();
+        expect(page.document.getElementById('loginPanel').hidden).toBe(false);
+        page.controller.destroy();
         page.dom.window.close();
     });
 

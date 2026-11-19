@@ -412,7 +412,7 @@ const hostedPorts = {
     ensureHostedVersionAllowed: (options = {}) => hostedUpdate.ensure(options),
     returnToModeChooser: () => hostedMode.returnToModeChooser(),
     switchToDirectMode: () => hostedMode.switchToDirectMode(),
-    switchToOwnKeyMode: () => hostedMode.switchToOwnKeyMode(),
+    switchToOwnKeyMode: (options = {}) => hostedMode.switchToOwnKeyMode(options),
     maybeRunFirstLaunchFlow: () => hostedMode.maybeRunFirstLaunchFlow(),
     preopenHostedLoginIfNeeded: () => hostedMode.preopenHostedLoginIfNeeded(),
     refreshPreopenedHostedLogin: () => hostedMode.refreshPreopenedHostedLogin(),
@@ -1743,6 +1743,7 @@ const loginForm = document.getElementById('loginForm');
 const loginCloseButton = document.getElementById('loginCloseButton');
 const loginUserInput = document.getElementById('loginUserInput');
 const loginPrimaryButton = document.getElementById('loginPrimaryButton');
+const loginModeBackButton = document.getElementById('loginModeBackButton');
 const loginBackButton = document.getElementById('loginBackButton');
 const loginPasteButton = document.getElementById('loginPasteButton');
 const loginCodeLink = document.getElementById('loginCodeLink');
@@ -1801,12 +1802,62 @@ const desktopShortcut = DesktopShortcut.create({
     t,
     showToast,
     elements: {
-        field: document.getElementById('loginDesktopShortcutField'),
-        checkbox: document.getElementById('loginDesktopShortcutCheckbox'),
-        label: document.getElementById('loginDesktopShortcutLabel'),
+        targets: {
+            login: {
+                field: document.getElementById('loginDesktopShortcutField'),
+                checkbox: document.getElementById('loginDesktopShortcutCheckbox'),
+                label: document.getElementById('loginDesktopShortcutLabel'),
+            },
+            ownKey: {
+                field: document.getElementById('ownKeyDesktopShortcutField'),
+                checkbox: document.getElementById('ownKeyDesktopShortcutCheckbox'),
+                label: document.getElementById('ownKeyDesktopShortcutLabel'),
+            },
+        },
     },
 });
 desktopShortcut.init();
+const ownKeyDialog = OwnKeyDialog.create({
+    policy: SettingsPolicy,
+    document,
+    window,
+    t,
+    buildCustomSelect: settingsPorts.buildCustomSelect,
+    loadProviderSettings: settingsPorts.loadProviderSettings,
+    saveProviderSettings: settingsPorts.saveProviderSettings,
+    getState: () => ({
+        lockManualControls,
+        relayAvailable,
+        translationProvider,
+        backendSonioxRegion,
+        backendSonioxCustomUrl,
+    }),
+    actions: {
+        pushSetup: settingsPorts.pushSetup,
+        switchToOwnKeyMode: hostedPorts.switchToOwnKeyMode,
+        syncDesktopShortcutOption: desktopShortcut.syncOption,
+        createDesktopShortcutIfRequested: desktopShortcut.createIfRequested,
+    },
+    elements: {
+        overlay: document.getElementById('ownKeyOverlay'),
+        dialog: document.getElementById('ownKeyDialog'),
+        form: document.getElementById('ownKeyForm'),
+        title: document.getElementById('ownKeyTitle'),
+        providerLabel: document.getElementById('ownKeyProviderLabel'),
+        providerFieldset: document.getElementById('ownKeyProviderFieldset'),
+        providerSonioxLabel: document.getElementById('ownKeyProviderSonioxLabel'),
+        providerGeminiLabel: document.getElementById('ownKeyProviderGeminiLabel'),
+        regionSection: document.getElementById('ownKeyRegionSection'),
+        regionLabel: document.getElementById('ownKeyRegionLabel'),
+        regionPickerHost: document.getElementById('ownKeySonioxRegionPicker'),
+        apiKeyLabel: document.getElementById('ownKeyApiKeyLabel'),
+        apiKeyInput: document.getElementById('ownKeyApiKeyInput'),
+        errorElement: document.getElementById('ownKeyError'),
+        backButton: document.getElementById('ownKeyBackButton'),
+        confirmButton: document.getElementById('ownKeyConfirmButton'),
+    },
+});
+ownKeyDialog.init();
 const hostedLogin = HostedLogin.create({
     document,
     window,
@@ -1833,6 +1884,9 @@ const hostedLogin = HostedLogin.create({
         applyDesktopShortcutI18n: desktopShortcut.applyI18n,
         syncDesktopShortcutOption: desktopShortcut.syncOption,
         createDesktopShortcutIfRequested: desktopShortcut.createIfRequested,
+        applyOwnKeyDialogI18n: ownKeyDialog.applyI18n,
+        openOwnKeyDialog: ownKeyDialog.open,
+        hideOwnKeyDialog: ownKeyDialog.hide,
     },
     elements: {
         overlay: loginOverlay,
@@ -1841,6 +1895,7 @@ const hostedLogin = HostedLogin.create({
         closeButton: loginCloseButton,
         userInput: loginUserInput,
         primaryButton: loginPrimaryButton,
+        modeBackButton: loginModeBackButton,
         backButton: loginBackButton,
         pasteButton: loginPasteButton,
         codeLink: loginCodeLink,
