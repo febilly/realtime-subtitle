@@ -72,7 +72,7 @@
             call('updateLoginSubmitState');
         }
 
-        async function switchToOwnKeyMode() {
+        async function switchToOwnKeyMode({ forced = true } = {}) {
             const current = state();
             if (current.lockManualControls || !current.relayAvailable) return;
             persistDirectMode();
@@ -83,7 +83,7 @@
             await call('syncProviderFromStorage');
             call('updateAccountSection');
             call('updateBalanceBarVisibility');
-            call('openSettings', { forced: true });
+            call('openSettings', { forced: !!forced });
             await call('maybeShowFeaturePacksPicker', 'direct');
         }
 

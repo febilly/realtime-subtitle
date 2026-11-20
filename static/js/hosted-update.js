@@ -13,8 +13,10 @@
         const current = input.currentVersion || '0.1.0';
         const latest = input.latestVersion || '';
         const minimum = input.minimumVersion || '';
-        const belowMinimum = !!minimum && Billing.compareVersions(current, minimum) < 0;
-        const belowLatest = !!latest && Billing.compareVersions(current, latest) < 0;
+        const minimumCmp = minimum ? Billing.compareVersions(current, minimum) : null;
+        const latestCmp = latest ? Billing.compareVersions(current, latest) : null;
+        const belowMinimum = minimumCmp !== null && minimumCmp < 0;
+        const belowLatest = latestCmp !== null && latestCmp < 0;
         return {
             needed: belowMinimum || belowLatest,
             forced: belowMinimum,
@@ -183,8 +185,10 @@
                 } catch (error) {
                     lastCheckedVersion = '';
                 }
-                newerThanLastCheck = !!lastCheckedVersion
-                    && Billing.compareVersions(updateState.latest, lastCheckedVersion) > 0;
+                const latestCmp = lastCheckedVersion
+                    ? Billing.compareVersions(updateState.latest, lastCheckedVersion)
+                    : null;
+                newerThanLastCheck = latestCmp !== null && latestCmp > 0;
             }
             if (!updateState.needed) {
                 rememberCheckedVersion(updateState.latest);

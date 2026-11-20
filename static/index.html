@@ -494,23 +494,6 @@
         </div>
     </div>
 
-    <!-- Offered after a successful hosted sign-in when no app shortcut exists. -->
-    <div class="confirm-overlay" id="desktopShortcutOverlay" hidden></div>
-    <div class="mode-chooser" id="desktopShortcutDialog" role="dialog" aria-modal="true" aria-labelledby="desktopShortcutTitle" hidden>
-        <h1 id="desktopShortcutTitle">Create a desktop shortcut?</h1>
-        <p class="field-hint" id="desktopShortcutHint"></p>
-        <div class="mode-chooser-options">
-            <button class="mode-card" id="desktopShortcutCreate" type="button">
-                <span class="mode-card-title" id="desktopShortcutCreateTitle">Create shortcut</span>
-                <span class="mode-card-desc" id="desktopShortcutCreateDesc"></span>
-            </button>
-            <button class="mode-card" id="desktopShortcutSkip" type="button">
-                <span class="mode-card-title" id="desktopShortcutSkipTitle">Not now</span>
-                <span class="mode-card-desc" id="desktopShortcutSkipDesc"></span>
-            </button>
-        </div>
-    </div>
-
     <!-- Feature packs picker dialog -->
     <div class="confirm-overlay" id="featurePackOverlay" hidden></div>
     <div class="feature-pack-dialog" id="featurePackDialog" role="dialog" aria-modal="true" aria-labelledby="featurePackTitle" hidden>
@@ -736,7 +719,6 @@
             <button class="primary-button" id="obsDialogDoneButton" type="button">Done</button>
         </div>
     </div>
-
     <!-- Subtitle-server sign-in (web one-time code) -->
     <div class="settings-overlay" id="loginOverlay" hidden></div>
     <aside class="settings-panel" id="loginPanel" aria-label="Sign in" hidden>
@@ -753,6 +735,10 @@
                 </div>
                 <p class="field-hint login-waiting-hint" id="loginWaitingHint" hidden></p>
                 <button class="link-button" id="loginManualToggle" type="button" hidden></button>
+                <label class="form-field checkbox-field login-shortcut-field" id="loginDesktopShortcutField" for="loginDesktopShortcutCheckbox" hidden>
+                    <input id="loginDesktopShortcutCheckbox" type="checkbox" checked>
+                    <span id="loginDesktopShortcutLabel">Create desktop shortcut</span>
+                </label>
                 <label class="form-field" id="loginManualField" for="loginUserInput" hidden>
                     <span id="loginUserInputLabel">One-time login code</span>
                     <div class="embedded-paste-control">
@@ -774,7 +760,7 @@
 
             <div class="settings-actions">
                 <div class="settings-actions-left">
-                    <button class="secondary-button" id="loginModeBackButton" type="button" hidden>Back to mode selection</button>
+                    <button class="secondary-button" id="loginModeBackButton" type="button" hidden>Use your own API key instead</button>
                 </div>
                 <div class="settings-actions-right">
                     <button class="secondary-button" id="loginBackButton" type="button" hidden>Back</button>
@@ -783,6 +769,48 @@
             </div>
         </form>
     </aside>
+
+    <!-- Own-key API setup dialog (opened from hosted login before switching to direct mode) -->
+    <div class="confirm-overlay own-key-overlay" id="ownKeyOverlay" hidden></div>
+    <div class="confirm-dialog own-key-dialog" id="ownKeyDialog" role="dialog" aria-modal="true" aria-labelledby="ownKeyTitle" hidden>
+        <form class="own-key-form" id="ownKeyForm" novalidate>
+            <h1 class="own-key-title" id="ownKeyTitle">Own API key</h1>
+            <section class="auth-section">
+                <div class="settings-item-label" id="ownKeyProviderLabel">API selection</div>
+                <fieldset class="segmented-control own-key-provider-fieldset" id="ownKeyProviderFieldset" aria-label="Translation provider">
+                    <label class="segmented-option">
+                        <input type="radio" name="ownKeyProvider" value="soniox" id="ownKeyProviderSoniox" checked>
+                        <span id="ownKeyProviderSonioxLabel">Soniox</span>
+                    </label>
+                    <label class="segmented-option">
+                        <input type="radio" name="ownKeyProvider" value="gemini" id="ownKeyProviderGemini">
+                        <span id="ownKeyProviderGeminiLabel">Gemini</span>
+                    </label>
+                </fieldset>
+            </section>
+            <section class="auth-section own-key-region-section" id="ownKeyRegionSection">
+                <div class="form-field">
+                    <span id="ownKeyRegionLabel">API region</span>
+                    <div id="ownKeySonioxRegionPicker"></div>
+                </div>
+            </section>
+            <section class="auth-section">
+                <label class="form-field" for="ownKeyApiKeyInput">
+                    <span id="ownKeyApiKeyLabel">Soniox API Key</span>
+                    <input id="ownKeyApiKeyInput" name="ownKeyApiKey" type="password" autocomplete="off" spellcheck="false">
+                </label>
+                <p class="own-key-warning" id="ownKeyError" role="alert"></p>
+            </section>
+            <label class="form-field checkbox-field own-key-shortcut-field" id="ownKeyDesktopShortcutField" for="ownKeyDesktopShortcutCheckbox" hidden>
+                <input id="ownKeyDesktopShortcutCheckbox" type="checkbox" checked>
+                <span id="ownKeyDesktopShortcutLabel">Create desktop shortcut</span>
+            </label>
+            <div class="own-key-actions">
+                <button class="secondary-button" id="ownKeyBackButton" type="button">Back</button>
+                <button class="primary-button" id="ownKeyConfirmButton" type="submit">Confirm</button>
+            </div>
+        </form>
+    </div>
 
     <script src="local-store-sync.js"></script>
     <script src="/kuromoji/kuromoji.js"></script>
@@ -837,6 +865,7 @@
     <script src="js/hosted.js"></script>
     <script src="js/hosted-mode.js"></script>
     <script src="js/desktop-shortcut.js"></script>
+    <script src="js/own-key-dialog.js"></script>
     <script src="js/hosted-login.js"></script>
     <script src="js/announcements.js"></script>
     <script src="js/hosted-update.js"></script>

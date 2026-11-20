@@ -259,6 +259,12 @@ describe('full-page feature packs wiring', () => {
 
             doc.getElementById('loginModeBackButton').click();
             await page.flush(15);
+            expect(doc.getElementById('ownKeyDialog').hidden).toBe(false);
+            expect(doc.getElementById('featurePackDialog').hidden).toBe(true);
+
+            doc.getElementById('ownKeyApiKeyInput').value = 'sk-test-key';
+            doc.getElementById('ownKeyConfirmButton').click();
+            await page.flush(20);
             expect(doc.getElementById('featurePackDialog').hidden).toBe(false);
         } finally {
             page.close();

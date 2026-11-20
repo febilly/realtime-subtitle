@@ -78,6 +78,8 @@
             setText('loginCodeLink', t('login_vrchat_button'));
             setText('loginManualToggle', t('login_manual_toggle'));
             setText('loginWaitingHint', t('login_waiting'));
+            call('applyDesktopShortcutI18n');
+            call('applyOwnKeyDialogI18n');
             const serverHint = documentRef && documentRef.getElementById('loginServerHint');
             const relayServerUrl = runtimeState().relayServerUrl || '';
             if (serverHint) serverHint.textContent = relayServerUrl
@@ -228,9 +230,11 @@
             if (manualToggle) manualToggle.hidden = false;
             if (closeButton) closeButton.style.display = forcedOpen ? 'none' : '';
             if (modeBackButton) modeBackButton.hidden = !current.relayAvailable;
+            void call('syncDesktopShortcutOption', { resetChecked: true, target: 'login' });
         }
 
         function hide() {
+            call('hideOwnKeyDialog');
             if (overlay) overlay.hidden = true;
             if (panel) panel.hidden = true;
             forcedOpen = false;
@@ -302,7 +306,7 @@
                 name: server.displayName || data.display_name || '',
             }), false, { timeoutMs: 5000 });
             hide();
-            void call('offerDesktopShortcut');
+            void call('createDesktopShortcutIfRequested', { target: 'login' });
             call('updateBalanceBarVisibility');
             void call('fetchBalance');
             call('clearSubtitleState');
@@ -404,7 +408,7 @@
             bind(userInput, 'input', updateSubmitState);
             bind(codeLink, 'click', (event) => { event.preventDefault(); void startHostedLogin(); });
             bind(manualToggle, 'click', () => setManualShown(!manualShown));
-            bind(modeBackButton, 'click', () => call('switchToOwnKeyMode'));
+            bind(modeBackButton, 'click', () => call('openOwnKeyDialog'));
             bind(closeButton, 'click', close);
             bind(overlay, 'click', close);
             bind(pasteButton, 'click', async () => {

@@ -42,7 +42,9 @@ function setup(overrides = {}) {
     const calls = [];
     const actionNames = [
         'showToast', 'updateBalanceBarVisibility', 'fetchBalance', 'clearSubtitleState',
-        'setTranslationModeSynced', 'pushSetup', 'switchToOwnKeyMode', 'offerDesktopShortcut',
+        'setTranslationModeSynced', 'pushSetup',
+        'applyDesktopShortcutI18n', 'syncDesktopShortcutOption', 'createDesktopShortcutIfRequested',
+        'applyOwnKeyDialogI18n', 'openOwnKeyDialog', 'hideOwnKeyDialog',
     ];
     const actions = Object.fromEntries(actionNames.map((name) => [
         name,
@@ -114,10 +116,30 @@ describe('HostedLogin presentation and input', () => {
         expect(page.document.getElementById('loginCloseButton').style.display).toBe('none');
         expect(page.document.getElementById('loginServerHint').textContent)
             .toBe('login_server:https://relay.example/');
+        expect(page.actions.applyDesktopShortcutI18n).toHaveBeenCalledOnce();
+        expect(page.actions.applyOwnKeyDialogI18n).toHaveBeenCalledOnce();
+        expect(page.actions.syncDesktopShortcutOption).toHaveBeenCalledWith({
+            resetChecked: true,
+            target: 'login',
+        });
+        expect(page.document.getElementById('loginModeBackButton').hidden).toBe(false);
+        expect(page.document.getElementById('loginModeBackButton').textContent).toBe('use_own_key_mode');
         page.controller.close();
         expect(page.document.getElementById('loginPanel').hidden).toBe(false);
         page.controller.hide();
+        expect(page.actions.hideOwnKeyDialog).toHaveBeenCalledOnce();
         expect(page.document.getElementById('loginPanel').hidden).toBe(true);
+        page.dom.window.close();
+    });
+
+    it('opens the own-key dialog when the own-key mode button is clicked', () => {
+        const page = setup();
+        page.controller.init();
+        page.controller.open({ forced: true });
+        page.document.getElementById('loginModeBackButton').click();
+        expect(page.actions.openOwnKeyDialog).toHaveBeenCalledOnce();
+        expect(page.document.getElementById('loginPanel').hidden).toBe(false);
+        page.controller.destroy();
         page.dom.window.close();
     });
 
@@ -207,6 +229,7 @@ describe('HostedLogin browser callback polling', () => {
         await page.controller.pollLoginCallback();
         expect(page.document.getElementById('loginError').textContent).toBe('login_rate_limited');
         expect(page.controller.getDebugState().pollState).toBeNull();
+        expect(page.actions.createDesktopShortcutIfRequested).not.toHaveBeenCalled();
         page.dom.window.close();
     });
 
@@ -230,7 +253,7 @@ describe('HostedLogin browser callback polling', () => {
             false,
             { timeoutMs: 5000 },
         );
-        expect(page.actions.offerDesktopShortcut).toHaveBeenCalledOnce();
+        expect(page.actions.createDesktopShortcutIfRequested).toHaveBeenCalledOnce();
         expect(page.controller.getDebugState().waitingForBrowser).toBe(false);
         page.dom.window.close();
     });
@@ -252,6 +275,7 @@ describe('HostedLogin browser callback polling', () => {
 
         expect(page.saveServerSettings).not.toHaveBeenCalled();
         expect(page.actions.pushSetup).not.toHaveBeenCalled();
+        expect(page.actions.createDesktopShortcutIfRequested).not.toHaveBeenCalled();
         expect(page.controller.getDebugState().pollState).toBeNull();
         page.dom.window.close();
     });
@@ -272,6 +296,7 @@ describe('HostedLogin manual verification', () => {
         expect(page.actions.setTranslationModeSynced).toHaveBeenCalledWith(false);
         expect(page.actions.updateBalanceBarVisibility).toHaveBeenCalledOnce();
         expect(page.actions.clearSubtitleState).toHaveBeenCalledOnce();
+        expect(page.actions.createDesktopShortcutIfRequested).toHaveBeenCalledOnce();
         page.dom.window.close();
     });
 
@@ -282,6 +307,7 @@ describe('HostedLogin manual verification', () => {
         expect(page.document.getElementById('loginError').textContent).toBe('localized:bad code');
         await page.controller.handleLoginInput();
         expect(page.document.getElementById('loginError').textContent).toBe('login_code_required');
+        expect(page.actions.createDesktopShortcutIfRequested).not.toHaveBeenCalled();
         page.dom.window.close();
     });
 });

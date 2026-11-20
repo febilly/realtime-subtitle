@@ -1,12 +1,19 @@
 const { Billing, createController } = require('../../static/js/hosted');
 
 describe('Hosted.Billing versions and formatting', () => {
-    it('compares normalized version segments and preserves invalid-version behavior', () => {
+    it('compares versions using SemVer-style numeric and prerelease precedence', () => {
         expect(Billing.compareVersions('v4.1.3', '4.1.2')).toBe(1);
+        expect(Billing.compareVersions('V5.3.0-rc1', '5.3.0-rc.1')).toBe(0);
         expect(Billing.compareVersions('4.1', '4.1.0')).toBe(0);
-        expect(Billing.compareVersions('4.1.0-beta', '4.1.0')).toBe(0);
+        expect(Billing.compareVersions('4.1.0-beta', '4.1.0')).toBe(-1);
+        expect(Billing.compareVersions('5.3.0-rc1', '5.3.0')).toBe(-1);
+        expect(Billing.compareVersions('4.1.3-rc.2', '4.1.3-rc.10')).toBe(-1);
+        expect(Billing.compareVersions('4.1.3-1', '4.1.3-alpha')).toBe(-1);
+        expect(Billing.compareVersions('4.1.3-preview.2', '4.1.3-beta.9')).toBe(1);
+        expect(Billing.compareVersions('4.1.3-beta.2+build.7', '4.1.3-beta.2+build.1')).toBe(0);
         expect(Billing.compareVersions('4.1.0.2', '4.1.0.1')).toBe(1);
-        expect(Billing.compareVersions('not-a-version', '4.1.0')).toBe(0);
+        expect(Billing.compareVersions('not-a-version', '4.1.0')).toBeNull();
+        expect(Billing.compareVersions('4.1.0', 'unknown')).toBeNull();
     });
 
     it('formats credits and fractional rates at current precision', () => {
