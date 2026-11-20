@@ -816,7 +816,7 @@ SERVER_ROUTE_RERACE_MIN_INTERVAL_SECONDS = 30.0
 # Test the relay-mirror fallback: treat the official site as unreachable when
 # choosing the route (requests already sent to it are not blocked).
 SIMULATE_OFFICIAL_UNREACHABLE = _env_bool("SIMULATE_OFFICIAL_UNREACHABLE", False)
-CLIENT_VERSION = "5.2.0"
+CLIENT_VERSION = "5.3.0"
 CLIENT_VERSION_HEADER = "X-Client-Version"
 
 # Optional pre-configured account token (long-lived ss_ key). Read-only fallback;
