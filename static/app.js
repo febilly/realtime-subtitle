@@ -886,6 +886,7 @@ const runtimeControls = RuntimeControls.create({
 const audioSourceUi = AudioSourceUI.create({
     document, window, fetch, t, button: audioSourceButton,
     isLocked: () => lockManualControls,
+    isVrchatPackEnabled: () => (featurePacks ? featurePacks.isEnabled('vrchat') : true),
     onApplied: (source) => {
         audioSource = source;
         runtimeControls.updateAudioSourceButton();
@@ -1359,6 +1360,7 @@ featurePacks = FeaturePacks.create({
                     void runtimeControls.closeVrOverlayForPack();
                 }
                 settingsRuntime.renderVrAttachModePicker();
+                audioSourceUi.refreshView();
             },
             onEnable: () => {
                 oscTranslationController.updateButton();
@@ -1367,6 +1369,7 @@ featurePacks = FeaturePacks.create({
                     void runtimeControls.restoreVrOverlayState();
                 }
                 settingsRuntime.renderVrAttachModePicker();
+                audioSourceUi.refreshView();
             },
         },
         learning: {

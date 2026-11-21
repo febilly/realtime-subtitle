@@ -208,7 +208,81 @@ def test_apply_during_recorder_replacement_is_not_lost(monkeypatch, store):
     assert session.audio_streamer.settings == next_settings
 
 
-@pytest.mark.parametrize("value", [None, [], {}, {"desktop_enabled": 1}, prefs.defaults() | {"desktop_mode": "unknown"}])
+@pytest.mark.parametrize("value", [None, [], {}, {"desktop_enabled": 1}, prefs.defaults() | {"desktop_mode": "unknown"}, prefs.defaults() | {"follow_vrchat_mic_mute": "yes"}])
 def test_rejects_malformed_settings(value):
     with pytest.raises(ValueError):
         prefs.normalize(value)
+
+
+def test_follow_vrchat_mic_mute_defaults_off_and_persists_when_remembered(store):
+    assert prefs.defaults()["follow_vrchat_mic_mute"] is False
+    assert prefs.load()["follow_vrchat_mic_mute"] is False
+    # Legacy saved payloads without follow_vrchat_mic_mute default cleanly to False.
+    legacy = prefs.defaults()
+    legacy.pop("follow_vrchat_mic_mute")
+    assert prefs.normalize(legacy)["follow_vrchat_mic_mute"] is False
+
+    enabled = prefs.defaults() | {"microphone_enabled": True, "follow_vrchat_mic_mute": True, "remember": True}
+    prefs.save(enabled)
+    assert prefs.load()["follow_vrchat_mic_mute"] is True
+
+
+def test_vrchat_mic_mute_only_applies_when_pack_enabled_option_on_and_vrchat_connected(monkeypatch):
+    monkeypatch.setattr("realtime_subtitle.sessions.realtime_session_base.MUTE_MIC_WHEN_VRCHAT_SELF_MUTED", True)
+    monkeypatch.setattr("realtime_subtitle.sessions.realtime_session_base.USE_TWITCH_AUDIO_STREAM", False)
+
+    session = RealtimeSessionBase.__new__(RealtimeSessionBase)
+    session.audio_lock = threading.Lock()
+    session._audio_capture_settings = prefs.defaults() | {"microphone_enabled": True}
+    session.audio_source = "microphone"
+    session.output_device_id = session.microphone_device_id = ""
+    session.sample_rate, session.chunk_size = 16000, 1600
+    session._vrchat_pack_enabled = True
+    session._vrchat_self_muted = False
+    session.loop = None
+    streamer = audio_capture.AudioStreamer(SimpleNamespace(send=lambda _: None), initial_source="microphone")
+    session.audio_streamer = streamer
+
+    # 1. Default (follow_vrchat_mic_mute=False): VRChat MuteSelf=True leaves mic OPEN.
+    session._handle_vrchat_mute_self(True)
+    assert streamer._should_mute_microphone_component() is False
+
+    # 2. Option turned ON while VRChat is connected & muted: mic mutes.
+    ok, _ = session.set_audio_capture_settings(
+        prefs.defaults() | {"microphone_enabled": True, "follow_vrchat_mic_mute": True}
+    )
+    assert ok is True
+    assert streamer._should_mute_microphone_component() is True
+
+    # 3. VRChat unmutes -> mic opens; mutes -> mic mutes.
+    session._handle_vrchat_mute_self(False)
+    assert streamer._should_mute_microphone_component() is False
+    session._handle_vrchat_mute_self(True)
+    assert streamer._should_mute_microphone_component() is True
+
+    # 4. VRChat feature pack disabled -> option has no effect, mic stays ALWAYS OPEN.
+    session.set_vrchat_pack_enabled(False)
+    assert streamer._should_mute_microphone_component() is False
+
+    # 5. Re-enabling VRChat feature pack restores mute state when still connected & muted.
+    session.set_vrchat_pack_enabled(True)
+    assert streamer._should_mute_microphone_component() is True
+
+    # 6. VRChat disconnected -> callback receives False -> mic stays OPEN.
+    session._handle_vrchat_mute_self(False)
+    assert streamer._should_mute_microphone_component() is False
+
+
+def test_local_session_start_triggers_vrchat_mute_listener(monkeypatch, store):
+    from realtime_subtitle.sessions.local_session import LocalInferenceSession
+    logger = SimpleNamespace(enabled=False, log_file=None)
+    session = LocalInferenceSession(logger, lambda *_: None)
+    called = []
+    monkeypatch.setattr(session, "_check_models", lambda *args, **kwargs: None)
+    monkeypatch.setattr(session, "_ensure_vrchat_mute_listener", lambda: called.append(True))
+    monkeypatch.setattr(session, "_run_local_session", lambda: None)
+
+    assert session.start("local-on-device", "pcm_s16le", "one_way", object(), "zh") is True
+    if session.thread is not None:
+        session.thread.join(timeout=1.0)
+    assert called == [True]

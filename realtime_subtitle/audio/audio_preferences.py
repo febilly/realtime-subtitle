@@ -12,6 +12,7 @@ def defaults():
     return dict(desktop_enabled=True, microphone_enabled=False, desktop_mode="output",
                 output_device_id=str(config.OUTPUT_DEVICE_ID or ""),
                 microphone_device_id=str(config.MICROPHONE_DEVICE_ID or ""),
+                follow_vrchat_mic_mute=False,
                 window=None, remember=False)
 
 
@@ -29,6 +30,10 @@ def normalize(value, *, validate_window=True):
         if not isinstance(value.get(key), bool):
             raise ValueError(f"'{key}' must be a boolean")
         result[key] = value[key]
+    if "follow_vrchat_mic_mute" in value:
+        if not isinstance(value.get("follow_vrchat_mic_mute"), bool):
+            raise ValueError("'follow_vrchat_mic_mute' must be a boolean")
+        result["follow_vrchat_mic_mute"] = value["follow_vrchat_mic_mute"]
     if not result["desktop_enabled"] and not result["microphone_enabled"]:
         raise ValueError("At least one audio source must be enabled")
     mode = value.get("desktop_mode")

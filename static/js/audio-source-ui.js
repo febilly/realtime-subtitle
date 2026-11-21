@@ -23,6 +23,7 @@
 
         const clone = (value) => JSON.parse(JSON.stringify(value));
         const locked = () => options.isLocked && options.isLocked();
+        const vrchatPackEnabled = () => (typeof options.isVrchatPackEnabled === 'function' ? !!options.isVrchatPackEnabled() : false);
         const node = (tag, className, text) => {
             const result = document.createElement(tag);
             result.className = className;
@@ -41,7 +42,7 @@
             captureError = data.capture_error || '';
             settings = data.settings || {
                 desktop_enabled: data.source !== 'microphone', microphone_enabled: ['microphone', 'mix'].includes(data.source),
-                desktop_mode: 'output', output_device_id: '', microphone_device_id: '', window: null, remember: false,
+                desktop_mode: 'output', output_device_id: '', microphone_device_id: '', follow_vrchat_mic_mute: false, window: null, remember: false,
             };
             button.classList.toggle('audio-window-waiting', !!(settings.desktop_enabled
                 && settings.desktop_mode === 'window' && settings.window
@@ -215,6 +216,22 @@
             }));
             panel.appendChild(section('audio_microphone_capture', 'microphone_enabled', (content) => {
                 devicePicker(content, 'microphone_device_id', lists.microphones);
+                if (vrchatPackEnabled()) {
+                    const row = node('label', 'settings-row audio-follow-vrchat-mute-row');
+                    row.title = t('audio_follow_vrchat_mute_hint');
+                    const textWrap = node('span', 'settings-row-text');
+                    const labelText = node('span', 'audio-tooltip-underline', t('audio_follow_vrchat_mute'));
+                    labelText.id = 'audio-follow_vrchat_mic_mute-label';
+                    textWrap.appendChild(labelText);
+                    const followToggle = ui.buildToggleSwitch({
+                        value: String(!!draft.follow_vrchat_mic_mute),
+                        onChange: (value) => { draft.follow_vrchat_mic_mute = value === 'true'; },
+                    });
+                    followToggle.id = 'audio-follow_vrchat_mic_mute';
+                    followToggle.setAttribute('aria-labelledby', labelText.id);
+                    row.append(textWrap, followToggle);
+                    content.appendChild(row);
+                }
             }));
             const remember = node('div', 'settings-row popover-remember');
             const rememberText = node('span', 'settings-row-text', t('remember_my_settings'));
@@ -312,7 +329,13 @@
             }
         }
 
-        return { show, hide, fetchState, startMonitoring, applyDraft, getDraft: () => draft, isOpen: () => !!panel };
+        function refreshView() {
+            if (!panel) return;
+            render();
+            position();
+        }
+
+        return { show, hide, fetchState, startMonitoring, applyDraft, refreshView, getDraft: () => draft, isOpen: () => !!panel };
     }
 
     root.AudioSourceUI = { create };

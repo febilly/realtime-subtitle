@@ -6,7 +6,7 @@ const initial = () => ({ desktop_enabled: true, microphone_enabled: false, deskt
     output_device_id: '', microphone_device_id: '', window: null, remember: false });
 const target = { pid: 42, hwnd: '84', created: '100', executable: 'C:\\player.exe', title: 'Player' };
 
-function setup({ reject = false, unavailable = false, settings = initial(), captureError = '', windows = [target] } = {}) {
+function setup({ reject = false, unavailable = false, settings = initial(), captureError = '', windows = [target], vrchatPackEnabled = false } = {}) {
     const dom = new JSDOM('<button id="audio"></button>', { url: 'http://localhost' });
     const document = dom.window.document;
     let saved = settings;
@@ -23,7 +23,8 @@ function setup({ reject = false, unavailable = false, settings = initial(), capt
         return { ok: true, json: async () => body };
     });
     const controller = AudioSourceUI.create({ document, window: dom.window, fetch,
-        settingsUI: SettingsUI, t: (key) => key, button: document.querySelector('button'), onApplied });
+        settingsUI: SettingsUI, t: (key) => key, button: document.querySelector('button'),
+        isVrchatPackEnabled: () => vrchatPackEnabled, onApplied });
     return { dom, document, controller, fetch, onApplied, saved: () => saved,
         setCaptureError: (value) => { captureError = value; },
         posts: () => fetch.mock.calls.filter(([, init]) => init?.method === 'POST') };
@@ -226,5 +227,46 @@ describe('audio source selector', () => {
         expect(page.controller.getDraft().desktop_mode).toBe('window');
         page.controller.hide();
         page.dom.window.close();
+    });
+
+    it('renders the VRChat mic mute follow switch only when VRChat pack is enabled, defaults off, has underline + tooltip, and submits changes', async () => {
+        const disabledPage = setup({ vrchatPackEnabled: false });
+        try {
+            await disabledPage.controller.show();
+            expect(disabledPage.document.getElementById('audio-follow_vrchat_mic_mute')).toBeNull();
+        } finally {
+            disabledPage.controller.hide();
+            disabledPage.dom.window.close();
+        }
+
+        let packEnabled = true;
+        const page = setup({
+            vrchatPackEnabled: true,
+            settings: { ...initial(), microphone_enabled: true, follow_vrchat_mic_mute: false },
+        });
+        try {
+            await page.controller.show();
+            const toggle = page.document.getElementById('audio-follow_vrchat_mic_mute');
+            const label = page.document.getElementById('audio-follow_vrchat_mic_mute-label');
+            const row = toggle.closest('.audio-follow-vrchat-mute-row');
+            expect(toggle).not.toBeNull();
+            expect(toggle.getAttribute('aria-checked')).toBe('false');
+            expect(label.classList.contains('audio-tooltip-underline')).toBe(true);
+            expect(label.textContent).toBe('audio_follow_vrchat_mute');
+            expect(row.getAttribute('title')).toBe('audio_follow_vrchat_mute_hint');
+            // Located inside the microphone section below the microphone picker
+            const micOptions = page.document.querySelectorAll('.audio-source-options')[1];
+            expect(micOptions.contains(row)).toBe(true);
+            expect(micOptions.firstElementChild.classList.contains('lang-picker')).toBe(true);
+
+            toggle.click();
+            expect(toggle.getAttribute('aria-checked')).toBe('true');
+            expect(await page.controller.applyDraft()).toBe(true);
+            expect(page.saved().follow_vrchat_mic_mute).toBe(true);
+        } finally {
+            packEnabled = false;
+            void packEnabled;
+            page.dom.window.close();
+        }
     });
 });

@@ -263,6 +263,8 @@ class WebServer:
             on_exported=lambda: self.feature_usage.report_feature_used("export"),
         )
         self.transcript_recorder.set_pack_enabled(self.is_pack_enabled("transcript"))
+        if session is not None and hasattr(session, "set_vrchat_pack_enabled"):
+            session.set_vrchat_pack_enabled(self.is_pack_enabled("vrchat"))
         if session is not None and hasattr(session, "set_transcript_recorder"):
             session.set_transcript_recorder(self.transcript_recorder)
         if session is not None and hasattr(session, "set_feature_usage_reporter"):
@@ -2870,6 +2872,8 @@ class WebServer:
 
         packs_state = self.get_feature_packs_state()
         self.transcript_recorder.set_pack_enabled(packs_state.get("transcript", False))
+        if self.session is not None and hasattr(self.session, "set_vrchat_pack_enabled"):
+            self.session.set_vrchat_pack_enabled(packs_state.get("vrchat", False))
         self.feature_usage.report_packs_changed()
         await self.broadcast_to_clients({
             "type": "feature_packs",

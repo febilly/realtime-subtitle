@@ -546,6 +546,13 @@ class ProviderManager:
                 print(f"⚠️  Failed to re-apply translation mode: {e}")
         self._apply_audio_preferences(new_session)
 
+        if (
+            self.web_server is not None
+            and hasattr(self.web_server, "is_pack_enabled")
+            and hasattr(new_session, "set_vrchat_pack_enabled")
+        ):
+            new_session.set_vrchat_pack_enabled(self.web_server.is_pack_enabled("vrchat"))
+
         if self.web_server is not None:
             self.web_server.session = new_session
             self.web_server.get_api_key = self.get_api_key

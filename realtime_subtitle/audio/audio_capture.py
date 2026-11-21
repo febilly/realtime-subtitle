@@ -157,7 +157,7 @@ class AudioStreamer:
         initial_source: str = "system",
         sample_rate: int = 16000,
         chunk_size: int = 3840,
-        mute_mic_when_vrchat_muted: bool = True,
+        mute_mic_when_vrchat_muted: bool = False,
         microphone_device_id: str = MICROPHONE_DEVICE_ID,
         output_device_id: str = OUTPUT_DEVICE_ID,
         mix_starvation_threshold: float = 0.08,
@@ -186,6 +186,16 @@ class AudioStreamer:
         self._mute_mic_when_vrchat_muted = bool(mute_mic_when_vrchat_muted)
         self._vrchat_mic_muted = False
         self.mix_starvation_threshold = float(mix_starvation_threshold)
+
+    def set_mute_mic_when_vrchat_muted(self, enabled: bool) -> None:
+        """Enable or disable following VRChat MuteSelf state for microphone capture."""
+        with self._mute_state_lock:
+            self._mute_mic_when_vrchat_muted = bool(enabled)
+
+    def get_mute_mic_when_vrchat_muted(self) -> bool:
+        """Return whether microphone capture follows VRChat MuteSelf state."""
+        with self._mute_state_lock:
+            return self._mute_mic_when_vrchat_muted
 
     def set_vrchat_mic_muted(self, muted: bool) -> None:
         with self._mute_state_lock:

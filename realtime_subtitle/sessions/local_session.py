@@ -496,6 +496,7 @@ class LocalInferenceSession(SonioxSession):
             self.logger.init_log_file()
         self._local_stop_event = threading.Event()
         self.stop_event = self._local_stop_event
+        self._ensure_vrchat_mute_listener()
         self._start_relay_link()
         self.thread = threading.Thread(
             target=self._run_local_session,

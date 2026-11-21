@@ -139,7 +139,12 @@ class RealtimeSessionBase:
             self.microphone_device_id = self._audio_capture_settings["microphone_device_id"]
             self.output_device_id = self._audio_capture_settings["output_device_id"]
         self._stream_close_lock = threading.Lock()
-        self._vrchat_self_muted = False
+        self._vrchat_pack_enabled = True
+        self._vrchat_self_muted = bool(
+            MUTE_MIC_WHEN_VRCHAT_SELF_MUTED
+            and getattr(osc_manager, "is_vrchat_connected", lambda: False)()
+            and getattr(osc_manager, "get_last_mute_value", lambda: False)()
+        )
         self.osc_translation_enabled = False
         # Display sentence buffer per speaker: feeds line-break decisions only.
         self._sentence_buffers: dict[str, dict] = {}
@@ -317,11 +322,7 @@ class RealtimeSessionBase:
         self._reset_run_state()
         self._reset_osc_live_state()
 
-        if MUTE_MIC_WHEN_VRCHAT_SELF_MUTED and not USE_TWITCH_AUDIO_STREAM and self.loop:
-            try:
-                asyncio.run_coroutine_threadsafe(osc_manager.start_server(app_name="RealtimeSubtitle"), self.loop)
-            except Exception as error:
-                print(f"⚠️  Failed to start OSC listener for MuteSelf: {error}")
+        self._ensure_vrchat_mute_listener()
 
         if translation_target_lang is not None:
             self.set_translation_target_lang(translation_target_lang)
@@ -577,6 +578,8 @@ class RealtimeSessionBase:
             self.output_device_id = settings["output_device_id"]
             if self.audio_streamer:
                 self.audio_streamer.configure_capture(settings)
+        self._sync_vrchat_mic_mute_state()
+        self._ensure_vrchat_mute_listener()
         return True, "Audio capture settings applied"
 
     def set_audio_source(self, source: str) -> Tuple[bool, str]:
@@ -675,18 +678,19 @@ class RealtimeSessionBase:
                 chunk_size=self.chunk_size,
             )
         else:
+            effective_mute_follow = self._effective_mute_mic_when_vrchat_muted()
             streamer = AudioStreamer(
                 ws,
                 initial_source=self.get_audio_source(),
                 sample_rate=self.sample_rate,
                 chunk_size=self.chunk_size,
-                mute_mic_when_vrchat_muted=bool(MUTE_MIC_WHEN_VRCHAT_SELF_MUTED),
+                mute_mic_when_vrchat_muted=effective_mute_follow,
                 microphone_device_id=self.get_microphone_device_id(),
                 output_device_id=self.get_output_device_id(),
                 desktop_mode=self._audio_capture_settings["desktop_mode"],
                 window=self._audio_capture_settings["window"],
             )
-            streamer.set_vrchat_mic_muted(self._vrchat_self_muted)
+            streamer.set_vrchat_mic_muted(bool(self._vrchat_self_muted) if effective_mute_follow else False)
 
         with self.audio_lock:
             if not USE_TWITCH_AUDIO_STREAM:
@@ -698,6 +702,11 @@ class RealtimeSessionBase:
                               output_device_id=self.output_device_id,
                               microphone_device_id=self.microphone_device_id)
                 streamer.configure_capture(latest)
+                effective_mute_follow = self._effective_mute_mic_when_vrchat_muted()
+                if hasattr(streamer, "set_mute_mic_when_vrchat_muted"):
+                    streamer.set_mute_mic_when_vrchat_muted(effective_mute_follow)
+                if hasattr(streamer, "set_vrchat_mic_muted"):
+                    streamer.set_vrchat_mic_muted(bool(self._vrchat_self_muted) if effective_mute_follow else False)
             self.audio_streamer = streamer
 
         streamer.start()
@@ -721,6 +730,43 @@ class RealtimeSessionBase:
         if streamer:
             streamer.stop()
 
+    def set_vrchat_pack_enabled(self, enabled: bool) -> None:
+        self._vrchat_pack_enabled = bool(enabled)
+        self._sync_vrchat_mic_mute_state()
+        if self._vrchat_pack_enabled:
+            self._ensure_vrchat_mute_listener()
+
+    def _effective_mute_mic_when_vrchat_muted(self) -> bool:
+        settings = getattr(self, "_audio_capture_settings", None) or {}
+        follow = bool(settings.get("follow_vrchat_mic_mute", False))
+        vrchat_pack = bool(getattr(self, "_vrchat_pack_enabled", True))
+        return bool(MUTE_MIC_WHEN_VRCHAT_SELF_MUTED) and vrchat_pack and follow
+
+    def _sync_vrchat_mic_mute_state(self) -> None:
+        effective = self._effective_mute_mic_when_vrchat_muted()
+        with self.audio_lock:
+            streamer = self.audio_streamer
+        if streamer is not None:
+            if hasattr(streamer, "set_mute_mic_when_vrchat_muted"):
+                streamer.set_mute_mic_when_vrchat_muted(effective)
+            if hasattr(streamer, "set_vrchat_mic_muted"):
+                streamer.set_vrchat_mic_muted(bool(self._vrchat_self_muted) if effective else False)
+
+    def _ensure_vrchat_mute_listener(self) -> None:
+        if not MUTE_MIC_WHEN_VRCHAT_SELF_MUTED or USE_TWITCH_AUDIO_STREAM:
+            return
+        if not getattr(self, "_vrchat_pack_enabled", True):
+            return
+        loop = getattr(self, "loop", None)
+        if not isinstance(loop, asyncio.AbstractEventLoop) or loop.is_closed():
+            return
+        try:
+            if hasattr(osc_manager, "set_mute_callback"):
+                osc_manager.set_mute_callback(self._handle_vrchat_mute_self)
+            asyncio.run_coroutine_threadsafe(osc_manager.start_server(app_name="RealtimeSubtitle"), loop)
+        except Exception as error:
+            print(f"⚠️  Failed to start OSC listener for MuteSelf: {error}")
+
     def _handle_vrchat_mute_self(self, mute_value) -> None:
         muted = bool(mute_value)
         self._vrchat_self_muted = muted
@@ -730,7 +776,8 @@ class RealtimeSessionBase:
 
         if streamer and hasattr(streamer, "set_vrchat_mic_muted"):
             try:
-                streamer.set_vrchat_mic_muted(muted)
+                effective = self._effective_mute_mic_when_vrchat_muted()
+                streamer.set_vrchat_mic_muted(muted if effective else False)
             except Exception as error:
                 print(f"⚠️  Failed to update microphone mute state from OSC: {error}")
 
