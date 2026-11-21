@@ -101,12 +101,12 @@
 
         function outside(event) {
             if (panel && !panel.contains(event.target) && !button.contains(event.target)
-                && !event.target.closest('.lang-select-menu')) hide();
+                && !event.target.closest('.custom-select-menu')) hide();
         }
 
         function escape(event) {
             if (event.key === 'Escape') {
-                if (document.querySelector('.lang-select-menu')) closePickers();
+                if (document.querySelector('.custom-select-menu')) closePickers();
                 else hide();
             }
         }

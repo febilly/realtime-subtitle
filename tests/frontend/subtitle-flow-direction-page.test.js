@@ -1,8 +1,8 @@
 const { createPageHarness } = require('./helpers/page-harness');
 
 function chooseFlow(page, index) {
-    page.document.querySelector('#subtitleFlowPicker .lang-picker-button').click();
-    const options = [...page.document.querySelectorAll('body > .lang-select-menu .lang-select-option')];
+    page.document.querySelector('#subtitleFlowPicker .custom-select-button').click();
+    const options = [...page.document.querySelectorAll('body > .custom-select-menu .custom-select-option')];
     expect(options).toHaveLength(2);
     options[index].click();
 }
@@ -15,7 +15,7 @@ describe('main-window subtitle flow setting', () => {
 
             page.document.getElementById('settingsButton').click();
             await page.flush(2);
-            expect(page.document.querySelector('#subtitleFlowPicker .lang-picker-label').textContent)
+            expect(page.document.querySelector('#subtitleFlowPicker .custom-select-label').textContent)
                 .toBe('Upward (newest at the bottom)');
 
             chooseFlow(page, 1);
@@ -37,7 +37,7 @@ describe('main-window subtitle flow setting', () => {
         try {
             page.document.getElementById('settingsButton').click();
             await page.flush(2);
-            expect(page.document.querySelector('#subtitleFlowPicker .lang-picker-label').textContent)
+            expect(page.document.querySelector('#subtitleFlowPicker .custom-select-label').textContent)
                 .toBe('Downward (newest at the top)');
         } finally {
             page.close();

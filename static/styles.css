@@ -282,7 +282,7 @@ body.dark-theme .popover-remember { color: #e5e7eb; }
 .audio-source-popover .audio-source-error { margin: 6px 0; }
 .audio-source-popover .lang-popover-actions { margin-top: 10px; }
 .audio-source-popover .audio-source-error,
-.audio-source-popover .audio-window-placeholder .lang-picker-label { color: var(--audio-warning-color); }
+.audio-source-popover .audio-window-placeholder .custom-select-label { color: var(--audio-warning-color); }
 
 body.dark-theme .control-button {
     background: rgba(255, 255, 255, 0.1);
@@ -1843,7 +1843,7 @@ body.dark-theme .lang-twoway-field {
     color: #9ca3af;
 }
 
-.lang-picker-button {
+.custom-select-button {
     width: 100%;
     min-height: 38px;
     border: 1px solid rgba(0, 0, 0, 0.12);
@@ -1861,29 +1861,29 @@ body.dark-theme .lang-twoway-field {
     text-align: left;
 }
 
-body.dark-theme .lang-picker-button {
+body.dark-theme .custom-select-button {
     border-color: rgba(255, 255, 255, 0.14);
     background-color: rgba(255, 255, 255, 0.08);
     color: #e5e7eb;
 }
 
-.lang-picker.disabled .lang-picker-button {
+.custom-select.disabled .custom-select-button {
     cursor: not-allowed;
     opacity: 0.55;
 }
 
-.lang-picker.disabled .lang-picker-chevron {
+.custom-select.disabled .custom-select-chevron {
     display: none;
 }
 
-.lang-picker-label {
+.custom-select-label {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-.lang-picker-chevron {
+.custom-select-chevron {
     width: 9px;
     height: 9px;
     flex: 0 0 9px;
@@ -1893,7 +1893,7 @@ body.dark-theme .lang-picker-button {
     opacity: 0.9;
 }
 
-.lang-select-menu {
+.custom-select-menu {
     position: fixed;
     z-index: 10050;
     overflow: auto;
@@ -1904,14 +1904,14 @@ body.dark-theme .lang-picker-button {
     box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
 }
 
-body.dark-theme .lang-select-menu {
+body.dark-theme .custom-select-menu {
     border-color: rgba(255, 255, 255, 0.14);
     background: #2b2b3a;
     box-shadow: 0 16px 34px rgba(0, 0, 0, 0.36);
 }
 
-button.lang-select-option,
-.lang-select-option-btn {
+button.custom-select-option,
+.custom-select-option-btn {
     width: 100%;
     min-height: 30px;
     padding: 6px 8px;
@@ -1925,27 +1925,27 @@ button.lang-select-option,
     text-align: left;
 }
 
-body.dark-theme button.lang-select-option,
-body.dark-theme .lang-select-option-btn {
+body.dark-theme button.custom-select-option,
+body.dark-theme .custom-select-option-btn {
     color: #e5e7eb;
 }
 
-button.lang-select-option:hover,
-button.lang-select-option.selected,
-.lang-select-option-btn:hover,
-.lang-select-option-btn.selected {
+button.custom-select-option:hover,
+button.custom-select-option.selected,
+.custom-select-option-btn:hover,
+.custom-select-option-btn.selected {
     background: rgba(59, 130, 246, 0.14);
 }
 
-body.dark-theme button.lang-select-option:hover,
-body.dark-theme button.lang-select-option.selected,
-body.dark-theme .lang-select-option-btn:hover,
-body.dark-theme .lang-select-option-btn.selected {
+body.dark-theme button.custom-select-option:hover,
+body.dark-theme button.custom-select-option.selected,
+body.dark-theme .custom-select-option-btn:hover,
+body.dark-theme .custom-select-option-btn.selected {
     background: rgba(96, 165, 250, 0.22);
     color: #ffffff;
 }
 
-div.lang-select-option {
+div.custom-select-option {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -1992,7 +1992,7 @@ body.dark-theme .lang-favorite-btn:hover {
     color: #eab308;
 }
 
-.lang-select-section-title {
+.custom-select-section-title {
     font-size: 10px;
     font-weight: 700;
     color: #6b7280;
@@ -2002,17 +2002,17 @@ body.dark-theme .lang-favorite-btn:hover {
     user-select: none;
 }
 
-body.dark-theme .lang-select-section-title {
+body.dark-theme .custom-select-section-title {
     color: #9ca3af;
 }
 
-.lang-select-divider {
+.custom-select-divider {
     height: 1px;
     background: rgba(0, 0, 0, 0.08);
     margin: 6px 8px;
 }
 
-body.dark-theme .lang-select-divider {
+body.dark-theme .custom-select-divider {
     background: rgba(255, 255, 255, 0.1);
 }
 

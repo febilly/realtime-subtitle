@@ -49,10 +49,20 @@ describe('SettingsUI controls', () => {
         const trigger = picker.querySelector('button');
         trigger.click();
         expect(trigger.getAttribute('aria-expanded')).toBe('true');
-        [...document.querySelectorAll('.lang-select-option')].find((node) => node.textContent === 'Two').click();
+        [...document.querySelectorAll('.custom-select-option')].find((node) => node.textContent === 'Two').click();
         expect(picker.value).toBe('two');
         expect(onChange).toHaveBeenCalledWith('two');
         expect(trigger.getAttribute('aria-expanded')).toBe('false');
+
+        // Dynamic disabled toggling closes open menus and blocks reopening.
+        trigger.click();
+        expect(trigger.getAttribute('aria-expanded')).toBe('true');
+        picker.disabled = true;
+        expect(trigger.disabled).toBe(true);
+        expect(picker.classList.contains('disabled')).toBe(true);
+        expect(trigger.getAttribute('aria-expanded')).toBe('false');
+        trigger.click();
+        expect(document.querySelector('.custom-select-menu')).toBeNull();
         dom.window.close();
     });
 

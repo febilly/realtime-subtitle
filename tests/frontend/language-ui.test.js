@@ -157,8 +157,8 @@ describe('LanguageUI', () => {
         dom.window.document.body.appendChild(picker);
         const changed = vi.fn();
         picker.addEventListener('change', changed);
-        picker.querySelector('.lang-picker-button').click();
-        const japanese = [...dom.window.document.querySelectorAll('.lang-select-option-btn')]
+        picker.querySelector('.custom-select-button').click();
+        const japanese = [...dom.window.document.querySelectorAll('.custom-select-option-btn')]
             .find((node) => node.textContent.includes('Japanese'));
         japanese.click();
         expect(picker.value).toBe('ja');
@@ -287,8 +287,8 @@ describe('LanguageUI', () => {
         const { dom, controller } = setup();
         controller.init();
         controller.show();
-        dom.window.document.querySelector('.lang-picker-button').click();
-        const menu = dom.window.document.querySelector('.lang-select-menu');
+        dom.window.document.querySelector('.custom-select-button').click();
+        const menu = dom.window.document.querySelector('.custom-select-menu');
         expect(menu.hidden).toBe(false);
 
         dom.window.document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape' }));
@@ -304,13 +304,13 @@ describe('LanguageUI', () => {
         const { dom, controller } = setup();
         controller.init();
         controller.show();
-        dom.window.document.querySelector('.lang-picker-button').click();
+        dom.window.document.querySelector('.custom-select-button').click();
         expect(dom.window.document.body.textContent).toContain('Japanese');
 
         expect(controller.setLanguageCodes(['fr'])).toBe(true);
         expect(dom.window.document.querySelector('.lang-popover')).toBeNull();
         controller.show();
-        dom.window.document.querySelector('.lang-picker-button').click();
+        dom.window.document.querySelector('.custom-select-button').click();
         expect(dom.window.document.body.textContent).toContain('French');
         expect(dom.window.document.body.textContent).not.toContain('Japanese');
         expect(controller.setLanguageCodes([])).toBe(false);

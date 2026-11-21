@@ -1,10 +1,10 @@
 const { createPageHarness } = require('./helpers/page-harness');
 
 function chooseOption(page, hostSelector, index) {
-    const trigger = page.document.querySelector(`${hostSelector} .lang-picker-button`);
+    const trigger = page.document.querySelector(`${hostSelector} .custom-select-button`);
     expect(trigger).not.toBeNull();
     trigger.click();
-    const options = [...page.document.querySelectorAll('body > .lang-select-menu .lang-select-option')];
+    const options = [...page.document.querySelectorAll('body > .custom-select-menu .custom-select-option')];
     expect(options.length).toBeGreaterThan(index);
     options[index].click();
 }

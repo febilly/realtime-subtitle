@@ -93,22 +93,23 @@
 
         function buildCustomSelect(selectOptions, { value = null, onChange = null, disabled = false } = {}) {
             const picker = documentRef.createElement('div');
-            picker.className = 'lang-picker';
+            picker.className = 'custom-select';
             let currentValue = value;
+            let isDisabled = !!disabled;
             let menu = null;
             const trigger = documentRef.createElement('button');
             trigger.type = 'button';
-            trigger.className = 'lang-picker-button';
+            trigger.className = 'custom-select-button';
             trigger.setAttribute('aria-haspopup', 'listbox');
             trigger.setAttribute('aria-expanded', 'false');
-            if (disabled) {
+            if (isDisabled) {
                 trigger.disabled = true;
                 picker.classList.add('disabled');
             }
             const label = documentRef.createElement('span');
-            label.className = 'lang-picker-label';
+            label.className = 'custom-select-label';
             const chevron = documentRef.createElement('span');
-            chevron.className = 'lang-picker-chevron';
+            chevron.className = 'custom-select-chevron';
             chevron.setAttribute('aria-hidden', 'true');
             trigger.append(label, chevron);
             picker.appendChild(trigger);
@@ -143,14 +144,14 @@
                 windowRef.removeEventListener('scroll', onScroll, true);
             };
             const open = () => {
-                if (menu || disabled) return;
+                if (menu || isDisabled || trigger.disabled) return;
                 menu = documentRef.createElement('div');
-                menu.className = 'lang-select-menu';
+                menu.className = 'custom-select-menu';
                 menu.setAttribute('role', 'listbox');
                 for (const entry of selectOptions) {
                     const option = documentRef.createElement('button');
                     option.type = 'button';
-                    option.className = 'lang-select-option';
+                    option.className = 'custom-select-option';
                     option.setAttribute('role', 'option');
                     option.textContent = entry.label;
                     const selected = entry.value === currentValue;
@@ -169,7 +170,7 @@
                 picker.classList.add('open');
                 trigger.setAttribute('aria-expanded', 'true');
                 positionDropdownMenu(trigger, menu);
-                const selected = menu.querySelector('.lang-select-option.selected');
+                const selected = menu.querySelector('.custom-select-option.selected');
                 if (selected && typeof selected.scrollIntoView === 'function') {
                     selected.scrollIntoView({ block: 'nearest' });
                 }
@@ -182,6 +183,15 @@
             Object.defineProperty(picker, 'value', {
                 get: () => currentValue,
                 set: (next) => { currentValue = next; renderLabel(); },
+            });
+            Object.defineProperty(picker, 'disabled', {
+                get: () => isDisabled,
+                set: (next) => {
+                    isDisabled = !!next;
+                    trigger.disabled = isDisabled;
+                    picker.classList.toggle('disabled', isDisabled);
+                    if (isDisabled) close();
+                },
             });
             picker.close = close;
             renderLabel();

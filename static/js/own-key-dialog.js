@@ -160,7 +160,7 @@
                 confirmButton.textContent = t(busy ? 'own_key_checking' : 'confirm');
             }
             if (sonioxRegionPicker) {
-                const trigger = sonioxRegionPicker.querySelector('.lang-picker-button');
+                const trigger = sonioxRegionPicker.querySelector('.custom-select-button');
                 if (trigger) trigger.disabled = busy || !!state().backendSonioxCustomUrl;
                 sonioxRegionPicker.classList.toggle('disabled', busy || !!state().backendSonioxCustomUrl);
                 if (busy && typeof sonioxRegionPicker.close === 'function') {

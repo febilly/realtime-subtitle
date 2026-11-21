@@ -138,8 +138,8 @@ describe('full-page hosted mode wiring', () => {
 
             // Valid Soniox JP key verifies, creates the checked shortcut silently, switches to direct mode, and pre-fills Settings.
             allowSetup = true;
-            page.document.querySelector('#ownKeySonioxRegionPicker .lang-picker-button').click();
-            page.document.querySelectorAll('.lang-select-option')[2].click();
+            page.document.querySelector('#ownKeySonioxRegionPicker .custom-select-button').click();
+            page.document.querySelectorAll('.custom-select-option')[2].click();
             keyInput.value = 'sk-good-jp';
             page.document.getElementById('ownKeyConfirmButton').click();
             await page.flush(30);

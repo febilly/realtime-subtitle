@@ -15,9 +15,9 @@ describe('full-page setup wiring', () => {
             page.document.getElementById('settingsButton').click();
             await page.flush(2);
 
-            page.document.querySelector('#sonioxRegionPicker .lang-picker-button').click();
+            page.document.querySelector('#sonioxRegionPicker .custom-select-button').click();
             const options = [...page.document.querySelectorAll(
-                'body > .lang-select-menu .lang-select-option',
+                'body > .custom-select-menu .custom-select-option',
             )];
             expect(options).toHaveLength(3);
             options[1].click();

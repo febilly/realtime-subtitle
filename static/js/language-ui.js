@@ -76,7 +76,7 @@
         function ensureSelectMenu() {
             if (selectMenu) return selectMenu;
             selectMenu = documentRef.createElement('div');
-            selectMenu.className = 'lang-select-menu';
+            selectMenu.className = 'custom-select-menu';
             selectMenu.hidden = true;
             selectMenu.setAttribute('role', 'listbox');
             documentRef.body.appendChild(selectMenu);
@@ -87,12 +87,12 @@
             if (!picker) return;
             const selected = coerceSupportedLanguageCode(code, picker.dataset.fallback || 'en');
             picker.dataset.value = selected;
-            const label = picker.querySelector('.lang-picker-label');
+            const label = picker.querySelector('.custom-select-label');
             if (label) label.textContent = getLanguageDisplayName(selected);
         }
 
         function positionSelectMenu(picker, menu) {
-            const trigger = picker.querySelector('.lang-picker-button') || picker;
+            const trigger = picker.querySelector('.custom-select-button') || picker;
             const rect = trigger.getBoundingClientRect();
             const gap = 6;
             const viewportPadding = 8;
@@ -162,7 +162,7 @@
 
         function findOption(menu, normalizedCode, section) {
             if (!menu) return null;
-            for (const row of menu.querySelectorAll('.lang-select-option[data-code]')) {
+            for (const row of menu.querySelectorAll('.custom-select-option[data-code]')) {
                 if (String(row.dataset.code || '').toLowerCase() !== normalizedCode) continue;
                 if (section && row.dataset.section !== section) continue;
                 return row;
@@ -192,12 +192,12 @@
             const selected = lang.code === picker.value;
             const favorited = getFavoriteLanguages().includes(String(lang.code).toLowerCase());
             const option = documentRef.createElement('div');
-            option.className = 'lang-select-option';
+            option.className = 'custom-select-option';
             option.dataset.code = lang.code;
             option.dataset.section = section;
             const selectButton = documentRef.createElement('button');
             selectButton.type = 'button';
-            selectButton.className = 'lang-select-option-btn';
+            selectButton.className = 'custom-select-option-btn';
             selectButton.classList.toggle('selected', selected);
             selectButton.setAttribute('role', 'option');
             selectButton.setAttribute('aria-selected', selected ? 'true' : 'false');
@@ -229,15 +229,15 @@
             );
             if (favoriteLanguages.length) {
                 const header = documentRef.createElement('div');
-                header.className = 'lang-select-section-title';
+                header.className = 'custom-select-section-title';
                 header.textContent = t('favorites_section_title');
                 menu.appendChild(header);
                 favoriteLanguages.forEach((lang) => menu.appendChild(createOptionRow(lang, picker, 'favorites')));
                 const divider = documentRef.createElement('div');
-                divider.className = 'lang-select-divider';
+                divider.className = 'custom-select-divider';
                 menu.appendChild(divider);
                 const allHeader = documentRef.createElement('div');
-                allHeader.className = 'lang-select-section-title';
+                allHeader.className = 'custom-select-section-title';
                 allHeader.textContent = t('all_languages_section_title');
                 menu.appendChild(allHeader);
             }
@@ -249,18 +249,18 @@
             activePicker = picker;
             renderSelectMenu(picker);
             picker.classList.add('open');
-            const trigger = picker.querySelector('.lang-picker-button');
+            const trigger = picker.querySelector('.custom-select-button');
             if (trigger) trigger.setAttribute('aria-expanded', 'true');
             menu.hidden = false;
             positionSelectMenu(picker, menu);
-            const selected = menu.querySelector('.lang-select-option-btn.selected');
+            const selected = menu.querySelector('.custom-select-option-btn.selected');
             if (selected && typeof selected.scrollIntoView === 'function') selected.scrollIntoView({ block: 'nearest' });
         }
 
         function closeSelectMenu() {
             if (activePicker) {
                 activePicker.classList.remove('open');
-                const trigger = activePicker.querySelector('.lang-picker-button');
+                const trigger = activePicker.querySelector('.custom-select-button');
                 if (trigger) trigger.setAttribute('aria-expanded', 'false');
             }
             activePicker = null;
@@ -272,7 +272,7 @@
 
         function buildPicker(selectedCode, fallbackCode = 'en') {
             const picker = documentRef.createElement('div');
-            picker.className = 'lang-picker';
+            picker.className = 'custom-select';
             picker.dataset.fallback = fallbackCode;
             Object.defineProperty(picker, 'value', {
                 get: () => picker.dataset.value || '',
@@ -280,13 +280,13 @@
             });
             const trigger = documentRef.createElement('button');
             trigger.type = 'button';
-            trigger.className = 'lang-picker-button';
+            trigger.className = 'custom-select-button';
             trigger.setAttribute('aria-haspopup', 'listbox');
             trigger.setAttribute('aria-expanded', 'false');
             const label = documentRef.createElement('span');
-            label.className = 'lang-picker-label';
+            label.className = 'custom-select-label';
             const chevron = documentRef.createElement('span');
-            chevron.className = 'lang-picker-chevron';
+            chevron.className = 'custom-select-chevron';
             chevron.setAttribute('aria-hidden', 'true');
             trigger.append(label, chevron);
             trigger.addEventListener('click', () => {
@@ -343,12 +343,12 @@
             const twoWayBox = popover.querySelector('.lang-popover-twoway');
             if (oneWayBox) oneWayBox.hidden = mode !== 'one_way';
             if (twoWayBox) twoWayBox.hidden = mode !== 'two_way';
-            const target = popover.querySelector('.lang-picker[data-role="target"]');
+            const target = popover.querySelector('.custom-select[data-role="target"]');
             if (target) target.value = coerceSupportedLanguageCode(value.targetLang, state.defaultTranslationTargetLang);
-            const first = popover.querySelector('.lang-picker[data-role="langA"]');
+            const first = popover.querySelector('.custom-select[data-role="langA"]');
             const [primary, secondary] = twoWayLanguages(value.targetLang1, value.targetLang2);
             if (first) first.value = primary;
-            const second = popover.querySelector('.lang-picker[data-role="langB"]');
+            const second = popover.querySelector('.custom-select[data-role="langB"]');
             if (second) second.value = secondary;
         }
 

@@ -43,13 +43,13 @@ describe('temporary offline startup', () => {
             expect(page.window.localStorage.getItem('subtitleServer.v1')).toBe(savedServer);
             expect(page.window.localStorage.getItem('providerSettings.v1')).toBe(savedProvider);
             expect(page.document.getElementById('translationLangButton').getAttribute('aria-disabled')).toBe(String(mode === 'off'));
-            page.document.querySelector('#translationModePicker .lang-picker-button').click();
-            expect(page.document.querySelectorAll('.lang-select-menu [role="option"]')).toHaveLength(mode === 'fast' ? 2 : 1);
+            page.document.querySelector('#translationModePicker .custom-select-button').click();
+            expect(page.document.querySelectorAll('.custom-select-menu [role="option"]')).toHaveLength(mode === 'fast' ? 2 : 1);
             if (mode === 'fast') {
-                const options = [...page.document.querySelectorAll('.lang-select-menu [role="option"]')];
+                const options = [...page.document.querySelectorAll('.custom-select-menu [role="option"]')];
                 options.at(-1).click();
             } else {
-                page.document.querySelector('.lang-select-menu [role="option"]').click();
+                page.document.querySelector('.custom-select-menu [role="option"]').click();
             }
             page.document.getElementById('settingsSaveButton').click();
             await page.flush(20);

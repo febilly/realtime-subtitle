@@ -146,8 +146,8 @@ describe('OwnKeyDialog', () => {
     it('saves provider, Soniox region, and key then switches mode after verification succeeds', async () => {
         const page = setup();
         page.controller.open();
-        page.document.querySelector('#ownKeySonioxRegionPicker .lang-picker-button').click();
-        page.document.querySelectorAll('.lang-select-option')[2].click();
+        page.document.querySelector('#ownKeySonioxRegionPicker .custom-select-button').click();
+        page.document.querySelectorAll('.custom-select-option')[2].click();
         page.document.getElementById('ownKeyApiKeyInput').value = ' sk-valid-jp ';
 
         const result = await page.controller.handleSubmit();

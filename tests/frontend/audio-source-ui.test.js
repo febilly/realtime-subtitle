@@ -110,17 +110,17 @@ describe('audio source selector', () => {
             await page.controller.show();
             expect(page.controller.isOpen()).toBe(true);
             expect(page.controller.getDraft().window).toEqual(target);
-            expect(page.document.querySelector('.audio-window-placeholder .lang-picker-label').textContent)
+            expect(page.document.querySelector('.audio-window-placeholder .custom-select-label').textContent)
                 .toBe('[player.exe] Player');
             expect(page.document.querySelector('[role="alert"]').textContent).toBe('audio_window_missing');
-            const trigger = page.document.querySelector('.audio-window-placeholder .lang-picker-button');
+            const trigger = page.document.querySelector('.audio-window-placeholder .custom-select-button');
             trigger.click();
             const choices = [...page.document.querySelectorAll('[role="option"]')];
             expect(choices.map(item => item.textContent)).toEqual(['audio_choose_window', '[player.exe] Player']);
             expect(choices[1].getAttribute('aria-selected')).toBe('true');
             choices[0].click();
             expect(page.controller.getDraft().window).toBeNull();
-            expect(page.document.querySelector('.audio-window-placeholder .lang-picker-label').textContent)
+            expect(page.document.querySelector('.audio-window-placeholder .custom-select-label').textContent)
                 .toBe('audio_choose_window');
             trigger.click();
             page.document.querySelectorAll('[role="option"]')[1].click();
@@ -195,7 +195,7 @@ describe('audio source selector', () => {
         await page.controller.show();
         page.document.querySelector('[data-desktop-mode="window"]').click();
         expect(await page.controller.applyDraft()).toBe(false);
-        const trigger = page.document.querySelector('.audio-source-options .lang-picker-button');
+        const trigger = page.document.querySelector('.audio-source-options .custom-select-button');
         trigger.click();
         [...page.document.querySelectorAll('[role="option"]')].find((item) => item.textContent === '[player.exe] Player').click();
         expect(await page.controller.applyDraft()).toBe(true);
@@ -222,7 +222,7 @@ describe('audio source selector', () => {
         const page = setup({ unavailable: true });
         await page.controller.show();
         page.document.querySelector('[data-desktop-mode="window"]').click();
-        expect(page.document.querySelector('.audio-source-options .lang-picker-button').disabled).toBe(true);
+        expect(page.document.querySelector('.audio-source-options .custom-select-button').disabled).toBe(true);
         expect(page.document.body.textContent).toContain('audio_window_unsupported');
         expect(page.controller.getDraft().desktop_mode).toBe('window');
         page.controller.hide();
@@ -257,7 +257,7 @@ describe('audio source selector', () => {
             // Located inside the microphone section below the microphone picker
             const micOptions = page.document.querySelectorAll('.audio-source-options')[1];
             expect(micOptions.contains(row)).toBe(true);
-            expect(micOptions.firstElementChild.classList.contains('lang-picker')).toBe(true);
+            expect(micOptions.firstElementChild.classList.contains('custom-select')).toBe(true);
 
             toggle.click();
             expect(toggle.getAttribute('aria-checked')).toBe('true');
