@@ -69,5 +69,8 @@ scratch-eval/
 # ZCode helper directories
 .zcode/
 
+# Local scratch/audit/Playwright artifacts
+output/
+
 # pytest temporary sandboxes
 .pytest-tmp*/
