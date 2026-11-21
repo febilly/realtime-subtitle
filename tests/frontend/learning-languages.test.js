@@ -176,9 +176,12 @@ describe('full-page learning languages wiring', () => {
             expect(trans.innerHTML).not.toContain('<ruby>');
 
             // Toggle Chinese pinyin switch OFF in settings -> removes ruby from Chinese line
+            // and keeps the same DOM node so CSS toggle transitions play smoothly.
             const zhSwitch = doc.querySelector('#learningLanguagesList [data-learning-lang="zh"] .settings-switch');
             zhSwitch.click();
             await page.flush(10);
+            expect(doc.querySelector('#learningLanguagesList [data-learning-lang="zh"] .settings-switch')).toBe(zhSwitch);
+            expect(zhSwitch.getAttribute('aria-checked')).toBe('false');
             orig = doc.querySelector('.original-line');
             expect(orig.innerHTML).not.toContain('<ruby>');
             expect(JSON.parse(page.window.localStorage.getItem('learningLanguages.v1')).zh).toBe(false);
@@ -187,6 +190,8 @@ describe('full-page learning languages wiring', () => {
             const zhSwitchOn = doc.querySelector('#learningLanguagesList [data-learning-lang="zh"] .settings-switch');
             zhSwitchOn.click();
             await page.flush(10);
+            expect(zhSwitchOn).toBe(zhSwitch);
+            expect(zhSwitch.getAttribute('aria-checked')).toBe('true');
             expect(doc.querySelector('.original-line').innerHTML).toContain('<ruby>');
 
             doc.getElementById('furiganaButton').click();

@@ -84,7 +84,9 @@ describe('LanguageUI', () => {
         const storage = dom.window.localStorage;
         storage.setItem('audioCapturePreferences.v1', 'untouched');
         controller.show();
-        dom.window.document.getElementById('rememberLanguageSettings').click();
+        const rememberToggle = dom.window.document.getElementById('rememberLanguageSettings');
+        expect(rememberToggle.closest('.settings-row').tagName).toBe('LABEL');
+        rememberToggle.click();
         controller.hide();
         expect(storage.getItem('translationLanguagePreferences.v1')).toBeNull();
         controller.show();

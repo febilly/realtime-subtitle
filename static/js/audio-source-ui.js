@@ -15,6 +15,7 @@
         let generation = 0;
         let pickers = [];
         let lists = {};
+        let view = null;
         let captureError = '';
         let stateRequest = 0;
         let pendingStateRequests = 0;
@@ -90,6 +91,7 @@
             closePickers();
             if (panel) panel.remove();
             panel = null;
+            view = null;
             draft = null;
             document.removeEventListener('mousedown', outside, true);
             document.removeEventListener('keydown', escape, true);
@@ -125,116 +127,225 @@
             }, { verticalRatio: 0.15, minTop: 12 });
         }
 
+        function clearError() {
+            const message = panel && panel.querySelector('.audio-source-error');
+            if (!message) return;
+            message.textContent = '';
+            message.hidden = true;
+        }
+
         function error(key) {
             const message = panel.querySelector('.audio-source-error');
             message.textContent = t(key);
             message.hidden = false;
         }
 
-        function picker(host, entries, value, onChange, disabled = false) {
-            const select = ui.buildCustomSelect(entries, { value, onChange, disabled });
+        function registerPicker(select) {
             pickers.push(select);
-            host.appendChild(select);
             return select;
         }
 
-        function devicePicker(host, key, data) {
+        function unregisterPicker(select) {
+            if (!select) return;
+            if (typeof select.close === 'function') select.close();
+            pickers = pickers.filter((entry) => entry !== select);
+        }
+
+        function createDevicePicker(key, data) {
             const entries = [{ value: '', label: data.default?.name
                 ? t('microphone_device_default', { name: data.default.name }) : t('microphone_device_default_unknown') },
             ...(data.devices || []).map((item) => ({ value: item.id, label: item.name }))];
             if (draft[key] && !entries.some((entry) => entry.value === draft[key])) {
                 entries.push({ value: draft[key], label: t('audio_device_missing') });
             }
-            picker(host, entries, draft[key], (value) => { draft[key] = value; }, !data.available);
+            return registerPicker(ui.buildCustomSelect(entries, {
+                value: draft[key],
+                onChange: (value) => { draft[key] = value; },
+                disabled: !data.available,
+            }));
         }
 
-        function section(labelKey, enabledKey, buildContents) {
+        function renderDesktopPicker() {
+            if (!view) return;
+            unregisterPicker(view.desktopPicker);
+            view.desktopPicker = null;
+            while (view.desktopModes.nextSibling) {
+                view.desktopModes.nextSibling.remove();
+            }
+            if (draft.desktop_mode === 'output') {
+                view.desktopPicker = createDevicePicker('output_device_id', lists.outputs);
+                view.desktopContent.appendChild(view.desktopPicker);
+                return;
+            }
+            const entries = [{ value: '', label: t('audio_choose_window') },
+                ...lists.windows.windows.map((item, index) => {
+                    const executable = String(item.executable || '').split(/[\\/]/).pop();
+                    return {
+                        value: String(index),
+                        label: `[${executable}] ${item.title}`,
+                        priority: executable.toLowerCase() === 'vrchat.exe' ? 0 : 1,
+                    };
+                }).sort((first, second) => first.priority - second.priority
+                    || first.label.toLowerCase().localeCompare(second.label.toLowerCase()))];
+            const selected = lists.windows.windows.findIndex((item) => item.hwnd === draft.window?.hwnd
+                && item.created === draft.window?.created);
+            const missingWindow = selected < 0 ? draft.window : null;
+            if (missingWindow) {
+                const executable = String(missingWindow.executable || '').split(/[\\/]/).pop();
+                entries.splice(1, 0, { value: 'missing', label: `[${executable}] ${missingWindow.title}` });
+            }
+            const value = selected >= 0 ? String(selected) : (missingWindow ? 'missing' : '');
+            const windowPicker = registerPicker(ui.buildCustomSelect(entries, {
+                value,
+                onChange: (nextValue) => {
+                    draft.window = nextValue === 'missing' ? missingWindow
+                        : (nextValue === '' ? null : lists.windows.windows[Number(nextValue)]);
+                    windowPicker.classList.toggle('audio-window-placeholder', nextValue === '' || nextValue === 'missing');
+                },
+                disabled: !lists.windows.available,
+            }));
+            windowPicker.classList.toggle('audio-window-placeholder', selected < 0);
+            view.desktopPicker = windowPicker;
+            view.desktopContent.appendChild(windowPicker);
+            if (!lists.windows.available) {
+                view.desktopContent.appendChild(node('p', 'field-hint', t('audio_window_unsupported')));
+            }
+        }
+
+        function renderMicrophonePicker() {
+            if (!view) return;
+            unregisterPicker(view.micPicker);
+            const nextPicker = createDevicePicker('microphone_device_id', lists.microphones);
+            if (view.micPicker && view.micPicker.parentNode === view.micContent) {
+                view.micContent.replaceChild(nextPicker, view.micPicker);
+            } else {
+                view.micContent.insertBefore(nextPicker, view.micContent.firstChild);
+            }
+            view.micPicker = nextPicker;
+        }
+
+        function syncVrchatMuteRow() {
+            if (!view) return;
+            const enabled = vrchatPackEnabled();
+            if (!enabled) {
+                if (view.followRow) {
+                    view.followRow.remove();
+                    view.followRow = null;
+                    view.followToggle = null;
+                }
+                return;
+            }
+            if (!view.followRow) {
+                const row = node('label', 'settings-row audio-follow-vrchat-mute-row');
+                row.title = t('audio_follow_vrchat_mute_hint');
+                const textWrap = node('span', 'settings-row-text');
+                const labelText = node('span', 'audio-tooltip-underline', t('audio_follow_vrchat_mute'));
+                labelText.id = 'audio-follow_vrchat_mic_mute-label';
+                textWrap.appendChild(labelText);
+                const followToggle = ui.buildToggleSwitch({
+                    value: String(!!draft.follow_vrchat_mic_mute),
+                    onChange: (value) => { draft.follow_vrchat_mic_mute = value === 'true'; },
+                });
+                followToggle.id = 'audio-follow_vrchat_mic_mute';
+                followToggle.setAttribute('aria-labelledby', labelText.id);
+                row.append(textWrap, followToggle);
+                view.micContent.appendChild(row);
+                view.followRow = row;
+                view.followToggle = followToggle;
+            } else if (view.followToggle) {
+                view.followToggle.value = String(!!draft.follow_vrchat_mic_mute);
+            }
+        }
+
+        function syncDesktopModeButtons() {
+            if (!view) return;
+            for (const option of view.desktopModeButtons) {
+                const selected = option.dataset.desktopMode === draft.desktop_mode;
+                option.classList.toggle('selected', selected);
+                option.setAttribute('aria-pressed', String(selected));
+            }
+        }
+
+        function syncControlsEnabled(disabled) {
+            if (!panel || !view) return;
+            panel.querySelectorAll('button, input').forEach((element) => { element.disabled = !!disabled; });
+            if (!disabled) {
+                if (view.desktopPicker) {
+                    view.desktopPicker.disabled = draft.desktop_mode === 'output'
+                        ? !lists.outputs.available
+                        : !lists.windows.available;
+                }
+                if (view.micPicker) {
+                    view.micPicker.disabled = !lists.microphones.available;
+                }
+            }
+        }
+
+        function section(labelKey, enabledKey) {
             const box = node('section', 'settings-card audio-source-section');
-            const row = node('div', 'settings-row');
+            const row = node('label', 'settings-row');
             const label = node('span', 'settings-row-text', t(labelKey));
             label.id = `audio-${enabledKey}-label`;
+            const content = node('div', 'audio-source-options');
+            content.hidden = !draft[enabledKey];
             const toggle = ui.buildToggleSwitch({ value: String(draft[enabledKey]), onChange: (value) => {
                 draft[enabledKey] = value === 'true';
-                render();
+                content.hidden = !draft[enabledKey];
+                clearError();
             } });
             toggle.id = `audio-${enabledKey}`;
             toggle.setAttribute('aria-labelledby', label.id);
             row.append(label, toggle);
-            box.appendChild(row);
-            const content = node('div', 'audio-source-options');
-            content.hidden = !draft[enabledKey];
-            buildContents(content);
-            box.appendChild(content);
-            return box;
+            box.append(row, content);
+            return { box, toggle, content };
         }
 
         function render() {
-            const focusedId = panel.contains(document.activeElement) ? document.activeElement.id : '';
+            if (view && panel.contains(view.desktopContent)) {
+                view.desktopToggle.value = String(draft.desktop_enabled);
+                view.desktopContent.hidden = !draft.desktop_enabled;
+                view.micToggle.value = String(draft.microphone_enabled);
+                view.micContent.hidden = !draft.microphone_enabled;
+                view.rememberSwitch.value = String(draft.remember);
+                syncDesktopModeButtons();
+                renderDesktopPicker();
+                renderMicrophonePicker();
+                syncVrchatMuteRow();
+                syncControlsEnabled(busy);
+                clearError();
+                return;
+            }
             closePickers();
             panel.replaceChildren();
             panel.appendChild(node('h2', 'lang-popover-title', t('audio_capture_title')));
-            panel.appendChild(section('audio_desktop_capture', 'desktop_enabled', (content) => {
-                const modes = node('div', 'segmented-control translation-mode-control');
-                for (const [mode, label] of [['output', 'audio_output_mode'], ['window', 'audio_window_mode']]) {
-                    const option = node('button', 'segmented-option', t(label));
-                    option.type = 'button';
-                    option.dataset.desktopMode = mode;
-                    option.id = `audio-desktop-mode-${mode}`;
-                    option.classList.toggle('selected', draft.desktop_mode === mode);
-                    option.setAttribute('aria-pressed', String(draft.desktop_mode === mode));
-                    option.addEventListener('click', () => { draft.desktop_mode = mode; render(); });
-                    modes.appendChild(option);
-                }
-                content.appendChild(modes);
-                if (draft.desktop_mode === 'output') devicePicker(content, 'output_device_id', lists.outputs);
-                else {
-                    const entries = [{ value: '', label: t('audio_choose_window') },
-                        ...lists.windows.windows.map((item, index) => {
-                            const executable = String(item.executable || '').split(/[\\/]/).pop();
-                            return {
-                                value: String(index),
-                                label: `[${executable}] ${item.title}`,
-                                priority: executable.toLowerCase() === 'vrchat.exe' ? 0 : 1,
-                            };
-                        }).sort((first, second) => first.priority - second.priority
-                            || first.label.toLowerCase().localeCompare(second.label.toLowerCase()))];
-                    const selected = lists.windows.windows.findIndex((item) => item.hwnd === draft.window?.hwnd
-                        && item.created === draft.window?.created);
-                    const missingWindow = selected < 0 ? draft.window : null;
-                    if (missingWindow) {
-                        const executable = String(missingWindow.executable || '').split(/[\\/]/).pop();
-                        entries.splice(1, 0, { value: 'missing', label: `[${executable}] ${missingWindow.title}` });
-                    }
-                    const value = selected >= 0 ? String(selected) : (missingWindow ? 'missing' : '');
-                    const windowPicker = picker(content, entries, value, (value) => {
-                        draft.window = value === 'missing' ? missingWindow
-                            : (value === '' ? null : lists.windows.windows[Number(value)]);
-                        windowPicker.classList.toggle('audio-window-placeholder', value === '' || value === 'missing');
-                    }, !lists.windows.available);
-                    windowPicker.classList.toggle('audio-window-placeholder', selected < 0);
-                    if (!lists.windows.available) content.appendChild(node('p', 'field-hint', t('audio_window_unsupported')));
-                }
-            }));
-            panel.appendChild(section('audio_microphone_capture', 'microphone_enabled', (content) => {
-                devicePicker(content, 'microphone_device_id', lists.microphones);
-                if (vrchatPackEnabled()) {
-                    const row = node('label', 'settings-row audio-follow-vrchat-mute-row');
-                    row.title = t('audio_follow_vrchat_mute_hint');
-                    const textWrap = node('span', 'settings-row-text');
-                    const labelText = node('span', 'audio-tooltip-underline', t('audio_follow_vrchat_mute'));
-                    labelText.id = 'audio-follow_vrchat_mic_mute-label';
-                    textWrap.appendChild(labelText);
-                    const followToggle = ui.buildToggleSwitch({
-                        value: String(!!draft.follow_vrchat_mic_mute),
-                        onChange: (value) => { draft.follow_vrchat_mic_mute = value === 'true'; },
-                    });
-                    followToggle.id = 'audio-follow_vrchat_mic_mute';
-                    followToggle.setAttribute('aria-labelledby', labelText.id);
-                    row.append(textWrap, followToggle);
-                    content.appendChild(row);
-                }
-            }));
-            const remember = node('div', 'settings-row popover-remember');
+
+            const desktopSection = section('audio_desktop_capture', 'desktop_enabled');
+            const desktopModes = node('div', 'segmented-control');
+            const desktopModeButtons = [];
+            for (const [mode, label] of [['output', 'audio_output_mode'], ['window', 'audio_window_mode']]) {
+                const option = node('button', 'segmented-option', t(label));
+                option.type = 'button';
+                option.dataset.desktopMode = mode;
+                option.id = `audio-desktop-mode-${mode}`;
+                option.classList.toggle('selected', draft.desktop_mode === mode);
+                option.setAttribute('aria-pressed', String(draft.desktop_mode === mode));
+                option.addEventListener('click', () => {
+                    if (draft.desktop_mode === mode) return;
+                    draft.desktop_mode = mode;
+                    syncDesktopModeButtons();
+                    renderDesktopPicker();
+                    clearError();
+                });
+                desktopModeButtons.push(option);
+                desktopModes.appendChild(option);
+            }
+            desktopSection.content.appendChild(desktopModes);
+            panel.appendChild(desktopSection.box);
+
+            const micSection = section('audio_microphone_capture', 'microphone_enabled');
+            panel.appendChild(micSection.box);
+
+            const remember = node('label', 'settings-row popover-remember');
             const rememberText = node('span', 'settings-row-text', t('remember_my_settings'));
             rememberText.id = 'rememberAudioSettingsLabel';
             const rememberSwitch = ui.buildToggleSwitch({ value: String(draft.remember),
@@ -243,10 +354,12 @@
             rememberSwitch.setAttribute('aria-labelledby', rememberText.id);
             remember.append(rememberText, rememberSwitch);
             panel.appendChild(remember);
+
             const message = node('p', 'field-hint audio-source-error');
             message.setAttribute('role', 'alert');
             message.hidden = true;
             panel.appendChild(message);
+
             const actions = node('div', 'lang-popover-actions');
             const refresh = node('button', 'secondary-button', t('audio_refresh_sources'));
             refresh.type = 'button';
@@ -261,7 +374,23 @@
             apply.addEventListener('click', () => { void applyDraft(); });
             actions.append(refresh, cancel, apply);
             panel.appendChild(actions);
-            if (focusedId) document.getElementById(focusedId)?.focus();
+
+            view = {
+                desktopToggle: desktopSection.toggle,
+                desktopContent: desktopSection.content,
+                desktopModes,
+                desktopModeButtons,
+                desktopPicker: null,
+                micToggle: micSection.toggle,
+                micContent: micSection.content,
+                micPicker: null,
+                followRow: null,
+                followToggle: null,
+                rememberSwitch,
+            };
+            renderDesktopPicker();
+            renderMicrophonePicker();
+            syncVrchatMuteRow();
         }
 
         async function refreshLists() {
@@ -313,7 +442,7 @@
             }
             busy = true;
             stateRequest += 1;
-            panel.querySelectorAll('button, input').forEach((element) => { element.disabled = true; });
+            syncControlsEnabled(true);
             try {
                 accept(await request('/audio-source', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ settings: draft }),
@@ -322,6 +451,7 @@
                 hide();
                 return true;
             } catch (failure) {
+                busy = false;
                 render();
                 error(failure.message === 'Selected audio window is unavailable' ? 'audio_window_missing' : 'audio_apply_failed');
                 return false;

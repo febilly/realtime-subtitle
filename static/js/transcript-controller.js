@@ -172,8 +172,18 @@
         function renderAutoSaveControl() {
             const host = el('autoSavePickerHost', 'transcriptAutoSavePicker');
             if (!host || !documentRef) return null;
-            host.innerHTML = '';
             const currentVal = settings.autoSave ? 'true' : 'false';
+            const expectedSwitch = !!buildToggleSwitch;
+            if (autoSaveControl && autoSaveControl.parentNode === host) {
+                const isSwitch = autoSaveControl.getAttribute && autoSaveControl.getAttribute('role') === 'switch';
+                if (isSwitch === expectedSwitch) {
+                    autoSaveControl.setAttribute('aria-label', t('transcript_auto_save'));
+                    if (isSwitch) autoSaveControl.value = currentVal;
+                    else autoSaveControl.checked = settings.autoSave;
+                    return autoSaveControl;
+                }
+            }
+            host.innerHTML = '';
             const onToggle = (nextValue) => {
                 const updated = saveSettings({
                     ...settings,

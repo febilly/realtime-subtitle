@@ -357,6 +357,8 @@
             const state = getState();
             popover = documentRef.createElement('div');
             popover.className = 'lang-popover';
+            popover.setAttribute('role', 'dialog');
+            popover.setAttribute('aria-label', t('translation_panel_title'));
             popover.style.display = 'none';
             const title = documentRef.createElement('h2');
             title.className = 'lang-popover-title';
@@ -408,7 +410,7 @@
                 makeField('language_b', 'langB', secondary, 'targetLang2'),
             );
             popover.appendChild(twoWayBox);
-            const rememberLabel = documentRef.createElement('div');
+            const rememberLabel = documentRef.createElement('label');
             rememberLabel.className = 'settings-row popover-remember';
             const rememberText = documentRef.createElement('span');
             rememberText.className = 'settings-row-text';

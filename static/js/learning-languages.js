@@ -55,6 +55,7 @@
 
         let hasExplicitStored = false;
         let state = loadInitialState();
+        const rowControls = new Map();
 
         function loadInitialState() {
             const defaults = getDefaultMap(getUiLanguage());
@@ -163,6 +164,30 @@
             const listEl = elements.settingsList
                 || (documentRef && documentRef.getElementById('learningLanguagesList'));
             if (!listEl || !documentRef) return;
+
+            const expectedKind = buildToggleSwitch ? 'switch' : 'checkbox';
+            const canUpdateInPlace = LANGUAGES.every((entry) => {
+                const cached = rowControls.get(entry.code);
+                return cached && cached.kind === expectedKind && cached.row.parentNode === listEl;
+            });
+
+            if (canUpdateInPlace) {
+                for (const entry of LANGUAGES) {
+                    const enabled = !!state[entry.code];
+                    const cached = rowControls.get(entry.code);
+                    const labelText = t(entry.labelKey);
+                    cached.nameEl.textContent = labelText;
+                    cached.control.setAttribute('aria-label', labelText);
+                    if (cached.kind === 'switch') {
+                        cached.control.value = enabled ? 'true' : 'false';
+                    } else {
+                        cached.control.checked = enabled;
+                    }
+                }
+                return;
+            }
+
+            rowControls.clear();
             listEl.innerHTML = '';
             for (const entry of LANGUAGES) {
                 const enabled = !!state[entry.code];
@@ -175,8 +200,9 @@
                 nameEl.textContent = t(entry.labelKey);
                 row.appendChild(nameEl);
 
+                let control;
                 if (buildToggleSwitch) {
-                    const toggle = buildToggleSwitch({
+                    control = buildToggleSwitch({
                         value: enabled ? 'true' : 'false',
                         onValue: 'true',
                         offValue: 'false',
@@ -184,18 +210,24 @@
                             setLanguageEnabled(entry.code, nextValue === 'true');
                         },
                     });
-                    toggle.setAttribute('aria-label', t(entry.labelKey));
-                    row.appendChild(toggle);
+                    control.setAttribute('aria-label', t(entry.labelKey));
+                    row.appendChild(control);
                 } else {
-                    const checkbox = documentRef.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.checked = enabled;
-                    checkbox.setAttribute('aria-label', t(entry.labelKey));
-                    checkbox.addEventListener('change', () => {
-                        setLanguageEnabled(entry.code, checkbox.checked);
+                    control = documentRef.createElement('input');
+                    control.type = 'checkbox';
+                    control.checked = enabled;
+                    control.setAttribute('aria-label', t(entry.labelKey));
+                    control.addEventListener('change', () => {
+                        setLanguageEnabled(entry.code, control.checked);
                     });
-                    row.appendChild(checkbox);
+                    row.appendChild(control);
                 }
+                rowControls.set(entry.code, {
+                    row,
+                    nameEl,
+                    control,
+                    kind: expectedKind,
+                });
                 listEl.appendChild(row);
             }
         }

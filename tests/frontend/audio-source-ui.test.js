@@ -312,4 +312,32 @@ describe('audio source selector', () => {
             dom.window.close();
         }
     });
+
+    it('preserves switch DOM nodes across toggles for smooth CSS transitions and wraps switch rows in labels', async () => {
+        const page = setup();
+        try {
+            await page.controller.show();
+            const desktopToggle = page.document.getElementById('audio-desktop_enabled');
+            const micToggle = page.document.getElementById('audio-microphone_enabled');
+            const rememberToggle = page.document.getElementById('rememberAudioSettings');
+
+            expect(desktopToggle.closest('.settings-row').tagName).toBe('LABEL');
+            expect(micToggle.closest('.settings-row').tagName).toBe('LABEL');
+            expect(rememberToggle.closest('.settings-row').tagName).toBe('LABEL');
+
+            desktopToggle.click();
+            expect(page.document.getElementById('audio-desktop_enabled')).toBe(desktopToggle);
+            expect(desktopToggle.getAttribute('aria-checked')).toBe('false');
+
+            micToggle.click();
+            expect(page.document.getElementById('audio-microphone_enabled')).toBe(micToggle);
+            expect(micToggle.getAttribute('aria-checked')).toBe('true');
+
+            page.document.querySelector('[data-desktop-mode="window"]').click();
+            expect(page.document.getElementById('audio-desktop_enabled')).toBe(desktopToggle);
+        } finally {
+            page.controller.hide();
+            page.dom.window.close();
+        }
+    });
 });
