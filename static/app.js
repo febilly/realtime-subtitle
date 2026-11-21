@@ -471,6 +471,8 @@ const furiganaToggleController = FuriganaToggleController.create({
     button: furiganaButton,
     icon: furiganaIcon,
     t,
+    getUiLanguage: () => (window.I18N && window.I18N.lang) || 'en',
+    getEnabledLanguages: () => (learningLanguages ? learningLanguages.getEnabledMap() : null),
     console,
     onChange: (enabled) => {
         furiganaService.setEnabled(enabled);
@@ -1410,11 +1412,13 @@ learningLanguages = LearningLanguages.create({
     getUiLanguage: () => (window.I18N && window.I18N.lang) || 'en',
     buildToggleSwitch: settingsPorts.buildToggleSwitch,
     onChange: () => {
+        furiganaToggleController.updateButton();
         subtitleRenderer.invalidateSentences();
         subtitleRuntimeController.render();
     },
 });
 learningLanguages.renderSettingsSection();
+furiganaToggleController.updateButton();
 const themeController = ThemeController.create({
     settingsUi,
     fetch,
@@ -1598,6 +1602,7 @@ const settingsPanelController = SettingsPanel.create({
             if (learningLanguages) learningLanguages.applyI18n();
             if (transcriptController) transcriptController.applyI18n();
             if (obsController) obsController.applyI18n();
+            furiganaToggleController.updateButton();
         },
         fetchMicrophoneDevices: settingsPorts.fetchMicrophoneDevices,
         fetchBalance: hostedPorts.fetchBalance,

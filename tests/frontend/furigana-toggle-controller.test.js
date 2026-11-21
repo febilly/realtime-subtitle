@@ -79,6 +79,52 @@ describe('FuriganaToggleController stored state and display', () => {
         expect(page.button.classList.contains('active')).toBe(false);
         expect(page.button.title).toBe('label:furigana_off');
     });
+
+    it('formats dynamic language-aware tooltips when getEnabledLanguages is provided', () => {
+        const dom = new JSDOM('<!doctype html><button id="furigana"><span id="icon">あ</span></button>');
+        pages.push(dom);
+        const button = dom.window.document.getElementById('furigana');
+        const icon = dom.window.document.getElementById('icon');
+        let langMap = { ja: true, zh: false, ko: true };
+        let uiLang = 'zh';
+        const storage = { getItem: () => 'false', setItem: () => {} };
+        const t = (key, vars) => {
+            if (key === 'learning_ja_furigana') return '日语假名';
+            if (key === 'learning_zh_pinyin') return '中文拼音';
+            if (key === 'learning_ko_romanization') return '韩语罗马音';
+            if (key === 'furigana_off_with_langs') return `OFF:${vars.languages}`;
+            if (key === 'furigana_on_with_langs') return `ON:${vars.languages}`;
+            if (key === 'furigana_no_langs_off') return 'NONE_OFF';
+            if (key === 'furigana_no_langs_on') return 'NONE_ON';
+            return key;
+        };
+        const controller = FuriganaToggleController.create({
+            storage,
+            button,
+            icon,
+            t,
+            getUiLanguage: () => uiLang,
+            getEnabledLanguages: () => langMap,
+        });
+
+        controller.updateButton();
+        expect(button.title).toBe('OFF:日语假名、韩语罗马音');
+
+        controller.toggle();
+        expect(button.title).toBe('ON:日语假名、韩语罗马音');
+
+        uiLang = 'en';
+        langMap = { ja: false, zh: true, ko: true };
+        controller.updateButton();
+        expect(button.title).toBe('ON:中文拼音, 韩语罗马音');
+
+        langMap = { ja: false, zh: false, ko: false };
+        controller.updateButton();
+        expect(button.title).toBe('NONE_ON');
+
+        controller.toggle();
+        expect(button.title).toBe('NONE_OFF');
+    });
 });
 
 describe('FuriganaToggleController toggling and lifecycle', () => {
