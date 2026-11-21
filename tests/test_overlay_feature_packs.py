@@ -85,13 +85,24 @@ def test_websocket_feature_packs_frame_updates_learning_pack(isolated_overlay):
 def test_websocket_learning_languages_frame_updates_overlay_state(isolated_overlay):
     window, _ = isolated_overlay
     assert window._learning_languages == {"ja": True, "zh": True, "ko": True}
+    tooltip_all = window.btn_furigana.toolTip()
+    assert overlay_module.tr("learning_ja_furigana") in tooltip_all
+    assert overlay_module.tr("learning_zh_pinyin") in tooltip_all
+    assert overlay_module.tr("learning_ko_romanization") in tooltip_all
 
     window._on_message(json.dumps({
         "type": "learning_languages",
         "languages": {"ja": True, "zh": False, "ko": True},
     }))
     assert window._learning_languages == {"ja": True, "zh": False, "ko": True}
+    tooltip_ja_ko = window.btn_furigana.toolTip()
+    assert overlay_module.tr("learning_ja_furigana") in tooltip_ja_ko
+    assert overlay_module.tr("learning_zh_pinyin") not in tooltip_ja_ko
+    assert overlay_module.tr("learning_ko_romanization") in tooltip_ja_ko
 
-    assert window.set_learning_languages({"zh": True, "ko": False, "unknown": False}) is True
+    assert window.set_learning_languages({"ja": False, "zh": False, "ko": False}) is True
+    assert window.btn_furigana.toolTip() == overlay_module.tr("furigana_no_langs_on")
+
+    assert window.set_learning_languages({"ja": True, "zh": True, "ko": False, "unknown": False}) is True
     assert window._learning_languages == {"ja": True, "zh": True, "ko": False}
     assert window.set_learning_languages({"ja": True, "zh": True, "ko": False}) is False

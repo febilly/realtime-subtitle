@@ -187,8 +187,15 @@ _I18N_DATA = {
         "flow_down": "字幕向下流动 (点击改为向上流动)",
         "passthrough_off": "穿透模式：关闭 (开启后除按钮外鼠标均可穿透)",
         "passthrough_on": "穿透模式：开启 (关闭后鼠标无法穿透悬浮窗)",
-        "furigana_off": "开启假名注音",
-        "furigana_on": "关闭假名注音",
+        "furigana_off": "开启注音（可在主界面设置中修改语言）",
+        "furigana_on": "关闭注音（可在主界面设置中修改语言）",
+        "furigana_off_with_langs": "开启注音：{languages}（可在主界面设置中修改）",
+        "furigana_on_with_langs": "关闭注音（当前：{languages} · 可在主界面设置中修改）",
+        "furigana_no_langs_off": "开启注音（请先在主界面设置 → 语言学习中选择语言）",
+        "furigana_no_langs_on": "注音已开启，但未选择任何语言（请在主界面设置 → 语言学习中开启）",
+        "learning_ja_furigana": "日语假名",
+        "learning_zh_pinyin": "中文拼音",
+        "learning_ko_romanization": "韩语罗马音",
         "restart": "重启识别",
         "restarting": "正在重启识别",
         "restart_failed": "重启失败，点击重试",
@@ -210,8 +217,15 @@ _I18N_DATA = {
         "flow_down": "Subtitles flow downward (click to flow upward)",
         "passthrough_off": "Click-through mode: disabled (click to enable)",
         "passthrough_on": "Click-through mode: enabled (click to disable)",
-        "furigana_off": "Enable furigana for Japanese",
-        "furigana_on": "Disable furigana",
+        "furigana_off": "Enable phonetic annotations (configurable in main Settings)",
+        "furigana_on": "Disable phonetic annotations (configurable in main Settings)",
+        "furigana_off_with_langs": "Enable phonetic annotations: {languages} (change in main Settings)",
+        "furigana_on_with_langs": "Disable phonetic annotations (Active: {languages} · change in main Settings)",
+        "furigana_no_langs_off": "Enable phonetic annotations (select languages in main Settings → Language learning)",
+        "furigana_no_langs_on": "Phonetic annotations enabled, but no languages are selected (enable in main Settings → Language learning)",
+        "learning_ja_furigana": "Japanese furigana",
+        "learning_zh_pinyin": "Chinese pinyin",
+        "learning_ko_romanization": "Korean romanization",
         "restart": "Restart recognition",
         "restarting": "Restarting recognition",
         "restart_failed": "Restart failed, click to retry",
@@ -233,8 +247,15 @@ _I18N_DATA = {
         "flow_down": "字幕は下方向に流れます (クリックで上方向に変更)",
         "passthrough_off": "マウスクリック透過：無効 (クリックで有効化)",
         "passthrough_on": "マウスクリック透過：有効 (クリックで無効化)",
-        "furigana_off": "ふりがな表示を有効にする",
-        "furigana_on": "ふりがな表示を無効にする",
+        "furigana_off": "発音ガイドを有効にする（メイン画面の設定で言語を変更可能）",
+        "furigana_on": "発音ガイドを無効にする（メイン画面の設定で言語を変更可能）",
+        "furigana_off_with_langs": "発音ガイドを有効にする：{languages}（メイン画面の設定で変更可能）",
+        "furigana_on_with_langs": "発音ガイドを無効にする（有効：{languages} · メイン画面の設定で変更可能）",
+        "furigana_no_langs_off": "発音ガイドを有効にする（メイン画面の設定 → 語学学習で言語を選択してください）",
+        "furigana_no_langs_on": "発音ガイドは有効ですが言語が未選択です（メイン画面の設定 → 語学学習で有効にしてください）",
+        "learning_ja_furigana": "日本語ふりがな",
+        "learning_zh_pinyin": "中国語ピンイン",
+        "learning_ko_romanization": "韓国語ローマ字",
         "restart": "認識を再起動",
         "restarting": "認識を再起動中",
         "restart_failed": "再起動に失敗、クリックして再試行",
@@ -256,8 +277,15 @@ _I18N_DATA = {
         "flow_down": "자막이 아래로 흐릅니다 (클릭하여 위로 변경)",
         "passthrough_off": "마우스 클릭 관통: 비활성화 (클릭 시 활성화)",
         "passthrough_on": "마우스 클릭 관통: 활성화 (클릭 시 비활성화)",
-        "furigana_off": "후리가나 활성화",
-        "furigana_on": "후리가나 비활성화",
+        "furigana_off": "발음 표기 활성화 (메인 설정에서 언어 변경 가능)",
+        "furigana_on": "발음 표기 비활성화 (메인 설정에서 언어 변경 가능)",
+        "furigana_off_with_langs": "발음 표기 활성화: {languages} (메인 설정에서 변경 가능)",
+        "furigana_on_with_langs": "발음 표기 비활성화 (사용 중: {languages} · 메인 설정에서 변경 가능)",
+        "furigana_no_langs_off": "발음 표기 활성화 (메인 설정 → 언어 학습에서 언어를 선택하세요)",
+        "furigana_no_langs_on": "발음 표기가 켜져 있지만 선택된 언어가 없습니다 (메인 설정 → 언어 학습에서 켜세요)",
+        "learning_ja_furigana": "일본어 후리가나",
+        "learning_zh_pinyin": "중국어 병음",
+        "learning_ko_romanization": "한국어 로마자 표기",
         "restart": "인식 재시작",
         "restarting": "인식 재시작 중",
         "restart_failed": "재시작 실패, 클릭하여 재시도",
@@ -279,8 +307,15 @@ _I18N_DATA = {
         "flow_down": "Субтитры движутся вниз (нажмите, чтобы направить вверх)",
         "passthrough_off": "Режим сквозного клика: отключен (нажмите для включения)",
         "passthrough_on": "Режим сквозного клика: включен (нажмите для отключения)",
-        "furigana_off": "Включить фуригану для японского",
-        "furigana_on": "Выключить фуригану",
+        "furigana_off": "Включить транскрипцию (настройка языков в главном окне)",
+        "furigana_on": "Выключить транскрипцию (настройка языков в главном окне)",
+        "furigana_off_with_langs": "Включить транскрипцию: {languages} (настройка в главном окне)",
+        "furigana_on_with_langs": "Выключить транскрипцию (вкл.: {languages} · настройка в главном окне)",
+        "furigana_no_langs_off": "Включить транскрипцию (выберите языки в Настройках главного окна → Изучение языков)",
+        "furigana_no_langs_on": "Транскрипция включена, но языки не выбраны (включите в Настройках главного окна → Изучение языков)",
+        "learning_ja_furigana": "Японская фуригана",
+        "learning_zh_pinyin": "Китайский пиньинь",
+        "learning_ko_romanization": "Корейская романизация",
         "restart": "Перезапустить распознавание",
         "restarting": "Перезапуск распознавания...",
         "restart_failed": "Сбой перезапуска, нажмите для повтора",
@@ -302,8 +337,15 @@ _I18N_DATA = {
         "flow_down": "Los subtítulos fluyen hacia abajo (clic para invertir)",
         "passthrough_off": "Modo de paso del ratón: desactivado (clic para activar)",
         "passthrough_on": "Modo de paso del ratón: activado (clic para desactivar)",
-        "furigana_off": "Activar furigana para japonés",
-        "furigana_on": "Desactivar furigana",
+        "furigana_off": "Activar anotaciones fonéticas (configurable en Ajustes principales)",
+        "furigana_on": "Desactivar anotaciones fonéticas (configurable en Ajustes principales)",
+        "furigana_off_with_langs": "Activar anotaciones fonéticas: {languages} (cambiar en Ajustes principales)",
+        "furigana_on_with_langs": "Desactivar anotaciones fonéticas (Activo: {languages} · cambiar en Ajustes principales)",
+        "furigana_no_langs_off": "Activar anotaciones fonéticas (selecciona idiomas en Ajustes principales → Aprendizaje de idiomas)",
+        "furigana_no_langs_on": "Anotaciones fonéticas activadas, pero sin idiomas seleccionados (actívalos en Ajustes principales → Aprendizaje de idiomas)",
+        "learning_ja_furigana": "Furigana japonés",
+        "learning_zh_pinyin": "Pinyin chino",
+        "learning_ko_romanization": "Romanización coreana",
         "restart": "Reiniciar reconocimiento",
         "restarting": "Reiniciando reconocimiento",
         "restart_failed": "Error al reiniciar, clic para reintentar",
@@ -325,8 +367,15 @@ _I18N_DATA = {
         "flow_down": "As legendas fluem para baixo (clique para inverter)",
         "passthrough_off": "Modo de passagem do mouse: desativado (clique para ativar)",
         "passthrough_on": "Modo de passagem do mouse: ativado (clique para desativar)",
-        "furigana_off": "Ativar furigana para japonês",
-        "furigana_on": "Desativar furigana",
+        "furigana_off": "Ativar anotações fonéticas (configurável nas Configurações principais)",
+        "furigana_on": "Desativar anotações fonéticas (configurável nas Configurações principais)",
+        "furigana_off_with_langs": "Ativar anotações fonéticas: {languages} (alterar nas Configurações principais)",
+        "furigana_on_with_langs": "Desativar anotações fonéticas (Ativo: {languages} · alterar nas Configurações principais)",
+        "furigana_no_langs_off": "Ativar anotações fonéticas (selecione idiomas nas Configurações principais → Aprendizado de idiomas)",
+        "furigana_no_langs_on": "Anotações fonéticas ativadas, mas nenhum idioma selecionado (ative nas Configurações principais → Aprendizado de idiomas)",
+        "learning_ja_furigana": "Furigana japonês",
+        "learning_zh_pinyin": "Pinyin chinês",
+        "learning_ko_romanization": "Romanização coreana",
         "restart": "Reiniciar reconhecimento",
         "restarting": "Reiniciando reconhecimento",
         "restart_failed": "Falha ao reiniciar, clique para tentar novamente",
@@ -337,11 +386,36 @@ _I18N_DATA = {
 }
 
 
-def tr(key: str) -> str:
+_LEARNING_LANGUAGE_KEYS = (
+    ("ja", "learning_ja_furigana"),
+    ("zh", "learning_zh_pinyin"),
+    ("ko", "learning_ko_romanization"),
+)
+
+
+def _overlay_lang() -> str:
     lang = QLocale.system().name().split('_')[0]
-    if lang not in _I18N_DATA:
-        lang = "en"
+    return lang if lang in _I18N_DATA else "en"
+
+
+def tr(key: str) -> str:
+    lang = _overlay_lang()
     return _I18N_DATA[lang].get(key, _I18N_DATA["en"].get(key, key))
+
+
+def _format_furigana_tooltip(enabled: bool, learning_languages) -> str:
+    if not isinstance(learning_languages, dict):
+        return tr("furigana_on" if enabled else "furigana_off")
+    enabled_labels = [
+        tr(label_key)
+        for code, label_key in _LEARNING_LANGUAGE_KEYS
+        if learning_languages.get(code)
+    ]
+    if not enabled_labels:
+        return tr("furigana_no_langs_on" if enabled else "furigana_no_langs_off")
+    sep = "、" if _overlay_lang() in ("zh", "ja") else ", "
+    template = tr("furigana_on_with_langs" if enabled else "furigana_off_with_langs")
+    return template.format(languages=sep.join(enabled_labels))
 
 
 def _normalize_background_mode(value) -> str:
@@ -2124,8 +2198,8 @@ class OverlayWindow(QWidget):
 
     def _update_furigana_button(self):
         self.btn_furigana.setStyleSheet(self._button_style(self.furigana_enabled))
-        self.btn_furigana.setToolTip(tr(
-            "furigana_on" if self.furigana_enabled else "furigana_off"))
+        self.btn_furigana.setToolTip(_format_furigana_tooltip(
+            self.furigana_enabled, getattr(self, "_learning_languages", None)))
 
     def set_learning_pack_enabled(self, enabled: bool):
         pack_enabled = bool(enabled)
@@ -2154,6 +2228,7 @@ class OverlayWindow(QWidget):
                     current[code] = languages[code]
                     changed = True
         if changed:
+            self._update_furigana_button()
             self._last_html = None
             self._render()
         return changed
