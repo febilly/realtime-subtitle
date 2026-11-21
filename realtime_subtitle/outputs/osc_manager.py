@@ -98,6 +98,9 @@ class OSCManager:
             self._oscquery_connected = False
             self._oscquery_httpd = None
             self._vrchat_linked_logged = False
+            self._vrchat_zc = None
+            self._vrchat_browser = None
+            self._vrchat_services: set[str] = set()
             
             # 发送节流配置（仅保留一个待发消息）
             self._cooldown_seconds = 1.5  # 发送冷却时间（秒）
@@ -162,6 +165,76 @@ class OSCManager:
             self._client = vrc_client()
             self._emit("[OSC] UDP client created")
         return self._client
+
+    def is_vrchat_connected(self) -> bool:
+        """Return True once VRChat has connected and sent MuteSelf state."""
+        return bool(self._oscquery_connected)
+
+    def get_last_mute_value(self) -> Optional[bool]:
+        """Return the last MuteSelf value received while VRChat is connected."""
+        return self._last_mute_value
+
+    def _on_vrchat_service_added(self, name: str) -> None:
+        if str(name or "").startswith("VRChat-Client-"):
+            self._vrchat_services.add(name)
+
+    def _on_vrchat_service_removed(self, name: str) -> None:
+        if name in self._vrchat_services:
+            self._vrchat_services.discard(name)
+            if not self._vrchat_services:
+                self._handle_vrchat_disconnected()
+
+    def _handle_vrchat_disconnected(self) -> None:
+        was_connected = self._oscquery_connected or self._last_mute_value is True
+        self._oscquery_connected = False
+        self._vrchat_linked_logged = False
+        self._last_mute_value = None
+        if was_connected:
+            self._emit("[OSCQuery] VRChat disconnected; clearing MuteSelf state")
+            self._notify_mute_callback(False)
+
+    def _start_vrchat_presence_monitor(self) -> None:
+        """Watch mDNS for VRChat-Client-* exit so disconnected sessions unmute mic."""
+        if os.getenv("PYTEST_CURRENT_TEST"):
+            return
+        try:
+            from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
+        except Exception:
+            return
+        manager = self
+
+        class _Listener(ServiceListener):
+            def add_service(self, zc, type_, name):
+                manager._on_vrchat_service_added(name)
+
+            def remove_service(self, zc, type_, name):
+                manager._on_vrchat_service_removed(name)
+
+            def update_service(self, zc, type_, name):
+                pass
+
+        try:
+            zc = Zeroconf()
+            browser = ServiceBrowser(zc, "_oscjson._tcp.local.", _Listener())
+            self._vrchat_zc = zc
+            self._vrchat_browser = browser
+        except Exception as error:
+            logger.debug("VRChat presence monitor unavailable: %s", error)
+
+    def _stop_vrchat_presence_monitor(self) -> None:
+        browser, self._vrchat_browser = self._vrchat_browser, None
+        zc, self._vrchat_zc = self._vrchat_zc, None
+        self._vrchat_services.clear()
+        if browser is not None:
+            try:
+                browser.cancel()
+            except Exception:
+                pass
+        if zc is not None:
+            try:
+                zc.close()
+            except Exception:
+                pass
 
     def _notify_mute_callback(self, mute_value: bool):
         if self._mute_callback is None:
@@ -233,7 +306,10 @@ class OSCManager:
             _oscquery_import_error = None
         vrchat_osc_common.APP_HOST = "127.0.0.1"
         dispatcher = dict_to_dispatcher({VRCHAT_MUTE_PATH: self._handle_mute_self})
-        return vrc_osc(self._oscquery_app_name, dispatcher, foreground=False)
+        httpd = vrc_osc(self._oscquery_app_name, dispatcher, foreground=False)
+        if getattr(vrc_osc, "__module__", "").startswith("vrchat_oscquery"):
+            self._start_vrchat_presence_monitor()
+        return httpd
     
     async def stop_server(self):
         """Stop OSCQuery service."""
@@ -244,6 +320,7 @@ class OSCManager:
                 self._pending_timer = None
             self._pending_message = None
 
+        self._stop_vrchat_presence_monitor()
         with self._oscquery_lock:
             httpd = self._oscquery_httpd
             self._oscquery_httpd = None
@@ -254,9 +331,7 @@ class OSCManager:
                 self._emit("[OSCQuery] Service stopped")
             except Exception as error:
                 self._emit(f"[OSCQuery] Error while stopping service: {error}", level="warning")
-        self._oscquery_connected = False
-        self._vrchat_linked_logged = False
-        self._last_mute_value = None
+        self._handle_vrchat_disconnected()
     
     def _truncate_text(self, text: str, max_length: int = 144) -> str:
         """

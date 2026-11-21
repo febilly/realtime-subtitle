@@ -399,3 +399,35 @@ def test_build_combined_history_respects_max_lines():
     combined = osc._build_combined_history_locked()
     lines = combined.split("\n")
     assert len(lines) <= 9
+
+
+@pytest.mark.asyncio
+async def test_vrchat_disconnect_and_stop_server_clear_mute_state():
+    osc = _fresh_osc_manager()
+    received = []
+    osc.set_mute_callback(received.append)
+
+    # Not connected initially
+    assert osc.is_vrchat_connected() is False
+    assert osc.get_last_mute_value() is None
+
+    # VRChat connects and sends MuteSelf=True
+    osc._on_vrchat_service_added("VRChat-Client-1234._oscjson._tcp.local.")
+    osc._handle_mute_self("/avatar/parameters/MuteSelf", True)
+    assert osc.is_vrchat_connected() is True
+    assert osc.get_last_mute_value() is True
+    assert received == [True]
+
+    # VRChat service disappears -> clears connected state and unmutes mic
+    osc._on_vrchat_service_removed("VRChat-Client-1234._oscjson._tcp.local.")
+    assert osc.is_vrchat_connected() is False
+    assert osc.get_last_mute_value() is None
+    assert received == [True, False]
+
+    # Also verify stop_server clears connected/muted state
+    osc._handle_mute_self("/avatar/parameters/MuteSelf", True)
+    assert osc.is_vrchat_connected() is True
+    await osc.stop_server()
+    assert osc.is_vrchat_connected() is False
+    assert osc.get_last_mute_value() is None
+    assert received[-1] is False
