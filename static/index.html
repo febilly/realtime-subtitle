@@ -38,38 +38,38 @@
         </div>
 
         <div class="button-bar">
-            <button class="control-button" id="pauseButton" title="Pause/Resume recognition">
+            <button class="control-button" id="pauseButton" type="button" title="Pause/Resume recognition">
                 <svg class="control-icon" id="pauseIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#pause"></use>
                 </svg>
             </button>
 
-            <button class="control-button restart-button" id="restartButton" title="Restart recognition">
+            <button class="control-button restart-button" id="restartButton" type="button" title="Restart recognition">
                 <svg class="control-icon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#rotate-cw"></use>
                 </svg>
             </button>
 
-            <button class="control-button" id="themeToggle" title="Toggle theme">
+            <button class="control-button" id="themeToggle" type="button" title="Toggle theme">
                 <svg class="control-icon" id="themeIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#sun"></use>
                 </svg>
             </button>
 
-            <button class="control-button" id="audioSourceButton" title="Switch audio source">
+            <button class="control-button" id="audioSourceButton" type="button" title="Switch audio source">
                 <svg class="control-icon" id="audioSourceIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#volume-2"></use>
                 </svg>
             </button>
 
-            <button class="control-button" id="overlayButton" title="Toggle subtitle overlay window">
+            <button class="control-button" id="overlayButton" type="button" title="Toggle subtitle overlay window">
                 <svg class="control-icon" id="overlayIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#subtitles"></use>
                 </svg>
             </button>
 
             <!-- Shown by runtime-controls.js once the backend reports SteamVR support. -->
-            <button class="control-button" id="vrOverlayButton" title="Toggle VR subtitle overlay" style="display: none;">
+            <button class="control-button" id="vrOverlayButton" type="button" title="Toggle VR subtitle overlay" style="display: none;">
                 <svg class="control-icon vr-overlay-icon" viewBox="0 0 24 24" aria-hidden="true">
                     <defs>
                         <mask id="vrOverlayIconMask" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
@@ -85,29 +85,29 @@
                 </svg>
             </button>
 
-            <button class="control-button" id="displayModeButton" title="Toggle display mode">
+            <button class="control-button" id="displayModeButton" type="button" title="Toggle display mode">
                 <svg class="control-icon" id="displayModeText" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#eye"></use>
                 </svg>
             </button>
 
-            <button class="control-button" id="translationLangButton" title="Translation language">
+            <button class="control-button" id="translationLangButton" type="button" title="Translation language">
                 <svg class="control-icon" id="translationLangIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#languages"></use>
                 </svg>
             </button>
 
-            <button class="control-button" id="oscTranslationButton" title="Send translation to VRChat via OSC">
+            <button class="control-button" id="oscTranslationButton" type="button" title="Send translation to VRChat via OSC">
                 <svg class="control-icon" id="oscTranslationIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#send-horizontal"></use>
                 </svg>
             </button>
 
-            <button class="control-button" id="furiganaButton" title="Toggle phonetic annotations">
+            <button class="control-button" id="furiganaButton" type="button" title="Toggle phonetic annotations">
                 <span id="furiganaIcon">あ</span>
             </button>
 
-            <button class="control-button mobile-only" id="bottomSafeAreaButton" title="Toggle extra bottom space on mobile">
+            <button class="control-button mobile-only" id="bottomSafeAreaButton" type="button" title="Toggle extra bottom space on mobile">
                 <svg class="control-icon" id="bottomSafeAreaIcon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#arrow-down-to-line"></use>
                 </svg>
@@ -130,13 +130,13 @@
                 <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
 
-            <button class="control-button" id="settingsButton" title="Settings">
+            <button class="control-button" id="settingsButton" type="button" title="Settings">
                 <svg class="control-icon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#settings"></use>
                 </svg>
             </button>
 
-            <button class="control-button" id="ipcStatusButton" title="Yakutan 已连接" style="display: none; cursor: default;">
+            <button class="control-button" id="ipcStatusButton" type="button" title="Yakutan 已连接" style="display: none; cursor: default;">
                 <svg class="control-icon" aria-hidden="true">
                     <use href="icons/lucide-sprite.svg#link"></use>
                 </svg>
@@ -202,13 +202,10 @@
 
                     <section class="auth-section settings-item" id="localInferenceSection" hidden>
                         <div class="settings-section-label" id="localInferenceLabel">Local models</div>
-                        <label class="form-field" for="localInferenceBackend">
+                        <div class="form-field">
                             <span id="localInferenceBackendLabel">Run location</span>
-                            <select id="localInferenceBackend">
-                                <option id="localInferenceBackendLocalOption" value="local">This computer</option>
-                                <option id="localInferenceBackendRemoteOption" value="remote">Remote inference server</option>
-                            </select>
-                        </label>
+                            <div id="localInferenceBackend"></div>
+                        </div>
                         <div id="localRemoteControls" hidden>
                             <label class="form-field" for="localRemoteServerUrl">
                                 <span id="localRemoteServerUrlLabel">Remote server address</span>
@@ -242,22 +239,18 @@
                                 <button class="secondary-button" id="localTranslationDownloadButton" type="button" hidden>Download Hy-MT2</button>
                             </div>
                             <button class="secondary-button" id="localLegacyCleanupButton" type="button" hidden>Delete old local model files</button>
-                            <label class="form-field" for="localAsrDevice">
+                            <div class="form-field">
                                 <span id="localAsrDeviceLabel">Qwen decoder device</span>
-                                <select id="localAsrDevice"></select>
-                            </label>
-                            <label class="form-field" for="localEncoderDevice">
+                                <div id="localAsrDevice"></div>
+                            </div>
+                            <div class="form-field">
                                 <span id="localEncoderDeviceLabel">Qwen audio encoder device</span>
-                                <select id="localEncoderDevice">
-                                    <option id="localEncoderDeviceAutoOption" value="auto">Follow decoder device</option>
-                                    <option value="gpu">GPU</option>
-                                    <option value="cpu">CPU</option>
-                                </select>
-                            </label>
-                            <label class="form-field" for="localTranslationDevice">
+                                <div id="localEncoderDevice"></div>
+                            </div>
+                            <div class="form-field">
                                 <span id="localTranslationDeviceLabel">Hy-MT2 device</span>
-                                <select id="localTranslationDevice"></select>
-                            </label>
+                                <div id="localTranslationDevice"></div>
+                            </div>
                         </div>
                         <label class="form-field range-field" for="localVadSilenceDuration">
                             <span class="range-field-header">

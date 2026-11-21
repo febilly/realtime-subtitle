@@ -38,6 +38,14 @@
         let forcedOpen = false;
         let relayPricing = null;
         let sonioxRegionPicker = null;
+        const localPickers = {
+            backend: null,
+            asrDevice: null,
+            encoderDevice: null,
+            translationDevice: null,
+        };
+        const mirroredSelectHosts = new WeakSet();
+        let lastLocalDevices = [];
         let localStatusLoaded = false;
         let localDraftDirty = false;
         let lastLocalConfig = {};
@@ -255,17 +263,128 @@
             return options;
         }
 
-        function populateNativeSelect(select, options, value) {
-            if (!select) return;
-            select.innerHTML = '';
-            for (const option of options) {
-                const element = documentRef.createElement('option');
-                element.value = option.value;
-                element.textContent = option.label;
-                select.appendChild(element);
+        function isNativeSelect(element) {
+            return !!(element && String(element.tagName || '').toUpperCase() === 'SELECT');
+        }
+
+        function ensureMirroredPickerHost(host, pickerKey) {
+            if (!host || isNativeSelect(host) || mirroredSelectHosts.has(host)) return;
+            mirroredSelectHosts.add(host);
+            Object.defineProperty(host, 'value', {
+                configurable: true,
+                get: () => {
+                    const picker = localPickers[pickerKey];
+                    return picker && typeof picker.value === 'string' ? picker.value : '';
+                },
+                set: (next) => {
+                    const picker = localPickers[pickerKey];
+                    if (picker) picker.value = next;
+                },
+            });
+            Object.defineProperty(host, 'disabled', {
+                configurable: true,
+                get: () => {
+                    const picker = localPickers[pickerKey];
+                    return !!(picker && picker.disabled);
+                },
+                set: (next) => {
+                    const picker = localPickers[pickerKey];
+                    if (picker) picker.disabled = !!next;
+                },
+            });
+        }
+
+        function populateLocalSelect(host, pickerKey, options, value, { disabled = false, onChange = null } = {}) {
+            if (!host) {
+                localPickers[pickerKey] = null;
+                return null;
             }
-            select.value = value || 'auto';
-            if (!select.value) select.value = 'auto';
+            const fallback = (options[0] && options[0].value) || 'auto';
+            const selected = options.some((option) => option.value === value) ? value : fallback;
+            if (isNativeSelect(host)) {
+                host.innerHTML = '';
+                for (const option of options) {
+                    const element = documentRef.createElement('option');
+                    element.value = option.value;
+                    element.textContent = option.label;
+                    host.appendChild(element);
+                }
+                host.value = selected;
+                host.disabled = !!disabled;
+                return host;
+            }
+            if (localPickers[pickerKey] && typeof localPickers[pickerKey].close === 'function') {
+                localPickers[pickerKey].close();
+            }
+            host.innerHTML = '';
+            const picker = buildCustomSelect(options, {
+                value: selected,
+                disabled: !!disabled,
+                onChange,
+            });
+            localPickers[pickerKey] = picker;
+            host.appendChild(picker);
+            ensureMirroredPickerHost(host, pickerKey);
+            return picker;
+        }
+
+        function localBackendOptions() {
+            return [
+                { value: 'local', label: t('local_inference_local') },
+                { value: 'remote', label: t('local_inference_remote') },
+            ];
+        }
+
+        function localEncoderDeviceOptions() {
+            return [
+                { value: 'auto', label: t('local_encoder_device_auto') },
+                { value: 'gpu', label: 'GPU' },
+                { value: 'cpu', label: 'CPU' },
+            ];
+        }
+
+        function renderLocalBackendPicker(value) {
+            const backend = normalizeLocalBackend(value);
+            return populateLocalSelect(
+                elements.localInferenceBackend,
+                'backend',
+                localBackendOptions(),
+                backend,
+                {
+                    disabled: !!state().offlineMode,
+                    onChange: (next) => {
+                        localDraftDirty = true;
+                        updateLocalBackendVisibility(next);
+                    },
+                },
+            );
+        }
+
+        function renderLocalDevicePickers(devices, { asrDevice, encoderDevice, translationDevice } = {}) {
+            if (Array.isArray(devices)) lastLocalDevices = devices;
+            const deviceOptions = localDeviceOptions(lastLocalDevices);
+            populateLocalSelect(elements.localAsrDevice, 'asrDevice', deviceOptions, asrDevice || 'auto');
+            populateLocalSelect(
+                elements.localEncoderDevice,
+                'encoderDevice',
+                localEncoderDeviceOptions(),
+                encoderDevice || 'auto',
+            );
+            populateLocalSelect(
+                elements.localTranslationDevice,
+                'translationDevice',
+                deviceOptions,
+                translationDevice || 'auto',
+            );
+        }
+
+        function closeOpenPickers() {
+            if (sonioxRegionPicker && typeof sonioxRegionPicker.close === 'function') {
+                sonioxRegionPicker.close();
+            }
+            for (const picker of Object.values(localPickers)) {
+                if (picker && typeof picker.close === 'function') picker.close();
+            }
         }
 
         function renderModelState(element, ready) {
@@ -343,7 +462,7 @@
         function applyLocalInferenceConfig(config = {}) {
             applyLocalTimingConfig(config);
             const backend = normalizeLocalBackend(config.backend);
-            if (elements.localInferenceBackend) elements.localInferenceBackend.value = backend;
+            renderLocalBackendPicker(backend);
             if (elements.localRemoteServerUrl) {
                 elements.localRemoteServerUrl.value = config.server_url || 'ws://127.0.0.1:18775';
             }
@@ -382,20 +501,15 @@
                     elements.localTranslationDownloadButton.hidden = !!translation.ready;
                 }
                 renderLegacyCleanup(models.legacy);
-                const options = localDeviceOptions(data.devices);
                 lastLocalConfig = data.config || {};
                 const localConfig = { ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) };
                 if (!localDraftDirty) applyLocalInferenceConfig(localConfig);
                 renderRemoteStatus(data.remote_status);
-                populateNativeSelect(elements.localAsrDevice, options, localConfig.asr_device);
-                populateNativeSelect(
-                    elements.localTranslationDevice,
-                    options,
-                    localConfig.translation_device,
-                );
-                if (elements.localEncoderDevice) {
-                    elements.localEncoderDevice.value = localConfig.encoder_device || 'auto';
-                }
+                renderLocalDevicePickers(data.devices, {
+                    asrDevice: localConfig.asr_device,
+                    encoderDevice: localConfig.encoder_device,
+                    translationDevice: localConfig.translation_device,
+                });
                 localStatusLoaded = true;
                 return true;
             } catch (error) {
@@ -672,6 +786,12 @@
             setText('vrResetPositionButton', 'vr_reset_position');
             setText('vrOverlayHint', 'vr_overlay_hint');
             renderSonioxRegionPicker(getSelectedSonioxRegion());
+            renderLocalBackendPicker(getLocalBackend());
+            renderLocalDevicePickers(lastLocalDevices, {
+                asrDevice: (elements.localAsrDevice && elements.localAsrDevice.value) || 'auto',
+                encoderDevice: (elements.localEncoderDevice && elements.localEncoderDevice.value) || 'auto',
+                translationDevice: (elements.localTranslationDevice && elements.localTranslationDevice.value) || 'auto',
+            });
             call('renderMicrophoneDevicePicker');
             call('renderOutputDevicePicker');
             call('renderRuntimeSettingsPickers');
@@ -717,6 +837,7 @@
         }
 
         function hide() {
+            closeOpenPickers();
             if (elements.overlay) elements.overlay.hidden = true;
             if (elements.panel) elements.panel.hidden = true;
             forcedOpen = false;

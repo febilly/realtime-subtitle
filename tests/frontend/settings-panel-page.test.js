@@ -46,4 +46,18 @@ describe('full-page settings panel wiring', () => {
             page.close();
         }
     });
+
+    it('renders local model dropdowns as unified custom pickers instead of native selects', async () => {
+        const page = await createPageHarness();
+        try {
+            page.document.getElementById('settingsButton').click();
+            for (const id of ['localInferenceBackend', 'localAsrDevice', 'localEncoderDevice', 'localTranslationDevice']) {
+                const host = page.document.getElementById(id);
+                expect(host.tagName).toBe('DIV');
+                expect(host.querySelector('.custom-select .custom-select-button')).not.toBeNull();
+            }
+        } finally {
+            page.close();
+        }
+    });
 });
