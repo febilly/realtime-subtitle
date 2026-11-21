@@ -269,4 +269,47 @@ describe('audio source selector', () => {
             page.dom.window.close();
         }
     });
+
+    it('positions the popover higher using the full expanded baseline and refreshes when feature packs change', async () => {
+        let vrchatEnabled = true;
+        const dom = new JSDOM('<button id="audio"></button>', { url: 'http://localhost' });
+        const document = dom.window.document;
+        Object.defineProperty(dom.window, 'innerHeight', { configurable: true, value: 560 });
+        const positionPopoverAtBaseline = vi.fn((panel, prepareBaseline, opts) => {
+            const clone = panel.cloneNode(true);
+            prepareBaseline(clone);
+            const contents = clone.querySelectorAll('.audio-source-options');
+            expect(contents[0].hidden).toBe(false);
+            expect(contents[1].hidden).toBe(false);
+            expect(opts).toEqual({ verticalRatio: 0.15, minTop: 12 });
+            panel.style.setProperty('--lang-popover-top', '18px');
+        });
+        const fetch = vi.fn(async (url) => {
+            if (url === '/audio-source') return { ok: true, json: async () => ({ source: 'system', settings: { ...initial(), follow_vrchat_mic_mute: false } }) };
+            if (url === '/audio-windows') return { ok: true, json: async () => ({ available: true, windows: [] }) };
+            return { ok: true, json: async () => ({ available: true, devices: [] }) };
+        });
+        const controller = AudioSourceUI.create({
+            document,
+            window: dom.window,
+            fetch,
+            settingsUI: { create: () => ({ ...SettingsUI.create({ document, window: dom.window }), positionPopoverAtBaseline }) },
+            t: (key) => key,
+            button: document.querySelector('button'),
+            isVrchatPackEnabled: () => vrchatEnabled,
+        });
+        try {
+            await controller.show();
+            expect(positionPopoverAtBaseline).toHaveBeenCalled();
+            expect(document.querySelector('.audio-source-popover').style.getPropertyValue('--lang-popover-top')).toBe('18px');
+            expect(document.getElementById('audio-follow_vrchat_mic_mute')).not.toBeNull();
+
+            vrchatEnabled = false;
+            controller.refreshView();
+            expect(document.getElementById('audio-follow_vrchat_mic_mute')).toBeNull();
+        } finally {
+            controller.hide();
+            dom.window.close();
+        }
+    });
 });

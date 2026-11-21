@@ -81,4 +81,25 @@ describe('SettingsUI controls', () => {
         expect(openSettings).toHaveBeenCalledOnce();
         dom.window.close();
     });
+
+    it('positions popovers with customizable verticalRatio and minTop', () => {
+        const { dom, document, ui } = setup();
+        Object.defineProperty(dom.window, 'innerHeight', { configurable: true, value: 560 });
+        const popover = document.createElement('div');
+        popover.getBoundingClientRect = () => ({ height: 440 });
+        document.body.appendChild(popover);
+        const origClone = popover.cloneNode.bind(popover);
+        popover.cloneNode = (deep) => {
+            const clone = origClone(deep);
+            clone.getBoundingClientRect = () => ({ height: 440 });
+            return clone;
+        };
+
+        ui.positionPopoverAtBaseline(popover, () => {});
+        expect(popover.style.getPropertyValue('--lang-popover-top')).toBe('60px');
+
+        ui.positionPopoverAtBaseline(popover, () => {}, { verticalRatio: 0.15, minTop: 12 });
+        expect(popover.style.getPropertyValue('--lang-popover-top')).toBe('18px');
+        dom.window.close();
+    });
 });

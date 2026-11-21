@@ -116,12 +116,13 @@
             ui.positionPopoverAtBaseline(panel, (baseline) => {
                 const contents = baseline.querySelectorAll('.audio-source-options');
                 contents[0].hidden = false;
-                contents[1].hidden = true;
-                // Reference: desktop output capture on, microphone off.
+                contents[1].hidden = false;
+                // Reference: both desktop output and microphone capture expanded so
+                // expanding microphone never overflows the default window height.
                 // Availability warnings and validation are extra content.
                 contents[0].querySelectorAll('.field-hint').forEach((hint) => hint.remove());
                 baseline.querySelector('.audio-source-error').hidden = true;
-            });
+            }, { verticalRatio: 0.15, minTop: 12 });
         }
 
         function error(key) {

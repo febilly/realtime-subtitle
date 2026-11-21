@@ -40,7 +40,7 @@
             if (overlay) overlay.hidden = !open;
         }
 
-        function positionPopoverAtBaseline(panel, prepareBaseline) {
+        function positionPopoverAtBaseline(panel, prepareBaseline, { verticalRatio = 0.5, minTop = 18 } = {}) {
             // Measure the reference state without changing the live draft or
             // moving the panel when its visible contents expand/collapse.
             const baseline = panel.cloneNode(true);
@@ -55,7 +55,7 @@
             prepareBaseline(baseline);
             documentRef.body.appendChild(baseline);
             try {
-                const top = Math.max(18, Math.round((windowRef.innerHeight - baseline.getBoundingClientRect().height) / 2));
+                const top = Math.max(minTop, Math.round((windowRef.innerHeight - baseline.getBoundingClientRect().height) * verticalRatio));
                 panel.style.setProperty('--lang-popover-top', `${top}px`);
             } finally {
                 baseline.remove();
