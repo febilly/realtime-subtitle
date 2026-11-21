@@ -68,17 +68,33 @@
         element.append(doc.createTextNode(text.slice(offset)));
     }
     const css = `
-        .announcement-backdrop{position:fixed;inset:0;z-index:20000;background:#0008;display:flex;align-items:center;justify-content:center;padding:12px;font:14px/1.6 system-ui,sans-serif;color:#202030}
-        .announcement-dialog{background:#fff;color:inherit;width:100%;max-width:660px;max-height:85vh;max-height:85dvh;border-radius:12px;box-shadow:0 12px 40px #0006;display:flex;flex-direction:column;overflow:hidden}
-        .dark-theme .announcement-dialog{background:#222235;color:#eee}
-        .announcement-header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px;border-bottom:1px solid #8885;flex-shrink:0}
-        .announcement-header h2{font-size:18px;margin:0;overflow-wrap:anywhere}
-        .announcement-dialog button{cursor:pointer;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;min-height:44px;padding:6px 12px;font:inherit}
-        .announcement-body{overflow-y:auto;overscroll-behavior:contain;padding:16px;min-height:0}
-        .announcement-item{padding:0 0 16px;margin:0 0 16px;border-bottom:1px solid #8885;overflow-wrap:anywhere}
+        .announcement-backdrop{position:fixed;inset:0;z-index:20000;background:rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;padding:12px;font-family:var(--app-font-stack,-apple-system,BlinkMacSystemFont,'Segoe UI','Roboto','Helvetica','Arial',sans-serif);font-size:14px;line-height:1.6;color:#1f2937}
+        .announcement-dialog{background:#ffffff;color:#1f2937;width:100%;max-width:660px;max-height:85vh;max-height:85dvh;border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,0.25);display:flex;flex-direction:column;overflow:hidden}
+        .dark-theme .announcement-dialog{background:#1e1e2e;color:#e5e7eb;border:1px solid rgba(255,255,255,0.08)}
+        .announcement-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px 12px;border-bottom:1px solid rgba(0,0,0,0.08);flex-shrink:0}
+        .dark-theme .announcement-header{border-bottom-color:rgba(255,255,255,0.08)}
+        .announcement-header h2{font-size:17px;font-weight:700;margin:0;overflow-wrap:anywhere}
+        .announcement-close-button{width:32px;height:32px;border-radius:50%;border:none;background:rgba(0,0,0,0.06);color:inherit;cursor:pointer;font-size:24px;line-height:1;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;padding:0;transition:background-color 0.15s ease,transform 0.1s ease}
+        .announcement-close-button:hover{background:rgba(0,0,0,0.12)}
+        .announcement-close-button:active{transform:scale(0.95)}
+        .dark-theme .announcement-close-button{background:rgba(255,255,255,0.10)}
+        .dark-theme .announcement-close-button:hover{background:rgba(255,255,255,0.18)}
+        .announcement-retry-button{min-width:76px;min-height:36px;border-radius:8px;border:none;background:rgba(0,0,0,0.06);color:#374151;cursor:pointer;padding:8px 14px;font:inherit;font-size:14px;font-weight:500;margin-top:10px;transition:background-color 0.15s ease,transform 0.1s ease}
+        .announcement-retry-button:hover{background:rgba(0,0,0,0.11)}
+        .announcement-retry-button:active{background:rgba(0,0,0,0.16)}
+        .dark-theme .announcement-retry-button{background:rgba(255,255,255,0.10);color:#e5e7eb}
+        .dark-theme .announcement-retry-button:hover{background:rgba(255,255,255,0.16)}
+        .dark-theme .announcement-retry-button:active{background:rgba(255,255,255,0.22)}
+        .announcement-close-button:focus-visible,.announcement-retry-button:focus-visible{outline:2px solid #60a5fa;outline-offset:2px}
+        .announcement-body{overflow-y:auto;overscroll-behavior:contain;padding:16px 20px;min-height:0}
+        .announcement-item{padding:0 0 16px;margin:0 0 16px;border-bottom:1px solid rgba(0,0,0,0.08);overflow-wrap:anywhere}
+        .dark-theme .announcement-item{border-bottom-color:rgba(255,255,255,0.08)}
+        .announcement-item:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
         .announcement-item h3{font-size:16px;margin:0 0 4px;line-height:1.5}
         .announcement-item time{display:block;font-size:12px;opacity:.7;margin:0 0 10px}
-        .announcement-item a{color:#4c91ed;text-decoration:underline}
+        .announcement-item a{color:#2563eb;text-decoration:none}
+        .announcement-item a:hover{text-decoration:underline}
+        .dark-theme .announcement-item a{color:#60a5fa}
         .announcement-item mark{background:#fce68b;color:#302400;border-radius:3px;padding:0 2px}
         .announcement-unread-dot{position:absolute;top:2px;right:2px;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 2px #222}
         .announcement-unread-dot[hidden]{display:none}
@@ -160,7 +176,7 @@
             if (dialogLoading) { body.textContent = l.loading; return; }
             if (failed) {
                 const message = doc.createElement('p'); message.setAttribute('role', 'alert'); message.textContent = l.error; body.append(message);
-                const retry = doc.createElement('button'); retry.textContent = l.retry; retry.onclick = () => { void check({ force: true }); }; body.append(retry); return;
+                const retry = doc.createElement('button'); retry.type = 'button'; retry.className = 'secondary-button announcement-retry-button'; retry.textContent = l.retry; retry.onclick = () => { void check({ force: true }); }; body.append(retry); return;
             }
             if (!loaded) { body.textContent = l.loading; return; }
             if (!rows.length) body.textContent = l.empty;
@@ -181,7 +197,7 @@
             const panel = doc.createElement('section'); panel.className = 'announcement-dialog'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); panel.setAttribute('aria-label', l.title); panel.tabIndex = -1;
             const header = doc.createElement('div'); header.className = 'announcement-header';
             const title = doc.createElement('h2'); title.textContent = l.title;
-            const closeButton = doc.createElement('button'); closeButton.textContent = '×'; closeButton.setAttribute('aria-label', l.close); closeButton.onclick = close;
+            const closeButton = doc.createElement('button'); closeButton.type = 'button'; closeButton.className = 'panel-close-button announcement-close-button'; closeButton.textContent = '×'; closeButton.setAttribute('aria-label', l.close); closeButton.title = l.close; closeButton.onclick = close;
             header.append(title, closeButton);
             const body = doc.createElement('div'); body.className = 'announcement-body';
             panel.append(header, body); backdrop.append(panel);
