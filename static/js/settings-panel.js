@@ -363,18 +363,23 @@
         function renderLocalDevicePickers(devices, { asrDevice, encoderDevice, translationDevice } = {}) {
             if (Array.isArray(devices)) lastLocalDevices = devices;
             const deviceOptions = localDeviceOptions(lastLocalDevices);
-            populateLocalSelect(elements.localAsrDevice, 'asrDevice', deviceOptions, asrDevice || 'auto');
+            const markDirty = () => { localDraftDirty = true; };
+            populateLocalSelect(elements.localAsrDevice, 'asrDevice', deviceOptions, asrDevice || 'auto', {
+                onChange: markDirty,
+            });
             populateLocalSelect(
                 elements.localEncoderDevice,
                 'encoderDevice',
                 localEncoderDeviceOptions(),
                 encoderDevice || 'auto',
+                { onChange: markDirty },
             );
             populateLocalSelect(
                 elements.localTranslationDevice,
                 'translationDevice',
                 deviceOptions,
                 translationDevice || 'auto',
+                { onChange: markDirty },
             );
         }
 
@@ -463,6 +468,11 @@
             applyLocalTimingConfig(config);
             const backend = normalizeLocalBackend(config.backend);
             renderLocalBackendPicker(backend);
+            renderLocalDevicePickers(lastLocalDevices, {
+                asrDevice: config.asr_device,
+                encoderDevice: config.encoder_device,
+                translationDevice: config.translation_device,
+            });
             if (elements.localRemoteServerUrl) {
                 elements.localRemoteServerUrl.value = config.server_url || 'ws://127.0.0.1:18775';
             }
@@ -505,7 +515,11 @@
                 const localConfig = { ...lastLocalConfig, ...(loadProviderSettings().localConfig || {}) };
                 if (!localDraftDirty) applyLocalInferenceConfig(localConfig);
                 renderRemoteStatus(data.remote_status);
-                renderLocalDevicePickers(data.devices, {
+                renderLocalDevicePickers(data.devices, localDraftDirty ? {
+                    asrDevice: elements.localAsrDevice && elements.localAsrDevice.value,
+                    encoderDevice: elements.localEncoderDevice && elements.localEncoderDevice.value,
+                    translationDevice: elements.localTranslationDevice && elements.localTranslationDevice.value,
+                } : {
                     asrDevice: localConfig.asr_device,
                     encoderDevice: localConfig.encoder_device,
                     translationDevice: localConfig.translation_device,
@@ -713,6 +727,7 @@
             call('renderMicrophoneDevicePicker');
             call('renderRuntimeSettingsPickers');
             call('renderBundledCjkFontPicker');
+            call('resetExternalDrafts');
             call('updateAccountSection');
             if (elements.errorElement) {
                 elements.errorElement.textContent = current.setupRequired
@@ -838,9 +853,12 @@
 
         function hide() {
             closeOpenPickers();
+            call('closeExternalPickers');
+            call('resetExternalDrafts');
             if (elements.overlay) elements.overlay.hidden = true;
             if (elements.panel) elements.panel.hidden = true;
             forcedOpen = false;
+            localDraftDirty = false;
         }
 
         function close() {
@@ -931,6 +949,13 @@
                 localDraftDirty = true;
                 updateLocalBackendVisibility();
             });
+            for (const select of [
+                elements.localAsrDevice,
+                elements.localEncoderDevice,
+                elements.localTranslationDevice,
+            ]) {
+                bind(select, 'change', () => { localDraftDirty = true; });
+            }
             for (const field of [elements.localRemoteServerUrl, elements.localRemoteTimeoutSeconds]) {
                 bind(field, 'input', () => { localDraftDirty = true; renderRemoteStatus(null); });
             }

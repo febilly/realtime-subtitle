@@ -110,6 +110,29 @@ describe('LearningLanguages defaults and persistence', () => {
         expect(ctrl.applyBackendLanguages({ ja: false, zh: true, ko: false }, { initialized: true })).toBe(true);
         expect(ctrl.getEnabledMap()).toEqual({ ja: false, zh: true, ko: false });
         expect(ctrl.applyBackendLanguages({ ja: false, zh: true, ko: false }, { initialized: true })).toBe(false);
+        // UI checkbox edits stay in draft until commitDraft() is called; resetDraft() reverts them
+        const zhCheckbox = dom.window.document.querySelector('[data-learning-lang="zh"] input[type="checkbox"]');
+        zhCheckbox.checked = false;
+        zhCheckbox.dispatchEvent(new dom.window.Event('change'));
+        expect(ctrl.hasPendingChanges()).toBe(true);
+        expect(ctrl.getEnabledMap()).toEqual({ ja: false, zh: true, ko: false });
+        expect(ctrl.getDraft()).toEqual({ ja: false, zh: false, ko: false });
+        const callsBeforeCommit = fetchMock.mock.calls.length;
+        ctrl.resetDraft();
+        expect(ctrl.hasPendingChanges()).toBe(false);
+        expect(zhCheckbox.checked).toBe(true);
+        expect(fetchMock.mock.calls.length).toBe(callsBeforeCommit);
+
+        zhCheckbox.checked = false;
+        zhCheckbox.dispatchEvent(new dom.window.Event('change'));
+        await expect(ctrl.commitDraft()).resolves.toBe(true);
+        expect(ctrl.hasPendingChanges()).toBe(false);
+        expect(ctrl.getEnabledMap()).toEqual({ ja: false, zh: false, ko: false });
+        expect(JSON.parse(storage.getItem('learningLanguages.v1'))).toEqual({ ja: false, zh: false, ko: false });
+        expect(fetchMock).toHaveBeenLastCalledWith('/learning-languages', expect.objectContaining({
+            method: 'POST',
+            body: JSON.stringify({ languages: { ja: false, zh: false, ko: false } }),
+        }));
     });
 });
 
@@ -175,21 +198,41 @@ describe('full-page learning languages wiring', () => {
             expect(orig.innerHTML).toContain('<ruby>你<rp>(</rp><rt>nǐ</rt><rp>)</rp></ruby>');
             expect(trans.innerHTML).not.toContain('<ruby>');
 
-            // Toggle Chinese pinyin switch OFF in settings -> removes ruby from Chinese line
-            // and keeps the same DOM node so CSS toggle transitions play smoothly.
+            // Toggle Chinese pinyin switch OFF in settings -> keeps the same DOM node for CSS
+            // toggle transitions, does not apply before Save, and Cancel discards the change.
+            doc.getElementById('settingsButton').click();
             const zhSwitch = doc.querySelector('#learningLanguagesList [data-learning-lang="zh"] .settings-switch');
             zhSwitch.click();
             await page.flush(10);
+            expect(doc.querySelector('#learningLanguagesList [data-learning-lang="zh"] .settings-switch')).toBe(zhSwitch);
+            expect(zhSwitch.getAttribute('aria-checked')).toBe('false');
+            expect(doc.querySelector('.original-line').innerHTML).toContain('<ruby>');
+            expect(page.window.localStorage.getItem('learningLanguages.v1')).toBeNull();
+
+            // Cancel reverts the toggle without modifying subtitles or storage
+            doc.getElementById('settingsCancelButton').click();
+            await page.flush(10);
+            expect(zhSwitch.getAttribute('aria-checked')).toBe('true');
+            expect(doc.querySelector('.original-line').innerHTML).toContain('<ruby>');
+            expect(page.window.localStorage.getItem('learningLanguages.v1')).toBeNull();
+
+            // Toggle OFF and Save -> removes ruby from Chinese line and persists
+            doc.getElementById('settingsButton').click();
+            zhSwitch.click();
+            doc.getElementById('settingsSaveButton').click();
+            await page.flush(12);
             expect(doc.querySelector('#learningLanguagesList [data-learning-lang="zh"] .settings-switch')).toBe(zhSwitch);
             expect(zhSwitch.getAttribute('aria-checked')).toBe('false');
             orig = doc.querySelector('.original-line');
             expect(orig.innerHTML).not.toContain('<ruby>');
             expect(JSON.parse(page.window.localStorage.getItem('learningLanguages.v1')).zh).toBe(false);
 
-            // Toggle Chinese back ON -> restores ruby; then master 「あ」 button OFF -> hides all ruby
+            // Toggle Chinese back ON and Save -> restores ruby; then master 「あ」 button OFF -> hides all ruby
+            doc.getElementById('settingsButton').click();
             const zhSwitchOn = doc.querySelector('#learningLanguagesList [data-learning-lang="zh"] .settings-switch');
             zhSwitchOn.click();
-            await page.flush(10);
+            doc.getElementById('settingsSaveButton').click();
+            await page.flush(12);
             expect(zhSwitchOn).toBe(zhSwitch);
             expect(zhSwitch.getAttribute('aria-checked')).toBe('true');
             expect(doc.querySelector('.original-line').innerHTML).toContain('<ruby>');

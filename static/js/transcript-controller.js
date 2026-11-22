@@ -62,6 +62,10 @@
 
         let hasStoredSettings = false;
         let settings = loadStoredSettings();
+        let draft = {
+            autoSave: settings.autoSave,
+            format: settings.format,
+        };
         let backendDefaultDirectory = '';
         let packEnabled = !!isPackEnabledFn();
         let desktopAvailable = !!options.desktopAvailable;
@@ -169,27 +173,70 @@
             updateFolderDisplay();
         }
 
+        function isDraftDirty() {
+            return draft.autoSave !== settings.autoSave || draft.format !== settings.format;
+        }
+
+        function hasPendingChanges() {
+            return packEnabled && isDraftDirty();
+        }
+
+        function getDraft() {
+            return { ...draft };
+        }
+
+        function closeOpenPickers() {
+            if (formatControl && typeof formatControl.close === 'function') {
+                formatControl.close();
+            }
+        }
+
+        function resetDraft() {
+            draft = {
+                autoSave: settings.autoSave,
+                format: settings.format,
+            };
+            renderAutoSaveControl();
+            renderFormatControl();
+            return getDraft();
+        }
+
+        async function commitDraft({ sync = true } = {}) {
+            if (!isDraftDirty()) return false;
+            const updated = saveSettings({
+                ...settings,
+                autoSave: draft.autoSave,
+                format: draft.format,
+            });
+            draft = {
+                autoSave: settings.autoSave,
+                format: settings.format,
+            };
+            renderAutoSaveControl();
+            renderFormatControl();
+            if (sync) {
+                await syncSettingsToBackend(updated);
+            }
+            return true;
+        }
+
         function renderAutoSaveControl() {
             const host = el('autoSavePickerHost', 'transcriptAutoSavePicker');
             if (!host || !documentRef) return null;
-            const currentVal = settings.autoSave ? 'true' : 'false';
+            const currentVal = draft.autoSave ? 'true' : 'false';
             const expectedSwitch = !!buildToggleSwitch;
             if (autoSaveControl && autoSaveControl.parentNode === host) {
                 const isSwitch = autoSaveControl.getAttribute && autoSaveControl.getAttribute('role') === 'switch';
                 if (isSwitch === expectedSwitch) {
                     autoSaveControl.setAttribute('aria-label', t('transcript_auto_save'));
                     if (isSwitch) autoSaveControl.value = currentVal;
-                    else autoSaveControl.checked = settings.autoSave;
+                    else autoSaveControl.checked = draft.autoSave;
                     return autoSaveControl;
                 }
             }
             host.innerHTML = '';
             const onToggle = (nextValue) => {
-                const updated = saveSettings({
-                    ...settings,
-                    autoSave: nextValue === 'true',
-                });
-                void syncSettingsToBackend(updated);
+                draft.autoSave = nextValue === 'true';
             };
             if (buildToggleSwitch) {
                 const toggle = buildToggleSwitch({
@@ -205,7 +252,7 @@
             }
             const checkbox = documentRef.createElement('input');
             checkbox.type = 'checkbox';
-            checkbox.checked = settings.autoSave;
+            checkbox.checked = draft.autoSave;
             checkbox.setAttribute('aria-label', t('transcript_auto_save'));
             checkbox.addEventListener('change', () => {
                 onToggle(checkbox.checked ? 'true' : 'false');
@@ -218,21 +265,18 @@
         function renderFormatControl() {
             const host = el('formatPickerHost', 'transcriptFormatPicker');
             if (!host || !documentRef) return null;
+            closeOpenPickers();
             host.innerHTML = '';
             const selectOptions = [
                 { value: 'srt', label: t('transcript_format_srt') },
                 { value: 'txt', label: t('transcript_format_txt') },
             ];
             const onSelect = (nextFormat) => {
-                const updated = saveSettings({
-                    ...settings,
-                    format: nextFormat,
-                });
-                void syncSettingsToBackend(updated);
+                draft.format = normalizeFormat(nextFormat);
             };
             if (buildCustomSelect) {
                 const picker = buildCustomSelect(selectOptions, {
-                    value: settings.format,
+                    value: draft.format,
                     onChange: onSelect,
                 });
                 host.appendChild(picker);
@@ -246,7 +290,7 @@
                 opt.textContent = entry.label;
                 select.appendChild(opt);
             }
-            select.value = settings.format;
+            select.value = draft.format;
             select.addEventListener('change', () => onSelect(select.value));
             host.appendChild(select);
             formatControl = select;
@@ -346,11 +390,18 @@
                         : settings.autoSave;
                     const nextFormat = normalizeFormat(incoming.format || settings.format);
                     if (nextAutoSave !== settings.autoSave || nextFormat !== settings.format) {
+                        const wasDirty = isDraftDirty();
                         settings = {
                             ...settings,
                             autoSave: nextAutoSave,
                             format: nextFormat,
                         };
+                        if (!wasDirty) {
+                            draft = {
+                                autoSave: settings.autoSave,
+                                format: settings.format,
+                            };
+                        }
                         controlsDirty = true;
                     }
                 }
@@ -365,6 +416,10 @@
 
         function setPackEnabled(enabled) {
             packEnabled = !!enabled;
+            if (!packEnabled) {
+                closeOpenPickers();
+                resetDraft();
+            }
             applyVisibility();
             return packEnabled;
         }
@@ -503,16 +558,21 @@
             applyI18n,
             applyStatus,
             applyVisibility,
+            closeOpenPickers,
+            commitDraft,
             destroy,
+            getDraft,
             getSettings: () => ({ ...settings, effectiveDirectory: effectiveDirectory() }),
             getStatus: () => ({ ...status }),
             handleChangeFolderClick,
             handleExportClick,
             handleOpenFolderClick,
+            hasPendingChanges,
             init,
             isDesktopMainWindow,
             isPackEnabled: () => packEnabled,
             renderSettingsSection,
+            resetDraft,
             setPackEnabled,
             syncToBackend,
         };

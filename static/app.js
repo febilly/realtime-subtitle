@@ -382,6 +382,8 @@ const settingsRuntime = SettingsRuntime.create({
             persist: true,
             render: true,
         }),
+        commitLearningLanguagesDraft: () => (learningLanguages ? learningLanguages.commitDraft() : false),
+        commitTranscriptSettingsDraft: () => (transcriptController ? transcriptController.commitDraft() : false),
     },
 });
 
@@ -1377,6 +1379,7 @@ featurePacks = FeaturePacks.create({
         learning: {
             onDisable: () => {
                 furiganaToggleController.setPackEnabled(false);
+                if (learningLanguages) learningLanguages.resetDraft();
             },
             onEnable: () => {
                 furiganaToggleController.setPackEnabled(true);
@@ -1612,6 +1615,14 @@ const settingsPanelController = SettingsPanel.create({
             if (previousProvider !== 'local' || provider === 'local') return;
             if (settingsRuntime.getDraft().translationUiMode !== 'off') return;
             settingsRuntime.setDraft({ translationUiMode: 'hybrid' });
+        },
+        resetExternalDrafts: () => {
+            if (learningLanguages) learningLanguages.resetDraft();
+            if (transcriptController) transcriptController.resetDraft();
+        },
+        closeExternalPickers: () => {
+            settingsRuntime.closeOpenPickers();
+            if (transcriptController) transcriptController.closeOpenPickers();
         },
     },
     elements: {

@@ -55,7 +55,51 @@
 
         let hasExplicitStored = false;
         let state = loadInitialState();
+        let draft = { ...state };
         const rowControls = new Map();
+
+        function isDirtyMap() {
+            return LANGUAGE_CODES.some((code) => draft[code] !== state[code]);
+        }
+
+        function isSectionVisible() {
+            const section = elements.settingsSection
+                || (documentRef && documentRef.getElementById('learningSettingsSection'));
+            return !section || !section.hidden;
+        }
+
+        function hasPendingChanges() {
+            return isSectionVisible() && isDirtyMap();
+        }
+
+        function getDraft() {
+            return { ...draft };
+        }
+
+        function setDraftLanguage(lang, nextValue) {
+            const code = normalizeUiLangCode(lang);
+            if (!LANGUAGE_CODES.includes(code)) return false;
+            draft[code] = !!nextValue;
+            return true;
+        }
+
+        function resetDraft() {
+            draft = { ...state };
+            renderSettingsSection();
+            return getDraft();
+        }
+
+        async function commitDraft({ sync = true } = {}) {
+            if (!isDirtyMap()) return false;
+            saveState(draft);
+            draft = { ...state };
+            renderSettingsSection();
+            onChange(getEnabledMap());
+            if (sync) {
+                await syncToBackend();
+            }
+            return true;
+        }
 
         function loadInitialState() {
             const defaults = getDefaultMap(getUiLanguage());
@@ -131,6 +175,7 @@
                 return false;
             }
             saveState({ ...state, [code]: enabled });
+            draft = { ...state };
             renderSettingsSection();
             onChange(getEnabledMap());
             if (sync) {
@@ -151,7 +196,11 @@
                 }
             }
             if (!changed) return false;
+            const wasDirty = isDirtyMap();
             saveState(next);
+            if (!wasDirty) {
+                draft = { ...state };
+            }
             renderSettingsSection();
             onChange(getEnabledMap());
             return true;
@@ -173,7 +222,7 @@
 
             if (canUpdateInPlace) {
                 for (const entry of LANGUAGES) {
-                    const enabled = !!state[entry.code];
+                    const enabled = !!draft[entry.code];
                     const cached = rowControls.get(entry.code);
                     const labelText = t(entry.labelKey);
                     cached.nameEl.textContent = labelText;
@@ -190,7 +239,7 @@
             rowControls.clear();
             listEl.innerHTML = '';
             for (const entry of LANGUAGES) {
-                const enabled = !!state[entry.code];
+                const enabled = !!draft[entry.code];
                 const row = documentRef.createElement('label');
                 row.className = 'settings-item settings-row';
                 row.dataset.learningLang = entry.code;
@@ -207,7 +256,7 @@
                         onValue: 'true',
                         offValue: 'false',
                         onChange: (nextValue) => {
-                            setLanguageEnabled(entry.code, nextValue === 'true');
+                            setDraftLanguage(entry.code, nextValue === 'true');
                         },
                     });
                     control.setAttribute('aria-label', t(entry.labelKey));
@@ -218,7 +267,7 @@
                     control.checked = enabled;
                     control.setAttribute('aria-label', t(entry.labelKey));
                     control.addEventListener('change', () => {
-                        setLanguageEnabled(entry.code, control.checked);
+                        setDraftLanguage(entry.code, control.checked);
                     });
                     row.appendChild(control);
                 }
@@ -234,7 +283,11 @@
 
         function applyI18n() {
             if (!hasExplicitStored) {
+                const wasDirty = isDirtyMap();
                 state = getDefaultMap(getUiLanguage());
+                if (!wasDirty) {
+                    draft = { ...state };
+                }
             }
             renderSettingsSection();
         }
@@ -245,9 +298,13 @@
             STORAGE_KEY,
             applyBackendLanguages,
             applyI18n,
+            commitDraft,
+            getDraft,
             getEnabledMap,
+            hasPendingChanges,
             isLanguageEnabled,
             renderSettingsSection,
+            resetDraft,
             setLanguageEnabled,
             syncToBackend,
         };

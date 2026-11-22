@@ -73,6 +73,12 @@
             return getDraft();
         }
 
+        function closeOpenPickers() {
+            for (const picker of Object.values(pickers)) {
+                if (picker && typeof picker.close === 'function') picker.close();
+            }
+        }
+
         function pickerValue(name, fallback) {
             const picker = pickers[name];
             return picker && typeof picker.value === 'string' ? picker.value : fallback;
@@ -827,10 +833,18 @@
                 if (!ok) return { ok: false, message: t('validation_error') };
             }
 
+            if (typeof actions.commitLearningLanguagesDraft === 'function') {
+                await actions.commitLearningLanguagesDraft();
+            }
+            if (typeof actions.commitTranscriptSettingsDraft === 'function') {
+                await actions.commitTranscriptSettingsDraft();
+            }
+
             return { ok: true };
         }
 
         return {
+            closeOpenPickers,
             getDraft,
             setDraft,
             getPickers,

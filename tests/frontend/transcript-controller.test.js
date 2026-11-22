@@ -157,7 +157,7 @@ describe('TranscriptController registration and visibility', () => {
 });
 
 describe('TranscriptController settings persistence and actions', () => {
-    it('persists autoSave and format toggles in transcriptSettings.v1 and syncs with backend', async () => {
+    it('stages autoSave and format toggles in draft until commitDraft, and discards on resetDraft', async () => {
         const dom = buildTranscriptDom();
         const doc = dom.window.document;
         const storage = createMemoryStorage();
@@ -187,33 +187,40 @@ describe('TranscriptController settings persistence and actions', () => {
         await expect(ctrl.syncToBackend()).resolves.toBe(false);
         expect(fetchMock).not.toHaveBeenCalled();
 
-        // Toggle auto-save checkbox
+        // Toggle auto-save checkbox -> stays in draft, does not persist or POST yet
         const autoSaveCheckbox = doc.querySelector('#transcriptAutoSavePicker input[type="checkbox"]');
         autoSaveCheckbox.checked = true;
         autoSaveCheckbox.dispatchEvent(new dom.window.Event('change'));
         await flushTasks(4);
 
-        expect(JSON.parse(storage.getItem('transcriptSettings.v1'))).toEqual({
-            autoSave: true,
-            format: 'srt',
-            directory: '',
-        });
-        expect(fetchMock).toHaveBeenCalledWith('/transcript/settings', expect.objectContaining({
-            method: 'POST',
-            body: JSON.stringify({ auto_save: true, format: 'srt' }),
-        }));
+        expect(ctrl.hasPendingChanges()).toBe(true);
+        expect(storage.getItem('transcriptSettings.v1')).toBeNull();
+        expect(fetchMock).not.toHaveBeenCalled();
 
-        // Switch format to txt
+        // resetDraft reverts UI and clears pending flag without persisting
+        ctrl.resetDraft();
+        expect(ctrl.hasPendingChanges()).toBe(false);
+        expect(autoSaveCheckbox.checked).toBe(false);
+        expect(storage.getItem('transcriptSettings.v1')).toBeNull();
+
+        // Edit both auto-save and format, then commitDraft persists & syncs once
+        autoSaveCheckbox.checked = true;
+        autoSaveCheckbox.dispatchEvent(new dom.window.Event('change'));
         const formatSelect = doc.querySelector('#transcriptFormatPicker select');
         formatSelect.value = 'txt';
         formatSelect.dispatchEvent(new dom.window.Event('change'));
-        await flushTasks(4);
+        expect(ctrl.hasPendingChanges()).toBe(true);
+        expect(storage.getItem('transcriptSettings.v1')).toBeNull();
+        expect(fetchMock).not.toHaveBeenCalled();
 
+        await expect(ctrl.commitDraft()).resolves.toBe(true);
+        expect(ctrl.hasPendingChanges()).toBe(false);
         expect(JSON.parse(storage.getItem('transcriptSettings.v1'))).toEqual({
             autoSave: true,
             format: 'txt',
             directory: '',
         });
+        expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(fetchMock).toHaveBeenLastCalledWith('/transcript/settings', expect.objectContaining({
             method: 'POST',
             body: JSON.stringify({ auto_save: true, format: 'txt' }),
@@ -327,6 +334,77 @@ describe('full-page transcript wiring', () => {
             await flushTasks(8);
             expect(section.hidden).toBe(true);
             expect(exportBtn.hidden).toBe(true);
+        } finally {
+            page.close();
+        }
+    });
+
+    it('only applies transcript auto-save and format after clicking Save, and discards on Cancel', async () => {
+        const page = await createPageHarness({
+            localStorage: {
+                'I18N.lang': 'en',
+                'featurePacks.v1': JSON.stringify({
+                    version: 1,
+                    confirmed: true,
+                    isUpgrade: false,
+                    enabled: { vrchat: false, learning: false, obs: false, transcript: true },
+                }),
+            },
+            uiConfig: {
+                env_key_present: { soniox: true, gemini: false },
+                transcript_desktop_available: true,
+                transcript_settings: {
+                    auto_save: false,
+                    format: 'srt',
+                    directory: 'C:\\Transcripts',
+                },
+            },
+        });
+        try {
+            const doc = page.document;
+            const pathOf = (url) => new URL(String(url), 'http://localhost/').pathname;
+            doc.getElementById('settingsButton').click();
+            await flushTasks(4);
+
+            const beforeEdit = page.fetchCalls.length;
+            const autoSaveSwitch = doc.querySelector('#transcriptAutoSavePicker .settings-switch');
+            autoSaveSwitch.click();
+            const formatTrigger = doc.querySelector('#transcriptFormatPicker .custom-select-button');
+            formatTrigger.click();
+            const formatOptions = [...doc.querySelectorAll('body > .custom-select-menu .custom-select-option')];
+            formatOptions[1].click();
+            await flushTasks(4);
+
+            // Neither storage nor backend is updated before Save
+            expect(page.window.localStorage.getItem('transcriptSettings.v1')).toBeNull();
+            expect(page.fetchCalls.slice(beforeEdit).some(([u]) => pathOf(u) === '/transcript/settings')).toBe(false);
+
+            // Cancel discards both edits
+            doc.getElementById('settingsCancelButton').click();
+            await flushTasks(4);
+            expect(page.window.localStorage.getItem('transcriptSettings.v1')).toBeNull();
+            expect(doc.querySelector('#transcriptAutoSavePicker .settings-switch').getAttribute('aria-checked')).toBe('false');
+
+            // Reopen, edit again, and click Save -> persists & POSTs /transcript/settings
+            doc.getElementById('settingsButton').click();
+            await flushTasks(4);
+            doc.querySelector('#transcriptAutoSavePicker .settings-switch').click();
+            doc.querySelector('#transcriptFormatPicker .custom-select-button').click();
+            [...doc.querySelectorAll('body > .custom-select-menu .custom-select-option')][1].click();
+
+            const beforeSave = page.fetchCalls.length;
+            doc.getElementById('settingsSaveButton').click();
+            await flushTasks(12);
+
+            expect(JSON.parse(page.window.localStorage.getItem('transcriptSettings.v1'))).toEqual({
+                autoSave: true,
+                format: 'txt',
+                directory: '',
+            });
+            const postCall = page.fetchCalls.slice(beforeSave)
+                .find(([u, init]) => pathOf(u) === '/transcript/settings' && init && init.method === 'POST');
+            expect(postCall).toBeDefined();
+            expect(JSON.parse(postCall[1].body)).toEqual({ auto_save: true, format: 'txt' });
         } finally {
             page.close();
         }
