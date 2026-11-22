@@ -36,6 +36,8 @@
         const listeners = [];
         let initialized = false;
         let forcedOpen = false;
+        let saving = false;
+        let initialSnapshot = null;
         let relayPricing = null;
         let sonioxRegionPicker = null;
         const localPickers = {
@@ -78,9 +80,10 @@
             }
         }
 
-        function setSaving(saving) {
+        function setSaving(nextSaving) {
+            saving = !!nextSaving;
             if (!elements.saveButton) return;
-            elements.saveButton.disabled = !!saving;
+            elements.saveButton.disabled = saving;
             elements.saveButton.textContent = t(saving ? 'saving' : 'save');
         }
 
@@ -524,6 +527,10 @@
                     encoderDevice: localConfig.encoder_device,
                     translationDevice: localConfig.translation_device,
                 });
+                if (!localDraftDirty && initialSnapshot && initialSnapshot.provider === 'local'
+                    && getSelectedProvider() === 'local') {
+                    initialSnapshot.localConfig = snapshotFormState().localConfig;
+                }
                 localStatusLoaded = true;
                 return true;
             } catch (error) {
@@ -709,6 +716,72 @@
             if (local && !localStatusLoaded) void refreshLocalInferenceStatus();
         }
 
+        function snapshotFormState() {
+            const draft = getDraft();
+            const snapshot = {
+                provider: draft.provider,
+                mode: draft.mode,
+                region: draft.mode === 'direct' && draft.provider === 'soniox' ? draft.region : null,
+                apiKey: draft.mode === 'direct' && draft.provider !== 'local'
+                    ? String(draft.apiKey || '').trim()
+                    : '',
+                localConfig: null,
+            };
+            if (draft.provider === 'local' && draft.localConfig) {
+                snapshot.localConfig = {
+                    backend: draft.localConfig.backend || 'local',
+                    asr_device: draft.localConfig.asr_device || 'auto',
+                    encoder_device: draft.localConfig.encoder_device || 'auto',
+                    translation_device: draft.localConfig.translation_device || 'auto',
+                    vad_silence_duration: draft.localConfig.vad_silence_duration ?? null,
+                    incremental_max_update_interval: draft.localConfig.incremental_max_update_interval ?? null,
+                    server_url: draft.localConfig.server_url || '',
+                    remote_timeout_seconds: draft.localConfig.remote_timeout_seconds ?? null,
+                };
+            }
+            return snapshot;
+        }
+
+        function localConfigEquals(a, b) {
+            if (!a && !b) return true;
+            if (!a || !b) return false;
+            return a.backend === b.backend
+                && a.asr_device === b.asr_device
+                && a.encoder_device === b.encoder_device
+                && a.translation_device === b.translation_device
+                && a.vad_silence_duration === b.vad_silence_duration
+                && a.incremental_max_update_interval === b.incremental_max_update_interval
+                && a.server_url === b.server_url
+                && a.remote_timeout_seconds === b.remote_timeout_seconds;
+        }
+
+        function isOpen() {
+            return !!(elements.panel && !elements.panel.hidden);
+        }
+
+        function isForcedOpen() {
+            return forcedOpen;
+        }
+
+        function isSaving() {
+            return saving;
+        }
+
+        function hasUnsavedChanges() {
+            if (!isOpen() || !initialSnapshot) return false;
+            const current = snapshotFormState();
+            if (
+                current.provider !== initialSnapshot.provider
+                || current.mode !== initialSnapshot.mode
+                || current.region !== initialSnapshot.region
+                || current.apiKey !== initialSnapshot.apiKey
+                || !localConfigEquals(current.localConfig, initialSnapshot.localConfig)
+            ) {
+                return true;
+            }
+            return !!call('hasUnsavedChanges');
+        }
+
         function populate() {
             const current = state();
             localDraftDirty = false;
@@ -734,6 +807,7 @@
                     ? t('setup_required_hint')
                     : '';
             }
+            initialSnapshot = snapshotFormState();
         }
 
         function applyI18n() {
@@ -858,6 +932,7 @@
             if (elements.overlay) elements.overlay.hidden = true;
             if (elements.panel) elements.panel.hidden = true;
             forcedOpen = false;
+            initialSnapshot = null;
             localDraftDirty = false;
         }
 
@@ -1000,8 +1075,12 @@
             getProviderDescription,
             getSelectedProvider,
             getSelectedSonioxRegion,
+            hasUnsavedChanges,
             hide,
             init,
+            isForcedOpen,
+            isOpen,
+            isSaving,
             open,
             populate,
             renderSonioxRegionPicker,

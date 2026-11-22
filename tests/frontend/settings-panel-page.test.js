@@ -60,4 +60,51 @@ describe('full-page settings panel wiring', () => {
             page.close();
         }
     });
+
+    it('detects unsaved local device picker changes and resets them after Cancel and reopen', async () => {
+        const page = await createPageHarness({
+            uiConfig: { provider: 'local', mode: 'direct', setup_required: false },
+            localStorage: {
+                'providerSettings.v1': JSON.stringify({
+                    providerOverride: 'local',
+                    localConfig: { backend: 'local', asr_device: 'auto' },
+                    keys: {},
+                }),
+            },
+        });
+        try {
+            const doc = page.document;
+            doc.getElementById('settingsButton').click();
+            await page.flush(8);
+
+            // Opening local settings without edits closes cleanly without prompting
+            doc.getElementById('settingsCloseButton').click();
+            expect(doc.getElementById('settingsPanel').hidden).toBe(true);
+            expect(doc.getElementById('confirmDialog').hidden).toBe(true);
+
+            // Changing localAsrDevice to CPU triggers unsaved-changes prompt on close
+            doc.getElementById('settingsButton').click();
+            await page.flush(8);
+            const trigger = doc.querySelector('#localAsrDevice .custom-select-button');
+            trigger.click();
+            const cpuOption = [...doc.querySelectorAll('body > .custom-select-menu .custom-select-option')]
+                .find((opt) => opt.textContent === 'CPU');
+            cpuOption.click();
+            expect(doc.getElementById('localAsrDevice').value).toBe('cpu');
+
+            doc.getElementById('settingsCloseButton').click();
+            expect(doc.getElementById('confirmDialog').hidden).toBe(false);
+            doc.getElementById('confirmCancelButton').click();
+            await page.flush(4);
+
+            // Cancel button discards the edit and reopening restores auto
+            doc.getElementById('settingsCancelButton').click();
+            expect(doc.getElementById('settingsPanel').hidden).toBe(true);
+            doc.getElementById('settingsButton').click();
+            await page.flush(8);
+            expect(doc.getElementById('localAsrDevice').value).toBe('auto');
+        } finally {
+            page.close();
+        }
+    });
 });

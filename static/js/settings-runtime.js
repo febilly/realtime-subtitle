@@ -62,6 +62,7 @@
         let microphoneData = normalizeMicrophoneData(options.microphoneData || EMPTY_MICROPHONE_DATA);
         let outputData = normalizeMicrophoneData(options.outputData || EMPTY_OUTPUT_DATA);
         let draft = {};
+        let initialValues = {};
 
         function state() {
             const value = getState();
@@ -73,10 +74,41 @@
             return getDraft();
         }
 
+        function setInitialAndDraft(patch) {
+            initialValues = { ...initialValues, ...(patch || {}) };
+            draft = { ...draft, ...(patch || {}) };
+            return getDraft();
+        }
+
         function closeOpenPickers() {
             for (const picker of Object.values(pickers)) {
                 if (picker && typeof picker.close === 'function') picker.close();
             }
+        }
+
+        function hasPendingChanges() {
+            const currentDraft = getDraft();
+            const checks = [
+                ['output', 'outputDeviceId'],
+                ['microphone', 'microphoneDeviceId'],
+                ['autoRestart', 'autoRestartEnabled'],
+                ['sleepOnSilence', 'sleepOnSilenceEnabled'],
+                ['speakerLabels', 'hideSpeakerLabels'],
+                ['oscSensitiveFilter', 'oscSensitiveFilterEnabled'],
+                ['oscSensitiveFilterNotice', 'oscSensitiveFilterNoticeDisabled'],
+                ['interruptRepair', 'interruptRepairEnabled'],
+                ['bundledCjkFont', 'useBundledCjkFont'],
+                ['translationMode', 'translationUiMode'],
+                ['segmentMode', 'segmentMode'],
+                ['subtitleFlow', 'subtitleFlowDirection'],
+                ['vrAttachMode', 'vrAttachMode'],
+            ];
+            for (const [pickerKey, draftKey] of checks) {
+                if (!pickers[pickerKey]) continue;
+                if (!Object.prototype.hasOwnProperty.call(initialValues, draftKey)) continue;
+                if (currentDraft[draftKey] !== initialValues[draftKey]) return true;
+            }
+            return false;
         }
 
         function pickerValue(name, fallback) {
@@ -242,7 +274,7 @@
             const selected = selectOptions.some((entry) => entry.value === microphoneData.selected_id)
                 ? microphoneData.selected_id
                 : '';
-            setDraft({ microphoneDeviceId: selected });
+            setInitialAndDraft({ microphoneDeviceId: selected });
             const picker = replaceHost(host, 'microphone', selectOptions, {
                 value: selected,
                 disabled: !microphoneData.available,
@@ -274,7 +306,7 @@
             ];
             const selected = selectOptions.some((entry) => entry.value === outputData.selected_id)
                 ? outputData.selected_id : '';
-            setDraft({ outputDeviceId: selected });
+            setInitialAndDraft({ outputDeviceId: selected });
             const picker = replaceHost(host, 'output', selectOptions, {
                 value: selected, disabled: !outputData.available,
                 onChange: (value) => setDraft({ outputDeviceId: value }),
@@ -366,13 +398,13 @@
                     const result = await saveDeviceSelection('/output-device', currentDraft.outputDeviceId, OUTPUT_STORAGE_KEY);
                     if (!result.ok) return result;
                     outputData.selected_id = result.id;
-                    setDraft({ outputDeviceId: result.id });
+                    setInitialAndDraft({ outputDeviceId: result.id });
                 }
                 if (elements.microphoneDeviceSection && microphoneData.available) {
                     const result = await saveDeviceSelection('/microphone-device', currentDraft.microphoneDeviceId, MICROPHONE_STORAGE_KEY);
                     if (!result.ok) return result;
                     microphoneData.selected_id = result.id;
-                    setDraft({ microphoneDeviceId: result.id });
+                    setInitialAndDraft({ microphoneDeviceId: result.id });
                 }
                 return { ok: true };
             } catch (error) {
@@ -389,7 +421,7 @@
                 return null;
             }
             const enabled = !!state().autoRestartEnabled;
-            setDraft({ autoRestartEnabled: enabled });
+            setInitialAndDraft({ autoRestartEnabled: enabled });
             return replaceSwitchHost(elements.autoRestartPickerHost, 'autoRestart', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ autoRestartEnabled: value !== 'false' }),
@@ -405,7 +437,7 @@
                 return null;
             }
             const enabled = state().sleepOnSilenceEnabled !== false;
-            setDraft({ sleepOnSilenceEnabled: enabled });
+            setInitialAndDraft({ sleepOnSilenceEnabled: enabled });
             return replaceSwitchHost(elements.sleepOnSilencePickerHost, 'sleepOnSilence', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ sleepOnSilenceEnabled: value !== 'false' }),
@@ -423,7 +455,7 @@
                 return null;
             }
             const hidden = desiredHideSpeakerLabels();
-            setDraft({ hideSpeakerLabels: hidden });
+            setInitialAndDraft({ hideSpeakerLabels: hidden });
             return replaceSwitchHost(elements.speakerLabelsPickerHost, 'speakerLabels', {
                 onValue: 'show',
                 offValue: 'hide',
@@ -434,7 +466,7 @@
 
         function renderOscSensitiveFilterPicker() {
             const enabled = state().oscSensitiveFilterEnabled !== false;
-            setDraft({ oscSensitiveFilterEnabled: enabled });
+            setInitialAndDraft({ oscSensitiveFilterEnabled: enabled });
             return replaceSwitchHost(elements.oscSensitiveFilterPickerHost, 'oscSensitiveFilter', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ oscSensitiveFilterEnabled: value !== 'false' }),
@@ -443,7 +475,7 @@
 
         function renderOscSensitiveFilterNoticePicker() {
             const disabled = state().oscSensitiveFilterNoticeDisabled === true;
-            setDraft({ oscSensitiveFilterNoticeDisabled: disabled });
+            setInitialAndDraft({ oscSensitiveFilterNoticeDisabled: disabled });
             return replaceSwitchHost(elements.oscSensitiveFilterNoticePickerHost, 'oscSensitiveFilterNotice', {
                 value: disabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ oscSensitiveFilterNoticeDisabled: value === 'true' }),
@@ -465,7 +497,7 @@
                 return null;
             }
             const enabled = current.interruptRepairEnabled !== false;
-            setDraft({ interruptRepairEnabled: enabled });
+            setInitialAndDraft({ interruptRepairEnabled: enabled });
             return replaceSwitchHost(elements.interruptRepairPickerHost, 'interruptRepair', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ interruptRepairEnabled: value !== 'false' }),
@@ -482,7 +514,7 @@
             const current = state();
             if (!current.customFontAvailable) {
                 pickers.bundledCjkFont = null;
-                setDraft({ useBundledCjkFont: false });
+                setInitialAndDraft({ useBundledCjkFont: false });
                 const status = documentRef.createElement('span');
                 status.className = 'font-not-detected-status';
                 status.style.color = '#ef4444';
@@ -496,7 +528,7 @@
                 return null;
             }
             const enabled = !!current.useBundledCjkFont;
-            setDraft({ useBundledCjkFont: enabled });
+            setInitialAndDraft({ useBundledCjkFont: enabled });
             const picker = replaceSwitchHost(host, 'bundledCjkFont', {
                 value: enabled ? 'true' : 'false',
                 onChange: (value) => setDraft({ useBundledCjkFont: value === 'true' }),
@@ -604,7 +636,7 @@
                 : DEFAULT_TRANSLATION_UI_MODE;
             const selected = modes.includes(current.translationUiMode) ? current.translationUiMode
                 : (modes.includes(fallback) ? fallback : modes[0]);
-            setDraft({ translationUiMode: selected });
+            setInitialAndDraft({ translationUiMode: selected });
             const picker = replaceHost(
                 elements.translationModePickerHost,
                 'translationMode',
@@ -641,7 +673,7 @@
             }
             const modes = getSegmentModes();
             const selected = modes.includes(current.segmentMode) ? current.segmentMode : (modes[0] || '');
-            setDraft({ segmentMode: selected });
+            setInitialAndDraft({ segmentMode: selected });
             return replaceHost(
                 elements.segmentModePickerHost,
                 'segmentMode',
@@ -655,7 +687,7 @@
 
         function renderSubtitleFlowPicker() {
             const direction = state().subtitleFlowDirection === 'down' ? 'down' : 'up';
-            setDraft({ subtitleFlowDirection: direction });
+            setInitialAndDraft({ subtitleFlowDirection: direction });
             return replaceHost(elements.subtitleFlowPickerHost, 'subtitleFlow', [
                 { value: 'up', label: t('subtitle_flow_option_up') },
                 { value: 'down', label: t('subtitle_flow_option_down') },
@@ -674,7 +706,7 @@
                 return null;
             }
             const mode = state().vrAttachMode || 'body';
-            setDraft({ vrAttachMode: mode });
+            setInitialAndDraft({ vrAttachMode: mode });
             return replaceHost(elements.vrAttachModePickerHost, 'vrAttachMode', [
                 { value: 'world', label: t('vr_attach_world') },
                 { value: 'head', label: t('vr_attach_head') },
@@ -848,6 +880,7 @@
             getDraft,
             setDraft,
             getPickers,
+            hasPendingChanges,
             getMicrophoneData,
             getOutputData,
             outputDefaultLabel,

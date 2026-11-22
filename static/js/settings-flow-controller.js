@@ -15,7 +15,11 @@
         const readState = typeof options.getState === 'function' ? options.getState : () => ({});
         const writeState = typeof options.updateState === 'function' ? options.updateState : () => {};
         const submit = typeof options.submit === 'function' ? options.submit : () => undefined;
+        const confirmUnsavedChanges = typeof options.confirmUnsavedChanges === 'function'
+            ? options.confirmUnsavedChanges
+            : null;
         const actions = options.actions || {};
+        let closePromptActive = false;
 
         function state() {
             return readState() || {};
@@ -35,6 +39,40 @@
 
         function close() {
             return typeof panel.close === 'function' ? panel.close() : undefined;
+        }
+
+        function requestClose() {
+            if (typeof panel.isForcedOpen === 'function' && panel.isForcedOpen()) {
+                return false;
+            }
+            if (typeof panel.isOpen === 'function' && !panel.isOpen()) {
+                return false;
+            }
+            if (typeof panel.isSaving === 'function' && panel.isSaving()) {
+                return false;
+            }
+            if (closePromptActive) {
+                return false;
+            }
+            const dirty = typeof panel.hasUnsavedChanges === 'function' && panel.hasUnsavedChanges();
+            if (!dirty || !confirmUnsavedChanges) {
+                return close();
+            }
+            closePromptActive = true;
+            return Promise.resolve(confirmUnsavedChanges()).then(async (choice) => {
+                closePromptActive = false;
+                if (choice === 'ok') {
+                    await handleSubmit();
+                    return typeof panel.isOpen === 'function' ? !panel.isOpen() : true;
+                }
+                if (choice === 'alt') {
+                    return !!close();
+                }
+                return false;
+            }, () => {
+                closePromptActive = false;
+                return false;
+            });
         }
 
         function handleSubmit(event) {
@@ -60,7 +98,7 @@
             return action;
         }
 
-        return { close, finishHotSave, handleSubmit, hide, maybeForceOpen, open };
+        return { close, finishHotSave, handleSubmit, hide, maybeForceOpen, open, requestClose };
     }
 
     const api = { create };

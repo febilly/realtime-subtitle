@@ -20,8 +20,13 @@ function setup(overrides = {}) {
             events.push(['close']);
             return true;
         }),
+        isOpen: vi.fn(() => true),
+        isForcedOpen: vi.fn(() => false),
+        isSaving: vi.fn(() => false),
+        hasUnsavedChanges: vi.fn(() => false),
     };
     const submit = overrides.submit || vi.fn((event) => ({ event }));
+    const confirmUnsavedChanges = overrides.confirmUnsavedChanges;
     const openLogin = overrides.openLogin || vi.fn((options) => events.push(['login', options]));
     const showToast = overrides.showToast || vi.fn((message) => events.push(['toast', message]));
     const updateState = overrides.updateState || vi.fn((patch) => {
@@ -35,6 +40,7 @@ function setup(overrides = {}) {
         getState: () => state,
         updateState,
         submit,
+        confirmUnsavedChanges,
         actions: { openLogin, showToast },
     });
     return { controller, events, openLogin, panel, showToast, state, submit, updateState };
@@ -97,5 +103,67 @@ describe('SettingsFlowController forced startup action', () => {
             expect(env.openLogin).not.toHaveBeenCalled();
             expect(env.panel.open).not.toHaveBeenCalled();
         }
+    });
+});
+
+describe('SettingsFlowController requestClose unsaved changes guard', () => {
+    it('closes synchronously without prompting when there are no unsaved changes', () => {
+        const confirmUnsavedChanges = vi.fn();
+        const env = setup({ confirmUnsavedChanges });
+        expect(env.controller.requestClose()).toBe(true);
+        expect(confirmUnsavedChanges).not.toHaveBeenCalled();
+        expect(env.panel.close).toHaveBeenCalledOnce();
+    });
+
+    it('saves when the user chooses ok, discards on alt, and stays open on cancel', async () => {
+        let open = true;
+        const submit = vi.fn(async () => { open = false; });
+        const panel = {
+            open: vi.fn(),
+            hide: vi.fn(() => { open = false; }),
+            close: vi.fn(() => { open = false; return true; }),
+            isOpen: vi.fn(() => open),
+            isForcedOpen: vi.fn(() => false),
+            isSaving: vi.fn(() => false),
+            hasUnsavedChanges: vi.fn(() => true),
+        };
+        const confirmUnsavedChanges = vi.fn()
+            .mockResolvedValueOnce('cancel')
+            .mockResolvedValueOnce('alt')
+            .mockResolvedValueOnce('ok');
+        const env = setup({ panel, submit, confirmUnsavedChanges });
+
+        await expect(env.controller.requestClose()).resolves.toBe(false);
+        expect(panel.close).not.toHaveBeenCalled();
+        expect(submit).not.toHaveBeenCalled();
+
+        await expect(env.controller.requestClose()).resolves.toBe(true);
+        expect(panel.close).toHaveBeenCalledOnce();
+        expect(submit).not.toHaveBeenCalled();
+
+        open = true;
+        await expect(env.controller.requestClose()).resolves.toBe(true);
+        expect(submit).toHaveBeenCalledOnce();
+    });
+
+    it('blocks requestClose while forced open or saving', () => {
+        const confirmUnsavedChanges = vi.fn();
+        const panel = {
+            open: vi.fn(),
+            hide: vi.fn(),
+            close: vi.fn(),
+            isOpen: vi.fn(() => true),
+            isForcedOpen: vi.fn(() => true),
+            isSaving: vi.fn(() => false),
+            hasUnsavedChanges: vi.fn(() => true),
+        };
+        const env = setup({ panel, confirmUnsavedChanges });
+        expect(env.controller.requestClose()).toBe(false);
+        expect(confirmUnsavedChanges).not.toHaveBeenCalled();
+
+        panel.isForcedOpen.mockReturnValue(false);
+        panel.isSaving.mockReturnValue(true);
+        expect(env.controller.requestClose()).toBe(false);
+        expect(confirmUnsavedChanges).not.toHaveBeenCalled();
     });
 });

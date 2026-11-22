@@ -73,6 +73,7 @@ const confirmOverlay = document.getElementById('confirmOverlay');
 const confirmDialog = document.getElementById('confirmDialog');
 const confirmMessageEl = document.getElementById('confirmMessage');
 const confirmOkButton = document.getElementById('confirmOkButton');
+const confirmAltButton = document.getElementById('confirmAltButton');
 const confirmCancelButton = document.getElementById('confirmCancelButton');
 const confirmController = ConfirmDialog.create({
     document,
@@ -83,6 +84,7 @@ const confirmController = ConfirmDialog.create({
         dialog: confirmDialog,
         message: confirmMessageEl,
         okButton: confirmOkButton,
+        altButton: confirmAltButton,
         cancelButton: confirmCancelButton,
     },
 });
@@ -1309,7 +1311,8 @@ const settingsUi = SettingsUI.create({
     storage: localStorage,
     actions: {
         openSettings: (options) => settingsFlowController.open(options),
-        closeSettings: () => settingsFlowController.close(),
+        closeSettings: () => settingsFlowController.requestClose(),
+        cancelSettings: () => settingsFlowController.close(),
         openFeaturePacks: () => featurePacks.openPicker({ cancellable: true }),
         handleResetAll: resetAllController.handle,
         handleSettingsSave: (event) => settingsFlowController.handleSubmit(event),
@@ -1616,6 +1619,11 @@ const settingsPanelController = SettingsPanel.create({
             if (settingsRuntime.getDraft().translationUiMode !== 'off') return;
             settingsRuntime.setDraft({ translationUiMode: 'hybrid' });
         },
+        hasUnsavedChanges: () => (
+            settingsRuntime.hasPendingChanges()
+            || !!(learningLanguages && learningLanguages.hasPendingChanges())
+            || !!(transcriptController && transcriptController.hasPendingChanges())
+        ),
         resetExternalDrafts: () => {
             if (learningLanguages) learningLanguages.resetDraft();
             if (transcriptController) transcriptController.resetDraft();
@@ -1828,6 +1836,11 @@ const settingsFlowController = SettingsFlowController.create({
         }
     },
     submit: (event) => settingsSaveController.handleSubmit(event),
+    confirmUnsavedChanges: () => confirmController.choose(t('settings_unsaved_confirm'), {
+        okLabel: t('save'),
+        altLabel: t('settings_unsaved_discard'),
+        cancelLabel: t('cancel'),
+    }),
     actions: { openLogin: hostedPorts.openLogin, showToast },
 });
 const settingsSaveController = SettingsSave.create({

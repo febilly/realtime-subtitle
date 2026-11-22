@@ -157,4 +157,44 @@ describe('ConfirmDialog completion paths', () => {
         expect(page.controller.getDebugState().pending).toBe(false);
         page.dom.window.close();
     });
+
+    it('supports three-way choose() with ok, alt, cancel, Escape, and hides alt button on later show()', async () => {
+        const page = setup();
+        page.controller.init();
+
+        const first = page.controller.choose('Save changes?', {
+            okLabel: 'Save',
+            altLabel: "Don't save",
+            cancelLabel: 'Cancel',
+        });
+        const altButton = [...page.document.querySelectorAll('#dialog button')]
+            .find((button) => button.textContent === "Don't save");
+        expect(altButton).toBeDefined();
+        expect(altButton.hidden).toBe(false);
+        altButton.click();
+        await expect(first).resolves.toBe('alt');
+        expect(altButton.hidden).toBe(true);
+
+        const second = page.controller.choose('Save changes?', {
+            okLabel: 'Save',
+            altLabel: "Don't save",
+            cancelLabel: 'Cancel',
+        });
+        page.document.getElementById('ok').click();
+        await expect(second).resolves.toBe('ok');
+
+        const third = page.controller.choose('Save changes?', {
+            okLabel: 'Save',
+            altLabel: "Don't save",
+            cancelLabel: 'Cancel',
+        });
+        page.document.dispatchEvent(new page.dom.window.KeyboardEvent('keydown', { key: 'Escape' }));
+        await expect(third).resolves.toBe('cancel');
+
+        const normal = page.controller.show('Regular confirm');
+        expect(altButton.hidden).toBe(true);
+        page.controller.close(true);
+        await expect(normal).resolves.toBe(true);
+        page.dom.window.close();
+    });
 });
