@@ -791,18 +791,30 @@ body.dark-theme .settings-section-label {
 .panel-close-button {
     width: 32px;
     height: 32px;
+    padding: 0;
     border-radius: 50%;
     border: none;
     background: rgba(0, 0, 0, 0.06);
     color: inherit;
     cursor: pointer;
-    font-size: 24px;
-    line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex: 0 0 auto;
     transition: background-color 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+
+.panel-close-icon {
+    width: 18px;
+    height: 18px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+    flex-shrink: 0;
 }
 
 .panel-close-button:hover {
@@ -1004,6 +1016,7 @@ body.dark-theme .settings-card .form-field {
 
 .settings-switch {
     position: relative;
+    display: block;
     flex: 0 0 auto;
     width: 36px;
     height: 20px;
@@ -1906,12 +1919,26 @@ body.dark-theme .toast .toast-action {
     border-radius: 6px;
     background: transparent;
     color: inherit;
-    font-size: 18px;
-    line-height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
     opacity: 0.55;
     transform: translateY(-50%);
     transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+
+.toast .toast-close-icon {
+    width: 15px;
+    height: 15px;
+    display: block;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+    flex-shrink: 0;
 }
 
 .toast--structured .toast-close {
@@ -1923,10 +1950,6 @@ body.dark-theme .toast .toast-action {
 .toast .toast-close:focus-visible {
     background: rgba(127, 127, 127, 0.16);
     opacity: 1;
-}
-
-.toast .toast-close::before {
-    content: "\00d7";
 }
 
 .lang-popover-title {
@@ -2972,8 +2995,9 @@ body.dark-theme .method-option.method-selected {
 
 .embedded-paste-button {
     position: absolute;
-    top: 4px;
+    top: 50%;
     right: 4px;
+    transform: translateY(-50%);
     width: 30px;
     height: 30px;
     min-width: 30px;
@@ -3331,7 +3355,7 @@ body.dark-theme .obs-group-summary {
     height: 8px;
     border-right: 1.75px solid currentColor;
     border-bottom: 1.75px solid currentColor;
-    transform: rotate(-45deg);
+    transform: translateX(-2px) rotate(-45deg);
     opacity: 0.7;
     transition: transform 0.15s ease;
     flex: 0 0 auto;
@@ -3339,7 +3363,7 @@ body.dark-theme .obs-group-summary {
 }
 
 .obs-settings-group[open] .obs-group-chevron {
-    transform: rotate(45deg);
+    transform: translateY(-2px) rotate(45deg);
 }
 
 .obs-group-card {

@@ -149,7 +149,11 @@
         <form class="settings-form" id="settingsForm">
             <div class="settings-header">
                 <h1 id="settingsTitle">Settings</h1>
-                <button class="panel-close-button" id="settingsCloseButton" title="Close" type="button">×</button>
+                <button class="panel-close-button" id="settingsCloseButton" title="Close" aria-label="Close" type="button">
+                    <svg class="panel-close-icon" aria-hidden="true">
+                        <use href="icons/lucide-sprite.svg#x"></use>
+                    </svg>
+                </button>
             </div>
 
             <section class="settings-group">
@@ -505,7 +509,11 @@
     <div class="obs-dialog" id="obsDialog" role="dialog" aria-modal="true" aria-labelledby="obsDialogTitle" hidden>
         <div class="obs-dialog-header">
             <h1 id="obsDialogTitle">OBS subtitles</h1>
-            <button class="panel-close-button" id="obsDialogCloseButton" title="Close" type="button">×</button>
+            <button class="panel-close-button" id="obsDialogCloseButton" title="Close" aria-label="Close" type="button">
+                <svg class="panel-close-icon" aria-hidden="true">
+                    <use href="icons/lucide-sprite.svg#x"></use>
+                </svg>
+            </button>
         </div>
 
         <div class="obs-dialog-body" id="obsDialogBody">
@@ -719,7 +727,11 @@
         <form class="settings-form" id="loginForm">
             <div class="settings-header">
                 <h1 id="loginTitle">Sign in</h1>
-                <button class="panel-close-button" id="loginCloseButton" title="Close" type="button">×</button>
+                <button class="panel-close-button" id="loginCloseButton" title="Close" aria-label="Close" type="button">
+                    <svg class="panel-close-icon" aria-hidden="true">
+                        <use href="icons/lucide-sprite.svg#x"></use>
+                    </svg>
+                </button>
             </div>
             <p class="field-hint" id="loginServerHint"></p>
 

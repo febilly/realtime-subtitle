@@ -130,6 +130,19 @@
             close.className = 'toast-close';
             close.setAttribute('aria-label', t('close'));
             close.setAttribute('title', t('close'));
+            if (typeof documentRef.createElementNS === 'function') {
+                const svgNS = 'http://www.w3.org/2000/svg';
+                const closeIcon = documentRef.createElementNS(svgNS, 'svg');
+                closeIcon.setAttribute('class', 'toast-close-icon');
+                closeIcon.setAttribute('viewBox', '0 0 24 24');
+                closeIcon.setAttribute('aria-hidden', 'true');
+                for (const d of ['M18 6 6 18', 'm6 6 12 12']) {
+                    const path = documentRef.createElementNS(svgNS, 'path');
+                    path.setAttribute('d', d);
+                    closeIcon.appendChild(path);
+                }
+                close.appendChild(closeIcon);
+            }
             close.addEventListener('click', () => dismissToast(messageText));
             toast.appendChild(close);
             toast.classList.toggle('error', !!isError);

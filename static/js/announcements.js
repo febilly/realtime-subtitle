@@ -74,7 +74,8 @@
         .announcement-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px 20px 12px;border-bottom:1px solid rgba(0,0,0,0.08);flex-shrink:0}
         .dark-theme .announcement-header{border-bottom-color:rgba(255,255,255,0.08)}
         .announcement-header h2{font-size:17px;font-weight:700;margin:0;overflow-wrap:anywhere}
-        .announcement-close-button{width:32px;height:32px;border-radius:50%;border:none;background:rgba(0,0,0,0.06);color:inherit;cursor:pointer;font-size:24px;line-height:1;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;padding:0;transition:background-color 0.15s ease,transform 0.1s ease}
+        .announcement-close-button{width:32px;height:32px;border-radius:50%;border:none;background:rgba(0,0,0,0.06);color:inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;padding:0;transition:background-color 0.15s ease,transform 0.1s ease}
+        .announcement-close-icon{width:18px;height:18px;display:block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;flex-shrink:0}
         .announcement-close-button:hover{background:rgba(0,0,0,0.12)}
         .announcement-close-button:active{transform:scale(0.95)}
         .dark-theme .announcement-close-button{background:rgba(255,255,255,0.10)}
@@ -197,7 +198,20 @@
             const panel = doc.createElement('section'); panel.className = 'announcement-dialog'; panel.setAttribute('role', 'dialog'); panel.setAttribute('aria-modal', 'true'); panel.setAttribute('aria-label', l.title); panel.tabIndex = -1;
             const header = doc.createElement('div'); header.className = 'announcement-header';
             const title = doc.createElement('h2'); title.textContent = l.title;
-            const closeButton = doc.createElement('button'); closeButton.type = 'button'; closeButton.className = 'panel-close-button announcement-close-button'; closeButton.textContent = '×'; closeButton.setAttribute('aria-label', l.close); closeButton.title = l.close; closeButton.onclick = close;
+            const closeButton = doc.createElement('button'); closeButton.type = 'button'; closeButton.className = 'panel-close-button announcement-close-button'; closeButton.setAttribute('aria-label', l.close); closeButton.title = l.close; closeButton.onclick = close;
+            if (typeof doc.createElementNS === 'function') {
+                const svgNS = 'http://www.w3.org/2000/svg';
+                const closeIcon = doc.createElementNS(svgNS, 'svg');
+                closeIcon.setAttribute('class', 'panel-close-icon announcement-close-icon');
+                closeIcon.setAttribute('viewBox', '0 0 24 24');
+                closeIcon.setAttribute('aria-hidden', 'true');
+                for (const d of ['M18 6 6 18', 'm6 6 12 12']) {
+                    const path = doc.createElementNS(svgNS, 'path');
+                    path.setAttribute('d', d);
+                    closeIcon.append(path);
+                }
+                closeButton.append(closeIcon);
+            }
             header.append(title, closeButton);
             const body = doc.createElement('div'); body.className = 'announcement-body';
             panel.append(header, body); backdrop.append(panel);

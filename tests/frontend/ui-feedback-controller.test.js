@@ -75,6 +75,7 @@ describe('UiFeedbackController toast lifecycle', () => {
         expect(toast.textContent).toBe('<strong>unsafe</strong>');
         expect(toast.querySelector('strong')).toBeNull();
         expect(toast.querySelector('.toast-close')).not.toBeNull();
+        expect(toast.querySelector('.toast-close svg.toast-close-icon')).not.toBeNull();
         expect(page.schedule).not.toHaveBeenCalled();
 
         toast.querySelector('.toast-close').click();

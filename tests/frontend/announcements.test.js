@@ -33,6 +33,8 @@ describe('announcement list, local unread state and rich text', () => {
         expect(page.doc.querySelector('.announcement-unread-dot').hidden).toBe(false);
         await page.client.open();
         expect(page.doc.querySelector('[role=dialog]')).not.toBeNull();
+        expect(page.doc.querySelector('.announcement-close-button svg.announcement-close-icon')).not.toBeNull();
+        expect(page.doc.querySelector('.announcement-close-button').textContent).toBe('');
         expect(page.client.hasUnread()).toBe(false);
         expect(page.doc.querySelector('.announcement-unread-dot').hidden).toBe(true);
         const body = page.doc.querySelector('.announcement-item');
